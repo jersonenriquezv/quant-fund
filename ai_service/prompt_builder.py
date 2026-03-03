@@ -161,9 +161,9 @@ class PromptBuilder:
         if not liqs:
             return (
                 "## Recent Liquidations\n"
-                "Liquidation data not available (Binance feed offline from this server). "
-                "Do NOT assume the market is calm — you simply have no liquidation data. "
-                "Weigh other factors more heavily."
+                "No liquidation cascades detected via OI proxy. "
+                "This does NOT mean no liquidations occurred — only that OI did not "
+                "drop >2% in the last 5 minutes. Weigh other factors accordingly."
             )
 
         total = sum(l.size_usd for l in liqs)
@@ -171,11 +171,12 @@ class PromptBuilder:
         short_usd = sum(l.size_usd for l in liqs if l.side == "short")
 
         return (
-            f"## Recent Liquidations\n"
-            f"- Total: ${total:,.0f}\n"
+            f"## Recent Liquidations (OI Proxy)\n"
+            f"- Estimated total: ${total:,.0f}\n"
             f"- Long liquidations: ${long_usd:,.0f}\n"
             f"- Short liquidations: ${short_usd:,.0f}\n"
-            f"- Count: {len(liqs)}"
+            f"- Cascade events: {len(liqs)}\n"
+            f"- Source: OI drop >2% in 5min (proxy, not individual events)"
         )
 
     def _build_whale_section(self, snapshot: MarketSnapshot) -> str:

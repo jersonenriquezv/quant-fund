@@ -141,7 +141,7 @@ class TestEvaluationPrompt:
         liqs = [
             LiquidationEvent(
                 timestamp=ts, pair="BTC/USDT", side="long",
-                size_usd=50000, price=49500, source="binance_forceOrder",
+                size_usd=50000, price=49500, source="oi_proxy",
             ),
         ]
         setup = _make_setup()
@@ -155,7 +155,7 @@ class TestEvaluationPrompt:
         setup = _make_setup()
         snapshot = _make_snapshot(liquidations=[])
         prompt = builder.build_evaluation_prompt(setup, snapshot, {})
-        assert "not available" in prompt.lower()
+        assert "No liquidation cascades detected" in prompt
 
     def test_includes_whale_movements(self, builder):
         ts = int(time.time() * 1000)

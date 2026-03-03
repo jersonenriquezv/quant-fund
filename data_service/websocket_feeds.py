@@ -306,7 +306,7 @@ class OKXWebSocketFeed:
 
             # Trigger pipeline callback
             if self._on_candle_confirmed:
-                asyncio.get_event_loop().create_task(
+                asyncio.get_running_loop().create_task(
                     self._on_candle_confirmed(candle)
                 )
 

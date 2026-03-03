@@ -11,6 +11,7 @@ Rate limit: 5 calls/sec with free API key. Our usage: ~10 calls/5min = safe.
 """
 
 import asyncio
+import functools
 import time
 
 import requests
@@ -119,7 +120,11 @@ class EtherscanClient:
         }
 
         try:
-            resp = requests.get(_ETHERSCAN_BASE, params=params, timeout=10)
+            loop = asyncio.get_running_loop()
+            resp = await loop.run_in_executor(
+                None,
+                functools.partial(requests.get, _ETHERSCAN_BASE, params=params, timeout=10),
+            )
             data = resp.json()
         except requests.RequestException as e:
             logger.error(f"Etherscan request failed: wallet={wallet[:10]}... error={e}")

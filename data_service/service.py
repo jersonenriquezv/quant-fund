@@ -9,7 +9,7 @@ Startup sequence:
 1. Connect Redis + PostgreSQL
 2. Backfill 500 candles per pair/timeframe via OKX REST (ccxt)
 3. Store backfilled candles in memory + PostgreSQL
-4. Start WebSockets (OKX candles, OKX trades/CVD, Binance liquidations)
+4. Start WebSockets (OKX candles, OKX trades/CVD)
 5. Start Etherscan polling
 6. Start funding rate + OI polling loops
 7. On every confirmed candle → store to Redis/PG → trigger pipeline callback
@@ -29,7 +29,7 @@ from shared.models import (
 from data_service.exchange_client import ExchangeClient
 from data_service.websocket_feeds import OKXWebSocketFeed
 from data_service.cvd_calculator import CVDCalculator
-from data_service.binance_liq import BinanceLiquidationFeed
+from data_service.oi_liquidation_proxy import OILiquidationProxy
 from data_service.etherscan_client import EtherscanClient
 from data_service.data_store import RedisStore, PostgresStore
 
@@ -56,7 +56,7 @@ class DataService:
         self._exchange = ExchangeClient()
         self._ws_feed = OKXWebSocketFeed(on_candle_confirmed=self._on_candle)
         self._cvd = CVDCalculator()
-        self._binance_liq = BinanceLiquidationFeed()
+        self._oi_proxy = OILiquidationProxy()
         self._etherscan = EtherscanClient()
         self._redis = RedisStore()
         self._postgres = PostgresStore()
@@ -92,13 +92,13 @@ class DataService:
 
     def get_recent_liquidations(self, pair: str,
                                 minutes: int = 60) -> list[LiquidationEvent]:
-        """Get recent liquidation events from Binance."""
-        return self._binance_liq.get_recent_liquidations(pair, minutes)
+        """Get recent liquidation events from OI proxy."""
+        return self._oi_proxy.get_recent_liquidations(pair, minutes)
 
     def get_liquidation_stats(self, pair: str,
                               minutes: int = 5) -> dict:
         """Get aggregated liquidation stats (total_usd, long_usd, short_usd, count)."""
-        return self._binance_liq.get_aggregated_stats(pair, minutes)
+        return self._oi_proxy.get_aggregated_stats(pair, minutes)
 
     def get_whale_movements(self, hours: int = 24) -> list[WhaleMovement]:
         """Get recent whale movements from Etherscan."""
@@ -116,7 +116,7 @@ class DataService:
             funding=self._redis.get_funding_rate(pair),
             oi=self._redis.get_open_interest(pair),
             cvd=self._cvd.get_cvd(pair),
-            recent_liquidations=self._binance_liq.get_recent_liquidations(pair, minutes=60),
+            recent_liquidations=self._oi_proxy.get_recent_liquidations(pair, minutes=60),
             whale_movements=self._etherscan.get_recent_movements(hours=24),
         )
 
@@ -131,7 +131,7 @@ class DataService:
             "postgres": self._postgres.is_connected,
             "okx_ws": self._ws_feed.is_connected,
             "cvd_ws": self._cvd.is_connected,
-            "binance_liq_ws": self._binance_liq.is_connected,
+            "oi_proxy": self._oi_proxy.is_connected,
             "running": self._running,
         }
 
@@ -164,7 +164,6 @@ class DataService:
         self._tasks = [
             asyncio.create_task(self._ws_feed.start(), name="okx_ws"),
             asyncio.create_task(self._cvd.start(), name="okx_cvd_ws"),
-            asyncio.create_task(self._binance_liq.start(), name="binance_liq"),
             asyncio.create_task(self._etherscan.start(), name="etherscan"),
             asyncio.create_task(self._funding_rate_loop(), name="funding_loop"),
             asyncio.create_task(self._oi_loop(), name="oi_loop"),
@@ -187,7 +186,6 @@ class DataService:
         # Stop sub-modules
         await self._ws_feed.stop()
         await self._cvd.stop()
-        await self._binance_liq.stop()
         await self._etherscan.stop()
 
         # Cancel remaining tasks
@@ -280,6 +278,7 @@ class DataService:
                 oi = self._exchange.fetch_open_interest(pair)
                 if oi:
                     self._redis.set_open_interest(oi)
+                    self._oi_proxy.update(oi)
             except Exception as e:
                 logger.error(f"Initial OI fetch failed: pair={pair} error={e}")
 
@@ -353,6 +352,7 @@ class DataService:
                     )
                     if oi:
                         self._redis.set_open_interest(oi)
+                        self._oi_proxy.update(oi)
                 except Exception as e:
                     logger.error(f"OI poll failed: pair={pair} error={e}")
 

@@ -33,6 +33,12 @@ _PAIR_TO_SYMBOL = {
 # OKX max candles per request
 _MAX_CANDLES_PER_REQUEST = 100
 
+# OKX perpetual contract sizes (base currency per contract)
+_CONTRACT_SIZES = {
+    "BTC/USDT": 0.01,   # 1 contract = 0.01 BTC
+    "ETH/USDT": 0.1,    # 1 contract = 0.1 ETH
+}
+
 # Timeframe strings accepted by OKX via ccxt
 _TIMEFRAME_MAP = {
     "5m": "5m",
@@ -253,10 +259,14 @@ class ExchangeClient:
             ticker = self._exchange.fetch_ticker(symbol)
             price = ticker.get("last", 0)
 
+            # Derive contract count from base amount and contract size
+            contract_size = _CONTRACT_SIZES.get(pair, 1.0)
+            oi_contracts = oi_base / contract_size if contract_size else oi_base
+
             oi = OpenInterest(
                 timestamp=int(ts),
                 pair=pair,
-                oi_contracts=oi_base,
+                oi_contracts=oi_contracts,
                 oi_base=oi_base,
                 oi_usd=oi_base * float(price) if price else 0.0,
             )
