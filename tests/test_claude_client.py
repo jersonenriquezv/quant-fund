@@ -62,7 +62,7 @@ class TestEvaluate:
             return_value=_make_mock_response(valid_json)
         )
 
-        result = asyncio.get_event_loop().run_until_complete(client.evaluate("system", "user"))
+        result = asyncio.run(client.evaluate("system", "user"))
         assert result is not None
         assert result["confidence"] == 0.75
         assert result["approved"] is True
@@ -82,7 +82,7 @@ class TestEvaluate:
             return_value=_make_mock_response(wrapped)
         )
 
-        result = asyncio.get_event_loop().run_until_complete(client.evaluate("system", "user"))
+        result = asyncio.run(client.evaluate("system", "user"))
         assert result is not None
         assert result["confidence"] == 0.75
 
@@ -100,7 +100,7 @@ class TestEvaluate:
             return_value=_make_mock_response("This is not JSON at all")
         )
 
-        result = asyncio.get_event_loop().run_until_complete(client.evaluate("system", "user"))
+        result = asyncio.run(client.evaluate("system", "user"))
         assert result is None
 
     @patch("ai_service.claude_client.settings")
@@ -118,7 +118,7 @@ class TestEvaluate:
             return_value=_make_mock_response(incomplete)
         )
 
-        result = asyncio.get_event_loop().run_until_complete(client.evaluate("system", "user"))
+        result = asyncio.run(client.evaluate("system", "user"))
         assert result is None
 
     @patch("ai_service.claude_client.settings")
@@ -135,7 +135,7 @@ class TestEvaluate:
             side_effect=APITimeoutError(request=MagicMock())
         )
 
-        result = asyncio.get_event_loop().run_until_complete(client.evaluate("system", "user"))
+        result = asyncio.run(client.evaluate("system", "user"))
         assert result is None
 
     @patch("ai_service.claude_client.settings")
@@ -156,7 +156,7 @@ class TestEvaluate:
             )
         )
 
-        result = asyncio.get_event_loop().run_until_complete(client.evaluate("system", "user"))
+        result = asyncio.run(client.evaluate("system", "user"))
         assert result is None
 
     @patch("ai_service.claude_client.settings")
@@ -177,5 +177,5 @@ class TestEvaluate:
             )
         )
 
-        result = asyncio.get_event_loop().run_until_complete(client.evaluate("system", "user"))
+        result = asyncio.run(client.evaluate("system", "user"))
         assert result is None

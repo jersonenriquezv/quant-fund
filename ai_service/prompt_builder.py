@@ -159,7 +159,12 @@ class PromptBuilder:
     def _build_liquidation_section(self, snapshot: MarketSnapshot) -> str:
         liqs = snapshot.recent_liquidations
         if not liqs:
-            return "## Recent Liquidations\nNo recent liquidations"
+            return (
+                "## Recent Liquidations\n"
+                "Liquidation data not available (Binance feed offline from this server). "
+                "Do NOT assume the market is calm — you simply have no liquidation data. "
+                "Weigh other factors more heavily."
+            )
 
         total = sum(l.size_usd for l in liqs)
         long_usd = sum(l.size_usd for l in liqs if l.side == "long")

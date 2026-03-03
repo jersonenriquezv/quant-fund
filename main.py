@@ -157,7 +157,7 @@ async def main() -> None:
     signal.signal(signal.SIGTERM, handle_signal)
 
     # Start DataService in background
-    data_task = asyncio.create_task(data_service.start(), name="data_service")
+    data_task = asyncio.create_task(_data_service.start(), name="data_service")
 
     # Wait for shutdown signal
     await shutdown_event.wait()

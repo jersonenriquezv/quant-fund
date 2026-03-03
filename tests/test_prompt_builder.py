@@ -155,7 +155,7 @@ class TestEvaluationPrompt:
         setup = _make_setup()
         snapshot = _make_snapshot(liquidations=[])
         prompt = builder.build_evaluation_prompt(setup, snapshot, {})
-        assert "No recent liquidations" in prompt
+        assert "not available" in prompt.lower()
 
     def test_includes_whale_movements(self, builder):
         ts = int(time.time() * 1000)

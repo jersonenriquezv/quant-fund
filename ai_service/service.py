@@ -60,6 +60,9 @@ class AIService:
             setup, snapshot, candles_context
         )
 
+        # Log prompt for audit trail
+        logger.debug(f"Claude prompt for {setup.pair} {setup.direction}:\n{user_prompt}")
+
         # Call Claude
         result = await self._claude.evaluate(self._system_prompt, user_prompt)
 

@@ -78,7 +78,7 @@ class TestApproval:
             "adjustments": {},
             "warnings": [],
         })
-        decision = asyncio.get_event_loop().run_until_complete(
+        decision = asyncio.run(
             service.evaluate(_make_setup(), _make_snapshot())
         )
         assert decision.approved is True
@@ -92,7 +92,7 @@ class TestApproval:
             "adjustments": {},
             "warnings": [],
         })
-        decision = asyncio.get_event_loop().run_until_complete(
+        decision = asyncio.run(
             service.evaluate(_make_setup(), _make_snapshot())
         )
         assert decision.approved is True
@@ -105,7 +105,7 @@ class TestApproval:
             "adjustments": {"sl_price": 49200.0},
             "warnings": [],
         })
-        decision = asyncio.get_event_loop().run_until_complete(
+        decision = asyncio.run(
             service.evaluate(_make_setup(), _make_snapshot())
         )
         assert decision.adjustments == {"sl_price": 49200.0}
@@ -118,7 +118,7 @@ class TestApproval:
             "adjustments": {},
             "warnings": ["High funding rate", "Low volume"],
         })
-        decision = asyncio.get_event_loop().run_until_complete(
+        decision = asyncio.run(
             service.evaluate(_make_setup(), _make_snapshot())
         )
         assert len(decision.warnings) == 2
@@ -138,7 +138,7 @@ class TestRejection:
             "adjustments": {},
             "warnings": [],
         })
-        decision = asyncio.get_event_loop().run_until_complete(
+        decision = asyncio.run(
             service.evaluate(_make_setup(), _make_snapshot())
         )
         assert decision.approved is False
@@ -151,7 +151,7 @@ class TestRejection:
             "adjustments": {},
             "warnings": [],
         })
-        decision = asyncio.get_event_loop().run_until_complete(
+        decision = asyncio.run(
             service.evaluate(_make_setup(), _make_snapshot())
         )
         assert decision.approved is False
@@ -164,14 +164,14 @@ class TestRejection:
             "adjustments": {},
             "warnings": [],
         })
-        decision = asyncio.get_event_loop().run_until_complete(
+        decision = asyncio.run(
             service.evaluate(_make_setup(), _make_snapshot())
         )
         assert decision.approved is False
 
     def test_api_failure_rejects(self):
         service = _make_ai_service_with_mock(None)
-        decision = asyncio.get_event_loop().run_until_complete(
+        decision = asyncio.run(
             service.evaluate(_make_setup(), _make_snapshot())
         )
         assert decision.approved is False
@@ -182,7 +182,7 @@ class TestRejection:
             mock_settings.ANTHROPIC_API_KEY = ""
             service = AIService(data_service=None)
 
-        decision = asyncio.get_event_loop().run_until_complete(
+        decision = asyncio.run(
             service.evaluate(_make_setup(), _make_snapshot())
         )
         assert decision.approved is False
@@ -203,7 +203,7 @@ class TestConfidenceClamping:
             "adjustments": {},
             "warnings": [],
         })
-        decision = asyncio.get_event_loop().run_until_complete(
+        decision = asyncio.run(
             service.evaluate(_make_setup(), _make_snapshot())
         )
         assert decision.confidence == 1.0
@@ -216,7 +216,7 @@ class TestConfidenceClamping:
             "adjustments": {},
             "warnings": [],
         })
-        decision = asyncio.get_event_loop().run_until_complete(
+        decision = asyncio.run(
             service.evaluate(_make_setup(), _make_snapshot())
         )
         assert decision.confidence == 0.0
@@ -237,7 +237,7 @@ class TestDataServiceIntegration:
             "adjustments": {},
             "warnings": [],
         })
-        decision = asyncio.get_event_loop().run_until_complete(
+        decision = asyncio.run(
             service.evaluate(_make_setup(), _make_snapshot())
         )
         assert decision.approved is True
