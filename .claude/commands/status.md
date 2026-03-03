@@ -1,0 +1,1 @@
+Revisa el estado actual del proyecto. Para cada servicio (data, strategy, ai, risk, execution), reporta si tiene archivos implementados o está pendiente. Corre los tests con pytest si existen. Verifica si Docker está corriendo. Formato: usar emojis 🟢 implementado, 🟡 en progreso, 🔴 pendiente.
