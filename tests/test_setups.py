@@ -1,0 +1,457 @@
+"""Tests for strategy_service.setups — Setup A/B, confluence, TP calculation."""
+
+import time
+import pytest
+from tests.conftest import make_candle, make_market_snapshot
+from strategy_service.setups import SetupEvaluator
+from strategy_service.market_structure import (
+    MarketStructureState, StructureBreak, SwingPoint,
+)
+from strategy_service.order_blocks import OrderBlock
+from strategy_service.fvg import FairValueGap
+from strategy_service.liquidity import (
+    LiquiditySweep, LiquidityLevel, PremiumDiscountZone,
+)
+from shared.models import LiquidationEvent
+from config.settings import settings
+
+
+# ============================================================
+# Fixtures / helpers
+# ============================================================
+
+def _make_structure_state(
+    trend="bullish",
+    break_type="choch",
+    break_direction="bullish",
+) -> MarketStructureState:
+    """Create a MarketStructureState with a single break."""
+    brk = StructureBreak(
+        timestamp=10000,
+        break_type=break_type,
+        direction=break_direction,
+        break_price=110.0,
+        broken_level=108.0,
+        candle_index=10,
+    )
+    return MarketStructureState(
+        pair="BTC/USDT",
+        timeframe="15m",
+        trend=trend,
+        swing_highs=[],
+        swing_lows=[],
+        structure_breaks=[brk],
+        latest_break=brk,
+    )
+
+
+def _make_ob(
+    direction="bullish",
+    entry_price=101.0,
+    high=103.0,
+    low=98.0,
+    body_high=102.0,
+    body_low=100.0,
+    volume_ratio=2.0,
+    timestamp=8000,
+    timeframe="15m",
+) -> OrderBlock:
+    brk = StructureBreak(
+        timestamp=10000, break_type="bos", direction=direction,
+        break_price=110.0, broken_level=108.0, candle_index=10,
+    )
+    return OrderBlock(
+        timestamp=timestamp,
+        pair="BTC/USDT",
+        timeframe=timeframe,
+        direction=direction,
+        high=high,
+        low=low,
+        body_high=body_high,
+        body_low=body_low,
+        entry_price=entry_price,
+        volume=20.0,
+        volume_ratio=volume_ratio,
+        mitigated=False,
+        associated_break=brk,
+    )
+
+
+def _make_sweep(
+    direction="bullish",
+    volume_ratio=2.5,
+    had_liquidations=True,
+) -> LiquiditySweep:
+    return LiquiditySweep(
+        timestamp=9000,
+        pair="BTC/USDT",
+        timeframe="15m",
+        direction=direction,
+        swept_level=95.0 if direction == "bullish" else 105.0,
+        wick_price=94.0 if direction == "bullish" else 106.0,
+        close_price=96.0 if direction == "bullish" else 104.0,
+        volume_ratio=volume_ratio,
+        had_liquidations=had_liquidations,
+    )
+
+
+def _make_fvg(
+    direction="bullish",
+    high=103.0,
+    low=100.5,
+    timeframe="15m",
+) -> FairValueGap:
+    return FairValueGap(
+        timestamp=7000,
+        pair="BTC/USDT",
+        timeframe=timeframe,
+        direction=direction,
+        high=high,
+        low=low,
+        size_pct=0.025,
+        filled_pct=0.0,
+        fully_filled=False,
+    )
+
+
+def _make_pd_zone(zone="discount") -> PremiumDiscountZone:
+    return PremiumDiscountZone(
+        pair="BTC/USDT",
+        range_high=110.0,
+        range_low=90.0,
+        equilibrium=100.0,
+        last_updated_ms=int(time.time() * 1000),
+        zone=zone,
+    )
+
+
+def _make_candles_near_ob(entry_price=101.0) -> list:
+    """Create candles where the last close is near the OB entry."""
+    return [
+        make_candle(close=entry_price, high=entry_price + 1,
+                    low=entry_price - 1, timestamp=i * 1000)
+        for i in range(20)
+    ]
+
+
+# ============================================================
+# Setup A tests
+# ============================================================
+
+class TestSetupA:
+    """Test Setup A — Liquidity Sweep + CHoCH + Order Block."""
+
+    def test_valid_setup_a_long(self):
+        """Full valid Setup A should produce a TradeSetup."""
+        evaluator = SetupEvaluator()
+
+        state = _make_structure_state(
+            trend="bullish", break_type="choch", break_direction="bullish",
+        )
+        obs = [_make_ob(direction="bullish", entry_price=101.0)]
+        sweeps = [_make_sweep(direction="bullish")]
+        pd = _make_pd_zone("discount")
+        snapshot = make_market_snapshot(
+            cvd_15m=100.0,
+            liquidations=[
+                LiquidationEvent(
+                    timestamp=9000, pair="BTC/USDT", side="long",
+                    size_usd=50000, price=94.5, source="binance_forceOrder",
+                ),
+            ],
+        )
+        candles = _make_candles_near_ob(101.0)
+
+        setup = evaluator.evaluate_setup_a(
+            structure_state=state,
+            active_obs=obs,
+            recent_sweeps=sweeps,
+            pd_zone=pd,
+            market_snapshot=snapshot,
+            candles=candles,
+            pair="BTC/USDT",
+            htf_bias="bullish",
+            liquidity_levels=[],
+        )
+
+        assert setup is not None
+        assert setup.setup_type == "setup_a"
+        assert setup.direction == "long"
+        assert setup.entry_price == 101.0
+        assert setup.sl_price == 98.0  # OB low
+        assert len(setup.confluences) >= 2
+
+    def test_setup_a_no_htf_bias(self):
+        """No HTF bias → no setup."""
+        evaluator = SetupEvaluator()
+
+        state = _make_structure_state(break_type="choch", break_direction="bullish")
+        setup = evaluator.evaluate_setup_a(
+            structure_state=state, active_obs=[_make_ob()],
+            recent_sweeps=[_make_sweep()], pd_zone=_make_pd_zone("discount"),
+            market_snapshot=None, candles=_make_candles_near_ob(),
+            pair="BTC/USDT", htf_bias="undefined", liquidity_levels=[],
+        )
+        assert setup is None
+
+    def test_setup_a_no_sweep(self):
+        """No liquidity sweep → no Setup A."""
+        evaluator = SetupEvaluator()
+
+        state = _make_structure_state(break_type="choch", break_direction="bullish")
+        setup = evaluator.evaluate_setup_a(
+            structure_state=state, active_obs=[_make_ob()],
+            recent_sweeps=[], pd_zone=_make_pd_zone("discount"),
+            market_snapshot=None, candles=_make_candles_near_ob(),
+            pair="BTC/USDT", htf_bias="bullish", liquidity_levels=[],
+        )
+        assert setup is None
+
+    def test_setup_a_no_choch(self):
+        """No CHoCH → no Setup A."""
+        evaluator = SetupEvaluator()
+
+        # Only BOS, no CHoCH
+        state = _make_structure_state(break_type="bos", break_direction="bullish")
+        setup = evaluator.evaluate_setup_a(
+            structure_state=state, active_obs=[_make_ob()],
+            recent_sweeps=[_make_sweep()], pd_zone=_make_pd_zone("discount"),
+            market_snapshot=None, candles=_make_candles_near_ob(),
+            pair="BTC/USDT", htf_bias="bullish", liquidity_levels=[],
+        )
+        assert setup is None
+
+    def test_setup_a_wrong_pd_zone(self):
+        """Long in premium → no setup."""
+        evaluator = SetupEvaluator()
+
+        state = _make_structure_state(break_type="choch", break_direction="bullish")
+        setup = evaluator.evaluate_setup_a(
+            structure_state=state, active_obs=[_make_ob()],
+            recent_sweeps=[_make_sweep()],
+            pd_zone=_make_pd_zone("premium"),  # Wrong for long
+            market_snapshot=None, candles=_make_candles_near_ob(),
+            pair="BTC/USDT", htf_bias="bullish", liquidity_levels=[],
+        )
+        assert setup is None
+
+
+# ============================================================
+# Setup B tests
+# ============================================================
+
+class TestSetupB:
+    """Test Setup B — BOS + FVG + Order Block."""
+
+    def test_valid_setup_b_long(self):
+        """Full valid Setup B should produce a TradeSetup."""
+        evaluator = SetupEvaluator()
+
+        state = _make_structure_state(
+            trend="bullish", break_type="bos", break_direction="bullish",
+        )
+        # OB zone: 98-103, FVG zone: 100.5-103 → overlapping
+        obs = [_make_ob(direction="bullish", entry_price=101.0,
+                        high=103.0, low=98.0, body_high=102.0, body_low=100.0)]
+        fvgs = [_make_fvg(direction="bullish", high=103.0, low=100.5)]
+        pd = _make_pd_zone("discount")
+        snapshot = make_market_snapshot(cvd_15m=100.0)
+        candles = _make_candles_near_ob(101.0)
+
+        setup = evaluator.evaluate_setup_b(
+            structure_state=state,
+            active_obs=obs,
+            active_fvgs=fvgs,
+            pd_zone=pd,
+            market_snapshot=snapshot,
+            candles=candles,
+            pair="BTC/USDT",
+            htf_bias="bullish",
+            liquidity_levels=[],
+        )
+
+        assert setup is not None
+        assert setup.setup_type == "setup_b"
+        assert setup.direction == "long"
+        assert len(setup.confluences) >= 2
+
+    def test_setup_b_no_bos(self):
+        """No BOS → no Setup B."""
+        evaluator = SetupEvaluator()
+
+        state = _make_structure_state(break_type="choch", break_direction="bullish")
+        setup = evaluator.evaluate_setup_b(
+            structure_state=state, active_obs=[_make_ob()],
+            active_fvgs=[_make_fvg()], pd_zone=_make_pd_zone("discount"),
+            market_snapshot=None, candles=_make_candles_near_ob(),
+            pair="BTC/USDT", htf_bias="bullish", liquidity_levels=[],
+        )
+        assert setup is None
+
+    def test_setup_b_no_fvg(self):
+        """No FVG → no Setup B."""
+        evaluator = SetupEvaluator()
+
+        state = _make_structure_state(break_type="bos", break_direction="bullish")
+        setup = evaluator.evaluate_setup_b(
+            structure_state=state, active_obs=[_make_ob()],
+            active_fvgs=[], pd_zone=_make_pd_zone("discount"),
+            market_snapshot=None, candles=_make_candles_near_ob(),
+            pair="BTC/USDT", htf_bias="bullish", liquidity_levels=[],
+        )
+        assert setup is None
+
+    def test_setup_b_fvg_not_adjacent_to_ob(self):
+        """FVG far from OB → no Setup B."""
+        evaluator = SetupEvaluator()
+
+        state = _make_structure_state(break_type="bos", break_direction="bullish")
+        obs = [_make_ob(direction="bullish", high=103.0, low=98.0)]
+        # FVG far away from OB
+        fvgs = [_make_fvg(direction="bullish", high=120.0, low=118.0)]
+
+        setup = evaluator.evaluate_setup_b(
+            structure_state=state, active_obs=obs, active_fvgs=fvgs,
+            pd_zone=_make_pd_zone("discount"), market_snapshot=None,
+            candles=_make_candles_near_ob(), pair="BTC/USDT",
+            htf_bias="bullish", liquidity_levels=[],
+        )
+        assert setup is None
+
+
+# ============================================================
+# Confluence tests
+# ============================================================
+
+class TestConfluence:
+    """Test minimum confluence requirement."""
+
+    def test_minimum_2_confluences_required(self):
+        """Setup must have at least 2 confluences (non-negotiable)."""
+        evaluator = SetupEvaluator()
+        assert evaluator._check_confluence_minimum(["one"]) is False
+        assert evaluator._check_confluence_minimum(["one", "two"]) is True
+        assert evaluator._check_confluence_minimum(["a", "b", "c"]) is True
+        assert evaluator._check_confluence_minimum([]) is False
+
+
+# ============================================================
+# TP Calculation tests
+# ============================================================
+
+class TestTPCalculation:
+    """Test take profit level calculation."""
+
+    def test_bullish_tp_levels(self):
+        """TP1=1:1, TP2=1:2, TP3=1:3 (no liquidity levels)."""
+        evaluator = SetupEvaluator()
+
+        entry = 100.0
+        sl = 97.0  # Risk = 3.0
+        tp1, tp2, tp3 = evaluator._calculate_tp_levels(
+            entry, sl, "bullish", [],
+        )
+
+        assert tp1 == pytest.approx(103.0, abs=0.01)   # 100 + 3*1.0
+        assert tp2 == pytest.approx(106.0, abs=0.01)   # 100 + 3*2.0
+        assert tp3 == pytest.approx(109.0, abs=0.01)   # 100 + 3*3.0 (fallback)
+
+    def test_bearish_tp_levels(self):
+        """Bearish TP levels go below entry."""
+        evaluator = SetupEvaluator()
+
+        entry = 100.0
+        sl = 103.0  # Risk = 3.0
+        tp1, tp2, tp3 = evaluator._calculate_tp_levels(
+            entry, sl, "bearish", [],
+        )
+
+        assert tp1 == pytest.approx(97.0, abs=0.01)
+        assert tp2 == pytest.approx(94.0, abs=0.01)
+        assert tp3 == pytest.approx(91.0, abs=0.01)
+
+    def test_tp3_uses_liquidity_level(self):
+        """TP3 should target the next liquidity level if available."""
+        evaluator = SetupEvaluator()
+
+        entry = 100.0
+        sl = 97.0  # Risk = 3.0
+
+        # BSL at 108 (above TP2=106)
+        levels = [
+            LiquidityLevel(price=108.0, level_type="bsl",
+                           touch_count=2, timestamps=[1000, 2000]),
+        ]
+
+        tp1, tp2, tp3 = evaluator._calculate_tp_levels(
+            entry, sl, "bullish", levels,
+        )
+
+        assert tp3 == 108.0  # Uses the BSL level instead of 1:3
+
+
+# ============================================================
+# PD Alignment tests
+# ============================================================
+
+class TestPDAlignment:
+    """Test premium/discount zone alignment."""
+
+    def test_long_in_discount_allowed(self):
+        evaluator = SetupEvaluator()
+        pd = _make_pd_zone("discount")
+        assert evaluator._check_pd_alignment(pd, "bullish") is True
+
+    def test_long_in_premium_blocked(self):
+        evaluator = SetupEvaluator()
+        pd = _make_pd_zone("premium")
+        assert evaluator._check_pd_alignment(pd, "bullish") is False
+
+    def test_short_in_premium_allowed(self):
+        evaluator = SetupEvaluator()
+        pd = _make_pd_zone("premium")
+        assert evaluator._check_pd_alignment(pd, "bearish") is True
+
+    def test_short_in_discount_blocked(self):
+        evaluator = SetupEvaluator()
+        pd = _make_pd_zone("discount")
+        assert evaluator._check_pd_alignment(pd, "bearish") is False
+
+    def test_equilibrium_blocked(self):
+        evaluator = SetupEvaluator()
+        pd = _make_pd_zone("equilibrium")
+        assert evaluator._check_pd_alignment(pd, "bullish") is False
+        assert evaluator._check_pd_alignment(pd, "bearish") is False
+
+    def test_no_pd_data_allowed(self):
+        """Missing PD data should not block the trade."""
+        evaluator = SetupEvaluator()
+        assert evaluator._check_pd_alignment(None, "bullish") is True
+
+
+# ============================================================
+# FVG adjacency tests
+# ============================================================
+
+class TestFVGAdjacency:
+    """Test FVG-OB adjacency check."""
+
+    def test_overlapping_zones(self):
+        evaluator = SetupEvaluator()
+        fvg = _make_fvg(high=103.0, low=100.0)
+        ob = _make_ob(high=102.0, low=99.0)
+        assert evaluator._is_fvg_adjacent_to_ob(fvg, ob) is True
+
+    def test_non_overlapping_far_zones(self):
+        evaluator = SetupEvaluator()
+        fvg = _make_fvg(high=120.0, low=118.0)
+        ob = _make_ob(high=103.0, low=98.0)
+        assert evaluator._is_fvg_adjacent_to_ob(fvg, ob) is False
+
+    def test_adjacent_zones(self):
+        """Zones within 0.1% of each other are considered adjacent."""
+        evaluator = SetupEvaluator()
+        # OB top at 103, FVG bottom at 103.05 → gap = 0.05/100.5 ≈ 0.05%
+        fvg = _make_fvg(high=106.0, low=103.05)
+        ob = _make_ob(high=103.0, low=98.0)
+        assert evaluator._is_fvg_adjacent_to_ob(fvg, ob) is True
