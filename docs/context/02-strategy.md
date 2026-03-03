@@ -15,6 +15,7 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
 - BOS: precio cierra 0.1%+ más allá del swing previo (continuación)
 - CHoCH: ruptura en dirección opuesta al trend (reversión)
 - Requiere cierre de vela completo (no solo wick)
+- **Solo un break por candle** — si una vela rompe múltiples niveles, solo se registra el más significativo (mayor distancia). Elimina ruido en flash crashes.
 
 ### `strategy_service/order_blocks.py` — Order Blocks
 - Bullish OB: última vela roja antes de impulso alcista + BOS
@@ -33,13 +34,18 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
 - Detecta equal highs (BSL) y equal lows (SSL)
 - Sweep: wick rompe nivel pero cierra dentro del rango
 - Volumen mínimo 2x para confirmar sweep institucional
-- Zonas premium (>50%), discount (<50%), equilibrium (50%)
+- Zonas premium (>52%), discount (<48%), **equilibrium (48%-52%)** con banda de tolerancia configurable (`PD_EQUILIBRIUM_BAND`)
+- **Persistencia de swept status** — niveles que ya fueron sweepados mantienen su estado entre llamadas para evitar sweeps duplicados
 
 ### `strategy_service/setups.py` — Setup A/B + Confluencia
 - **Setup A** (primario): Sweep + CHoCH + OB en discount/premium
+  - **Orden temporal obligatorio**: sweep ANTES del CHoCH
+  - **Proximidad temporal**: sweep dentro de `SETUP_A_MAX_SWEEP_CHOCH_GAP` candles del CHoCH
 - **Setup B** (secundario): BOS + FVG adyacente a OB
 - Mínimo 2 confluencias obligatorio
 - Cálculo de TP1 (1:1), TP2 (1:2), TP3 (trailing/liquidity)
+- **R:R blended** — validación ponderada: 50%×TP1 + 30%×TP2 + 20%×TP3 ≥ 1.5
+- **Proximidad OB basada en precio** — `OB_PROXIMITY_PCT` (0.3% del precio), no % del body
 - Validación premium/discount alignment
 
 ### `strategy_service/service.py` — Facade
@@ -50,10 +56,15 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
 ### `strategy_service/__init__.py`
 - Exporta `StrategyService`
 
+## Settings nuevos (config/settings.py)
+- `PD_EQUILIBRIUM_BAND: float = 0.02` — banda ±2% alrededor del 50% para zona equilibrium
+- `OB_PROXIMITY_PCT: float = 0.003` — 0.3% del precio como margen de proximidad al OB
+- `SETUP_A_MAX_SWEEP_CHOCH_GAP: int = 20` — máximo candles entre sweep y CHoCH
+
 ## Tests
-64 tests en 5 archivos:
-- `test_market_structure.py` — swings, BOS, CHoCH
+76 tests en 5 archivos:
+- `test_market_structure.py` — swings, BOS, CHoCH, single break per candle
 - `test_order_blocks.py` — detección, volumen, expiración, mitigación
 - `test_fvg.py` — detección, fill, expiración
-- `test_liquidity.py` — clustering, sweeps, premium/discount
-- `test_setups.py` — Setup A/B, confluencia, TPs, PD alignment
+- `test_liquidity.py` — clustering, sweeps, premium/discount, equilibrium band, swept persistence
+- `test_setups.py` — Setup A/B, confluencia, TPs, PD alignment, blended R:R, OB proximity, temporal ordering

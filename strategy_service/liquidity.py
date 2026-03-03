@@ -92,7 +92,12 @@ class LiquidityAnalyzer:
         # Cluster swing points into liquidity levels
         bsl_levels = self._cluster_levels(swing_highs, "bsl")
         ssl_levels = self._cluster_levels(swing_lows, "ssl")
-        self._levels[key] = bsl_levels + ssl_levels
+        new_levels = bsl_levels + ssl_levels
+
+        # Merge with existing levels to preserve swept status
+        self._levels[key] = self._merge_levels(
+            self._levels.get(key, []), new_levels
+        )
 
         # Detect sweeps
         avg_volume = self._compute_avg_volume(candles)
@@ -238,6 +243,34 @@ class LiquidityAnalyzer:
 
         return levels
 
+    def _merge_levels(
+        self,
+        old_levels: list[LiquidityLevel],
+        new_levels: list[LiquidityLevel],
+    ) -> list[LiquidityLevel]:
+        """Merge new levels with existing ones, preserving swept status.
+
+        If a new level matches an old one by price proximity, carry over
+        the swept flag so previously-swept levels aren't re-detected.
+        """
+        tolerance = settings.EQUAL_LEVEL_TOLERANCE_PCT
+
+        for new_level in new_levels:
+            for old_level in old_levels:
+                if old_level.level_type != new_level.level_type:
+                    continue
+                if old_level.price <= 0:
+                    continue
+                # Match by price proximity
+                diff_pct = abs(new_level.price - old_level.price) / old_level.price
+                if diff_pct <= tolerance:
+                    # Carry over swept status
+                    if old_level.swept:
+                        new_level.swept = True
+                    break
+
+        return new_levels
+
     def _detect_sweeps(
         self,
         candles: list[Candle],
@@ -319,16 +352,21 @@ class LiquidityAnalyzer:
 
     def _classify_zone(self, price: float, range_high: float,
                        range_low: float) -> str:
-        """Classify current price as premium, discount, or equilibrium."""
+        """Classify current price as premium, discount, or equilibrium.
+
+        Uses a tolerance band around 50% to define equilibrium zone.
+        E.g. with PD_EQUILIBRIUM_BAND=0.02, positions 0.48-0.52 = equilibrium.
+        """
         if range_high <= range_low:
             return "undefined"
 
         total_range = range_high - range_low
         position = (price - range_low) / total_range
 
-        if position > 0.5:
+        band = settings.PD_EQUILIBRIUM_BAND
+        if position > (0.5 + band):
             return "premium"
-        elif position < 0.5:
+        elif position < (0.5 - band):
             return "discount"
         else:
             return "equilibrium"

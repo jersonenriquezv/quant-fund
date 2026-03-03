@@ -194,7 +194,7 @@ class TestSweepDetection:
             liquidations=[
                 LiquidationEvent(
                     timestamp=8000, pair="BTC/USDT", side="long",
-                    size_usd=50000.0, price=94.5, source="binance_forceOrder",
+                    size_usd=50000.0, price=94.5, source="oi_proxy",
                 ),
             ],
         )
@@ -282,6 +282,57 @@ class TestPremiumDiscountZone:
         assert pd is not None
         assert pd.zone == "equilibrium"
 
+    def test_equilibrium_band_near_50_pct(self):
+        """Price near 50% but not exact → still equilibrium (band tolerance)."""
+        analyzer = LiquidityAnalyzer()
+
+        htf_highs = [
+            _make_swing_high(110.0, index=5, timestamp=1000),
+            _make_swing_high(110.0, index=15, timestamp=2000),
+        ]
+        htf_lows = [
+            _make_swing_low(90.0, index=3, timestamp=500),
+            _make_swing_low(90.0, index=10, timestamp=1500),
+        ]
+
+        htf_candles = [make_candle(timestamp=i * 1000) for i in range(20)]
+        # Range = 90-110, equilibrium = 100
+        # PD_EQUILIBRIUM_BAND = 0.02 → equilibrium zone: 48%-52% → 99.6-100.4
+        current_price = 100.3  # 51.5% of range — inside band
+
+        pd = analyzer.update_premium_discount(
+            htf_candles, htf_highs, htf_lows,
+            "BTC/USDT", current_price, 25000,
+        )
+
+        assert pd is not None
+        assert pd.zone == "equilibrium"
+
+    def test_just_outside_equilibrium_band(self):
+        """Price just outside equilibrium band → premium or discount."""
+        analyzer = LiquidityAnalyzer()
+
+        htf_highs = [
+            _make_swing_high(110.0, index=5, timestamp=1000),
+            _make_swing_high(110.0, index=15, timestamp=2000),
+        ]
+        htf_lows = [
+            _make_swing_low(90.0, index=3, timestamp=500),
+            _make_swing_low(90.0, index=10, timestamp=1500),
+        ]
+
+        htf_candles = [make_candle(timestamp=i * 1000) for i in range(20)]
+        # Range = 90-110, band = 0.02 → equilibrium ends at 52% → 100.4
+        current_price = 101.0  # 55% of range → just premium
+
+        pd = analyzer.update_premium_discount(
+            htf_candles, htf_highs, htf_lows,
+            "BTC/USDT", current_price, 25000,
+        )
+
+        assert pd is not None
+        assert pd.zone == "premium"
+
     def test_pd_zone_caching(self):
         """PD zone should be cached and not recalculated within PD_RECALC_HOURS."""
         analyzer = LiquidityAnalyzer()
@@ -313,3 +364,43 @@ class TestPremiumDiscountZone:
         # But range should be the same (not recalculated)
         assert pd2.range_high == pd1.range_high
         assert pd2.range_low == pd1.range_low
+
+
+class TestSweptLevelPersistence:
+    """Test that swept status persists across update() calls."""
+
+    def test_swept_level_stays_swept(self):
+        """A swept level should remain swept after re-clustering."""
+        analyzer = LiquidityAnalyzer()
+
+        highs = [
+            _make_swing_high(100.0, index=2, timestamp=2000),
+            _make_swing_high(100.03, index=5, timestamp=5000),
+        ]
+        lows = []
+
+        # First call: candle sweeps the BSL
+        candles = [
+            make_candle(volume=10.0, timestamp=i * 1000)
+            for i in range(8)
+        ]
+        candles.append(make_candle(
+            open=99.0, high=101.0, low=98.0, close=98.5,
+            volume=25.0, timestamp=8000,
+        ))
+
+        analyzer.update(candles, highs, lows, "BTC/USDT", "15m", None, 9000)
+        sweeps1 = analyzer.get_recent_sweeps("BTC/USDT", "15m")
+        assert len(sweeps1) >= 1
+
+        # Second call with same swing points — level should stay swept
+        candles2 = [
+            make_candle(volume=10.0, timestamp=i * 1000)
+            for i in range(10)
+        ]
+        # No new sweep candle this time
+        analyzer.update(candles2, highs, lows, "BTC/USDT", "15m", None, 12000)
+
+        # Should NOT have duplicate sweeps
+        sweeps2 = analyzer.get_recent_sweeps("BTC/USDT", "15m")
+        assert len(sweeps2) == len(sweeps1)

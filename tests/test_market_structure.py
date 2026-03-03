@@ -249,3 +249,62 @@ class TestGetState:
     def test_get_state_returns_none_for_unknown(self):
         analyzer = MarketStructureAnalyzer()
         assert analyzer.get_state("ETH/USDT", "1h") is None
+
+
+class TestSingleBreakPerCandle:
+    """Test that only one structure break is recorded per candle."""
+
+    def test_large_candle_only_one_break(self):
+        """A candle that breaks multiple swing levels should only produce one break."""
+        analyzer = MarketStructureAnalyzer()
+        lookback = settings.SWING_LOOKBACK  # 5
+
+        # Build candles with two separate swing lows
+        candles = []
+        for i in range(30):
+            candles.append(make_candle(
+                high=105.0, low=95.0, close=100.0,
+                open=100.0, timestamp=1000 + i * 1000,
+            ))
+
+        # Place two swing lows at different levels
+        # Swing low at index 8 (price 92)
+        candles[8] = make_candle(
+            high=100.0, low=92.0, close=95.0,
+            open=100.0, timestamp=1000 + 8 * 1000,
+        )
+        # Make surrounding candles have higher lows
+        for j in range(max(0, 8 - lookback), min(len(candles), 8 + lookback + 1)):
+            if j != 8:
+                candles[j] = make_candle(
+                    high=105.0, low=96.0, close=100.0,
+                    open=100.0, timestamp=1000 + j * 1000,
+                )
+
+        # Swing low at index 18 (price 93)
+        candles[18] = make_candle(
+            high=100.0, low=93.0, close=95.0,
+            open=100.0, timestamp=1000 + 18 * 1000,
+        )
+        for j in range(max(0, 18 - lookback), min(len(candles), 18 + lookback + 1)):
+            if j != 18:
+                candles[j] = make_candle(
+                    high=105.0, low=96.0, close=100.0,
+                    open=100.0, timestamp=1000 + j * 1000,
+                )
+
+        # Big bearish candle at index 25 that breaks BOTH swing lows
+        candles[25] = make_candle(
+            high=100.0, low=85.0, close=88.0,
+            open=100.0, timestamp=1000 + 25 * 1000,
+        )
+
+        state = analyzer.analyze(candles, "BTC/USDT", "15m")
+
+        # Count breaks at candle_index=25
+        breaks_at_25 = [
+            b for b in state.structure_breaks
+            if b.candle_index == 25
+        ]
+        # Should be at most 1 break per candle
+        assert len(breaks_at_25) <= 1

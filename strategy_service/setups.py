@@ -46,11 +46,12 @@ class SetupEvaluator:
         1. HTF bias defined (bullish or bearish)
         2. Liquidity sweep occurred
         3. CHoCH confirms direction change
-        4. Fresh OB forms (< 48h)
-        5. OB in correct PD zone (long=discount, short=premium)
-        6. Retrace to OB — price near entry
-        7. Volume spike >= 2x + liquidations visible
-        8. Minimum 2 confluences
+        4. Temporal ordering: sweep BEFORE CHoCH
+        5. Fresh OB forms (< 48h)
+        6. OB in correct PD zone (long=discount, short=premium)
+        7. Retrace to OB — price near entry
+        8. Volume spike >= 2x + liquidations visible
+        9. Minimum 2 confluences
 
         Returns:
             TradeSetup if all conditions met, None otherwise.
@@ -77,9 +78,20 @@ class SetupEvaluator:
             return None
 
         # Find the most recent sweep aligned with the direction
+        # that occurred BEFORE the CHoCH (temporal ordering)
         aligned_sweep = None
+        max_gap = settings.SETUP_A_MAX_SWEEP_CHOCH_GAP
         for sweep in reversed(recent_sweeps):
-            if sweep.direction == direction:
+            if sweep.direction != direction:
+                continue
+            # Sweep must happen before CHoCH
+            if sweep.timestamp >= latest_choch.timestamp:
+                continue
+            # Proximity check: sweep should be within max_gap candles of CHoCH
+            candle_gap = abs(latest_choch.candle_index - self._find_candle_index_by_ts(
+                candles, sweep.timestamp
+            ))
+            if candle_gap <= max_gap:
                 aligned_sweep = sweep
                 break
 
@@ -135,10 +147,13 @@ class SetupEvaluator:
             entry_price, sl_price, direction, liquidity_levels
         )
 
-        # Validate R:R meets minimum (use TP2 since TP1 is a partial close at 1:1)
+        # Validate blended R:R meets minimum
+        # Weighted average: 50% at TP1 + 30% at TP2 + 20% at TP3
         risk = abs(entry_price - sl_price)
-        reward = abs(tp2 - entry_price)
-        if risk <= 0 or (reward / risk) < settings.MIN_RISK_REWARD:
+        if risk <= 0:
+            return None
+        blended_rr = self._compute_blended_rr(entry_price, sl_price, tp1, tp2, tp3)
+        if blended_rr < settings.MIN_RISK_REWARD:
             return None
 
         return TradeSetup(
@@ -287,10 +302,12 @@ class SetupEvaluator:
             entry_price, sl_price, direction, liquidity_levels
         )
 
-        # Validate R:R (use TP2 since TP1 is a partial close at 1:1)
+        # Validate blended R:R meets minimum
         risk = abs(entry_price - sl_price)
-        reward = abs(tp2 - entry_price)
-        if risk <= 0 or (reward / risk) < settings.MIN_RISK_REWARD:
+        if risk <= 0:
+            return None
+        blended_rr = self._compute_blended_rr(entry_price, sl_price, tp1, tp2, tp3)
+        if blended_rr < settings.MIN_RISK_REWARD:
             return None
 
         return TradeSetup(
@@ -432,13 +449,14 @@ class SetupEvaluator:
                           ob: OrderBlock) -> bool:
         """Check if current price is near the OB entry zone.
 
-        Price should be within the OB body range (body_low to body_high)
-        or approaching it (within 0.5% of body edge).
+        Price must be within the OB body range extended by OB_PROXIMITY_PCT
+        of the current price. This prevents triggering setups when price
+        is still far from the ideal 50% body entry.
         """
         if current_price <= 0:
             return False
 
-        margin = (ob.body_high - ob.body_low) * 0.5  # 50% buffer
+        margin = current_price * settings.OB_PROXIMITY_PCT
         extended_low = ob.body_low - margin
         extended_high = ob.body_high + margin
 
@@ -480,6 +498,57 @@ class SetupEvaluator:
 
         # Return most recent
         return max(candidates, key=lambda ob: ob.timestamp)
+
+    def _compute_blended_rr(
+        self,
+        entry: float,
+        sl: float,
+        tp1: float,
+        tp2: float,
+        tp3: float,
+    ) -> float:
+        """Compute weighted-average R:R across partial closes.
+
+        Weights: TP1=50%, TP2=30%, TP3=20% (from settings).
+        This gives a realistic expected R:R instead of checking a single level.
+        """
+        risk = abs(entry - sl)
+        if risk <= 0:
+            return 0.0
+
+        rr1 = abs(tp1 - entry) / risk
+        rr2 = abs(tp2 - entry) / risk
+        rr3 = abs(tp3 - entry) / risk
+
+        return (
+            settings.TP1_CLOSE_PCT * rr1
+            + settings.TP2_CLOSE_PCT * rr2
+            + settings.TP3_CLOSE_PCT * rr3
+        )
+
+    def _find_candle_index_by_ts(
+        self,
+        candles: list[Candle],
+        timestamp: int,
+    ) -> int:
+        """Find the candle index closest to a given timestamp.
+
+        Returns the index of the candle with the closest timestamp.
+        Used for temporal proximity checks between events.
+        """
+        if not candles:
+            return 0
+
+        best_idx = 0
+        best_diff = abs(candles[0].timestamp - timestamp)
+
+        for i, c in enumerate(candles):
+            diff = abs(c.timestamp - timestamp)
+            if diff < best_diff:
+                best_diff = diff
+                best_idx = i
+
+        return best_idx
 
     def _calculate_sl(self, ob: OrderBlock, direction: str) -> float:
         """Calculate stop loss — below/above entire OB (wick-to-wick)."""

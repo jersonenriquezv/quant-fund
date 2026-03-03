@@ -129,6 +129,17 @@ class Settings:
     # --- Premium/Discount ---
     # Horas entre recálculos de zonas premium/discount
     PD_RECALC_HOURS: int = 4
+    # Band around 50% that counts as equilibrium (±this value)
+    # e.g. 0.02 means 48%-52% of range = equilibrium (no trading)
+    PD_EQUILIBRIUM_BAND: float = 0.02
+
+    # --- Setup proximity ---
+    # Max % of price that current price can be from OB entry to trigger setup
+    OB_PROXIMITY_PCT: float = 0.003  # 0.3%
+
+    # --- Setup A temporal ---
+    # Max candles between sweep and CHoCH for Setup A validity
+    SETUP_A_MAX_SWEEP_CHOCH_GAP: int = 20
 
     # ========================
     # AI SERVICE — Claude Filter
@@ -169,8 +180,11 @@ class Settings:
     OI_CHECK_INTERVAL: int = 300  # 5 minutos
     # Segundos entre checks de Etherscan
     ETHERSCAN_CHECK_INTERVAL: int = 300  # 5 minutos
-    # Binance liquidation WebSocket — no polling, real-time stream
-    # (no interval needed, it's a persistent WebSocket connection)
+    # OI Liquidation Proxy — detects liquidation cascades via OI drops
+    # Minimum OI drop % in the window to flag as liquidation cascade
+    OI_DROP_THRESHOLD_PCT: float = float(os.getenv("OI_DROP_THRESHOLD_PCT", "0.02"))  # 2%
+    # Time window (seconds) to measure OI drops
+    OI_DROP_WINDOW_SECONDS: int = int(os.getenv("OI_DROP_WINDOW_SECONDS", "300"))  # 5 min
 
     # Coinglass — future phase
     # COINGLASS_CHECK_INTERVAL: int = 60

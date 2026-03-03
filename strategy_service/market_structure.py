@@ -171,6 +171,10 @@ class MarketStructureAnalyzer:
 
         Same direction as current trend = BOS.
         Opposite direction = CHoCH.
+
+        Only the most significant break per candle is kept (largest
+        distance from the broken level) to avoid noise from large candles
+        breaking multiple levels.
         """
         if not swing_highs and not swing_lows:
             return []
@@ -179,16 +183,15 @@ class MarketStructureAnalyzer:
         current_trend = "undefined"
         threshold_pct = settings.BOS_CONFIRMATION_PCT
 
-        # Track the most recent unbroken swing high and swing low
-        # Use index pointers to walk through sorted swing points
-        high_idx = 0
-        low_idx = 0
-
         # Track which swing levels have been broken to avoid duplicate breaks
         broken_high_indices: set[int] = set()
         broken_low_indices: set[int] = set()
 
         for i, candle in enumerate(candles):
+            # Collect all candidate breaks for this candle
+            candidates: list[tuple[StructureBreak, int, str]] = []
+            # Each tuple: (break, swing_index, "high" or "low")
+
             # Check bullish breaks — close above swing high
             for h_idx in range(len(swing_highs)):
                 sh = swing_highs[h_idx]
@@ -199,22 +202,23 @@ class MarketStructureAnalyzer:
 
                 required = sh.price * (1 + threshold_pct)
                 if candle.close >= required:
-                    # Bullish break
                     if current_trend == "bullish" or current_trend == "undefined":
                         break_type = "bos"
                     else:
                         break_type = "choch"
 
-                    breaks.append(StructureBreak(
-                        timestamp=candle.timestamp,
-                        break_type=break_type,
-                        direction="bullish",
-                        break_price=candle.close,
-                        broken_level=sh.price,
-                        candle_index=i,
+                    candidates.append((
+                        StructureBreak(
+                            timestamp=candle.timestamp,
+                            break_type=break_type,
+                            direction="bullish",
+                            break_price=candle.close,
+                            broken_level=sh.price,
+                            candle_index=i,
+                        ),
+                        h_idx,
+                        "high",
                     ))
-                    broken_high_indices.add(h_idx)
-                    current_trend = "bullish"
 
             # Check bearish breaks — close below swing low
             for l_idx in range(len(swing_lows)):
@@ -226,22 +230,48 @@ class MarketStructureAnalyzer:
 
                 required = sl.price * (1 - threshold_pct)
                 if candle.close <= required:
-                    # Bearish break
                     if current_trend == "bearish" or current_trend == "undefined":
                         break_type = "bos"
                     else:
                         break_type = "choch"
 
-                    breaks.append(StructureBreak(
-                        timestamp=candle.timestamp,
-                        break_type=break_type,
-                        direction="bearish",
-                        break_price=candle.close,
-                        broken_level=sl.price,
-                        candle_index=i,
+                    candidates.append((
+                        StructureBreak(
+                            timestamp=candle.timestamp,
+                            break_type=break_type,
+                            direction="bearish",
+                            break_price=candle.close,
+                            broken_level=sl.price,
+                            candle_index=i,
+                        ),
+                        l_idx,
+                        "low",
                     ))
-                    broken_low_indices.add(l_idx)
-                    current_trend = "bearish"
+
+            if not candidates:
+                continue
+
+            # Keep only the most significant break for this candle
+            # (largest distance from the broken level)
+            best_brk, best_idx, best_type = max(
+                candidates,
+                key=lambda c: abs(c[0].break_price - c[0].broken_level),
+            )
+
+            breaks.append(best_brk)
+            if best_type == "high":
+                broken_high_indices.add(best_idx)
+            else:
+                broken_low_indices.add(best_idx)
+            current_trend = best_brk.direction
+
+            # Mark all other broken levels from this candle as consumed
+            # so they don't trigger again on future candles
+            for brk, idx, typ in candidates:
+                if typ == "high":
+                    broken_high_indices.add(idx)
+                else:
+                    broken_low_indices.add(idx)
 
         return breaks
 

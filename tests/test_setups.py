@@ -156,7 +156,7 @@ class TestSetupA:
             liquidations=[
                 LiquidationEvent(
                     timestamp=9000, pair="BTC/USDT", side="long",
-                    size_usd=50000, price=94.5, source="binance_forceOrder",
+                    size_usd=50000, price=94.5, source="oi_proxy",
                 ),
             ],
         )
@@ -455,3 +455,151 @@ class TestFVGAdjacency:
         fvg = _make_fvg(high=106.0, low=103.05)
         ob = _make_ob(high=103.0, low=98.0)
         assert evaluator._is_fvg_adjacent_to_ob(fvg, ob) is True
+
+
+# ============================================================
+# Blended R:R tests
+# ============================================================
+
+class TestBlendedRR:
+    """Test blended R:R calculation."""
+
+    def test_standard_blended_rr(self):
+        """Standard TP levels: blended = 0.5*1.0 + 0.3*2.0 + 0.2*3.0 = 1.7."""
+        evaluator = SetupEvaluator()
+        # Entry=100, SL=97, risk=3
+        # TP1=103 (1:1), TP2=106 (2:1), TP3=109 (3:1)
+        rr = evaluator._compute_blended_rr(100.0, 97.0, 103.0, 106.0, 109.0)
+        assert rr == pytest.approx(1.7, abs=0.01)
+
+    def test_tp3_liquidity_level_close_lowers_rr(self):
+        """TP3 at a closer liquidity level lowers blended R:R."""
+        evaluator = SetupEvaluator()
+        # Entry=100, SL=97, risk=3
+        # TP3 at 107 (2.33:1) instead of 109 (3:1)
+        rr = evaluator._compute_blended_rr(100.0, 97.0, 103.0, 106.0, 107.0)
+        # 0.5*1.0 + 0.3*2.0 + 0.2*2.33 = 0.5 + 0.6 + 0.467 = 1.567
+        assert rr == pytest.approx(1.567, abs=0.01)
+
+    def test_zero_risk_returns_zero(self):
+        """Zero risk (entry == SL) should return 0.0."""
+        evaluator = SetupEvaluator()
+        rr = evaluator._compute_blended_rr(100.0, 100.0, 103.0, 106.0, 109.0)
+        assert rr == 0.0
+
+
+# ============================================================
+# OB Proximity tests
+# ============================================================
+
+class TestOBProximity:
+    """Test price-based OB proximity check."""
+
+    def test_price_inside_ob_body(self):
+        """Price inside OB body is always near."""
+        evaluator = SetupEvaluator()
+        ob = _make_ob(body_high=102.0, body_low=100.0)
+        assert evaluator._is_price_near_ob(101.0, ob) is True
+
+    def test_price_within_margin(self):
+        """Price just outside body but within OB_PROXIMITY_PCT margin."""
+        evaluator = SetupEvaluator()
+        ob = _make_ob(body_high=102.0, body_low=100.0)
+        # OB_PROXIMITY_PCT = 0.003, price=100 → margin = 0.3
+        # extended_low = 100.0 - 0.3 = 99.7
+        assert evaluator._is_price_near_ob(99.8, ob) is True
+
+    def test_price_too_far(self):
+        """Price outside margin should fail."""
+        evaluator = SetupEvaluator()
+        ob = _make_ob(body_high=102.0, body_low=100.0)
+        # margin at price 95 = 95*0.003 = 0.285
+        # extended_low = 100 - 0.285 = 99.715 → 95 < 99.715
+        assert evaluator._is_price_near_ob(95.0, ob) is False
+
+
+# ============================================================
+# Temporal ordering tests (Setup A)
+# ============================================================
+
+class TestTemporalOrdering:
+    """Test that Setup A enforces sweep before CHoCH."""
+
+    def test_sweep_after_choch_rejected(self):
+        """Sweep timestamp > CHoCH timestamp → no Setup A."""
+        evaluator = SetupEvaluator()
+
+        # CHoCH at timestamp 5000, candle_index=5
+        choch = StructureBreak(
+            timestamp=5000, break_type="choch", direction="bullish",
+            break_price=110.0, broken_level=108.0, candle_index=5,
+        )
+        state = MarketStructureState(
+            pair="BTC/USDT", timeframe="15m", trend="bullish",
+            swing_highs=[], swing_lows=[],
+            structure_breaks=[choch], latest_break=choch,
+        )
+
+        # Sweep at timestamp 9000 (AFTER CHoCH) — should be rejected
+        sweep = LiquiditySweep(
+            timestamp=9000, pair="BTC/USDT", timeframe="15m",
+            direction="bullish", swept_level=95.0, wick_price=94.0,
+            close_price=96.0, volume_ratio=2.5, had_liquidations=True,
+        )
+
+        obs = [_make_ob(direction="bullish", entry_price=101.0)]
+        pd = _make_pd_zone("discount")
+        candles = _make_candles_near_ob(101.0)
+        snapshot = make_market_snapshot(cvd_15m=100.0)
+
+        setup = evaluator.evaluate_setup_a(
+            structure_state=state, active_obs=obs,
+            recent_sweeps=[sweep], pd_zone=pd,
+            market_snapshot=snapshot, candles=candles,
+            pair="BTC/USDT", htf_bias="bullish", liquidity_levels=[],
+        )
+        assert setup is None
+
+    def test_sweep_before_choch_accepted(self):
+        """Sweep timestamp < CHoCH timestamp → valid for Setup A."""
+        evaluator = SetupEvaluator()
+
+        # CHoCH at timestamp 10000, candle_index=10
+        choch = StructureBreak(
+            timestamp=10000, break_type="choch", direction="bullish",
+            break_price=110.0, broken_level=108.0, candle_index=10,
+        )
+        state = MarketStructureState(
+            pair="BTC/USDT", timeframe="15m", trend="bullish",
+            swing_highs=[], swing_lows=[],
+            structure_breaks=[choch], latest_break=choch,
+        )
+
+        # Sweep at timestamp 8000 (BEFORE CHoCH)
+        sweep = LiquiditySweep(
+            timestamp=8000, pair="BTC/USDT", timeframe="15m",
+            direction="bullish", swept_level=95.0, wick_price=94.0,
+            close_price=96.0, volume_ratio=2.5, had_liquidations=True,
+        )
+
+        obs = [_make_ob(direction="bullish", entry_price=101.0)]
+        pd = _make_pd_zone("discount")
+        candles = _make_candles_near_ob(101.0)
+        snapshot = make_market_snapshot(
+            cvd_15m=100.0,
+            liquidations=[
+                LiquidationEvent(
+                    timestamp=8000, pair="BTC/USDT", side="long",
+                    size_usd=50000, price=94.5, source="oi_proxy",
+                ),
+            ],
+        )
+
+        setup = evaluator.evaluate_setup_a(
+            structure_state=state, active_obs=obs,
+            recent_sweeps=[sweep], pd_zone=pd,
+            market_snapshot=snapshot, candles=candles,
+            pair="BTC/USDT", htf_bias="bullish", liquidity_levels=[],
+        )
+        assert setup is not None
+        assert setup.setup_type == "setup_a"
