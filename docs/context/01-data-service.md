@@ -3,7 +3,7 @@
 > Status: implemented (core complete, ready for integration)
 
 ## What it does (30 seconds)
-The Data Service is the bot's eyes and ears. It connects to OKX and Binance 24/7, collecting price data (candles), trade flow (CVD), market indicators (funding rate, open interest), liquidation events, and whale movements. Every other service gets clean, validated, typed data through here.
+The Data Service is the bot's eyes and ears. It connects to OKX 24/7, collecting price data (candles), trade flow (CVD), market indicators (funding rate, open interest), liquidation cascades (via OI proxy), and whale movements. Every other service gets clean, validated, typed data through here.
 
 ## Why it exists
 Without real-time market data, the Strategy Service has nothing to analyze. Without historical candles, it can't detect patterns. The Data Service ensures every layer gets typed dataclasses from `shared/models.py` — never raw dicts, never stale prices.
@@ -19,7 +19,7 @@ Without real-time market data, the Strategy Service has nothing to analyze. With
 | OKX REST (ccxt) | Historical candles | `fetch_ohlcv()` via ccxt | On startup (backfill 500) |
 | OKX REST (ccxt) | Funding rate | `fetch_funding_rate()` via ccxt | Every 8 hours |
 | OKX REST (ccxt) | Open Interest | `fetch_open_interest()` via ccxt | Every 5 minutes |
-| Binance Futures WS | Liquidations | `forceOrder` channel, no auth | Real-time |
+| OI Proxy | Liquidation cascades | OI drop >2% in 5min = cascade | Every 5 minutes (fed by OI poll) |
 | Etherscan REST | Whale movements | Transaction polling, 5 calls/sec limit | Every 5 minutes |
 
 ### Pipeline Flow
@@ -28,8 +28,7 @@ Without real-time market data, the Strategy Service has nothing to analyze. With
 2. Backfill 500 candles per pair/timeframe via OKX REST (ccxt) → store in PostgreSQL + memory
 3. Connect OKX WebSocket → candle channels (8 total: 2 pairs × 4 timeframes)
 4. Connect OKX WebSocket → trades channel (2 pairs) for CVD calculation
-5. Connect Binance Futures WS → forceOrder (liquidations)
-6. Start Etherscan polling loop (whale wallets every 5 min)
+5. Start Etherscan polling loop (whale wallets every 5 min)
 7. Start funding rate polling (every 8 hours) and OI polling (every 5 min)
 8. On confirmed candle (confirm="1"):
    → Store in memory + Redis + PostgreSQL
@@ -47,7 +46,7 @@ All 5 layers run in the same Python process. The Data Service exposes methods th
 - **FundingRate** — current rate + next estimated + next funding time
 - **OpenInterest** — in contracts, base currency, and USD
 - **CVDSnapshot** — cumulative volume delta for 5m, 15m, 1h windows + buy/sell volume
-- **LiquidationEvent** — from Binance forceOrder or OI proxy, with side and size_usd
+- **LiquidationEvent** — from OI proxy (OI drop >2% = cascade), with side and size_usd
 - **WhaleMovement** — Etherscan whale transfers to/from exchanges
 - **MarketSnapshot** — wraps funding, OI, CVD, liquidations, whales for a pair
 - **TradeSetup** — detected setup from Strategy Service
@@ -95,15 +94,20 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Auto-prunes trades older than 1 hour
 - Public method: `get_cvd(pair)` → `CVDSnapshot | None`
 
-### `data_service/binance_liq.py` — Binance Liquidation WebSocket
-- Connects to `wss://fstream.binance.com/ws/!forceOrder@arr` (public, no auth)
-- **Independent of trading exchange** — Binance liquidation data is exchange-independent
-- Filters only BTCUSDT and ETHUSDT, ignores all other pairs
-- Maps to our pairs: BTCUSDT → BTC/USDT, ETHUSDT → ETH/USDT
-- Parses: SELL side = long liquidated, BUY side = short liquidated
-- `get_recent_liquidations(pair, minutes)` → `list[LiquidationEvent]`
-- `get_aggregated_stats(pair, minutes)` → `{total_usd, long_usd, short_usd, count}`
+### `data_service/oi_liquidation_proxy.py` — OI-Based Liquidation Proxy
+- Detects liquidation cascades from OI drops (>2% in 5 minutes)
+- Fed by DataService's `_oi_loop()` — no separate async task needed
+- Ring buffer of last 12 OI snapshots per pair (1 hour of history)
+- When OI drops ≥ `OI_DROP_THRESHOLD_PCT` in `OI_DROP_WINDOW_SECONDS`, generates `LiquidationEvent(source="oi_proxy")`
+- Same public API as the old Binance feed: `get_recent_liquidations()`, `get_aggregated_stats()`, `is_connected`
+- **Why:** Binance WebSocket is geo-blocked from Canada. OI proxy detects the same cascades indirectly.
+- **Limitation:** Cannot detect individual liquidations — only aggregate cascades. No directional info (defaults to "long").
 - Auto-prunes events older than 1 hour
+
+### `data_service/binance_liq.py` — UNUSED (geo-blocked)
+- Original Binance Futures WebSocket for individual liquidation events
+- Geo-blocked from Canada — kept in codebase but not launched as a task
+- If Binance becomes accessible, can be re-enabled by adding it back to DataService
 
 ### `data_service/etherscan_client.py` — Whale Wallet Monitor
 - Polls configured wallets every `ETHERSCAN_CHECK_INTERVAL` seconds (default 300)
@@ -157,6 +161,8 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 | `WHALE_HIGH_ETH` | `100.0` | Significance threshold |
 | `RECONNECT_INITIAL_DELAY` | `1.0` | Backoff start |
 | `RECONNECT_MAX_DELAY` | `60.0` | Backoff ceiling |
+| `OI_DROP_THRESHOLD_PCT` | `0.02` (2%) | OI proxy cascade threshold |
+| `OI_DROP_WINDOW_SECONDS` | `300` (5min) | OI proxy measurement window |
 | `RECONNECT_BACKOFF_FACTOR` | `2.0` | Backoff multiplier |
 
 ## FAQ
@@ -164,8 +170,8 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 **Why OKX if the website is blocked in Canada?**
 The OKX website is geo-blocked, but the API works without issues. We tested from our server — `https://www.okx.com/api/v5/public/instruments` returns data. The bot only uses the API, never the website.
 
-**Why Binance for liquidations if we don't trade there?**
-OKX has no public liquidation endpoint. Binance's `forceOrder` is public, free, and real-time. No API key or account needed. BTC/ETH liquidations are correlated across exchanges within seconds.
+**Why an OI proxy instead of Binance for liquidations?**
+Binance Futures WebSocket (`forceOrder`) is geo-blocked from Canada where our server is located. Instead, we detect liquidation cascades indirectly: when OI drops >2% in 5 minutes, significant positions were force-closed. Not as granular as individual events, but sufficient for the Strategy Service's cascade detection.
 
 **Why 500 candles for backfill?**
 Strategy needs history for swing highs/lows, pattern detection, volume averages. 500 × 5min = ~42 hours. 500 × 4H = ~83 days. OKX returns max 100 per request, so we paginate (5 requests per pair/timeframe).

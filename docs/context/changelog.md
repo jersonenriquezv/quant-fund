@@ -1,5 +1,45 @@
 # Changelog — One-Man Quant Fund
 
+## [2026-03-03] — Strategy Service review — 6 fixes
+**Qué cambió:**
+- `strategy_service/market_structure.py` — Solo un break por candle. Si una vela grande rompe múltiples swing levels, solo se registra el más significativo (mayor distancia). Los demás se marcan como consumidos.
+- `strategy_service/setups.py` — 3 fixes:
+  - **Orden temporal en Setup A**: sweep debe ocurrir ANTES del CHoCH, con proximidad máxima configurable (`SETUP_A_MAX_SWEEP_CHOCH_GAP=20` candles).
+  - **R:R blended**: validación ponderada real (50%×TP1 + 30%×TP2 + 20%×TP3) en vez de check muerto contra TP2.
+  - **Proximidad OB**: margen basado en % del precio (`OB_PROXIMITY_PCT=0.3%`) en vez de 50% del body del OB.
+- `strategy_service/liquidity.py` — 2 fixes:
+  - **Equilibrium band**: zona equilibrium es ahora 48%-52% (±`PD_EQUILIBRIUM_BAND`), no exacto 50%.
+  - **Swept persistence**: niveles de liquidez mantienen su estado `swept` entre llamadas via merge por proximidad de precio.
+- `config/settings.py` — 3 settings nuevos: `PD_EQUILIBRIUM_BAND`, `OB_PROXIMITY_PCT`, `SETUP_A_MAX_SWEEP_CHOCH_GAP`
+- `tests/` — 12 tests nuevos: blended R:R, OB proximity, temporal ordering, equilibrium band, swept persistence, single break per candle
+- `docs/context/02-strategy.md` — Documentación actualizada con todos los cambios
+
+**Por qué:** Revisión del @planner encontró 6 issues (3 críticos, 2 significativos, 1 menor). 192/192 tests passing.
+**Impacto:** strategy_service/, config/settings.py, tests/, docs/context/
+
+## [2026-03-03] — Binance → OI Proxy migration
+**Qué cambió:**
+- `data_service/oi_liquidation_proxy.py` — Nuevo módulo: detecta cascadas de liquidación via OI drops >2% en 5min. Ring buffer de 12 snapshots por par. Misma API pública que BinanceLiquidationFeed.
+- `data_service/service.py` — Reemplaza `BinanceLiquidationFeed` por `OILiquidationProxy`. OI proxy alimentado desde `_oi_loop()` y `_fetch_initial_indicators()`. Removido Binance async task.
+- `config/settings.py` — 2 settings nuevas: `OI_DROP_THRESHOLD_PCT` (0.02), `OI_DROP_WINDOW_SECONDS` (300)
+- `ai_service/prompt_builder.py` — Prompt actualizado: "OI Proxy" en vez de "Binance feed offline". Sección de liquidaciones muestra source y disclaimer.
+- `tests/test_oi_proxy.py` — 13 tests nuevos (detección, aislamiento por par, stats, edge cases, threshold custom)
+- Tests existentes actualizados: `source="binance_forceOrder"` → `source="oi_proxy"` en test_setups.py, test_liquidity.py, test_prompt_builder.py
+- `CLAUDE.md` — 6 referencias a Binance actualizadas. oi_liquidation_proxy.py agregado a estructura.
+- `docs/context/01-data-service.md` — Sección Binance reemplazada por OI proxy. FAQ actualizada.
+
+**Por qué:** Binance Futures WebSocket (`forceOrder`) está geo-bloqueado desde Canadá. OI proxy detecta las mismas cascadas indirectamente via OKX Open Interest (ya polled cada 5 min).
+**Impacto:** data_service/, ai_service/, config/, tests/, CLAUDE.md, docs/
+
+## [2026-03-03] — Risk Service review + settings cleanup
+**Qué cambió:**
+- `risk_service/state_tracker.py` — Warning log cuando `record_trade_closed()` no encuentra el pair en posiciones abiertas. Previene bugs silenciosos en el pipeline.
+- `config/settings.py` — Todos los comentarios y docstrings traducidos de español a inglés (cumplimiento de CLAUDE.md language rule).
+- `docs/context/04-risk.md` — Actualizado: conteo correcto de tests (14 en test_risk_service.py, no 10), sección de limitaciones conocidas, FAQ sobre warning log, cambios recientes.
+
+**Por qué:** Revisión del @planner encontró 2 issues menores. Ningún bug crítico — 69/69 tests passing, 100% alineado con CLAUDE.md.
+**Impacto:** risk_service/state_tracker.py, config/settings.py, docs/context/04-risk.md
+
 ## [2026-03-03] — AI Service — Layer 3 implementado
 **Qué cambió:**
 - `ai_service/prompt_builder.py` — System + evaluation prompts para Claude. Interpreta funding, OI, CVD, liquidaciones, whales.

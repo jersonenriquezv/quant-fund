@@ -68,7 +68,7 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 - Clase: `RiskStateTracker`
 - Lifecycle del trade:
   - `record_trade_opened(pair, direction, entry_price, timestamp)`
-  - `record_trade_closed(pair, pnl_pct, timestamp)` — actualiza DD, activa cooldown si pérdida
+  - `record_trade_closed(pair, pnl_pct, timestamp)` — actualiza DD, activa cooldown si pérdida. Si el pair no está en posiciones abiertas, emite `logger.warning()` (protección contra bugs silenciosos en el pipeline).
 - Getters para guardrails: `get_trades_today_count()`, `get_open_positions_count()`, `get_daily_dd_pct()`, `get_weekly_dd_pct()`, `get_last_loss_time()`
 - `_check_date_reset()` — auto-reset al cambiar día/semana UTC
 
@@ -106,7 +106,9 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 - `test_position_sizer.py` (10) — fórmula, leverage cap, edge cases
 - `test_guardrails.py` (17) — cada regla pass/fail/boundary
 - `test_state_tracker.py` (18) — lifecycle, DD, cooldown, date reset
-- `test_risk_service.py` (10) — check() integración: approvals + rejections
+- `test_risk_service.py` (14) — check() integración: 3 approvals, 6 rejections, 4 lifecycle, 1 entry==SL
+
+Última corrida: 69 passed, 0 failed (0.33s)
 
 ## FAQ
 
@@ -121,3 +123,18 @@ Si el cooldown está activo, no tiene sentido calcular position size. El primer 
 
 **¿Qué pasa si el bot se reinicia?**
 Estado se pierde (es in-memory). Empezaría con 0 trades hoy, 0 DD. Esto es conservador — permite tradear inmediatamente. Cuando Execution Service esté listo, reconstruiremos estado desde PostgreSQL al arrancar.
+
+**¿Qué pasa si `record_trade_closed()` recibe un pair que no está abierto?**
+No crashea. El trade se registra igual (P&L, cooldown, trades_today), pero emite un `logger.warning()` porque probablemente indica un bug en el pipeline (nombre de par inconsistente entre layers, o cierre duplicado). Busca en logs: `"Closed trade for X but no matching open position found"`.
+
+## Limitaciones conocidas
+
+- **Estado in-memory**: Se pierde al reiniciar. Planeado para Phase 2 (Execution Service + Redis persistence).
+- **Max trade duration (12h)**: El setting existe (`MAX_TRADE_DURATION_HOURS`) pero NO se enforcea aquí — es responsabilidad del Execution Service (monitoreo de posiciones abiertas).
+- **Tracking por pair, no por trade ID**: Si hubiera 2 trades abiertos en el mismo pair (improbable con MAX_OPEN_POSITIONS=3 y solo BTC/ETH), el cierre matchearía el primero.
+
+## Cambios recientes
+
+- **2026-03-03** — Warning log en `state_tracker.py` cuando se cierra un pair sin posición abierta (protección contra bugs silenciosos)
+- **2026-03-03** — Traducción de comentarios en `config/settings.py` a inglés (cumplimiento de CLAUDE.md)
+- **2026-03-03** — Revisión completa por @planner: 0 bugs críticos, 69/69 tests passing, 100% alineado con CLAUDE.md

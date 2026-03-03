@@ -28,7 +28,7 @@ ALL code, comments, variable names, docstrings, commit messages, and log message
 ## Infrastructure
 - **Server:** Acer Nitro 5 (i5-9300H, 4 cores/8 threads, 16GB RAM, SSD 240GB) running Ubuntu Server 24.04 — dedicated 24/7 server, no GUI
 - **IP:** 192.168.1.238 (static, local network)
-- **Internet:** Direct connection, no proxy. Required for OKX WebSocket, Binance WebSocket, Etherscan API, Claude API.
+- **Internet:** Direct connection, no proxy. Required for OKX WebSocket, Etherscan API, Claude API.
 - **Docker + Docker Compose:** Installed and ready
 - **Python:** 3.12 with venv at ~/quant-fund/venv
 - **Node.js:** 20.x (for Claude Code only)
@@ -52,7 +52,8 @@ quant-fund/
 │   ├── websocket_feeds.py   # OKX WebSocket (candles on /business)
 │   ├── exchange_client.py   # OKX REST via ccxt (backfill, funding, OI)
 │   ├── cvd_calculator.py    # CVD from OKX trade stream (/public)
-│   ├── binance_liq.py       # Binance Futures WebSocket (liquidations)
+│   ├── oi_liquidation_proxy.py # OI-based liquidation cascade detection
+│   ├── binance_liq.py       # Binance Futures WebSocket (UNUSED — geo-blocked from Canada)
 │   ├── etherscan_client.py  # Whale wallet monitoring
 │   └── data_store.py        # Redis (cache) + PostgreSQL (historical)
 ├── strategy_service/
@@ -85,6 +86,7 @@ quant-fund/
 │   ├── test_fvg.py
 │   ├── test_liquidity.py
 │   ├── test_setups.py
+│   ├── test_oi_proxy.py
 │   ├── test_guardrails.py
 │   ├── test_position_sizer.py
 │   ├── test_state_tracker.py
@@ -136,10 +138,9 @@ Receives real-time data from multiple sources:
 
 * **OKX WebSocket**: Candles on `/business` (`wss://ws.okx.com:8443/ws/v5/business`), trades on `/public` (`wss://ws.okx.com:8443/ws/v5/public`)
 * **OKX REST** (via ccxt): Candle backfill, funding rate (every 8 hours), open interest
-* **Binance Futures WebSocket** (`wss://fstream.binance.com/ws/!forceOrder@arr`): Liquidation data (public, no API key)
 * **Etherscan REST**: Whale ETH wallet movements
 * Funding rates: OKX charges every 8 hours (standard CEX schedule)
-* Liquidations: Binance forceOrder (primary) + OKX OI drop >2% in 5min (proxy)
+* Liquidations: OI drop proxy — detects cascades when OI drops >2% in 5min (Binance WebSocket geo-blocked from Canada)
 * **Rate limits:** 20 requests/2s market data, 60 requests/2s trading
 * **Instrument format:** `BTC-USDT-SWAP` (hyphens, not slashes — OKX convention)
 
@@ -262,7 +263,7 @@ Claude API (Sonnet) as filter. Does not originate trades. **Claude has NO intern
 * Current funding rate + context (extreme or normal? threshold: ±0.03%)
 * Open Interest trend (rising/falling + price correlation)
 * CVD snapshot (divergence with price?)
-* Recent liquidation volume (Binance forceOrder aggregated last 1h)
+* Recent liquidation cascades (OI proxy — estimated USD from OI drops)
 * Whale movements (last 24h significant transfers)
 * Recent price action (1H and 4H candle % change)
 
@@ -467,7 +468,6 @@ risk_events (
    - Store backfilled candles in memory + PostgreSQL
    - Start OKX WebSocket (candles on `/business`)
    - Start OKX trades WebSocket (for CVD on `/public`)
-   - Start Binance liquidations WebSocket
    - Start Etherscan polling loop (every 5 min)
    - Start funding rate polling (every 8 hours)
    - Start OI polling (every 5 min)
@@ -495,7 +495,7 @@ All services use `loguru` via `shared/logger.py`:
 
 ## Error Recovery & Resilience
 
-**WebSocket disconnects (OKX, Binance):**
+**WebSocket disconnects (OKX):**
 * Automatic reconnection with exponential backoff
 * Initial delay: 1s → doubles each retry → max 60s
 * Configured in `settings.py`: `RECONNECT_INITIAL_DELAY`, `RECONNECT_MAX_DELAY`, `RECONNECT_BACKOFF_FACTOR`
