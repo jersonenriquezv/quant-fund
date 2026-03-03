@@ -1,5 +1,22 @@
 # Changelog — One-Man Quant Fund
 
+## [2026-03-03] — AI Service — Layer 3 implementado
+**Qué cambió:**
+- `ai_service/prompt_builder.py` — System + evaluation prompts para Claude. Interpreta funding, OI, CVD, liquidaciones, whales.
+- `ai_service/claude_client.py` — Wrapper async de Anthropic SDK. Timeout 30s, 2 retries, JSON parsing, code fence stripping.
+- `ai_service/service.py` — Facade AIService.evaluate(setup, snapshot) → AIDecision. Double check confidence >= 0.60. Fail-safe en todo error.
+- `ai_service/__init__.py` — Exporta AIService
+- `config/settings.py` — 4 settings nuevas: AI_TIMEOUT_SECONDS, AI_TEMPERATURE, AI_MAX_TOKENS, FUNDING_EXTREME_THRESHOLD
+- `requirements.txt` — Agregado anthropic==0.84.0
+- `main.py` — Pipeline completo Data→Strategy→AI→Risk. data_service como variable module-level. Graceful shutdown de AI client. Validación de ANTHROPIC_API_KEY.
+- `tests/test_prompt_builder.py` — 14 tests (system prompt, eval prompt, datos faltantes, funding extremo)
+- `tests/test_claude_client.py` — 8 tests (JSON parsing, API errors, timeout, rate limit)
+- `tests/test_ai_service.py` — 12 tests (approval/rejection, confidence clamping, API failure, disabled mode)
+- `docs/context/03-ai-filter.md` — Documentación completa del servicio
+
+**Por qué:** Cuarto paso del build order. El AI filter evalúa contexto de mercado que las reglas determinísticas no capturan.
+**Impacto:** ai_service/, tests/, main.py, config/, docs/context/
+
 ## [2026-03-03] — Risk Service — Layer 4 implementado
 **Qué cambió:**
 - `risk_service/position_sizer.py` — Calculadora: (capital × risk%) / |entry - sl|, cap a MAX_LEVERAGE (5x)

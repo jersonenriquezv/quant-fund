@@ -4,8 +4,8 @@ Entry point for the One-Man Quant Fund trading bot.
 Single Python process running all 5 layers:
     Data Service → Strategy Service → AI Service → Risk Service → Execution Service
 
-Current state: Data Service + Strategy Service. AI/Risk/Execution are stubs
-that will be wired in as they're built.
+Current state: Data Service + Strategy Service + AI Service + Risk Service.
+Execution Service is a stub that will be wired when built.
 
 Usage:
     python main.py
@@ -20,12 +20,15 @@ from shared.logger import setup_logger
 from shared.models import Candle
 from data_service.service import DataService
 from strategy_service import StrategyService
+from ai_service import AIService
 from risk_service import RiskService
 
 logger = setup_logger("main")
 
 # Module-level references set by main() so the callback can access them
+_data_service: DataService | None = None
 _strategy_service: StrategyService | None = None
+_ai_service: AIService | None = None
 _risk_service: RiskService | None = None
 
 
@@ -59,11 +62,17 @@ async def on_candle_confirmed(candle: Candle) -> None:
         f"confluences={setup.confluences}"
     )
 
-    # TODO: Wire AI Service here
-    # snapshot = data_service.get_market_snapshot(candle.pair)
-    # decision = ai_service.evaluate(setup, snapshot)
-    # if not decision.approved:
-    #     return
+    # Layer 3: AI Service — Claude filter
+    if _ai_service is not None and _data_service is not None:
+        snapshot = _data_service.get_market_snapshot(candle.pair)
+        decision = await _ai_service.evaluate(setup, snapshot)
+        if not decision.approved:
+            logger.info(
+                f"AI rejected: confidence={decision.confidence:.2f} "
+                f"reason={decision.reasoning}"
+            )
+            return
+        logger.info(f"AI approved: confidence={decision.confidence:.2f}")
 
     # Layer 4: Risk Service — enforce guardrails + position sizing
     if _risk_service is not None:
@@ -90,6 +99,9 @@ def validate_config() -> bool:
 
     if not settings.OKX_API_KEY:
         logger.warning("OKX_API_KEY not set — trading will be disabled (market data still works)")
+
+    if not settings.ANTHROPIC_API_KEY:
+        logger.warning("ANTHROPIC_API_KEY not set — AI filter disabled, trades will be auto-rejected")
 
     if settings.OKX_SANDBOX:
         logger.info("Running in DEMO mode (OKX sandbox / simulated trading)")
@@ -118,18 +130,20 @@ async def main() -> None:
         logger.error("Config validation failed. Exiting.")
         sys.exit(1)
 
-    global _strategy_service, _risk_service
+    global _data_service, _strategy_service, _ai_service, _risk_service
 
     # Create DataService with pipeline callback
-    data_service = DataService(on_candle_confirmed=on_candle_confirmed)
+    _data_service = DataService(on_candle_confirmed=on_candle_confirmed)
 
     # Create StrategyService — Layer 2
-    _strategy_service = StrategyService(data_service)
+    _strategy_service = StrategyService(_data_service)
     logger.info("Strategy Service initialized")
+
+    # Create AIService — Layer 3
+    _ai_service = AIService(_data_service)
 
     # Create RiskService — Layer 4 ($100 demo capital)
     _risk_service = RiskService(capital=100.0)
-    logger.info("Risk Service initialized")
 
     # Handle graceful shutdown
     shutdown_event = asyncio.Event()
@@ -150,7 +164,9 @@ async def main() -> None:
 
     # Graceful shutdown
     logger.info("Shutting down...")
-    await data_service.stop()
+    if _ai_service is not None:
+        await _ai_service.close()
+    await _data_service.stop()
 
     # Cancel main task if still running
     if not data_task.done():

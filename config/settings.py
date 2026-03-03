@@ -137,6 +137,14 @@ class Settings:
     CLAUDE_MODEL: str = "claude-sonnet-4-20250514"
     # Confianza mínima para aprobar un trade
     AI_MIN_CONFIDENCE: float = 0.60
+    # Maximum seconds to wait for Claude API response
+    AI_TIMEOUT_SECONDS: float = 30.0
+    # Temperature for Claude responses (lower = more consistent)
+    AI_TEMPERATURE: float = 0.3
+    # Max tokens for Claude response
+    AI_MAX_TOKENS: int = 500
+    # Funding rate threshold for "extreme" interpretation (absolute value)
+    FUNDING_EXTREME_THRESHOLD: float = 0.0003  # 0.03%
 
     # ========================
     # TAKE PROFITS

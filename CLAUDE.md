@@ -35,13 +35,98 @@ ALL code, comments, variable names, docstrings, commit messages, and log message
 - **Development:** VS Code Remote SSH from main PC (ASUS). Claude Code runs directly on the server.
 - **The bot runs ON this server 24/7.** All code, Docker containers, databases, and WebSocket connections live here. It's not a dev machine — it's the production server.
 
+## Project Structure
+
+```
+quant-fund/
+├── main.py                  # Entry point — starts all services, runs pipeline
+├── config/
+│   ├── settings.py          # All configuration (mode, API keys, pairs, thresholds)
+│   └── .env                 # Secrets (OKX keys, Etherscan, Anthropic) — NOT in git
+├── shared/
+│   ├── models.py            # Dataclasses shared between all services
+│   └── logger.py            # Loguru setup (stdout + daily rotated files)
+├── data_service/
+│   ├── __init__.py
+│   ├── service.py           # DataService facade (only public interface)
+│   ├── websocket_feeds.py   # OKX WebSocket (candles on /business)
+│   ├── exchange_client.py   # OKX REST via ccxt (backfill, funding, OI)
+│   ├── cvd_calculator.py    # CVD from OKX trade stream (/public)
+│   ├── binance_liq.py       # Binance Futures WebSocket (liquidations)
+│   ├── etherscan_client.py  # Whale wallet monitoring
+│   └── data_store.py        # Redis (cache) + PostgreSQL (historical)
+├── strategy_service/
+│   ├── __init__.py
+│   ├── service.py           # StrategyService facade
+│   ├── market_structure.py  # BOS/CHoCH detection
+│   ├── order_blocks.py      # OB detection + mitigation tracking
+│   ├── fvg.py               # FVG detection + fill tracking
+│   ├── liquidity.py         # Liquidity pools, sweeps, premium/discount
+│   └── setups.py            # Setup A & B assembly + confluence counting
+├── ai_service/
+│   ├── __init__.py
+│   ├── service.py           # AIService facade
+│   ├── claude_client.py     # Anthropic API wrapper
+│   └── prompt_builder.py    # Builds structured context for Claude
+├── risk_service/
+│   ├── __init__.py
+│   ├── service.py           # RiskService facade
+│   ├── guardrails.py        # Stateless checks (RR, cooldown, DD, etc.)
+│   ├── position_sizer.py    # Position size + leverage calculation
+│   └── state_tracker.py     # In-memory state (open positions, daily PnL)
+├── execution_service/
+│   ├── __init__.py
+│   ├── executor.py          # Order placement via ccxt
+│   └── monitor.py           # Fill monitoring, slippage tracking
+├── tests/
+│   ├── conftest.py          # Shared fixtures (make_candle, make_snapshot)
+│   ├── test_market_structure.py
+│   ├── test_order_blocks.py
+│   ├── test_fvg.py
+│   ├── test_liquidity.py
+│   ├── test_setups.py
+│   ├── test_guardrails.py
+│   ├── test_position_sizer.py
+│   ├── test_state_tracker.py
+│   └── test_risk_service.py
+├── docs/
+│   └── context/             # Auto-generated docs per service (Spanish)
+├── logs/                    # Daily rotated log files (auto-created)
+├── requirements.txt
+└── CLAUDE.md
+```
+
+---
+
 ## ARCHITECTURE — 5 Layers
 
-The system has 5 independent services communicating sequentially:
+All 5 layers run in the **same Python process**. Communication is via direct function calls — no message queues, no pub/sub, no IPC.
 
 ```
 Market Data → [1. Data Service] → [2. Strategy Service] → [3. AI Service] → [4. Risk Service] → [5. Execution Service] → Exchange
 ```
+
+### Inter-layer Communication
+
+Direct Python calls. The pipeline is triggered on every confirmed candle:
+
+```python
+# main.py — on_candle_confirmed callback
+candle = ...  # from OKX WebSocket (confirmed=True)
+setup = strategy_service.evaluate(candle.pair, candle)
+if setup:
+    snapshot = data_service.get_market_snapshot(candle.pair)
+    decision = await ai_service.evaluate(setup, snapshot)
+    if decision.approved:
+        approval = risk_service.check(setup)
+        if approval.approved:
+            execution_service.execute(setup, approval)
+```
+
+**Redis is used ONLY for:**
+* State caching (latest candles, OI, funding, orderbook depth)
+* Persistence between restarts (portfolio state, daily PnL tracking)
+* NOT for inter-module messaging
 
 ---
 
@@ -169,11 +254,37 @@ Deterministic Python engine that detects SMC patterns. No AI. Pure rules.
 
 ### Layer 3: AI Service (`ai_service/`)
 
-Claude API as filter. Does not originate trades.
+Claude API (Sonnet) as filter. Does not originate trades. **Claude has NO internet access** — all data must be provided as structured context.
 
-Evaluates macro context, sentiment, news, HTF confluence, liquidity, OI/funding trends, and on-chain ETH activity.
+**What Claude receives (built by `prompt_builder.py`):**
+* The detected setup (type, pair, direction, entry, SL, TP levels, confluences)
+* HTF market structure (4H/1H trend direction, recent BOS/CHoCH)
+* Current funding rate + context (extreme or normal? threshold: ±0.03%)
+* Open Interest trend (rising/falling + price correlation)
+* CVD snapshot (divergence with price?)
+* Recent liquidation volume (Binance forceOrder aggregated last 1h)
+* Whale movements (last 24h significant transfers)
+* Recent price action (1H and 4H candle % change)
 
-Minimum confidence: ≥ 0.60.
+**What Claude does NOT have access to:**
+* News, Twitter/X, Reddit, or any real-time internet data
+* Fear & Greed Index (future phase)
+* Macro economic data (Fed rates, CPI)
+
+**Claude's output:** Structured JSON with:
+* `confidence`: float 0.0–1.0 (minimum 0.60 to proceed)
+* `approved`: bool (must be true AND confidence ≥ 0.60)
+* `reasoning`: string explaining the decision
+* `adjustments`: optional SL/TP modifications
+* `warnings`: list of risk factors detected
+
+**Fail-safe behavior:**
+* If Claude API call fails → trade is REJECTED (never execute without filter)
+* If ANTHROPIC_API_KEY not set → all trades auto-rejected
+* If response can't be parsed → trade is REJECTED
+* Timeout: 30 seconds max per API call
+
+**Config:** Model `claude-sonnet-4-20250514`, temperature 0.3, max_tokens 500.
 
 ---
 
@@ -203,12 +314,40 @@ Position Size = (Capital × Risk%) / (Entry - Stop Loss)
 Executes orders on OKX via ccxt (exchange id: `"okx"`).
 Authentication: API key + secret + passphrase (`OKX_API_KEY`, `OKX_SECRET`, `OKX_PASSPHRASE` in `.env`).
 Instrument format: `"BTC-USDT-SWAP"`, `"ETH-USDT-SWAP"` (OKX convention).
-Order types: limit, market, stop-loss (trigger orders), take-profit — all supported.
-Places SL/TP automatically. Monitors fills and slippage.
+
+**Order flow:**
+1. Receive approved trade from Risk Service (TradeSetup + RiskApproval)
+2. Place limit entry order at calculated price (50% OB/FVG)
+3. Attach SL as stop-market order (guaranteed fill on volatile moves)
+4. Attach TP1/TP2/TP3 as limit orders with scaled sizes (50%/30%/20%)
+5. Monitor fill status
+
+**Order types:**
+* Entry: Limit order. If not filled within 15 minutes → cancel.
+* Stop Loss: Stop-market (not stop-limit — stop-limits can skip during crashes)
+* Take Profit: Limit orders (TP1, TP2, TP3 as separate orders)
+
+**Partial fills & edge cases:**
+* Entry partially fills → keep order open, SL/TP scale to filled amount
+* Entry fails (insufficient margin, API error) → log ERROR, do NOT retry automatically
+* SL/TP placement fails after entry fills → EMERGENCY close at market immediately
+* Slippage tracking: log expected vs actual fill price on every order
+
+**Position management after entry:**
+* TP1 hit (50% at 1:1 R/R) → move SL to breakeven
+* TP2 hit (30% at 1:2 R/R) → trail SL to TP1 level
+* TP3: trailing stop or next liquidity level for remaining 20%
 
 **Trading Mode:**
 * Demo first (4-week minimum): set `OKX_SANDBOX=true`, adds `x-simulated-trading: 1` header
 * Live: set `OKX_SANDBOX=false`
+
+**Graduation criteria (demo → live):**
+* Minimum 50 paper trades executed
+* Win rate >40% on paper
+* No critical bugs in execution flow
+* Drawdown stayed within limits
+* Minimum 4 weeks elapsed
 
 ---
 
@@ -237,3 +376,176 @@ Places SL/TP automatically. Monitors fills and slippage.
 6. Dashboard
 
 Initial validation capital: $50–100 USD on OKX (demo mode first, then live).
+
+---
+
+## Shared Data Models (`shared/models.py`)
+
+All inter-service communication uses typed frozen dataclasses. No raw dicts between layers.
+
+**Layer 1 (Data) outputs:**
+* `Candle` — OHLCV with `confirmed` flag. Only process when `confirmed=True`.
+* `FundingRate` — current rate + next estimated rate + next funding time
+* `OpenInterest` — OI in contracts, base currency, and USD
+* `CVDSnapshot` — cumulative volume delta at 5m/15m/1h windows + buy/sell volume
+* `LiquidationEvent` — single liquidation (pair, side, size_usd, source)
+* `WhaleMovement` — ETH transfer (wallet, action, amount, exchange, significance)
+* `MarketSnapshot` — aggregates all of the above for a single pair at a point in time
+
+**Layer 2 (Strategy) outputs:**
+* `TradeSetup` — detected setup with entry/SL/TP1-3, confluences list, htf_bias, ob_timeframe
+
+**Layer 3 (AI) outputs:**
+* `AIDecision` — confidence (0-1), approved (bool), reasoning, adjustments (dict), warnings (list)
+
+**Layer 4 (Risk) outputs:**
+* `RiskApproval` — approved (bool), position_size, leverage, risk_pct, reason
+
+---
+
+## Database Schema (PostgreSQL)
+
+```sql
+candles (
+    id SERIAL PRIMARY KEY,
+    pair VARCHAR(20),
+    timeframe VARCHAR(5),
+    timestamp BIGINT,         -- Unix ms
+    open FLOAT, high FLOAT, low FLOAT, close FLOAT,
+    volume FLOAT,
+    volume_quote FLOAT,
+    UNIQUE(pair, timeframe, timestamp)
+)
+
+trades (
+    id SERIAL PRIMARY KEY,
+    pair VARCHAR(20),
+    direction VARCHAR(5),     -- "long" or "short"
+    setup_type VARCHAR(10),   -- "setup_a" or "setup_b"
+    entry_price FLOAT,
+    sl_price FLOAT,
+    tp1_price FLOAT, tp2_price FLOAT, tp3_price FLOAT,
+    actual_entry FLOAT,       -- Real fill price (slippage tracking)
+    actual_exit FLOAT,
+    exit_reason VARCHAR(20),  -- "tp1", "tp2", "tp3", "sl", "timeout", "invalidation"
+    position_size FLOAT,
+    pnl_usd FLOAT,
+    pnl_pct FLOAT,
+    ai_confidence FLOAT,
+    opened_at TIMESTAMP,
+    closed_at TIMESTAMP,
+    status VARCHAR(15)        -- "open", "closed", "cancelled"
+)
+
+ai_decisions (
+    id SERIAL PRIMARY KEY,
+    trade_id INT REFERENCES trades(id),
+    confidence FLOAT,
+    reasoning TEXT,
+    adjustments JSONB,
+    warnings JSONB,
+    created_at TIMESTAMP
+)
+
+risk_events (
+    id SERIAL PRIMARY KEY,
+    event_type VARCHAR(30),   -- "daily_dd_limit", "weekly_dd_limit", "cooldown", "max_positions"
+    details JSONB,
+    created_at TIMESTAMP
+)
+```
+
+---
+
+## Startup Sequence (`main.py`)
+
+1. **Validate config** — check API keys, log trading mode (demo/live), log pairs and risk params
+2. **Initialize services** — DataService (with pipeline callback), StrategyService, AIService, RiskService
+3. **DataService.start():**
+   - Connect Redis + PostgreSQL
+   - Backfill last 500 candles per pair/timeframe via OKX REST
+   - Store backfilled candles in memory + PostgreSQL
+   - Start OKX WebSocket (candles on `/business`)
+   - Start OKX trades WebSocket (for CVD on `/public`)
+   - Start Binance liquidations WebSocket
+   - Start Etherscan polling loop (every 5 min)
+   - Start funding rate polling (every 8 hours)
+   - Start OI polling (every 5 min)
+   - Start health check loop (every 30 seconds)
+4. **Main loop** — WebSocket callbacks trigger `on_candle_confirmed` → pipeline runs
+5. **Graceful shutdown** on SIGINT/SIGTERM — close AI client, stop DataService, cancel tasks
+
+---
+
+## Logging
+
+All services use `loguru` via `shared/logger.py`:
+
+```
+{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | {name}:{function}:{line} | {message}
+```
+
+* **stdout**: All levels (for Docker logs). No colors for clean output.
+* **File**: `logs/{service}_{date}.log` — daily rotation at midnight, 30-day retention, gzip compression
+* **Thread-safe**: `enqueue=True` for async contexts
+* **Levels**: DEBUG (development), INFO (normal ops), WARNING (recoverable), ERROR (requires attention)
+* **Usage**: `from shared.logger import setup_logger` then `logger = setup_logger("service_name")`
+
+---
+
+## Error Recovery & Resilience
+
+**WebSocket disconnects (OKX, Binance):**
+* Automatic reconnection with exponential backoff
+* Initial delay: 1s → doubles each retry → max 60s
+* Configured in `settings.py`: `RECONNECT_INITIAL_DELAY`, `RECONNECT_MAX_DELAY`, `RECONNECT_BACKOFF_FACTOR`
+* Logs WARNING on disconnect, INFO on successful reconnect
+
+**Redis/PostgreSQL down:**
+* Data Service health check runs every 30 seconds
+* If Redis fails: bot continues with in-memory data only, logs ERROR
+* If PostgreSQL fails: candles not persisted historically, real-time still works, logs ERROR
+* Neither failure kills the bot — it degrades gracefully
+
+**Data validation (before publishing to pipeline):**
+* Price ≤ 0 → discard, log ERROR
+* Volume = 0 on BTC/ETH → discard, log WARNING
+* Timestamp >60s in the future → discard, log WARNING
+
+**Claude API failure:**
+* Timeout (30s) or network error → trade REJECTED (fail-safe)
+* Never execute without AI filter passing
+
+**Open positions on restart:**
+* Risk Service state (open positions, daily PnL) is in-memory — resets on restart
+* SL/TP orders live on the exchange — they persist independently of the bot
+* Future: persist Risk state to Redis for recovery
+
+**Exchange API errors:**
+* Rate limit hit → ccxt built-in throttling handles backoff
+* Order placement failure → log ERROR, do NOT retry automatically
+* Authentication failure → log CRITICAL, disable trading
+
+---
+
+## Environment Variables (`.env`)
+
+```
+OKX_API_KEY=
+OKX_SECRET=
+OKX_PASSPHRASE=
+OKX_SANDBOX=true
+
+ETHERSCAN_API_KEY=
+
+ANTHROPIC_API_KEY=
+
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_DB=quant_fund
+POSTGRES_USER=jer
+POSTGRES_PASSWORD=
+
+REDIS_HOST=localhost
+REDIS_PORT=6379
+```
