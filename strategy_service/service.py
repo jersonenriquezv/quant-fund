@@ -1,0 +1,186 @@
+"""
+StrategyService Facade — Wires all SMC detectors into a single interface.
+
+This is the ONLY class other services import from the strategy layer.
+Main entry: evaluate(pair, trigger_candle) -> TradeSetup | None
+
+Data flow:
+    trigger_candle → fetch all candles from DataService →
+    HTF analysis (4H/1H) → LTF analysis (15m/5m) →
+    Setup A → Setup B → TradeSetup | None
+"""
+
+import time
+from typing import Optional
+
+from config.settings import settings
+from shared.logger import setup_logger
+from shared.models import Candle, TradeSetup
+
+from strategy_service.market_structure import MarketStructureAnalyzer
+from strategy_service.order_blocks import OrderBlockDetector
+from strategy_service.fvg import FVGDetector
+from strategy_service.liquidity import LiquidityAnalyzer
+from strategy_service.setups import SetupEvaluator
+
+logger = setup_logger("strategy_service")
+
+
+class StrategyService:
+    """Strategy Service (Layer 2) — SMC pattern detection engine.
+
+    Deterministic rules. No AI. Receives candle data from DataService,
+    runs all SMC detectors, and produces TradeSetup objects for AI evaluation.
+
+    Synchronous — CPU-bound analysis, no async needed.
+    Called from async context via direct call (DataService reads from memory).
+    """
+
+    def __init__(self, data_service):
+        """
+        Args:
+            data_service: DataService instance for fetching candles and snapshots.
+        """
+        self._data = data_service
+
+        # Detectors — each maintains its own state between calls
+        self._market_structure = MarketStructureAnalyzer()
+        self._order_blocks = OrderBlockDetector()
+        self._fvg = FVGDetector()
+        self._liquidity = LiquidityAnalyzer()
+        self._setups = SetupEvaluator()
+
+    def evaluate(self, pair: str,
+                 trigger_candle: Candle) -> Optional[TradeSetup]:
+        """Main entry point — evaluate a pair for trade setups.
+
+        Called on every confirmed LTF candle. Runs full analysis pipeline.
+
+        Args:
+            pair: e.g. "BTC/USDT"
+            trigger_candle: The confirmed candle that triggered evaluation.
+
+        Returns:
+            TradeSetup if a valid setup is found, None otherwise.
+        """
+        # Only evaluate on LTF candles
+        if trigger_candle.timeframe not in settings.LTF_TIMEFRAMES:
+            return None
+
+        current_time_ms = int(time.time() * 1000)
+
+        # ============================================================
+        # Step 1: Fetch candle data from DataService
+        # ============================================================
+        candles_4h = self._data.get_candles(pair, "4h", 100)
+        candles_1h = self._data.get_candles(pair, "1h", 100)
+        candles_15m = self._data.get_candles(pair, "15m", 200)
+        candles_5m = self._data.get_candles(pair, "5m", 200)
+        market_snapshot = self._data.get_market_snapshot(pair)
+
+        # ============================================================
+        # Step 2: HTF analysis — determine bias
+        # ============================================================
+        state_4h = self._market_structure.analyze(candles_4h, pair, "4h")
+        state_1h = self._market_structure.analyze(candles_1h, pair, "1h")
+
+        htf_bias = self._determine_htf_bias(state_4h, state_1h)
+        if htf_bias == "undefined":
+            logger.debug(f"No HTF bias for {pair} — skipping")
+            return None
+
+        # Update premium/discount zone from 4H data
+        current_price = trigger_candle.close
+        self._liquidity.update_premium_discount(
+            candles_4h, state_4h.swing_highs, state_4h.swing_lows,
+            pair, current_price, current_time_ms,
+        )
+        pd_zone = self._liquidity.get_pd_zone(pair)
+
+        # ============================================================
+        # Step 3: LTF analysis — run all detectors
+        # ============================================================
+        setup = None
+
+        for ltf, candles in [("15m", candles_15m), ("5m", candles_5m)]:
+            if not candles:
+                continue
+
+            # Market structure
+            ltf_state = self._market_structure.analyze(candles, pair, ltf)
+
+            # Order blocks (depends on structure breaks)
+            active_obs = self._order_blocks.update(
+                candles, ltf_state.structure_breaks,
+                pair, ltf, current_time_ms,
+            )
+
+            # FVGs
+            active_fvgs = self._fvg.update(
+                candles, pair, ltf, current_time_ms,
+            )
+
+            # Liquidity levels and sweeps
+            self._liquidity.update(
+                candles, ltf_state.swing_highs, ltf_state.swing_lows,
+                pair, ltf, market_snapshot, current_time_ms,
+            )
+            recent_sweeps = self._liquidity.get_recent_sweeps(pair, ltf)
+            liq_levels = self._liquidity.get_levels(pair, ltf)
+
+            # ============================================================
+            # Step 4: Evaluate setups — A first, then B
+            # ============================================================
+            setup = self._setups.evaluate_setup_a(
+                structure_state=ltf_state,
+                active_obs=active_obs,
+                recent_sweeps=recent_sweeps,
+                pd_zone=pd_zone,
+                market_snapshot=market_snapshot,
+                candles=candles,
+                pair=pair,
+                htf_bias=htf_bias,
+                liquidity_levels=liq_levels,
+            )
+
+            if setup is not None:
+                logger.info(
+                    f"Setup A found: pair={pair} direction={setup.direction} "
+                    f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
+                    f"tp1={setup.tp1_price:.2f} confluences={setup.confluences}"
+                )
+                return setup
+
+            setup = self._setups.evaluate_setup_b(
+                structure_state=ltf_state,
+                active_obs=active_obs,
+                active_fvgs=active_fvgs,
+                pd_zone=pd_zone,
+                market_snapshot=market_snapshot,
+                candles=candles,
+                pair=pair,
+                htf_bias=htf_bias,
+                liquidity_levels=liq_levels,
+            )
+
+            if setup is not None:
+                logger.info(
+                    f"Setup B found: pair={pair} direction={setup.direction} "
+                    f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
+                    f"tp1={setup.tp1_price:.2f} confluences={setup.confluences}"
+                )
+                return setup
+
+        return None
+
+    def _determine_htf_bias(self, state_4h, state_1h) -> str:
+        """Determine HTF bias from 4H and 1H analysis.
+
+        4H trend dominates. If 4H is undefined, use 1H.
+        If both are undefined, no trading.
+        """
+        if state_4h.trend != "undefined":
+            return state_4h.trend
+        if state_1h.trend != "undefined":
+            return state_1h.trend
+        return "undefined"
