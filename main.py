@@ -20,11 +20,13 @@ from shared.logger import setup_logger
 from shared.models import Candle
 from data_service.service import DataService
 from strategy_service import StrategyService
+from risk_service import RiskService
 
 logger = setup_logger("main")
 
-# Module-level reference set by main() so the callback can access it
+# Module-level references set by main() so the callback can access them
 _strategy_service: StrategyService | None = None
+_risk_service: RiskService | None = None
 
 
 # ================================================================
@@ -62,12 +64,18 @@ async def on_candle_confirmed(candle: Candle) -> None:
     # decision = ai_service.evaluate(setup, snapshot)
     # if not decision.approved:
     #     return
-    #
-    # TODO: Wire Risk Service here
-    # approval = risk_service.check(setup, decision)
-    # if not approval.approved:
-    #     return
-    #
+
+    # Layer 4: Risk Service — enforce guardrails + position sizing
+    if _risk_service is not None:
+        approval = _risk_service.check(setup)
+        if not approval.approved:
+            logger.info(f"Risk rejected: {approval.reason}")
+            return
+        logger.info(
+            f"Risk approved: size={approval.position_size:.6f} "
+            f"leverage={approval.leverage:.2f}x risk={approval.risk_pct*100:.1f}%"
+        )
+
     # TODO: Wire Execution Service here
     # execution_service.execute(setup, approval)
 
@@ -110,7 +118,7 @@ async def main() -> None:
         logger.error("Config validation failed. Exiting.")
         sys.exit(1)
 
-    global _strategy_service
+    global _strategy_service, _risk_service
 
     # Create DataService with pipeline callback
     data_service = DataService(on_candle_confirmed=on_candle_confirmed)
@@ -118,6 +126,10 @@ async def main() -> None:
     # Create StrategyService — Layer 2
     _strategy_service = StrategyService(data_service)
     logger.info("Strategy Service initialized")
+
+    # Create RiskService — Layer 4 ($100 demo capital)
+    _risk_service = RiskService(capital=100.0)
+    logger.info("Risk Service initialized")
 
     # Handle graceful shutdown
     shutdown_event = asyncio.Event()

@@ -1,0 +1,76 @@
+"""
+Pure guardrail checks — each returns (passed, reason).
+
+No state. Each method takes the values it needs and returns a verdict.
+All thresholds come from config.settings.
+"""
+
+from config.settings import settings
+from shared.models import TradeSetup
+
+
+class Guardrails:
+    """Non-negotiable risk checks. If any fails, the trade does NOT execute."""
+
+    def check_rr_ratio(self, setup: TradeSetup) -> tuple[bool, str]:
+        """Check that TP2 reward/risk >= MIN_RISK_REWARD (1.5)."""
+        risk = abs(setup.entry_price - setup.sl_price)
+        if risk == 0:
+            return False, "Risk is zero (entry == SL)"
+
+        reward = abs(setup.tp2_price - setup.entry_price)
+        rr = reward / risk
+
+        if rr < settings.MIN_RISK_REWARD:
+            return False, f"R:R {rr:.2f} below minimum {settings.MIN_RISK_REWARD}"
+        return True, f"R:R {rr:.2f} OK"
+
+    def check_cooldown(
+        self, last_loss_time: int | None, current_time: int
+    ) -> tuple[bool, str]:
+        """Check that COOLDOWN_MINUTES have elapsed since last loss.
+
+        Args:
+            last_loss_time: Unix timestamp (seconds) of last loss, or None.
+            current_time: Current Unix timestamp (seconds).
+        """
+        if last_loss_time is None:
+            return True, "No recent loss"
+
+        elapsed_min = (current_time - last_loss_time) / 60
+        if elapsed_min < settings.COOLDOWN_MINUTES:
+            remaining = settings.COOLDOWN_MINUTES - elapsed_min
+            return False, f"Cooldown active, {remaining:.0f} min remaining"
+        return True, "Cooldown elapsed"
+
+    def check_max_trades_today(self, count: int) -> tuple[bool, str]:
+        """Check that trades today < MAX_TRADES_PER_DAY."""
+        if count >= settings.MAX_TRADES_PER_DAY:
+            return False, f"Max trades/day reached ({count}/{settings.MAX_TRADES_PER_DAY})"
+        return True, f"Trades today {count}/{settings.MAX_TRADES_PER_DAY}"
+
+    def check_max_open_positions(self, count: int) -> tuple[bool, str]:
+        """Check that open positions < MAX_OPEN_POSITIONS."""
+        if count >= settings.MAX_OPEN_POSITIONS:
+            return False, f"Max open positions reached ({count}/{settings.MAX_OPEN_POSITIONS})"
+        return True, f"Open positions {count}/{settings.MAX_OPEN_POSITIONS}"
+
+    def check_daily_drawdown(self, dd_pct: float) -> tuple[bool, str]:
+        """Check that daily drawdown < MAX_DAILY_DRAWDOWN.
+
+        Args:
+            dd_pct: Current daily drawdown as positive fraction (e.g. 0.02 = 2%).
+        """
+        if dd_pct >= settings.MAX_DAILY_DRAWDOWN:
+            return False, f"Daily DD {dd_pct*100:.1f}% >= limit {settings.MAX_DAILY_DRAWDOWN*100:.1f}%"
+        return True, f"Daily DD {dd_pct*100:.1f}% OK"
+
+    def check_weekly_drawdown(self, dd_pct: float) -> tuple[bool, str]:
+        """Check that weekly drawdown < MAX_WEEKLY_DRAWDOWN.
+
+        Args:
+            dd_pct: Current weekly drawdown as positive fraction (e.g. 0.04 = 4%).
+        """
+        if dd_pct >= settings.MAX_WEEKLY_DRAWDOWN:
+            return False, f"Weekly DD {dd_pct*100:.1f}% >= limit {settings.MAX_WEEKLY_DRAWDOWN*100:.1f}%"
+        return True, f"Weekly DD {dd_pct*100:.1f}% OK"

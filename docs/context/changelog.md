@@ -1,5 +1,23 @@
 # Changelog — One-Man Quant Fund
 
+## [2026-03-03] — Risk Service — Layer 4 implementado
+**Qué cambió:**
+- `risk_service/position_sizer.py` — Calculadora: (capital × risk%) / |entry - sl|, cap a MAX_LEVERAGE (5x)
+- `risk_service/guardrails.py` — 6 checks puros: R:R, cooldown, max trades/día, max posiciones, DD diario, DD semanal
+- `risk_service/state_tracker.py` — Estado in-memory: trades hoy, posiciones abiertas, P&L, cooldown, auto-reset diario/semanal
+- `risk_service/service.py` — Facade RiskService.check(setup) → RiskApproval. Fail fast.
+- `risk_service/__init__.py` — Exporta RiskService
+- `main.py` — Integrado en pipeline: setup detectado → risk.check() → log approval/rejection. Capital $100 demo.
+- `tests/test_position_sizer.py` — 10 tests (fórmula, leverage cap, edge cases)
+- `tests/test_guardrails.py` — 17 tests (cada regla pass/fail/boundary)
+- `tests/test_state_tracker.py` — 18 tests (lifecycle, DD, cooldown, date reset)
+- `tests/test_risk_service.py` — 10 tests (check() integración completa)
+- `docs/context/04-risk.md` — Documentación completa del servicio
+- `docs/context/02-strategy.md` — Actualizado de "pendiente" a "implementado"
+
+**Por qué:** Tercer paso del build order. Sin Risk Service, no hay protección del capital.
+**Impacto:** risk_service/, tests/, main.py, docs/context/
+
 ## [2026-03-03] — Exchange Revert — Hyperliquid → OKX
 **Qué cambió:**
 - Reverted ALL files from Hyperliquid back to OKX. Same files as the migration entry below, but in reverse.
