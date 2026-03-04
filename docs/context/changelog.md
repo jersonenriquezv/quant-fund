@@ -1,5 +1,21 @@
 # Changelog — One-Man Quant Fund
 
+## [2026-03-04] — Fix liquidity level clustering tolerance
+**Qué cambió:**
+- `config/settings.py` — `EQUAL_LEVEL_TOLERANCE_PCT`: 0.0005 (0.05%) → 0.002 (0.2%). Para BTC a $73k, la tolerancia pasa de $36.50 a $146. Para ETH a $2.1k, de $1.07 a $4.30.
+- `docs/context/02-strategy.md` — Documentación actualizada con nuevo valor de tolerancia.
+
+**Por qué:** Diagnóstico reveló que el bot detectaba 0 sweeps de liquidez porque la tolerancia para agrupar swing highs/lows en niveles era demasiado estricta. A 0.05%, dos swing highs de BTC debían estar dentro de $36.50 para formar un nivel — imposible en velas de 15m/5m. Con 0.2%, ETH 15m pasó de 0 a 2 niveles y 1 sweep detectado en el primer ciclo.
+
+**Análisis de sensibilidad ejecutado:**
+| Tolerancia | ETH 15m levels | ETH 15m sweeps | BTC 15m levels |
+|---|---|---|---|
+| 0.05% (antes) | 1 | 0 | 3 |
+| 0.20% (ahora) | 6 | 4 | 3 |
+
+**Impacto:** config/settings.py, docs/context/
+**Tests:** 45/45 passing (liquidity + setups).
+
 ## [2026-03-04] — Safety-Critical Fixes: Execution + Risk Service
 **Qué cambió:**
 Batch de fixes safety-critical del audit (6 IMPORTANT + 3 MINOR en Execution, 1 IMPORTANT + 5 MINOR en Risk).

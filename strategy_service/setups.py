@@ -60,6 +60,7 @@ class SetupEvaluator:
             return None
 
         if not recent_sweeps:
+            logger.debug(f"Setup A [{pair}]: no recent sweeps")
             return None
 
         # Find CHoCH in structure breaks
@@ -68,6 +69,7 @@ class SetupEvaluator:
             if b.break_type == "choch"
         ]
         if not choch_breaks:
+            logger.debug(f"Setup A [{pair}]: no CHoCH (sweeps={len(recent_sweeps)})")
             return None
 
         latest_choch = choch_breaks[-1]
@@ -78,6 +80,7 @@ class SetupEvaluator:
         # Reversal setups (CHoCH opposing HTF) are intentionally excluded
         # because they have lower win rates without additional confirmation.
         if direction != htf_bias:
+            logger.debug(f"Setup A [{pair}]: CHoCH {direction} != HTF {htf_bias}")
             return None
 
         # Find the most recent sweep aligned with the direction
@@ -99,10 +102,14 @@ class SetupEvaluator:
                 break
 
         if aligned_sweep is None:
+            logger.debug(f"Setup A [{pair}]: no aligned sweep before CHoCH "
+                         f"(sweeps={len(recent_sweeps)} dir={direction})")
             return None
 
         # PD zone alignment
         if not self._check_pd_alignment(pd_zone, direction):
+            zone = pd_zone.zone if pd_zone else "none"
+            logger.debug(f"Setup A [{pair}]: PD misaligned (zone={zone} dir={direction})")
             return None
 
         # Find a fresh OB aligned with direction
@@ -111,16 +118,21 @@ class SetupEvaluator:
             if ob.direction == direction
         ]
         if not aligned_obs:
+            logger.debug(f"Setup A [{pair}]: no aligned OBs (total_obs={len(active_obs)} dir={direction})")
             return None
 
         # Find the best OB (most recent, closest to current price)
         current_price = candles[-1].close if candles else 0
         best_ob = self._find_best_ob(aligned_obs, current_price, direction)
         if best_ob is None:
+            logger.debug(f"Setup A [{pair}]: OBs exist but price not near any "
+                         f"(price={current_price:.2f} obs={len(aligned_obs)})")
             return None
 
         # Check if price is near OB entry
         if not self._is_price_near_ob(current_price, best_ob):
+            logger.debug(f"Setup A [{pair}]: price not near best OB "
+                         f"(price={current_price:.2f} ob={best_ob.body_low:.2f}-{best_ob.body_high:.2f})")
             return None
 
         # Volume confirmation
@@ -210,6 +222,7 @@ class SetupEvaluator:
             if b.break_type == "bos"
         ]
         if not bos_breaks:
+            logger.debug(f"Setup B [{pair}]: no BOS")
             return None
 
         latest_bos = bos_breaks[-1]
@@ -217,10 +230,13 @@ class SetupEvaluator:
 
         # Direction must align with HTF bias
         if direction != htf_bias:
+            logger.debug(f"Setup B [{pair}]: BOS {direction} != HTF {htf_bias}")
             return None
 
         # PD zone alignment
         if not self._check_pd_alignment(pd_zone, direction):
+            zone = pd_zone.zone if pd_zone else "none"
+            logger.debug(f"Setup B [{pair}]: PD misaligned (zone={zone} dir={direction})")
             return None
 
         # Find fresh OB aligned with direction
@@ -229,6 +245,7 @@ class SetupEvaluator:
             if ob.direction == direction
         ]
         if not aligned_obs:
+            logger.debug(f"Setup B [{pair}]: no aligned OBs (total={len(active_obs)} dir={direction})")
             return None
 
         # Find FVG aligned with direction
@@ -237,6 +254,7 @@ class SetupEvaluator:
             if fvg.direction == direction
         ]
         if not aligned_fvgs:
+            logger.debug(f"Setup B [{pair}]: no aligned FVGs (total={len(active_fvgs)} dir={direction})")
             return None
 
         # Find OB+FVG pair where FVG is inside or adjacent to OB
@@ -252,10 +270,14 @@ class SetupEvaluator:
                         best_fvg = fvg
 
         if best_ob is None or best_fvg is None:
+            logger.debug(f"Setup B [{pair}]: no adjacent OB+FVG pair "
+                         f"(obs={len(aligned_obs)} fvgs={len(aligned_fvgs)})")
             return None
 
         # Check if price is near entry zone
         if not self._is_price_near_ob(current_price, best_ob):
+            logger.debug(f"Setup B [{pair}]: price not near OB "
+                         f"(price={current_price:.2f} ob={best_ob.body_low:.2f}-{best_ob.body_high:.2f})")
             return None
 
         # Volume + CVD confirmation

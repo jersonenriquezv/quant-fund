@@ -86,8 +86,14 @@ class StrategyService:
 
         htf_bias = self._determine_htf_bias(state_4h, state_1h)
         if htf_bias == "undefined":
-            logger.debug(f"No HTF bias for {pair} — skipping")
+            logger.debug(f"No HTF bias for {pair} — skipping "
+                         f"(4h_trend={state_4h.trend} 1h_trend={state_1h.trend} "
+                         f"4h_breaks={len(state_4h.structure_breaks)} "
+                         f"1h_breaks={len(state_1h.structure_breaks)})")
             return None
+
+        logger.debug(f"HTF bias={htf_bias} for {pair} "
+                     f"(4h={state_4h.trend} 1h={state_1h.trend})")
 
         # Update premium/discount zone from 4H data
         current_price = trigger_candle.close
@@ -127,6 +133,17 @@ class StrategyService:
             )
             recent_sweeps = self._liquidity.get_recent_sweeps(pair, ltf)
             liq_levels = self._liquidity.get_levels(pair, ltf)
+
+            # Diagnostic: log detected patterns for visibility
+            n_breaks = len(ltf_state.structure_breaks)
+            n_bos = sum(1 for b in ltf_state.structure_breaks if b.break_type == "bos")
+            n_choch = sum(1 for b in ltf_state.structure_breaks if b.break_type == "choch")
+            logger.debug(
+                f"[{pair} {ltf}] patterns: breaks={n_breaks} "
+                f"(bos={n_bos} choch={n_choch}) obs={len(active_obs)} "
+                f"fvgs={len(active_fvgs)} sweeps={len(recent_sweeps)} "
+                f"liq_levels={len(liq_levels)} price={candles[-1].close}"
+            )
 
             # ============================================================
             # Step 4: Evaluate setups — A first, then B

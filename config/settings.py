@@ -124,7 +124,7 @@ class Settings:
 
     # --- Liquidity ---
     # Tolerancia para detectar equal highs/lows (% de diferencia máxima)
-    EQUAL_LEVEL_TOLERANCE_PCT: float = 0.0005  # 0.05%
+    EQUAL_LEVEL_TOLERANCE_PCT: float = 0.002  # 0.2% (~$146 for BTC, ~$4.3 for ETH)
     # Volumen mínimo relativo para confirmar un sweep como institucional
     SWEEP_MIN_VOLUME_RATIO: float = 2.0  # 2x el promedio
 

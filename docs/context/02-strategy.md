@@ -32,8 +32,8 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
 - Tracking de fill parcial/total
 
 ### `strategy_service/liquidity.py` — Sweeps + Premium/Discount
-- Detecta equal highs (BSL) y equal lows (SSL)
-- Sweep: wick rompe nivel pero cierra dentro del rango
+- Detecta equal highs (BSL) y equal lows (SSL) con tolerancia `EQUAL_LEVEL_TOLERANCE_PCT` (0.2% — ~$146 para BTC, ~$4.3 para ETH)
+- Sweep: wick rompe nivel pero cierre queda dentro del rango
 - Volumen mínimo 2x para confirmar sweep institucional
 - Zonas premium (>52%), discount (<48%), **equilibrium (48%-52%)** con banda de tolerancia configurable (`PD_EQUILIBRIUM_BAND`)
 - **Persistencia de swept status** — niveles que ya fueron sweepados mantienen su estado entre llamadas para evitar sweeps duplicados
