@@ -45,7 +45,13 @@ export function WhaleLog() {
               <tr><td colSpan={6}><div className="skeleton" style={{ height: 16, width: "100%" }} /></td></tr>
             )}
             {whales?.map((w, i) => {
-              const isDeposit = w.action === "exchange_deposit";
+              const actionConfig: Record<string, { badge: string; label: string }> = {
+                exchange_deposit: { badge: "badge-short", label: "deposit" },
+                exchange_withdrawal: { badge: "badge-long", label: "withdrawal" },
+                transfer_out: { badge: "badge-neutral", label: "transfer out" },
+                transfer_in: { badge: "badge-neutral", label: "transfer in" },
+              };
+              const { badge, label } = actionConfig[w.action] ?? { badge: "badge-neutral", label: w.action };
               return (
                 <tr key={`${w.timestamp}-${w.wallet}-${i}`} className="animate-in">
                   <td style={{ color: "var(--text-muted)" }}>{formatTime(w.timestamp)}</td>
@@ -56,8 +62,8 @@ export function WhaleLog() {
                     </span>
                   </td>
                   <td>
-                    <span className={`badge ${isDeposit ? "badge-short" : "badge-long"}`}>
-                      {isDeposit ? "deposit" : "withdrawal"}
+                    <span className={`badge ${badge}`}>
+                      {label}
                     </span>
                   </td>
                   <td className="num" style={{ fontWeight: 600 }}>{formatAmount(w.amount, w.chain)} {w.chain}</td>

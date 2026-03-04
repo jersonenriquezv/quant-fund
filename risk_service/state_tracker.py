@@ -30,7 +30,7 @@ class RiskStateTracker:
 
         # Date tracking for auto-reset
         now = datetime.now(timezone.utc)
-        self._current_day: int = now.timetuple().tm_yday
+        self._current_day = now.date()
         self._current_week: int = now.isocalendar()[1]
 
     # ================================================================
@@ -50,20 +50,21 @@ class RiskStateTracker:
         })
 
     def record_trade_closed(
-        self, pair: str, pnl_pct: float, timestamp: int
+        self, pair: str, direction: str, pnl_pct: float, timestamp: int
     ) -> None:
         """Record a position closed.
 
         Args:
             pair: Trading pair.
+            direction: "long" or "short" — matches the exact position.
             pnl_pct: P&L as fraction of capital (positive = profit, negative = loss).
             timestamp: Unix timestamp in seconds.
         """
         self._check_date_reset()
 
-        # Remove from open positions (first match)
+        # Remove from open positions (match by pair AND direction)
         for i, pos in enumerate(self._open_positions):
-            if pos["pair"] == pair:
+            if pos["pair"] == pair and pos["direction"] == direction:
                 self._open_positions.pop(i)
                 break
 
@@ -74,7 +75,10 @@ class RiskStateTracker:
             "timestamp": timestamp,
         })
 
-        # Update P&L
+        # Update P&L (simple summation of per-trade pnl_pct).
+        # This is an approximation — summing percentages is not exact for
+        # compounding, but the error is negligible at our trade sizes
+        # (1-2% risk per trade, max 5 trades/day).
         self._daily_pnl_pct += pnl_pct
         self._weekly_pnl_pct += pnl_pct
 
@@ -123,13 +127,13 @@ class RiskStateTracker:
     def _check_date_reset(self) -> None:
         """Auto-reset daily counters at midnight UTC, weekly on Monday."""
         now = datetime.now(timezone.utc)
-        day = now.timetuple().tm_yday
+        today = now.date()
         week = now.isocalendar()[1]
 
-        if day != self._current_day:
+        if today != self._current_day:
             self._trades_today.clear()
             self._daily_pnl_pct = 0.0
-            self._current_day = day
+            self._current_day = today
 
         if week != self._current_week:
             self._weekly_pnl_pct = 0.0

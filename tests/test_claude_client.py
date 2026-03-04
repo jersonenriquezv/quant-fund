@@ -179,3 +179,26 @@ class TestEvaluate:
 
         result = asyncio.run(client.evaluate("system", "user"))
         assert result is None
+
+    @patch("ai_service.claude_client.settings")
+    def test_approved_string_true_returns_none(self, mock_settings):
+        """M-R5: 'approved': 'true' (string) should be rejected — must be bool."""
+        mock_settings.ANTHROPIC_API_KEY = "test-key"
+        mock_settings.CLAUDE_MODEL = "claude-sonnet-4-20250514"
+        mock_settings.AI_TIMEOUT_SECONDS = 30.0
+        mock_settings.AI_MAX_TOKENS = 500
+        mock_settings.AI_TEMPERATURE = 0.3
+
+        bad_json = json.dumps({
+            "confidence": 0.75,
+            "approved": "true",  # string, not bool
+            "reasoning": "Looks good",
+        })
+        client = ClaudeClient()
+        client._client = AsyncMock()
+        client._client.messages.create = AsyncMock(
+            return_value=_make_mock_response(bad_json)
+        )
+
+        result = asyncio.run(client.evaluate("system", "user"))
+        assert result is None

@@ -1,6 +1,6 @@
 # Execution Service (Layer 5)
 > Última actualización: 2026-03-04
-> Estado: **implementado** — 20 tests passing. Audited — 5 CRITICAL fixes applied.
+> Estado: **implementado** — 28 tests passing. Audited — 5 CRITICAL + 6 IMPORTANT + 3 MINOR fixes applied.
 
 El brazo ejecutor del bot. Recibe trades aprobados por Risk Service y los ejecuta en OKX via ccxt.
 
@@ -16,11 +16,12 @@ ExecutionService (facade)
 ## Flujo de una operación
 
 1. `execute(setup, approval, ai_confidence)` recibe trade aprobado
-2. Configura el par (margin mode isolado + leverage)
-3. Coloca limit entry order al precio calculado (50% OB/FVG)
-4. Notifica Risk Service inmediatamente (en PLACE, no en fill — para conteo correcto)
-5. Registra la posición en el monitor
-6. El monitor (polling cada 5s) gestiona el ciclo de vida
+2. **Valida precio ordering** — Long: `sl < entry < tp1 < tp2 < tp3`. Short: inverso. Rechaza si inválido.
+3. Configura el par (margin mode isolado + leverage)
+4. Coloca limit entry order al precio calculado (50% OB/FVG)
+5. Notifica Risk Service inmediatamente (en PLACE, no en fill — para conteo correcto)
+6. Registra la posición en el monitor
+7. El monitor (polling cada 5s) gestiona el ciclo de vida
 
 ## Máquina de estados
 
@@ -59,12 +60,15 @@ emergency_pending ──[3 fails]──> emergency_failed  (requiere intervenci�
 
 ## Reglas de seguridad críticas
 
-1. **Entry fill + SL falla → EMERGENCY market close con retry.** Nunca hay posición abierta sin SL. Máximo 3 reintentos (fase `emergency_pending`). Tras 3 fallos → `emergency_failed`, se mantiene en tracking para intervención manual. Envía alerta Telegram.
-2. **Ajuste de SL: nuevo ANTES de cancelar viejo.** Cero ventana sin protección.
-3. **Notificación a Risk: en PLACE, no en fill.** Si hay 2 entries pendientes, Risk los cuenta como 2 posiciones abiertas.
-4. **Cancelled entries no cuentan como trades.** Si el entry timeout cancela una orden que nunca se llenó, no se notifica a Risk ni se envía Telegram de trade cerrado.
-5. **Shutdown: cancela entries pendientes, NO cierra posiciones activas.** Los SL/TP viven en el exchange y sobreviven al bot.
-6. **Telegram notifications:** Entry fill → `notify_trade_opened`, position close → `notify_trade_closed`, SL fail → `notify_emergency`. Fire-and-forget via `asyncio.ensure_future`.
+1. **Validación de precios en execute().** Long: `sl < entry < tp1 < tp2 < tp3`. Short: `sl > entry > tp1 > tp2 > tp3`. Rechaza trades con precios inválidos antes de tocar el exchange.
+2. **Entry fill + SL falla → EMERGENCY market close con retry.** Nunca hay posición abierta sin SL. Máximo 3 reintentos (fase `emergency_pending`). Tras 3 fallos → `emergency_failed`, se mantiene en tracking para intervención manual. Envía alerta Telegram.
+3. **TP placement falla → EMERGENCY close.** Si cualquier TP falla al colocarse, cancela todos los TPs y SL colocados, y cierra por market. Un TP faltante impide mover SL a breakeven (TP1 nunca llena → SL nunca se ajusta).
+4. **Ajuste de SL: nuevo ANTES de cancelar viejo.** Cero ventana sin protección. Race window mitigada por `reduceOnly` — si ambos SL se ejecutan, el segundo cierra size=0. TODO: migrar a OKX amend-order API para updates atómicos.
+5. **Notificación a Risk: en PLACE, no en fill.** Si hay 2 entries pendientes, Risk los cuenta como 2 posiciones abiertas.
+6. **Cancelled entries no cuentan como trades.** Si el entry timeout cancela una orden que nunca se llenó, no se notifica a Risk ni se envía Telegram de trade cerrado.
+7. **Shutdown: cancela entries pendientes, NO cierra posiciones activas.** Los SL/TP viven en el exchange y sobreviven al bot.
+8. **Telegram notifications:** Entry fill → `notify_trade_opened`, position close → `notify_trade_closed`, SL/TP fail → `notify_emergency`. Fire-and-forget via `_safe_notify()` con error logging callback (no `ensure_future`).
+9. **DB persistence guards.** `_persist_trade_open/close` verifica que tanto `_data_store` como `.postgres` no sean None antes de escribir.
 
 ## Slippage tracking
 
@@ -81,7 +85,7 @@ Slippage: BTC/USDT expected=50000.00 actual=50025.00 diff=0.0500%
 | `execution_service/service.py` | Facade — execute(), start(), stop(), health() |
 | `execution_service/executor.py` | Wrapper ccxt — place/cancel/fetch orders (con fallback a algo orders) |
 | `execution_service/monitor.py` | Background loop — máquina de estados + notificaciones Telegram |
-| `execution_service/models.py` | ManagedPosition (estado mutable interno, incluye `emergency_retries` counter) |
+| `execution_service/models.py` | ManagedPosition (estado mutable interno, incluye `emergency_retries`, `realized_pnl_usd`) |
 
 ## Settings
 
@@ -92,18 +96,32 @@ Slippage: BTC/USDT expected=50000.00 actual=50025.00 diff=0.0500%
 | `MARGIN_MODE` | "isolated" | Modo de margen (más seguro) |
 | `MAX_TRADE_DURATION_SECONDS` | 43200 (12h) | Duración máxima de un trade |
 
-## Tests (20)
+## PnL Calculation — Blended
+
+El PnL se calcula de forma blended: acumula PnL realizado de cada TP fill + PnL no realizado del tamaño restante al precio de salida.
+
+```
+total_pnl_usd = realized_from_TPs + unrealized_remainder
+pnl_pct = total_pnl_usd / (entry_price × filled_size)
+```
+
+Cada vez que un TP llena, `_accumulate_realized_pnl()` calcula y suma el PnL de esa tranche a `pos.realized_pnl_usd`. Al cerrar (SL, timeout, TP3), `_calculate_pnl()` combina ambos para el PnL final reportado a Risk Service.
+
+## Tests (28)
 
 - Facade: disabled sin API key, happy path, short/sell side, pair ya gestionado, fallos
+- **SL/TP validation**: long inválido (SL arriba de entry), short inválido (SL abajo de entry)
 - Entry fill: coloca SL + 3 TPs
 - Entry timeout: cancela después de 15 min
 - TP1 hit: SL → breakeven
 - TP2 hit: SL → nivel TP1
+- **TP3 hit**: posición cerrada, SL cancelado
 - SL hit: cancela todos los TPs
 - 12h timeout: market close + cancela todo
 - Emergency close: SL falla → market close
+- **SL adjustment failure**: mantiene SL viejo si nuevo falla
 - Slippage: logging verificado
-- PnL: cálculo correcto long/short profit/loss
+- PnL: cálculo correcto long/short profit/loss, **blended PnL con realized**
 
 ## OKX Algo Order Handling
 

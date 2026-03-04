@@ -206,12 +206,14 @@ class BtcWhaleClient:
             tx_timestamp = int(time.time() * 1000)
 
         # Case 1: Wallet is sender → check if any output goes to exchange (deposit)
+        found_exchange_output = False
         if wallet_lower in input_addrs:
             for out_addr, sats in output_addrs.items():
                 if out_addr in self._exchange_lookup and out_addr != wallet_lower:
                     value_btc = sats / 1e8
                     if value_btc < settings.WHALE_MIN_BTC:
                         continue
+                    found_exchange_output = True
                     exchange = self._exchange_lookup[out_addr]
                     significance = "high" if value_btc >= settings.WHALE_HIGH_BTC else "medium"
                     movement = WhaleMovement(
@@ -227,9 +229,38 @@ class BtcWhaleClient:
                     logger.info(f"BTC whale deposit: {value_btc:.4f} BTC → {exchange} "
                                 f"from {wallet[:10]}... significance={significance}")
 
+            # No exchange output found → transfer out to non-exchange (neutral)
+            if not found_exchange_output:
+                non_self_sats = sum(
+                    sats for addr, sats in output_addrs.items()
+                    if addr != wallet_lower
+                )
+                value_btc = non_self_sats / 1e8
+                if value_btc >= settings.WHALE_MIN_BTC:
+                    # Pick first non-self output for the label
+                    first_out = next(
+                        (a for a in output_addrs if a != wallet_lower), ""
+                    )
+                    truncated = first_out[:6] + "..." + first_out[-4:] if first_out else "unknown"
+                    significance = "high" if value_btc >= settings.WHALE_HIGH_BTC else "medium"
+                    movement = WhaleMovement(
+                        timestamp=tx_timestamp,
+                        wallet=wallet,
+                        action="transfer_out",
+                        amount=value_btc,
+                        exchange=truncated,
+                        significance=significance,
+                        chain="BTC",
+                    )
+                    self._movements.append(movement)
+                    logger.info(f"BTC whale transfer out: {value_btc:.4f} BTC → {truncated} "
+                                f"from {wallet[:10]}... significance={significance}")
+
         # Case 2: Exchange is sender → check if wallet is in outputs (withdrawal)
+        found_exchange_input = False
         for in_addr in input_addrs:
             if in_addr in self._exchange_lookup:
+                found_exchange_input = True
                 if wallet_lower in output_addrs:
                     value_btc = output_addrs[wallet_lower] / 1e8
                     if value_btc < settings.WHALE_MIN_BTC:
@@ -249,6 +280,28 @@ class BtcWhaleClient:
                     logger.info(f"BTC whale withdrawal: {value_btc:.4f} BTC ← {exchange} "
                                 f"to {wallet[:10]}... significance={significance}")
                 break  # Only count once per tx
+
+        # Case 3: Wallet receives from non-exchange → transfer in (neutral)
+        if (wallet_lower not in input_addrs
+                and wallet_lower in output_addrs
+                and not found_exchange_input):
+            value_btc = output_addrs[wallet_lower] / 1e8
+            if value_btc >= settings.WHALE_MIN_BTC:
+                first_in = next(iter(input_addrs), "")
+                truncated = first_in[:6] + "..." + first_in[-4:] if first_in else "unknown"
+                significance = "high" if value_btc >= settings.WHALE_HIGH_BTC else "medium"
+                movement = WhaleMovement(
+                    timestamp=tx_timestamp,
+                    wallet=wallet,
+                    action="transfer_in",
+                    amount=value_btc,
+                    exchange=truncated,
+                    significance=significance,
+                    chain="BTC",
+                )
+                self._movements.append(movement)
+                logger.info(f"BTC whale transfer in: {value_btc:.4f} BTC ← {truncated} "
+                            f"to {wallet[:10]}... significance={significance}")
 
         # Prune old movements (keep last 24h)
         self._prune_old_movements()

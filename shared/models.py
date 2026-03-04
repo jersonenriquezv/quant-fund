@@ -84,12 +84,13 @@ class WhaleMovement:
     """Large crypto transfer detected via Etherscan (ETH) or mempool.space (BTC).
     Exchange deposit = bearish signal (potential sell).
     Exchange withdrawal = bullish signal (accumulation).
+    Non-exchange transfer = neutral/informational signal.
     """
     timestamp: int
     wallet: str
-    action: str             # "exchange_deposit" or "exchange_withdrawal"
+    action: str             # "exchange_deposit", "exchange_withdrawal", "transfer_out", "transfer_in"
     amount: float           # ETH or BTC amount
-    exchange: str           # "Binance", "OKX", "Coinbase", etc.
+    exchange: str           # Exchange name ("Binance", "OKX") or truncated address ("0xab12...ef34")
     significance: str       # "high" or "medium"
     chain: str              # "ETH" or "BTC"
 

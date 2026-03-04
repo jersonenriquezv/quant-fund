@@ -615,7 +615,7 @@ class TestEtherscanProcessing:
         assert len(client.get_recent_movements(hours=1)) == 0
         client._patcher.stop()
 
-    def test_non_exchange_transfer_ignored(self):
+    def test_non_exchange_transfer_out_tracked(self):
         client = self._make_client()
         tx = {
             "from": "0xWhale1",
@@ -625,7 +625,29 @@ class TestEtherscanProcessing:
             "hash": "0xabc",
         }
         client._process_transaction("0xWhale1", tx)
-        assert len(client.get_recent_movements(hours=1)) == 0
+        movements = client.get_recent_movements(hours=1)
+        assert len(movements) == 1
+        assert movements[0].action == "transfer_out"
+        assert movements[0].significance == "high"  # 5000 ETH > 1000 threshold
+        assert "..." in movements[0].exchange  # Truncated address
+        client._patcher.stop()
+
+    def test_non_exchange_transfer_in_tracked(self):
+        client = self._make_client()
+        tx = {
+            "from": "0xRandomSender",  # Not in exchange addresses
+            "to": "0xWhale1",
+            "value": str(int(200 * 1e18)),
+            "timeStamp": str(int(time.time())),
+            "hash": "0xdef",
+        }
+        client._process_transaction("0xWhale1", tx)
+        movements = client.get_recent_movements(hours=1)
+        assert len(movements) == 1
+        assert movements[0].action == "transfer_in"
+        assert movements[0].amount == 200.0
+        assert movements[0].significance == "medium"  # 200 ETH < 1000 threshold
+        assert "..." in movements[0].exchange  # Truncated address
         client._patcher.stop()
 
     def test_prune_old_movements(self):

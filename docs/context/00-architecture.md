@@ -143,12 +143,12 @@ docker compose build --no-cache  # Rebuild después de cambios en código
 
 | Capa | Estado | Tests | Archivo principal |
 |------|--------|-------|-------------------|
-| 1. Data Service | Implementado + auditoría | 81 | `data_service/service.py` |
+| 1. Data Service | Implementado + auditoría | 83 | `data_service/service.py` |
 | 2. Strategy Service | Implementado + auditoría | 76 | `strategy_service/service.py` |
-| 3. AI Service | Implementado | 34 | `ai_service/service.py` |
+| 3. AI Service | Implementado | 35 | `ai_service/service.py` |
 | 4. Risk Service | Implementado | 69 | `risk_service/service.py` |
-| 5. Execution Service | Implementado + auditoría | 20 | `execution_service/service.py` |
-| **Total** | **5/5 completas** | **280** | `main.py` (pipeline completo) |
+| 5. Execution Service | Implementado + auditoría | 28 | `execution_service/service.py` |
+| **Total** | **5/5 completas** | **291** | `main.py` (pipeline completo) |
 
 ## Roadmap v2
 
@@ -168,6 +168,7 @@ Actualmente TP3 usa una limit order fija al siguiente nivel de liquidez. CLAUDE.
 - Ver `docs/to-fix.md` para backlog completo (~30 IMPORTANT + 29 MINOR issues)
 
 ## Cambios recientes
+- 2026-03-04: **Whale tracking completo** — Todas las transferencias grandes se trackean (no solo exchange). 4 acciones: deposit (bearish), withdrawal (bullish), transfer_out (neutral), transfer_in (neutral). ETH + BTC.
 - 2026-03-04: **Auditoría completa** — 12 CRITICAL corregidos (PG reconnection, pipeline locks, OKX algo orders, emergency close retry, sweep temporal guard, OB break_timestamp, etc.). 28 IMPORTANT + 29 MINOR documentados en `docs/to-fix.md`.
 - 2026-03-04: BTC whale tracking via mempool.space.
 - 2026-03-04: Telegram notifications — push al celular en cada evento clave del pipeline (`shared/notifier.py`).

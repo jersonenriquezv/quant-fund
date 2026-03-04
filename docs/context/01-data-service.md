@@ -1,6 +1,6 @@
 # Data Service
 > Last updated: 2026-03-04
-> Status: implemented (complete, running in Docker). Audited — 4 CRITICAL fixes applied.
+> Status: implemented (complete, running in Docker). Audited — 4 CRITICAL fixes applied. Whale tracking expanded to all large movements.
 
 ## What it does (30 seconds)
 The Data Service is the bot's eyes and ears. It connects to OKX 24/7, collecting price data (candles), trade flow (CVD), market indicators (funding rate, open interest), liquidation cascades (via OI proxy), and whale movements. Every other service gets clean, validated, typed data through here.
@@ -48,7 +48,7 @@ All 5 layers run in the same Python process. The Data Service exposes methods th
 - **OpenInterest** — in contracts, base currency, and USD
 - **CVDSnapshot** — cumulative volume delta for 5m, 15m, 1h windows + buy/sell volume
 - **LiquidationEvent** — from OI proxy (OI drop >2% = cascade), with side and size_usd
-- **WhaleMovement** — Whale transfers to/from exchanges (ETH via Etherscan, BTC via mempool.space). Fields: `amount` (ETH or BTC), `chain` ("ETH" or "BTC")
+- **WhaleMovement** — Whale transfers (ETH via Etherscan, BTC via mempool.space). 4 action types: `exchange_deposit` (bearish), `exchange_withdrawal` (bullish), `transfer_out` (neutral), `transfer_in` (neutral). Fields: `amount` (ETH or BTC), `chain` ("ETH" or "BTC"), `exchange` (exchange name or truncated address)
 - **MarketSnapshot** — wraps funding, OI, CVD, liquidations, whales for a pair
 - **TradeSetup** — detected setup from Strategy Service
 - **AIDecision** — Claude's evaluation with confidence score
@@ -113,9 +113,11 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 
 ### `data_service/etherscan_client.py` — ETH Whale Wallet Monitor
 - Polls configured wallets every `ETHERSCAN_CHECK_INTERVAL` seconds (default 300)
-- Detects transfers to/from known exchange deposit addresses
+- Detects ALL large transfers from monitored wallets (not just exchange transfers)
 - Whale → exchange = `exchange_deposit` (bearish signal)
 - Exchange → whale = `exchange_withdrawal` (bullish signal)
+- Whale → non-exchange = `transfer_out` (neutral, `exchange` = truncated address)
+- Non-exchange → whale = `transfer_in` (neutral, `exchange` = truncated address)
 - Significance: >100 ETH = "high", >10 ETH = "medium", <10 ETH ignored
 - Rate limit enforced: max 4.5 calls/sec (safely under Etherscan's 5/sec)
 - Creates `WhaleMovement(chain="ETH")`
@@ -125,7 +127,11 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - API: `https://mempool.space/api/address/{addr}/txs` — no API key needed
 - Parses BTC UTXO model: `vin[].prevout.scriptpubkey_address` (senders) and `vout[].scriptpubkey_address` (recipients)
 - Values in satoshis (÷ 1e8 = BTC)
-- Detects deposits/withdrawals to known exchange addresses (Binance, Robinhood, Bitfinex, OKX, Kraken, etc.)
+- Detects ALL large transfers from monitored wallets:
+  - Wallet → exchange = `exchange_deposit` (bearish)
+  - Exchange → wallet = `exchange_withdrawal` (bullish)
+  - Wallet → non-exchange = `transfer_out` (neutral, sums non-self outputs)
+  - Non-exchange → wallet = `transfer_in` (neutral)
 - Significance: >100 BTC = "high", >10 BTC = "medium", <10 BTC ignored
 - Rate limit: 0.5s between calls (~10 req/min, safe for public instance)
 - Creates `WhaleMovement(chain="BTC")`

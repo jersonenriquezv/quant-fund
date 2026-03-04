@@ -257,6 +257,38 @@ class EtherscanClient:
             logger.info(f"Whale withdrawal: {value_eth:.2f} ETH ← {exchange} "
                         f"to {wallet[:10]}... significance={significance}")
 
+        # Wallet sends to non-exchange address → transfer out (neutral)
+        elif from_addr == wallet_lower:
+            truncated = to_addr[:6] + "..." + to_addr[-4:]
+            movement = WhaleMovement(
+                timestamp=tx_timestamp,
+                wallet=wallet,
+                action="transfer_out",
+                amount=value_eth,
+                exchange=truncated,
+                significance=significance,
+                chain="ETH",
+            )
+            self._movements.append(movement)
+            logger.info(f"Whale transfer out: {value_eth:.2f} ETH → {truncated} "
+                        f"from {wallet[:10]}... significance={significance}")
+
+        # Wallet receives from non-exchange address → transfer in (neutral)
+        elif to_addr == wallet_lower:
+            truncated = from_addr[:6] + "..." + from_addr[-4:]
+            movement = WhaleMovement(
+                timestamp=tx_timestamp,
+                wallet=wallet,
+                action="transfer_in",
+                amount=value_eth,
+                exchange=truncated,
+                significance=significance,
+                chain="ETH",
+            )
+            self._movements.append(movement)
+            logger.info(f"Whale transfer in: {value_eth:.2f} ETH ← {truncated} "
+                        f"to {wallet[:10]}... significance={significance}")
+
         # Prune old movements (keep last 24h)
         self._prune_old_movements()
 

@@ -90,7 +90,7 @@ class TestRejections:
         """Trade during cooldown should reject."""
         now = int(time.time())
         risk.on_trade_opened("BTC/USDT", "long", 50000, now - 3600)
-        risk.on_trade_closed("BTC/USDT", -0.01, now - 600)  # Loss 10 min ago
+        risk.on_trade_closed("BTC/USDT", "long",-0.01, now - 600)  # Loss 10 min ago
 
         setup = _make_setup(entry=50000, sl=49000, tp2=52000)
         result = risk.check(setup)
@@ -102,7 +102,7 @@ class TestRejections:
         now = int(time.time())
         for i in range(settings.MAX_TRADES_PER_DAY):
             risk.on_trade_opened(f"BTC/USDT", "long", 50000, now + i)
-            risk.on_trade_closed(f"BTC/USDT", 0.001, now + i + 1)
+            risk.on_trade_closed(f"BTC/USDT", "long", 0.001, now + i + 1)
 
         setup = _make_setup(entry=50000, sl=49000, tp2=52000)
         result = risk.check(setup)
@@ -125,7 +125,7 @@ class TestRejections:
         now = int(time.time())
         # Loss far enough ago that cooldown has elapsed, but DD persists same day
         past = now - (settings.COOLDOWN_MINUTES * 60 + 60)
-        risk.on_trade_closed("BTC/USDT", -settings.MAX_DAILY_DRAWDOWN, past)
+        risk.on_trade_closed("BTC/USDT", "long",-settings.MAX_DAILY_DRAWDOWN, past)
 
         setup = _make_setup(entry=50000, sl=49000, tp2=52000)
         result = risk.check(setup)
@@ -136,7 +136,7 @@ class TestRejections:
         """Weekly drawdown at limit should reject."""
         now = int(time.time())
         past = now - (settings.COOLDOWN_MINUTES * 60 + 60)
-        risk.on_trade_closed("BTC/USDT", -settings.MAX_WEEKLY_DRAWDOWN, past)
+        risk.on_trade_closed("BTC/USDT", "long",-settings.MAX_WEEKLY_DRAWDOWN, past)
 
         setup = _make_setup(entry=50000, sl=49000, tp2=52000)
         result = risk.check(setup)
@@ -164,7 +164,7 @@ class TestLifecycle:
         risk.on_trade_opened("BTC/USDT", "long", 50000, now)
 
         # Close with profit
-        risk.on_trade_closed("BTC/USDT", 0.02, now + 3600)
+        risk.on_trade_closed("BTC/USDT", "long",0.02, now + 3600)
 
         # Second trade should also be approved
         result2 = risk.check(setup)
@@ -192,7 +192,13 @@ class TestLifecycle:
         assert result.leverage <= settings.MAX_LEVERAGE
 
     def test_entry_equals_sl_rejected(self, risk):
-        """Entry == SL should be caught as position sizing error."""
+        """Entry == SL should be caught as position sizing error.
+
+        Note (M-R4): The ValueError path in position_sizer.calculate() is
+        effectively unreachable because guardrails.check_rr_ratio() catches
+        malformed setups (zero risk distance, inverted SL) before the sizer
+        is called. This is by design — guardrails are the first line of defense.
+        """
         setup = _make_setup(entry=50000, sl=50000, tp2=52000)
         result = risk.check(setup)
         # Rejected by R:R check (zero risk) before reaching position sizer

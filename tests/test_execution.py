@@ -168,8 +168,12 @@ class TestExecutionServiceExecute:
 
         service = _make_service(executor, monitor, risk)
 
+        setup = make_setup(
+            direction="short", entry=50000.0, sl=50500.0,
+            tp1=49500.0, tp2=49000.0, tp3=48500.0
+        )
         result = asyncio.run(
-            service.execute(make_setup(direction="short"), make_approval(), 0.70)
+            service.execute(setup, make_approval(), 0.70)
         )
 
         assert result is True
@@ -462,31 +466,137 @@ class TestPnlCalculation:
 
     def test_long_profit(self):
         monitor = PositionMonitor(MagicMock(), MagicMock())
-        pos = make_position(direction="long")
+        pos = make_position(direction="long", phase="active")
         pos.actual_entry_price = 50000.0
         monitor._calculate_pnl(pos, 51000.0)
         assert abs(pos.pnl_pct - 0.02) < 0.0001
 
     def test_long_loss(self):
         monitor = PositionMonitor(MagicMock(), MagicMock())
-        pos = make_position(direction="long")
+        pos = make_position(direction="long", phase="active")
         pos.actual_entry_price = 50000.0
         monitor._calculate_pnl(pos, 49500.0)
         assert abs(pos.pnl_pct - (-0.01)) < 0.0001
 
     def test_short_profit(self):
         monitor = PositionMonitor(MagicMock(), MagicMock())
-        pos = make_position(direction="short")
+        pos = make_position(direction="short", phase="active")
         pos.actual_entry_price = 50000.0
         monitor._calculate_pnl(pos, 49000.0)
         assert abs(pos.pnl_pct - 0.02) < 0.0001
 
     def test_short_loss(self):
         monitor = PositionMonitor(MagicMock(), MagicMock())
-        pos = make_position(direction="short")
+        pos = make_position(direction="short", phase="active")
         pos.actual_entry_price = 50000.0
         monitor._calculate_pnl(pos, 50500.0)
         assert abs(pos.pnl_pct - (-0.01)) < 0.0001
+
+    def test_blended_pnl_with_realized(self):
+        """PnL blends realized from TPs with unrealized remainder."""
+        monitor = PositionMonitor(MagicMock(), MagicMock())
+        pos = make_position(direction="long", phase="tp1_hit")
+        pos.actual_entry_price = 50000.0
+        # TP1 realized: 50% at 50500 = 0.001 * 500 = $0.50
+        pos.realized_pnl_usd = 0.50
+        # Remaining 50% at SL (breakeven 50000) = $0
+        monitor._calculate_pnl(pos, 50000.0)
+        # Total: $0.50 / (50000 * 0.002) = 0.005
+        assert abs(pos.pnl_pct - 0.005) < 0.0001
+
+
+class TestTP3FullClose:
+    """TP3 fills → position fully closed."""
+
+    def test_tp3_fill_closes_position(self):
+        executor = MagicMock(spec=OrderExecutor)
+        risk = MagicMock()
+        monitor = PositionMonitor(executor, risk)
+
+        pos = make_position(phase="tp2_hit", size=0.002)
+        pos.actual_entry_price = 50000.0
+        pos.filled_at = int(time.time())
+        pos.sl_order_id = "ord-sl-tp1"
+        pos.tp3_order_id = "ord-tp3"
+        monitor.register(pos)
+
+        async def mock_fetch(order_id, pair):
+            if order_id == "ord-sl-tp1":
+                return make_order("ord-sl-tp1", status="open")
+            if order_id == "ord-tp3":
+                return make_order("ord-tp3", status="closed", filled=0.0004)
+            return make_order(order_id, status="open")
+
+        executor.fetch_order = AsyncMock(side_effect=mock_fetch)
+        executor.cancel_order = AsyncMock(return_value=True)
+
+        asyncio.run(monitor._check_all_positions())
+
+        assert pos.phase == "closed"
+        assert pos.close_reason == "tp3"
+        # SL should be cancelled since position is fully closed
+        executor.cancel_order.assert_called_once_with("ord-sl-tp1", "BTC/USDT")
+        risk.on_trade_closed.assert_called_once()
+
+
+class TestAdjustSLFailure:
+    """If new SL placement fails, old SL is kept."""
+
+    def test_adjust_sl_failure_keeps_old(self):
+        executor = MagicMock(spec=OrderExecutor)
+        risk = MagicMock()
+        monitor = PositionMonitor(executor, risk)
+
+        pos = make_position(phase="active", size=0.002)
+        pos.actual_entry_price = 50000.0
+        pos.filled_at = int(time.time())
+        pos.sl_order_id = "ord-sl-old"
+        pos.tp1_order_id = "ord-tp1"
+        pos.tp2_order_id = "ord-tp2"
+        pos.tp3_order_id = "ord-tp3"
+        monitor.register(pos)
+
+        # New SL placement fails
+        executor.place_stop_market = AsyncMock(return_value=None)
+        executor.cancel_order = AsyncMock(return_value=True)
+
+        asyncio.run(monitor._adjust_sl(pos, 50000.0))
+
+        # Old SL should be kept
+        assert pos.sl_order_id == "ord-sl-old"
+        # Old SL should NOT be cancelled
+        executor.cancel_order.assert_not_called()
+
+
+class TestSLTPValidation:
+    """I-E4: SL/TP price ordering validation."""
+
+    def test_long_invalid_sl_above_entry_rejected(self):
+        """Long: SL > entry should be rejected."""
+        risk = MagicMock()
+        executor = MagicMock(spec=OrderExecutor)
+        monitor = MagicMock(spec=PositionMonitor)
+        monitor.positions = {}
+        service = _make_service(executor, monitor, risk)
+
+        setup = make_setup(sl=50500.0, entry=50000.0)  # SL above entry
+        result = asyncio.run(service.execute(setup, make_approval(), 0.85))
+        assert result is False
+
+    def test_short_invalid_sl_below_entry_rejected(self):
+        """Short: SL < entry should be rejected."""
+        risk = MagicMock()
+        executor = MagicMock(spec=OrderExecutor)
+        monitor = MagicMock(spec=PositionMonitor)
+        monitor.positions = {}
+        service = _make_service(executor, monitor, risk)
+
+        setup = make_setup(
+            direction="short", sl=49500.0, entry=50000.0,
+            tp1=49000.0, tp2=48000.0, tp3=47000.0
+        )
+        result = asyncio.run(service.execute(setup, make_approval(), 0.85))
+        assert result is False
 
 
 class TestHealthCheck:

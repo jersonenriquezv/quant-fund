@@ -188,6 +188,26 @@ class TestEvaluationPrompt:
         assert "Price Context" in prompt
         assert "50100" in prompt
 
+    def test_non_exchange_whale_labels(self, builder):
+        ts = int(time.time() * 1000)
+        whales = [
+            WhaleMovement(
+                timestamp=ts, wallet="0xabc", action="transfer_out",
+                amount=500.0, exchange="0xde12...ab34", significance="medium", chain="ETH",
+            ),
+            WhaleMovement(
+                timestamp=ts, wallet="0xabc", action="transfer_in",
+                amount=300.0, exchange="0xff00...1234", significance="medium", chain="BTC",
+            ),
+        ]
+        setup = _make_setup()
+        snapshot = _make_snapshot(whales=whales)
+        prompt = builder.build_evaluation_prompt(setup, snapshot, {})
+
+        assert "transferred out to" in prompt
+        assert "received from" in prompt
+        assert "0xde12...ab34" in prompt
+
     def test_ends_with_json_instruction(self, builder):
         setup = _make_setup()
         snapshot = _make_snapshot()

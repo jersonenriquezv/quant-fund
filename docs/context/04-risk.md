@@ -1,6 +1,6 @@
 # Risk Service
-> Última actualización: 2026-03-03
-> Estado: implementado (completo, integrado en main.py)
+> Última actualización: 2026-03-04
+> Estado: implementado (completo, integrado en main.py). 1 IMPORTANT + 5 MINOR fixes applied.
 
 ## Qué hace (30 segundos)
 El Risk Service es el guardián del capital. Antes de que cualquier trade se ejecute, pasa por 6 checks obligatorios (guardrails) y un cálculo de tamaño de posición. Si cualquier check falla, el trade NO se ejecuta. Sin excepciones.
@@ -68,9 +68,9 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 - Clase: `RiskStateTracker`
 - Lifecycle del trade:
   - `record_trade_opened(pair, direction, entry_price, timestamp)`
-  - `record_trade_closed(pair, pnl_pct, timestamp)` — actualiza DD, activa cooldown si pérdida. Si el pair no está en posiciones abiertas, emite `logger.warning()` (protección contra bugs silenciosos en el pipeline).
+  - `record_trade_closed(pair, direction, pnl_pct, timestamp)` — matchea por `(pair, direction)`. Actualiza DD, activa cooldown si pérdida.
 - Getters para guardrails: `get_trades_today_count()`, `get_open_positions_count()`, `get_daily_dd_pct()`, `get_weekly_dd_pct()`, `get_last_loss_time()`
-- `_check_date_reset()` — auto-reset al cambiar día/semana UTC
+- `_check_date_reset()` — auto-reset al cambiar día/semana UTC. Usa `date()` objects (no `tm_yday`) para correcto reset en frontera de año.
 
 ### `risk_service/service.py` — Facade (RiskService)
 - Clase: `RiskService(capital: float)`
@@ -81,7 +81,7 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
   3. Retorna RiskApproval (approved/rejected con razón)
 - **Para Execution Service (implementado):**
   - `on_trade_opened(pair, direction, entry_price, timestamp)` — llamado al colocar entry order
-  - `on_trade_closed(pair, pnl_pct, timestamp)` — llamado al cerrar posición (SL, TP, timeout, emergency)
+  - `on_trade_closed(pair, direction, pnl_pct, timestamp)` — llamado al cerrar posición (SL, TP, timeout, emergency). Matchea por `(pair, direction)` para cerrar la posición correcta.
   - `update_capital(amount)` — disponible para futuro sync con balance del exchange
 
 ### `risk_service/__init__.py`
@@ -102,13 +102,13 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 
 ## Tests
 
-69 tests en 4 archivos:
+73 tests en 4 archivos:
 - `test_position_sizer.py` (10) — fórmula, leverage cap, edge cases
 - `test_guardrails.py` (17) — cada regla pass/fail/boundary
-- `test_state_tracker.py` (18) — lifecycle, DD, cooldown, date reset
+- `test_state_tracker.py` (22) — lifecycle, DD, cooldown, date reset, year boundary, direction matching
 - `test_risk_service.py` (14) — check() integración: 3 approvals, 6 rejections, 4 lifecycle, 1 entry==SL
 
-Última corrida: 69 passed, 0 failed (0.33s)
+Última corrida: 73 passed, 0 failed
 
 ## FAQ
 
@@ -124,17 +124,21 @@ Si el cooldown está activo, no tiene sentido calcular position size. El primer 
 **¿Qué pasa si el bot se reinicia?**
 Estado se pierde (es in-memory). Empezaría con 0 trades hoy, 0 DD. Esto es conservador — permite tradear inmediatamente. Planeado para v2: reconstruir estado desde PostgreSQL al arrancar.
 
-**¿Qué pasa si `record_trade_closed()` recibe un pair que no está abierto?**
-No crashea. El trade se registra igual (P&L, cooldown, trades_today), pero emite un `logger.warning()` porque probablemente indica un bug en el pipeline (nombre de par inconsistente entre layers, o cierre duplicado). Busca en logs: `"Closed trade for X but no matching open position found"`.
+**¿Qué pasa si `record_trade_closed()` recibe un pair/direction que no está abierto?**
+No crashea. El trade se registra igual (P&L, cooldown, trades_today), pero no remueve ninguna posición abierta (no hay match por `(pair, direction)`).
 
 ## Limitaciones conocidas
 
 - **Estado in-memory**: Se pierde al reiniciar. Planeado para v2 (Redis persistence).
 - **Max trade duration (12h)**: Enforceado por el Execution Service (`PositionMonitor` cierra posiciones después de `MAX_TRADE_DURATION_SECONDS`).
-- **Tracking por pair, no por trade ID**: Si hubiera 2 trades abiertos en el mismo pair (improbable con MAX_OPEN_POSITIONS=3 y solo BTC/ETH), el cierre matchearía el primero.
+- **Tracking por (pair, direction)**: El cierre matchea por par Y dirección. Si hubiera BTC long + BTC short simultáneo, se cierran independientemente.
 
 ## Cambios recientes
 
+- **2026-03-04** — I-R1: `record_trade_closed` ahora recibe `direction`, matchea por `(pair, direction)`. Todos los callers actualizados.
+- **2026-03-04** — M-R1: `_check_date_reset` usa `date()` en vez de `tm_yday` (fix año boundary Dec 31 → Jan 1).
+- **2026-03-04** — M-R3: `_persist_failures` counter en RiskService — logea warning tras 5 fallos consecutivos de PostgreSQL.
+- **2026-03-04** — M-R2: Docstring en state_tracker explicando que la sumación de PnL % es una aproximación (negligible a esta escala).
 - **2026-03-03** — Warning log en `state_tracker.py` cuando se cierra un pair sin posición abierta (protección contra bugs silenciosos)
 - **2026-03-03** — Traducción de comentarios en `config/settings.py` a inglés (cumplimiento de CLAUDE.md)
 - **2026-03-03** — Revisión completa por @planner: 0 bugs críticos, 69/69 tests passing, 100% alineado con CLAUDE.md

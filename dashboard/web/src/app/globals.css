@@ -184,6 +184,11 @@ tr:last-child td {
   color: var(--short);
 }
 
+.badge-neutral {
+  background: rgba(148, 163, 184, 0.15);
+  color: var(--text-muted);
+}
+
 /* Scrollable containers */
 .scroll-y {
   overflow-y: auto;

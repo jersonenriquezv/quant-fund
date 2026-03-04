@@ -36,7 +36,7 @@ Factors to evaluate:
 2. OPEN INTEREST: OI rising + price rising = genuine trend. OI rising + price falling = distribution. OI falling = no new capital entering.
 3. CVD (Cumulative Volume Delta): CVD aligned with trade direction = confirmation. CVD diverging = warning sign.
 4. LIQUIDATIONS: Recent cascade in the direction of the trade = exhaustion risk. Cascade against the trade direction = fuel for the move.
-5. WHALE MOVEMENTS: Large deposits to exchanges = potential selling pressure. Withdrawals = accumulation signal.
+5. WHALE MOVEMENTS: Large deposits to exchanges = potential selling pressure. Withdrawals = accumulation signal. Non-exchange transfers (transfer_out/transfer_in) = neutral/informational — note the movement but do not treat it as bullish or bearish.
 6. HTF CONFLUENCE: Does the higher timeframe structure support this trade direction?
 7. SETUP QUALITY: How strong are the confluences? Is the order block fresh? Volume confirmation?
 
@@ -184,9 +184,15 @@ class PromptBuilder:
         if not whales:
             return "## Whale Activity\nNo significant whale activity"
 
+        _ACTION_LABELS = {
+            "exchange_deposit": "deposited to",
+            "exchange_withdrawal": "withdrew from",
+            "transfer_out": "transferred out to",
+            "transfer_in": "received from",
+        }
         lines = ["## Whale Activity"]
         for w in whales:
-            action = "deposited to" if w.action == "exchange_deposit" else "withdrew from"
+            action = _ACTION_LABELS.get(w.action, w.action)
             lines.append(
                 f"- {w.amount:.1f} {w.chain} {action} {w.exchange} "
                 f"(significance: {w.significance})"

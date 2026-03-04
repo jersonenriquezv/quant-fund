@@ -112,11 +112,19 @@ class TelegramNotifier:
         )
         await self.send(msg)
 
+    _WHALE_ACTION_MAP = {
+        "exchange_deposit": ("deposited to", "\U0001f534 BEARISH"),
+        "exchange_withdrawal": ("withdrew from", "\U0001f7e2 BULLISH"),
+        "transfer_out": ("transferred out to", "\U0001f7e1 NEUTRAL"),
+        "transfer_in": ("received from", "\U0001f7e1 NEUTRAL"),
+    }
+
     async def notify_whale_movement(self, movement) -> None:
         """Large whale transfer detected (ETH or BTC)."""
-        action = "deposited to" if movement.action == "exchange_deposit" else "withdrew from"
+        action, signal = self._WHALE_ACTION_MAP.get(
+            movement.action, (movement.action, "\u2753 UNKNOWN")
+        )
         emoji = "\U0001f433"  # whale
-        signal = "\U0001f534 BEARISH" if movement.action == "exchange_deposit" else "\U0001f7e2 BULLISH"
         decimals = 4 if movement.chain == "BTC" else 2
         msg = (
             f"{emoji} <b>WHALE MOVEMENT</b>\n"

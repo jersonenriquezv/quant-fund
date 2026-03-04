@@ -30,7 +30,7 @@ HEADER: Bot status + Mode (DEMO) + UTC clock
 ├── BTC/USDT panel | ETH/USDT panel | Risk gauges (DD arcos)
 ├── Open Positions (cards)        | Equity curve (SVG sparkline)
 ├── Trade Log (tabla, últimos 20) | AI Decision Log (barras de confianza)
-├── Whale Movements Log (full width, últimas 24h)
+├── Whale Movements Log (full width, últimas 24h, 4 badge types: deposit/withdrawal/transfer out/transfer in)
 └── System Health: Redis + PG + API status dots
 ```
 

@@ -62,6 +62,7 @@ class ManagedPosition:
     # Exit info
     close_reason: Optional[str] = None  # "tp1", "tp2", "tp3", "sl", "timeout", "emergency", "cancelled"
     pnl_pct: float = 0.0
+    realized_pnl_usd: float = 0.0      # Accumulated PnL from filled TP tranches
 
     # Emergency close retry tracking
     emergency_retries: int = 0

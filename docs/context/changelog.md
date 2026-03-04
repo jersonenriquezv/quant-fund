@@ -1,5 +1,46 @@
 # Changelog — One-Man Quant Fund
 
+## [2026-03-04] — Safety-Critical Fixes: Execution + Risk Service
+**Qué cambió:**
+Batch de fixes safety-critical del audit (6 IMPORTANT + 3 MINOR en Execution, 1 IMPORTANT + 5 MINOR en Risk).
+
+**Execution Service:**
+- **I-E4** `service.py` — Validación de precio ordering en `execute()`. Long: `sl < entry < tp1 < tp2 < tp3`, Short: inverso. Rechaza trades malformados antes de tocar exchange.
+- **I-E2** `monitor.py` — TP placement failure ahora dispara emergency close (cancela TPs+SL colocados, cierra por market). Antes solo logeaba WARNING y continuaba — un TP faltante impedía mover SL a breakeven.
+- **I-E3** `models.py` + `monitor.py` — PnL blended: acumula `realized_pnl_usd` en cada TP fill, calcula PnL combinado (realized + unrealized remainder) al cerrar. Antes asumía 100% del size al precio de salida.
+- **I-E7** `monitor.py` — Guard `.postgres is None` en ambos persist methods (antes crasheaba si DataService estaba up pero PG down).
+- **I-E8** `monitor.py` — 3 `asyncio.ensure_future` reemplazados por `_safe_notify()` con error-logging callback (patrón `_pipeline_task_done` de websocket_feeds).
+- **I-E1** `monitor.py` — Documentación de race window en `_adjust_sl`: por qué `reduceOnly` mitiga el doble close, TODO para OKX amend-order API.
+- **M-E3** `monitor.py` — Comentario: slippage se persiste via `actual_entry` en PG.
+
+**Risk Service:**
+- **I-R1** `state_tracker.py` + `service.py` + `monitor.py` — `record_trade_closed` ahora recibe `direction`, matchea por `(pair, direction)`. **Breaking change** — todos los callers actualizados.
+- **M-R1** `state_tracker.py` — `_check_date_reset` usa `date()` en vez de `tm_yday` (fix: Dec 31 tm_yday=365 → Jan 1 tm_yday=1 no dispararía reset si tm_yday se comparaba como int).
+- **M-R2** `state_tracker.py` — Docstring: PnL summation es aproximación negligible a esta escala.
+- **M-R3** `service.py` — `_persist_failures` counter con warning log tras 5 fallos consecutivos.
+- **M-R4** `test_risk_service.py` — Docstring: ValueError path en position_sizer es unreachable (guardrails lo atrapan antes).
+- **M-R5** `test_claude_client.py` — Test: `"approved": "true"` (string) → retorna None.
+
+**Tests:** 291 passing (9 nuevos: tp3_full_close, adjust_sl_failure, 2 sl/tp validation, blended_pnl, year_boundary, 2 direction_matching, approved_string_true).
+
+**Por qué:** Fixes pre-producción que afectan directamente dinero real: SL/TP placement failures, PnL calculation, position tracking, date boundaries.
+**Impacto:** execution_service/, risk_service/, tests/
+
+## [2026-03-04] — Whale Tracking — All Large Movements (not just exchange)
+**Qué cambió:**
+- `shared/models.py` — `WhaleMovement` ahora documenta 4 acciones: `exchange_deposit`, `exchange_withdrawal`, `transfer_out`, `transfer_in`. Campo `exchange` puede ser nombre de exchange O dirección truncada (`0xab12...ef34`).
+- `data_service/etherscan_client.py` — Dos nuevas ramas `elif` en `_process_transaction()`: si el wallet envía a dirección no-exchange → `transfer_out`; si recibe de dirección no-exchange → `transfer_in`. Mismos thresholds (WHALE_MIN_ETH) y lógica de significancia.
+- `data_service/btc_whale_client.py` — Case 1 extendido: si wallet es sender y ningún output va a exchange, suma outputs non-self → `transfer_out`. Nuevo Case 3: si wallet recibe y ningún input es exchange → `transfer_in`. Mismos thresholds (WHALE_MIN_BTC).
+- `ai_service/prompt_builder.py` — Ternario binario reemplazado por `_ACTION_LABELS` dict con 4 acciones ("deposited to", "withdrew from", "transferred out to", "received from"). Nota en system prompt: transferencias non-exchange = señal neutral.
+- `shared/notifier.py` — Ternario reemplazado por `_WHALE_ACTION_MAP` class variable. Transfers usan círculo amarillo + "NEUTRAL".
+- `dashboard/web/src/components/WhaleLog.tsx` — `isDeposit` ternario reemplazado por `actionConfig` object con 4 acciones → badge class + label. Nuevos labels: "transfer out", "transfer in".
+- `dashboard/web/src/app/globals.css` — Nueva clase `.badge-neutral` (gris muted).
+- Tests: `test_non_exchange_transfer_ignored` → `test_non_exchange_transfer_out_tracked` (ahora espera movement). Nuevo `test_non_exchange_transfer_in_tracked`. Nuevo `test_non_exchange_whale_labels` en prompt builder.
+
+**Por qué:** El sistema solo creaba WhaleMovement cuando la transferencia involucraba un exchange conocido. 90%+ de la actividad whale se descartaba silenciosamente. Ahora TODO movimiento grande se trackea — exchange transfers siguen siendo bearish/bullish, non-exchange transfers son neutral/informational.
+**Impacto:** shared/, data_service/, ai_service/, dashboard/, tests/
+**Tests:** 291 passing (3 nuevos, 1 renombrado).
+
 ## [2026-03-04] — Full Audit — 12 CRITICAL fixes
 **Qué cambió:**
 Auditoría completa de las 5 capas. 12 issues CRITICAL corregidos, 28 IMPORTANT + 29 MINOR documentados en `docs/to-fix.md`.

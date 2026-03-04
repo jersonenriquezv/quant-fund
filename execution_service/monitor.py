@@ -178,7 +178,7 @@ class PositionMonitor:
             logger.error(f"SL placement FAILED after entry fill — EMERGENCY CLOSE: {pos.pair}")
             # Telegram: emergency close
             if self._notifier is not None:
-                asyncio.ensure_future(
+                self._safe_notify(
                     self._notifier.notify_emergency(pos, "SL placement failed — market closed")
                 )
             result = await self._executor.close_position_market(
@@ -214,10 +214,35 @@ class PositionMonitor:
         pos.tp3_order_id = tp3.get("id") if tp3 else None
 
         if not tp1 or not tp2 or not tp3:
-            logger.warning(f"Some TP orders failed: {pos.pair} "
-                           f"tp1={'ok' if tp1 else 'FAIL'} "
-                           f"tp2={'ok' if tp2 else 'FAIL'} "
-                           f"tp3={'ok' if tp3 else 'FAIL'}")
+            logger.error(f"TP order placement failed: {pos.pair} "
+                         f"tp1={'ok' if tp1 else 'FAIL'} "
+                         f"tp2={'ok' if tp2 else 'FAIL'} "
+                         f"tp3={'ok' if tp3 else 'FAIL'} "
+                         f"— EMERGENCY CLOSE (missing TP = no SL adjustment)")
+
+            # Cancel all successfully placed TPs and SL
+            for order_id in (pos.tp1_order_id, pos.tp2_order_id, pos.tp3_order_id):
+                if order_id:
+                    await self._executor.cancel_order(order_id, pos.pair)
+            if pos.sl_order_id:
+                await self._executor.cancel_order(pos.sl_order_id, pos.pair)
+
+            # Emergency market close
+            if self._notifier is not None:
+                self._safe_notify(self._notifier.notify_emergency(
+                    pos, "TP placement failed — emergency market close"
+                ))
+            close_side = "sell" if pos.direction == "long" else "buy"
+            result = await self._executor.close_position_market(
+                pos.pair, close_side, pos.filled_size
+            )
+            if result is None:
+                logger.critical(f"EMERGENCY CLOSE FAILED after TP failure: {pos.pair}")
+                pos.phase = "emergency_pending"
+                pos.emergency_retries = 1
+                return
+            self._close_position(pos, "emergency")
+            return
 
         pos.phase = "active"
         logger.info(f"Position ACTIVE: {pos.pair} {pos.direction} "
@@ -225,7 +250,7 @@ class PositionMonitor:
 
         # Telegram: trade opened
         if self._notifier is not None:
-            asyncio.ensure_future(self._notifier.notify_trade_opened(pos))
+            self._safe_notify(self._notifier.notify_trade_opened(pos))
 
         # Persist trade to PostgreSQL
         self._persist_trade_open(pos)
@@ -261,6 +286,7 @@ class PositionMonitor:
             tp1_status = await self._executor.fetch_order(pos.tp1_order_id, pos.pair)
             if tp1_status and tp1_status.get("status") == "closed":
                 logger.info(f"TP1 hit: {pos.pair} — moving SL to breakeven")
+                self._accumulate_realized_pnl(pos, pos.tp1_price, settings.TP1_CLOSE_PCT)
                 await self._adjust_sl(pos, pos.actual_entry_price)
                 pos.phase = "tp1_hit"
                 return
@@ -269,6 +295,7 @@ class PositionMonitor:
             tp2_status = await self._executor.fetch_order(pos.tp2_order_id, pos.pair)
             if tp2_status and tp2_status.get("status") == "closed":
                 logger.info(f"TP2 hit: {pos.pair} — moving SL to TP1 level")
+                self._accumulate_realized_pnl(pos, pos.tp2_price, settings.TP2_CLOSE_PCT)
                 await self._adjust_sl(pos, pos.tp1_price)
                 pos.phase = "tp2_hit"
                 return
@@ -280,6 +307,7 @@ class PositionMonitor:
                 # Cancel SL since position is fully closed
                 if pos.sl_order_id:
                     await self._executor.cancel_order(pos.sl_order_id, pos.pair)
+                self._accumulate_realized_pnl(pos, pos.tp3_price, settings.TP3_CLOSE_PCT)
                 self._calculate_pnl(pos, pos.tp3_price)
                 self._close_position(pos, "tp3")
                 return
@@ -316,7 +344,15 @@ class PositionMonitor:
     # ================================================================
 
     async def _adjust_sl(self, pos: ManagedPosition, new_price: float) -> None:
-        """Move SL to new level. Place new BEFORE cancelling old."""
+        """Move SL to new level. Place new BEFORE cancelling old.
+
+        Race window: Between placing the new SL and cancelling the old one,
+        both SL orders exist simultaneously. If price hits both, we could get
+        a double close. Mitigation: both SLs use reduceOnly, so the second
+        would close zero size (no net position to reduce). A fully atomic
+        SL amendment via OKX amend-order API would eliminate this race entirely.
+        TODO: migrate to OKX amend-order API for atomic SL updates.
+        """
         close_side = "sell" if pos.direction == "long" else "buy"
 
         # Remaining size after partial closes
@@ -342,6 +378,19 @@ class PositionMonitor:
     # ================================================================
     # Helpers
     # ================================================================
+
+    def _accumulate_realized_pnl(
+        self, pos: ManagedPosition, fill_price: float, tranche_pct: float
+    ) -> None:
+        """Accumulate realized PnL for a filled TP tranche."""
+        if not pos.actual_entry_price:
+            return
+        tranche_size = pos.filled_size * tranche_pct
+        if pos.direction == "long":
+            pnl = (fill_price - pos.actual_entry_price) * tranche_size
+        else:
+            pnl = (pos.actual_entry_price - fill_price) * tranche_size
+        pos.realized_pnl_usd += pnl
 
     def _remaining_size(self, pos: ManagedPosition) -> float:
         """Calculate remaining position size based on phase."""
@@ -375,6 +424,20 @@ class PositionMonitor:
 
         self._close_position(pos, "timeout")
 
+    def _safe_notify(self, coro) -> None:
+        """Fire-and-forget notification with error logging."""
+        task = asyncio.create_task(coro)
+        task.add_done_callback(self._notify_task_done)
+
+    @staticmethod
+    def _notify_task_done(task: asyncio.Task) -> None:
+        """Log exceptions from notification tasks."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error(f"Notification task failed: {exc}")
+
     def _log_slippage(self, pos: ManagedPosition, actual_price: float) -> None:
         """Log expected vs actual fill price."""
         expected = pos.entry_price
@@ -386,13 +449,29 @@ class PositionMonitor:
             )
 
     def _calculate_pnl(self, pos: ManagedPosition, exit_price: float) -> None:
-        """Calculate approximate PnL percentage."""
+        """Calculate blended PnL across realized TP tranches + unrealized remainder.
+
+        Combines accumulated realized PnL from TP fills with unrealized PnL
+        on the remaining position size at exit_price.
+        """
         if not pos.actual_entry_price or pos.actual_entry_price == 0:
             return
+
+        remaining = self._remaining_size(pos)
+
+        # Unrealized PnL on remaining size at exit_price
         if pos.direction == "long":
-            pos.pnl_pct = (exit_price - pos.actual_entry_price) / pos.actual_entry_price
+            unrealized_usd = (exit_price - pos.actual_entry_price) * remaining
         else:
-            pos.pnl_pct = (pos.actual_entry_price - exit_price) / pos.actual_entry_price
+            unrealized_usd = (pos.actual_entry_price - exit_price) * remaining
+
+        # Blended PnL: (realized from TPs + unrealized remainder) / notional
+        total_pnl_usd = pos.realized_pnl_usd + unrealized_usd
+        notional = pos.actual_entry_price * pos.filled_size
+        if notional > 0:
+            pos.pnl_pct = total_pnl_usd / notional
+        else:
+            pos.pnl_pct = 0.0
 
     def _close_position(self, pos: ManagedPosition, reason: str) -> None:
         """Transition position to closed and notify Risk Service."""
@@ -407,7 +486,7 @@ class PositionMonitor:
 
         # Telegram: trade closed (skip cancelled entries — no real trade)
         if self._notifier is not None and reason != "cancelled":
-            asyncio.ensure_future(self._notifier.notify_trade_closed(pos))
+            self._safe_notify(self._notifier.notify_trade_closed(pos))
 
         # Persist trade close to PostgreSQL
         self._persist_trade_close(pos)
@@ -417,7 +496,9 @@ class PositionMonitor:
 
         # Notify Risk Service (skip cancelled entries — not a real trade)
         if self._risk is not None and reason != "cancelled":
-            self._risk.on_trade_closed(pos.pair, pos.pnl_pct, pos.closed_at)
+            self._risk.on_trade_closed(
+                pos.pair, pos.direction, pos.pnl_pct, pos.closed_at
+            )
 
         # Remove from tracking
         self._positions.pop(pos.pair, None)
@@ -427,8 +508,10 @@ class PositionMonitor:
     # ================================================================
 
     def _persist_trade_open(self, pos: ManagedPosition) -> None:
-        """Insert trade into PostgreSQL on entry fill."""
-        if self._data_store is None:
+        """Insert trade into PostgreSQL on entry fill.
+        Slippage is persisted via actual_entry (expected vs actual fill price).
+        """
+        if self._data_store is None or self._data_store.postgres is None:
             return
         try:
             trade_id = self._data_store.postgres.insert_trade(
@@ -450,7 +533,7 @@ class PositionMonitor:
 
     def _persist_trade_close(self, pos: ManagedPosition) -> None:
         """Update trade in PostgreSQL on position close."""
-        if self._data_store is None:
+        if self._data_store is None or self._data_store.postgres is None:
             return
         trade_id = getattr(pos, "db_trade_id", None)
         if trade_id is None:

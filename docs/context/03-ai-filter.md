@@ -47,7 +47,7 @@ AIDecision { confidence, approved, reasoning, adjustments, warnings }
 - Open interest
 - CVD con buy dominance %
 - Liquidaciones recientes (long vs short)
-- Whale activity
+- Whale activity (exchange transfers = bearish/bullish signal, non-exchange transfers = neutral/informational)
 - Price context (cambio 1h, 4h)
 
 ## Archivos implementados
@@ -98,8 +98,8 @@ AIDecision { confidence, approved, reasoning, adjustments, warnings }
 
 ## Tests
 
-34 tests en 3 archivos:
-- `test_prompt_builder.py` (14) — system prompt, evaluation prompt, datos faltantes, funding extremo
+35 tests en 3 archivos:
+- `test_prompt_builder.py` (15) — system prompt, evaluation prompt, datos faltantes, funding extremo, non-exchange whale labels
 - `test_claude_client.py` (8) — JSON válido/inválido, code fences, API errors, timeout, rate limit
 - `test_ai_service.py` (12) — approval/rejection, confidence clamping, double check, API failure, disabled mode
 

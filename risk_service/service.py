@@ -25,6 +25,7 @@ class RiskService:
         self._guardrails = Guardrails()
         self._state = RiskStateTracker(capital)
         self._data_service = data_service
+        self._persist_failures: int = 0
         logger.info(f"Risk Service initialized with capital=${capital:.2f}")
 
     # ================================================================
@@ -118,9 +119,11 @@ class RiskService:
         """Notify Risk Service that a trade was opened."""
         self._state.record_trade_opened(pair, direction, entry_price, timestamp)
 
-    def on_trade_closed(self, pair: str, pnl_pct: float, timestamp: int) -> None:
+    def on_trade_closed(
+        self, pair: str, direction: str, pnl_pct: float, timestamp: int
+    ) -> None:
         """Notify Risk Service that a trade was closed."""
-        self._state.record_trade_closed(pair, pnl_pct, timestamp)
+        self._state.record_trade_closed(pair, direction, pnl_pct, timestamp)
 
     def update_capital(self, amount: float) -> None:
         """Update tracked capital (e.g. from exchange balance query)."""
@@ -133,4 +136,10 @@ class RiskService:
         try:
             self._data_service.postgres.insert_risk_event(event_type, details)
         except Exception as e:
+            self._persist_failures += 1
             logger.error(f"Failed to persist risk event: {e}")
+            if self._persist_failures > 5:
+                logger.warning(
+                    f"Risk event persistence failed {self._persist_failures} times — "
+                    f"check PostgreSQL connection"
+                )
