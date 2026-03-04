@@ -20,7 +20,7 @@ export function Header() {
   const isOk = health?.status === "ok";
 
   return (
-    <div className="header card" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 20px" }}>
+    <div className="header card header-inner" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 20px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
         <span className={`status-dot ${isOk ? "ok" : "down"}`} />
         <span style={{ fontWeight: 700, fontSize: 15, letterSpacing: "0.05em" }}>

@@ -31,11 +31,11 @@ export function TradeLog() {
               <th>Time</th>
               <th>Pair</th>
               <th>Dir</th>
-              <th>Type</th>
+              <th className="col-type">Type</th>
               <th style={{ textAlign: "right" }}>Entry</th>
               <th style={{ textAlign: "right" }}>P&L</th>
-              <th style={{ textAlign: "right" }}>P&L $</th>
-              <th>Exit</th>
+              <th className="col-pnl-usd" style={{ textAlign: "right" }}>P&L $</th>
+              <th className="col-exit">Exit</th>
               <th>Status</th>
             </tr>
           </thead>
@@ -55,15 +55,15 @@ export function TradeLog() {
                       {t.direction}
                     </span>
                   </td>
-                  <td style={{ color: "var(--text-muted)", fontSize: 11 }}>{t.setup_type}</td>
+                  <td className="col-type" style={{ color: "var(--text-muted)", fontSize: 11 }}>{t.setup_type}</td>
                   <td className="num">{fmt(t.actual_entry ?? t.entry_price)}</td>
                   <td className={`num ${pnlClass}`}>
                     {t.pnl_pct != null ? (t.pnl_pct >= 0 ? "+" : "") + (t.pnl_pct * 100).toFixed(2) + "%" : "--"}
                   </td>
-                  <td className={`num ${pnlClass}`}>
+                  <td className={`num ${pnlClass} col-pnl-usd`}>
                     {t.pnl_usd != null ? (t.pnl_usd >= 0 ? "+" : "") + fmt(t.pnl_usd) : "--"}
                   </td>
-                  <td style={{ fontSize: 11 }}>{t.exit_reason ?? "--"}</td>
+                  <td className="col-exit" style={{ fontSize: 11 }}>{t.exit_reason ?? "--"}</td>
                   <td>
                     <span style={{
                       fontSize: 11, padding: "1px 6px", borderRadius: 3,

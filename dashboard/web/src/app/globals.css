@@ -227,3 +227,58 @@ tr:last-child td {
 .pulse {
   animation: pulse 2s ease-in-out infinite;
 }
+
+/* ── Responsive: Tablet ≤1023px ── */
+@media (max-width: 1023px) {
+  .dashboard {
+    grid-template-columns: 1fr 1fr;
+  }
+  .risk-gauge,
+  .equity,
+  .ai-log {
+    grid-column: 1 / -1;
+  }
+  .positions,
+  .trade-log {
+    grid-column: 1 / -1;
+  }
+}
+
+/* ── Responsive: Mobile ≤639px ── */
+@media (max-width: 639px) {
+  .dashboard {
+    grid-template-columns: 1fr;
+  }
+  .dashboard > * {
+    grid-column: 1 !important;
+  }
+  .header-inner {
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: center !important;
+  }
+  .card {
+    padding: 12px;
+  }
+  .scroll-y {
+    max-height: 250px;
+    overflow-x: auto;
+  }
+  .price-value {
+    font-size: 22px !important;
+  }
+  .position-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+  .health-inner {
+    flex-wrap: wrap;
+    gap: 8px 16px;
+  }
+  .col-type,
+  .col-pnl-usd,
+  .col-exit,
+  .col-sig,
+  .wallet-addr {
+    display: none;
+  }
+}

@@ -37,7 +37,7 @@ export function WhaleLog() {
               <th>Action</th>
               <th style={{ textAlign: "right" }}>Amount</th>
               <th>Exchange</th>
-              <th>Significance</th>
+              <th className="col-sig">Significance</th>
             </tr>
           </thead>
           <tbody>
@@ -57,7 +57,7 @@ export function WhaleLog() {
                   <td style={{ color: "var(--text-muted)" }}>{formatTime(w.timestamp)}</td>
                   <td title={w.wallet}>
                     <span style={{ fontWeight: 600 }}>{w.label || truncateAddr(w.wallet)}</span>
-                    <span style={{ color: "var(--text-muted)", fontSize: 11, marginLeft: 4 }}>
+                    <span className="wallet-addr" style={{ color: "var(--text-muted)", fontSize: 11, marginLeft: 4 }}>
                       {truncateAddr(w.wallet)}
                     </span>
                   </td>
@@ -68,7 +68,7 @@ export function WhaleLog() {
                   </td>
                   <td className="num" style={{ fontWeight: 600 }}>{formatAmount(w.amount, w.chain)} {w.chain}</td>
                   <td>{w.exchange}</td>
-                  <td>
+                  <td className="col-sig">
                     <span style={{
                       fontSize: 11, padding: "1px 6px", borderRadius: 3,
                       background: w.significance === "high"

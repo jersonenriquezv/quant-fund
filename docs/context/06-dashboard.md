@@ -102,10 +102,20 @@ dashboard/
     └── next.config.ts
 ```
 
+## Responsive — Mobile/Tablet
+
+CSS-first approach con 2 breakpoints en `globals.css`:
+
+- **Tablet (≤1023px):** Grid 2 columnas, sidebar items (risk, equity, AI log) pasan a full-width
+- **Mobile (≤639px):** Grid 1 columna, header wrap centrado, precios font reducido (28→22px), position cards 2×2, tablas scroll horizontal, columnas de baja prioridad ocultas (Type/P&L$/Exit en TradeLog, Significance/wallet addr en WhaleLog), health grid wrap
+
+Clases CSS añadidas a componentes para permitir override de inline styles via `!important`:
+- `header-inner` (Header), `price-value` (PricePanel), `position-grid` (PositionCard), `health-inner` (HealthGrid)
+- `col-type`, `col-pnl-usd`, `col-exit` (TradeLog), `col-sig`, `wallet-addr` (WhaleLog)
+
 ## Limitaciones v1
 
 - Sin charting library (TradingView, etc.) — sparklines SVG
 - Sin ejecución de trades desde el dashboard — read-only
 - Sin autenticación — localhost detrás del router
-- Sin responsive mobile — 1080p+
 - Sin backtesting UI o alertas en el dashboard (notificaciones push via Telegram — `shared/notifier.py`)

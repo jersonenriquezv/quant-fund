@@ -35,7 +35,7 @@ export function PricePanel({ pair, ws }: { pair: string; ws: WSMessage | null })
     <div>
       <div className="card-title">{pair}</div>
 
-      <div style={{ fontSize: 28, fontWeight: 700, marginBottom: 4, fontVariantNumeric: "tabular-nums" }}>
+      <div className="price-value" style={{ fontSize: 28, fontWeight: 700, marginBottom: 4, fontVariantNumeric: "tabular-nums" }}>
         ${price != null ? fmt(price, pair.startsWith("BTC") ? 1 : 2) : "--"}
       </div>
 

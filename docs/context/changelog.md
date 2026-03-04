@@ -1,5 +1,19 @@
 # Changelog — One-Man Quant Fund
 
+## [2026-03-04] — Dashboard — Mobile Responsiveness
+**Qué cambió:**
+- `dashboard/web/src/app/globals.css` — 2 breakpoints: tablet (≤1023px, grid 2 columnas) y mobile (≤639px, grid 1 columna). Columnas low-priority ocultas en mobile, tablas con scroll horizontal, cards con padding reducido.
+- `dashboard/web/src/components/Header.tsx` — Clase `header-inner` para flex-wrap en mobile.
+- `dashboard/web/src/components/PricePanel.tsx` — Clase `price-value` para reducir font de 28→22px en mobile.
+- `dashboard/web/src/components/PositionCard.tsx` — Clase `position-grid` para layout 2×2 en mobile (antes 4 columnas).
+- `dashboard/web/src/components/TradeLog.tsx` — Clases `col-type`, `col-pnl-usd`, `col-exit` para ocultar columnas en mobile.
+- `dashboard/web/src/components/WhaleLog.tsx` — Clases `col-sig`, `wallet-addr` para ocultar columnas en mobile.
+- `dashboard/web/src/components/HealthGrid.tsx` — Clase `health-inner` para flex-wrap en mobile.
+- `docs/context/06-dashboard.md` — Sección "Responsive" documentada, limitación "Sin responsive mobile" removida.
+
+**Por qué:** Dashboard era inutilizable en móvil — grid fijo de 3 columnas, tablas de 6-9 columnas sin scroll. Ahora funciona en 375px+ (iPhone SE).
+**Impacto:** dashboard/web/, docs/context/
+
 ## [2026-03-04] — Fix liquidity level clustering tolerance
 **Qué cambió:**
 - `config/settings.py` — `EQUAL_LEVEL_TOLERANCE_PCT`: 0.0005 (0.05%) → 0.002 (0.2%). Para BTC a $73k, la tolerancia pasa de $36.50 a $146. Para ETH a $2.1k, de $1.07 a $4.30.

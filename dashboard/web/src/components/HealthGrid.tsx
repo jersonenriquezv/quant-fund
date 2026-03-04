@@ -18,7 +18,7 @@ export function HealthGrid() {
   ];
 
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 20, padding: "4px 0" }}>
+    <div className="health-inner" style={{ display: "flex", alignItems: "center", gap: 20, padding: "4px 0" }}>
       <span style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.1em" }}>
         System Health
       </span>

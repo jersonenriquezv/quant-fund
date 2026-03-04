@@ -27,7 +27,7 @@ function SinglePosition({ pos }: { pos: PositionData }) {
         </span>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, fontSize: 12 }}>
+      <div className="position-grid" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, fontSize: 12 }}>
         <div>
           <div style={{ color: "var(--text-muted)", fontSize: 10 }}>ENTRY</div>
           <div className="num">{fmt(pos.actual_entry_price ?? pos.entry_price)}</div>
