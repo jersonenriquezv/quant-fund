@@ -11,6 +11,7 @@ Usage:
 """
 
 import asyncio
+import json
 import signal
 import sys
 
@@ -54,6 +55,38 @@ async def _sync_profile_from_redis() -> None:
         pass  # Redis down — keep current profile
 
 
+def _publish_strategy_state(pair: str) -> None:
+    """Publish active OBs and HTF bias to Redis for the dashboard."""
+    if _strategy_service is None or _data_service is None:
+        return
+    try:
+        redis = _data_service.redis
+
+        # Collect OBs for all pairs
+        all_obs = []
+        for p in settings.TRADING_PAIRS:
+            for ob in _strategy_service.get_active_order_blocks(p):
+                all_obs.append({
+                    "timestamp": ob.timestamp,
+                    "pair": ob.pair,
+                    "timeframe": ob.timeframe,
+                    "direction": ob.direction,
+                    "high": ob.high,
+                    "low": ob.low,
+                    "body_high": ob.body_high,
+                    "body_low": ob.body_low,
+                    "entry_price": ob.entry_price,
+                    "volume_ratio": ob.volume_ratio,
+                })
+        redis.set_bot_state("order_blocks", json.dumps(all_obs), ttl=600)
+
+        # HTF bias for all pairs
+        bias = {p: _strategy_service.get_htf_bias(p) for p in settings.TRADING_PAIRS}
+        redis.set_bot_state("htf_bias", json.dumps(bias), ttl=600)
+    except Exception as e:
+        logger.error(f"Failed to publish strategy state to Redis: {e}")
+
+
 async def on_candle_confirmed(candle: Candle) -> None:
     """Pipeline entry point: Data → Strategy → AI → Risk → Execution.
 
@@ -73,6 +106,7 @@ async def on_candle_confirmed(candle: Candle) -> None:
         return
 
     setup = _strategy_service.evaluate(candle.pair, candle)
+    _publish_strategy_state(candle.pair)
     if setup is None:
         return
 

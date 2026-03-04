@@ -125,6 +125,23 @@ export interface WhaleMovement {
   chain: string;
 }
 
+export interface OrderBlockData {
+  timestamp: number;
+  pair: string;
+  timeframe: string;
+  direction: string;
+  high: number;
+  low: number;
+  body_high: number;
+  body_low: number;
+  entry_price: number;
+  volume_ratio: number;
+}
+
+export interface HTFBiasResponse {
+  bias: Record<string, string>;
+}
+
 export interface WSMessage {
   prices: Record<string, { price: number; open: number; high: number; low: number; timestamp: number }>;
   positions: PositionData[];

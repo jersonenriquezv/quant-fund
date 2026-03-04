@@ -18,7 +18,7 @@ from shared.logger import setup_logger
 from shared.models import Candle, TradeSetup
 
 from strategy_service.market_structure import MarketStructureAnalyzer
-from strategy_service.order_blocks import OrderBlockDetector
+from strategy_service.order_blocks import OrderBlock, OrderBlockDetector
 from strategy_service.fvg import FVGDetector
 from strategy_service.liquidity import LiquidityAnalyzer
 from strategy_service.setups import SetupEvaluator
@@ -49,6 +49,9 @@ class StrategyService:
         self._fvg = FVGDetector()
         self._liquidity = LiquidityAnalyzer()
         self._setups = SetupEvaluator()
+
+        # Cached HTF bias per pair (updated on every evaluate call)
+        self._cached_htf_bias: dict[str, str] = {}
 
     def evaluate(self, pair: str,
                  trigger_candle: Candle) -> Optional[TradeSetup]:
@@ -85,6 +88,7 @@ class StrategyService:
         state_1h = self._market_structure.analyze(candles_1h, pair, "1h")
 
         htf_bias = self._determine_htf_bias(state_4h, state_1h)
+        self._cached_htf_bias[pair] = htf_bias
         if htf_bias == "undefined":
             logger.debug(f"No HTF bias for {pair} — skipping "
                          f"(4h_trend={state_4h.trend} 1h_trend={state_1h.trend} "
@@ -144,6 +148,13 @@ class StrategyService:
                 f"fvgs={len(active_fvgs)} sweeps={len(recent_sweeps)} "
                 f"liq_levels={len(liq_levels)} price={candles[-1].close}"
             )
+            if active_obs:
+                for ob in active_obs:
+                    logger.debug(
+                        f"[{pair} {ltf}] OB: {ob.direction} "
+                        f"range={ob.low:.2f}-{ob.high:.2f} "
+                        f"entry={ob.entry_price:.2f} vol_ratio={ob.volume_ratio:.1f}x"
+                    )
 
             # ============================================================
             # Step 4: Evaluate setups — A first, then B
@@ -189,6 +200,17 @@ class StrategyService:
                 return setup
 
         return None
+
+    def get_active_order_blocks(self, pair: str) -> list[OrderBlock]:
+        """Get all active OBs for a pair across LTF timeframes."""
+        obs: list[OrderBlock] = []
+        for tf in settings.LTF_TIMEFRAMES:
+            obs.extend(self._order_blocks.get_active_obs(pair, tf))
+        return obs
+
+    def get_htf_bias(self, pair: str) -> str:
+        """Get the cached HTF bias for a pair."""
+        return self._cached_htf_bias.get(pair, "undefined")
 
     def _determine_htf_bias(self, state_4h, state_1h) -> str:
         """Determine HTF bias from 4H and 1H analysis.

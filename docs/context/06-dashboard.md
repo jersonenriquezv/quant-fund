@@ -24,14 +24,17 @@ Si el dashboard crashea, el bot sigue operando normalmente.
 | `WS /api/ws` | Redis poll cada 2s | Precio live + posiciones |
 | `GET /api/profile` | Redis + definiciones locales | Perfil activo + perfiles disponibles |
 | `POST /api/profile` | Redis write | Cambiar perfil de estrategia |
+| `GET /api/strategy/order-blocks` | Redis (`qf:bot:order_blocks`) | OBs activos (ambos pares, LTF) |
+| `GET /api/strategy/htf-bias` | Redis (`qf:bot:htf_bias`) | HTF bias por par |
 
 ## Frontend — Layout
 
 ```
 HEADER: Bot status + Mode (DEMO) + Profile Selector (dropdown) + UTC clock
-├── BTC/USDT panel | ETH/USDT panel | Risk gauges (DD arcos)
+├── BTC/USDT panel (+ HTF bias badge) | ETH/USDT panel (+ HTF bias badge) | Risk gauges (DD arcos)
 ├── Open Positions (cards)        | Equity curve (SVG sparkline)
 ├── Trade Log (tabla, últimos 20) | AI Decision Log (barras de confianza)
+├── Active Order Blocks (full width, tabla con Time/Pair/TF/Direction/Range/Entry/Distance%/VolRatio)
 ├── Whale Movements Log (full width, últimas 24h, 4 badge types: deposit/withdrawal/transfer out/transfer in)
 └── System Health: Redis + PG + API status dots
 ```
@@ -55,6 +58,8 @@ Para que el dashboard muestre datos, el bot ahora escribe a PostgreSQL:
 - **`risk_service/service.py`** — Guardrail hit → `insert_risk_event()`
 - **Redis** — `qf:bot:positions` → JSON de posiciones abiertas actuales
 - **Redis** — `qf:bot:whale_movements` → JSON de whale movements (TTL 600s, actualizado cada poll de Etherscan)
+- **Redis** — `qf:bot:order_blocks` → JSON de OBs activos (TTL 600s, actualizado en cada candle confirmada)
+- **Redis** — `qf:bot:htf_bias` → JSON de HTF bias por par (TTL 600s, actualizado en cada candle confirmada)
 
 ## Docker
 
@@ -91,14 +96,15 @@ dashboard/
 │   │   ├── candles.py   # GET /api/candles/{pair}/{tf}
 │   │   ├── stats.py     # GET /api/stats
 │   │   ├── whales.py    # GET /api/whales
-│   │   └── profile.py   # GET/POST /api/profile
+│   │   ├── profile.py   # GET/POST /api/profile
+│   │   └── strategy.py  # GET /api/strategy/order-blocks, /api/strategy/htf-bias
 │   ├── ws.py            # WS /api/ws
 │   ├── requirements.txt
 │   └── Dockerfile
 └── web/
     ├── src/
     │   ├── app/          # Next.js app router
-    │   ├── components/   # 10 componentes UI (incl. ProfileSelector)
+    │   ├── components/   # 11 componentes UI (incl. ProfileSelector, OrderBlockPanel)
     │   └── lib/          # API client, hooks
     ├── package.json
     ├── Dockerfile
@@ -110,11 +116,11 @@ dashboard/
 CSS-first approach con 2 breakpoints en `globals.css`:
 
 - **Tablet (≤1023px):** Grid 2 columnas, sidebar items (risk, equity, AI log) pasan a full-width
-- **Mobile (≤639px):** Grid 1 columna, header wrap centrado, precios font reducido (28→22px), position cards 2×2, tablas scroll horizontal, columnas de baja prioridad ocultas (Type/P&L$/Exit en TradeLog, Significance/wallet addr en WhaleLog), health grid wrap
+- **Mobile (≤639px):** Grid 1 columna, header wrap centrado, precios font reducido (28→22px), position cards 2×2, tablas scroll horizontal, columnas de baja prioridad ocultas (Type/P&L$/Exit en TradeLog, Significance/wallet addr en WhaleLog, Range/VolRatio en OrderBlockPanel), health grid wrap
 
 Clases CSS añadidas a componentes para permitir override de inline styles via `!important`:
 - `header-inner` (Header), `price-value` (PricePanel), `position-grid` (PositionCard), `health-inner` (HealthGrid)
-- `col-type`, `col-pnl-usd`, `col-exit` (TradeLog), `col-sig`, `wallet-addr` (WhaleLog)
+- `col-type`, `col-pnl-usd`, `col-exit` (TradeLog), `col-sig`, `wallet-addr` (WhaleLog), `col-range`, `col-vol` (OrderBlockPanel)
 
 ## Profile Selector
 

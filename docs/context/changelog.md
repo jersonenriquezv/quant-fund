@@ -1,5 +1,31 @@
 # Changelog — One-Man Quant Fund
 
+## [2026-03-04] — Dashboard: Order Block Panel + HTF Bias Indicator
+**Qué cambió:**
+
+**Strategy Service (`strategy_service/service.py`):**
+- Nuevo `_cached_htf_bias` dict — cachea HTF bias en cada `evaluate()` (antes solo existía en scope local)
+- `get_active_order_blocks(pair)` — devuelve OBs activos de todos los LTF timeframes
+- `get_htf_bias(pair)` — devuelve bias cacheado ("bullish"/"bearish"/"undefined")
+
+**Bot (`main.py`):**
+- `_publish_strategy_state(pair)` — serializa OBs + bias a Redis después de cada `evaluate()`, ANTES del `if setup is None: return` (publica siempre, no solo cuando hay setup)
+- Redis keys: `qf:bot:order_blocks` (JSON array, TTL 600s), `qf:bot:htf_bias` (JSON dict, TTL 600s)
+
+**Dashboard API:**
+- `dashboard/api/routes/strategy.py` — 2 endpoints: `GET /api/strategy/order-blocks`, `GET /api/strategy/htf-bias`
+- `dashboard/api/models.py` — `OrderBlockRecord`, `HTFBiasResponse`
+- `dashboard/api/main.py` — strategy router registrado
+
+**Dashboard Frontend:**
+- `OrderBlockPanel.tsx` — Tabla de OBs activos con distance% desde precio live (WS), sorted por cercanía. Highlighting amarillo para distance <0.5% y vol ratio ≥2x. Mobile: oculta Range y Vol Ratio
+- `PricePanel.tsx` — Badge de HTF bias (BULLISH verde/BEARISH rojo/UNDEFINED gris) junto al nombre del par
+- `api.ts` — `OrderBlockData`, `HTFBiasResponse` interfaces
+- `page.tsx` — OrderBlockPanel entre trade/AI row y whale row
+- `globals.css` — `.ob-panel { grid-column: 1/-1 }`, grid-template-rows actualizado, `.col-range`/`.col-vol` ocultos en mobile
+
+---
+
 ## [2026-03-04] — Strategy Profiles + Backtester + Dashboard Profile Switcher
 **Qué cambió:**
 

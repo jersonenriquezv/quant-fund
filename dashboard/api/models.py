@@ -105,6 +105,23 @@ class WhaleMovementRecord(BaseModel):
     chain: str
 
 
+class OrderBlockRecord(BaseModel):
+    timestamp: int
+    pair: str
+    timeframe: str
+    direction: str
+    high: float
+    low: float
+    body_high: float
+    body_low: float
+    entry_price: float
+    volume_ratio: float
+
+
+class HTFBiasResponse(BaseModel):
+    bias: dict[str, str]
+
+
 class PositionData(BaseModel):
     pair: str
     direction: str

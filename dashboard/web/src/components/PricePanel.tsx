@@ -1,7 +1,7 @@
 "use client";
 
 import { usePolling } from "@/lib/hooks";
-import type { MarketData, WSMessage } from "@/lib/api";
+import type { MarketData, HTFBiasResponse, WSMessage } from "@/lib/api";
 
 function fmt(n: number | null | undefined, decimals: number = 2): string {
   if (n == null) return "--";
@@ -21,8 +21,15 @@ function fmtPct(n: number | null | undefined): string {
   return sign + n.toFixed(4) + "%";
 }
 
+function biasClass(bias: string): string {
+  if (bias === "bullish") return "badge-long";
+  if (bias === "bearish") return "badge-short";
+  return "badge-neutral";
+}
+
 export function PricePanel({ pair, ws }: { pair: string; ws: WSMessage | null }) {
   const { data: market } = usePolling<MarketData>(`/market/${encodeURIComponent(pair)}`, 5000);
+  const { data: biasData } = usePolling<HTFBiasResponse>("/strategy/htf-bias", 10000);
 
   // Prefer WebSocket price if available
   const wsPrice = ws?.prices?.[pair]?.price;
@@ -31,9 +38,16 @@ export function PricePanel({ pair, ws }: { pair: string; ws: WSMessage | null })
   const changePct = market?.change_pct;
   const isPositive = (changePct ?? 0) >= 0;
 
+  const bias = biasData?.bias?.[pair] ?? "undefined";
+
   return (
     <div>
-      <div className="card-title">{pair}</div>
+      <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        {pair}
+        <span className={`badge ${biasClass(bias)}`} style={{ fontSize: 9, letterSpacing: "0.08em" }}>
+          {bias}
+        </span>
+      </div>
 
       <div className="price-value" style={{ fontSize: 28, fontWeight: 700, marginBottom: 4, fontVariantNumeric: "tabular-nums" }}>
         ${price != null ? fmt(price, pair.startsWith("BTC") ? 1 : 2) : "--"}
