@@ -19,7 +19,7 @@ ALL code, comments, variable names, docstrings, commit messages, and log message
 * **Analysis:** pandas + numpy
 * **AI Filter:** Claude API (Sonnet)
 * **Database:** PostgreSQL (historical) + Redis (real-time cache)
-* **On-chain:** Etherscan API for top ETH wallet movements
+* **On-chain:** Etherscan API (ETH wallets) + mempool.space API (BTC wallets)
 * **Dashboard:** FastAPI + Next.js
 * **Containers:** Docker + Docker Compose
 * **Server:** Acer Nitro 5 (i5-9300H, 16GB RAM, GTX 1050) running Ubuntu Server 24.04
@@ -45,7 +45,8 @@ quant-fund/
 │   └── .env                 # Secrets (OKX keys, Etherscan, Anthropic) — NOT in git
 ├── shared/
 │   ├── models.py            # Dataclasses shared between all services
-│   └── logger.py            # Loguru setup (stdout + daily rotated files)
+│   ├── logger.py            # Loguru setup (stdout + daily rotated files)
+│   └── notifier.py          # Telegram push notifications (fire-and-forget)
 ├── data_service/
 │   ├── __init__.py
 │   ├── service.py           # DataService facade (only public interface)
@@ -54,7 +55,8 @@ quant-fund/
 │   ├── cvd_calculator.py    # CVD from OKX trade stream (/public)
 │   ├── oi_liquidation_proxy.py # OI-based liquidation cascade detection
 │   ├── binance_liq.py       # Binance Futures WebSocket (UNUSED — geo-blocked from Canada)
-│   ├── etherscan_client.py  # Whale wallet monitoring
+│   ├── etherscan_client.py  # ETH whale wallet monitoring (Etherscan API)
+│   ├── btc_whale_client.py  # BTC whale wallet monitoring (mempool.space API)
 │   └── data_store.py        # Redis (cache) + PostgreSQL (historical)
 ├── strategy_service/
 │   ├── __init__.py
@@ -77,8 +79,10 @@ quant-fund/
 │   └── state_tracker.py     # In-memory state (open positions, daily PnL)
 ├── execution_service/
 │   ├── __init__.py
+│   ├── models.py            # ManagedPosition — mutable position lifecycle state
 │   ├── executor.py          # Order placement via ccxt
-│   └── monitor.py           # Fill monitoring, slippage tracking
+│   ├── monitor.py           # Fill monitoring, SL/TP lifecycle, slippage tracking
+│   └── service.py           # ExecutionService facade
 ├── tests/
 │   ├── conftest.py          # Shared fixtures (make_candle, make_snapshot)
 │   ├── test_market_structure.py
@@ -90,7 +94,15 @@ quant-fund/
 │   ├── test_guardrails.py
 │   ├── test_position_sizer.py
 │   ├── test_state_tracker.py
-│   └── test_risk_service.py
+│   ├── test_risk_service.py
+│   ├── test_ai_service.py
+│   ├── test_claude_client.py
+│   ├── test_prompt_builder.py
+│   ├── test_data_service.py
+│   └── test_execution.py
+├── dashboard/
+│   ├── api/                 # FastAPI backend (read-only, port 8000)
+│   └── web/                 # Next.js frontend (port 3000)
 ├── docs/
 │   └── context/             # Auto-generated docs per service (Spanish)
 ├── logs/                    # Daily rotated log files (auto-created)
@@ -138,7 +150,8 @@ Receives real-time data from multiple sources:
 
 * **OKX WebSocket**: Candles on `/business` (`wss://ws.okx.com:8443/ws/v5/business`), trades on `/public` (`wss://ws.okx.com:8443/ws/v5/public`)
 * **OKX REST** (via ccxt): Candle backfill, funding rate (every 8 hours), open interest
-* **Etherscan REST**: Whale ETH wallet movements
+* **Etherscan REST**: Whale ETH wallet movements (all large transfers, not just exchange)
+* **mempool.space REST**: Whale BTC wallet movements (UTXO parsing, no API key needed)
 * Funding rates: OKX charges every 8 hours (standard CEX schedule)
 * Liquidations: OI drop proxy — detects cascades when OI drops >2% in 5min (Binance WebSocket geo-blocked from Canada)
 * **Rate limits:** 20 requests/2s market data, 60 requests/2s trading
@@ -390,7 +403,7 @@ All inter-service communication uses typed frozen dataclasses. No raw dicts betw
 * `OpenInterest` — OI in contracts, base currency, and USD
 * `CVDSnapshot` — cumulative volume delta at 5m/15m/1h windows + buy/sell volume
 * `LiquidationEvent` — single liquidation (pair, side, size_usd, source)
-* `WhaleMovement` — ETH transfer (wallet, action, amount, exchange, significance)
+* `WhaleMovement` — ETH/BTC transfer (wallet, action, amount, exchange, significance, chain). Actions: `exchange_deposit`, `exchange_withdrawal`, `transfer_out`, `transfer_in`
 * `MarketSnapshot` — aggregates all of the above for a single pair at a point in time
 
 **Layer 2 (Strategy) outputs:**
@@ -468,7 +481,8 @@ risk_events (
    - Store backfilled candles in memory + PostgreSQL
    - Start OKX WebSocket (candles on `/business`)
    - Start OKX trades WebSocket (for CVD on `/public`)
-   - Start Etherscan polling loop (every 5 min)
+   - Start Etherscan polling loop (ETH whales, every 5 min)
+   - Start mempool.space polling loop (BTC whales, every 5 min)
    - Start funding rate polling (every 8 hours)
    - Start OI polling (every 5 min)
    - Start health check loop (every 30 seconds)
@@ -539,6 +553,9 @@ OKX_SANDBOX=true
 ETHERSCAN_API_KEY=
 
 ANTHROPIC_API_KEY=
+
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
 
 POSTGRES_HOST=localhost
 POSTGRES_PORT=5432
