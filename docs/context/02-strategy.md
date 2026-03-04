@@ -41,15 +41,16 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
 
 ### `strategy_service/setups.py` — Setup A/B + Confluencia
 - **Setup A** (primario): Sweep + CHoCH + OB en discount/premium
-  - **Patrón de CONTINUACIÓN**: CHoCH debe alinearse con HTF bias. Solo se opera cuando la estructura LTF confirma la dirección HTF. Setups de reversión (CHoCH opuesto a HTF) excluidos intencionalmente por menor win rate.
+  - **Patrón de CONTINUACIÓN** (default): CHoCH debe alinearse con HTF bias. Configurable via `REQUIRE_HTF_LTF_ALIGNMENT` — scalping profile lo desactiva para permitir trades LTF-only.
   - **Orden temporal obligatorio**: sweep ANTES del CHoCH
   - **Proximidad temporal**: sweep dentro de `SETUP_A_MAX_SWEEP_CHOCH_GAP` candles del CHoCH
 - **Setup B** (secundario): BOS + FVG adyacente a OB
-- Mínimo 2 confluencias obligatorio
+  - Dirección BOS debe alinear con HTF bias (configurable via `REQUIRE_HTF_LTF_ALIGNMENT`)
+- Mínimo 2 confluencias obligatorio (no configurable — hardcoded)
 - Cálculo de TP1 (1:1), TP2 (1:2), TP3 (trailing/liquidity)
-- **R:R blended** — validación ponderada: 50%×TP1 + 30%×TP2 + 20%×TP3 ≥ 1.5
+- **R:R blended** — validación ponderada: 50%×TP1 + 30%×TP2 + 20%×TP3 ≥ `MIN_RISK_REWARD`
 - **Proximidad OB basada en precio** — `OB_PROXIMITY_PCT` (0.3% del precio), no % del body
-- Validación premium/discount alignment
+- **Validación premium/discount** — equilibrium zone bloquea trades por defecto, configurable via `ALLOW_EQUILIBRIUM_TRADES`
 
 ### `strategy_service/service.py` — Facade
 - `StrategyService(data_service)` — obtiene candles del DataService
@@ -59,10 +60,27 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
 ### `strategy_service/__init__.py`
 - Exporta `StrategyService`
 
-## Settings nuevos (config/settings.py)
+## Settings (config/settings.py)
 - `PD_EQUILIBRIUM_BAND: float = 0.02` — banda ±2% alrededor del 50% para zona equilibrium
 - `OB_PROXIMITY_PCT: float = 0.003` — 0.3% del precio como margen de proximidad al OB
 - `SETUP_A_MAX_SWEEP_CHOCH_GAP: int = 20` — máximo candles entre sweep y CHoCH
+- `REQUIRE_HTF_LTF_ALIGNMENT: bool = True` — si LTF debe alinearse con HTF (scalping: False)
+- `ALLOW_EQUILIBRIUM_TRADES: bool = False` — permitir trades en zona equilibrium (scalping: True)
+- `HTF_BIAS_REQUIRE_4H: bool = True` — si 4H debe definir trend o 1H solo basta (scalping: False)
+
+## Sistema de perfiles (`STRATEGY_PROFILE`)
+
+El bot soporta 3 perfiles de estrategia, switcheables desde dashboard o env var:
+
+| Perfil | Setups/día | Descripción |
+|--------|-----------|-------------|
+| `default` | ~1-2 | Conservador — todos los filtros activos |
+| `aggressive` | ~3-5 | Zonas más amplias, umbrales más bajos, mismos filtros estructurales |
+| `scalping` | ~10-20+ | Permite trades contra HTF, en equilibrium, R:R mínimo 1.0 |
+
+Los perfiles se definen en `STRATEGY_PROFILES` (config/settings.py) y se aplican via `apply_profile()`. Risk guardrails (DD, max positions) **nunca cambian** entre perfiles.
+
+El perfil activo se almacena en Redis (`qf:bot:strategy_profile`) y se sincroniza al inicio de cada pipeline cycle en `main.py`.
 
 ## Tests
 76 tests en 5 archivos:

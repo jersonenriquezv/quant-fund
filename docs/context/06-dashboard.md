@@ -22,11 +22,13 @@ Si el dashboard crashea, el bot sigue operando normalmente.
 | `GET /api/stats` | PG trades (closed) | Win rate, P&L, profit factor |
 | `GET /api/whales?hours=24` | Redis (whale_movements) | Whale movements last N hours |
 | `WS /api/ws` | Redis poll cada 2s | Precio live + posiciones |
+| `GET /api/profile` | Redis + definiciones locales | Perfil activo + perfiles disponibles |
+| `POST /api/profile` | Redis write | Cambiar perfil de estrategia |
 
 ## Frontend — Layout
 
 ```
-HEADER: Bot status + Mode (DEMO) + UTC clock
+HEADER: Bot status + Mode (DEMO) + Profile Selector (dropdown) + UTC clock
 ├── BTC/USDT panel | ETH/USDT panel | Risk gauges (DD arcos)
 ├── Open Positions (cards)        | Equity curve (SVG sparkline)
 ├── Trade Log (tabla, últimos 20) | AI Decision Log (barras de confianza)
@@ -88,14 +90,15 @@ dashboard/
 │   │   ├── risk.py      # GET /api/risk
 │   │   ├── candles.py   # GET /api/candles/{pair}/{tf}
 │   │   ├── stats.py     # GET /api/stats
-│   │   └── whales.py    # GET /api/whales
+│   │   ├── whales.py    # GET /api/whales
+│   │   └── profile.py   # GET/POST /api/profile
 │   ├── ws.py            # WS /api/ws
 │   ├── requirements.txt
 │   └── Dockerfile
 └── web/
     ├── src/
     │   ├── app/          # Next.js app router
-    │   ├── components/   # 9 componentes UI
+    │   ├── components/   # 10 componentes UI (incl. ProfileSelector)
     │   └── lib/          # API client, hooks
     ├── package.json
     ├── Dockerfile
@@ -113,9 +116,19 @@ Clases CSS añadidas a componentes para permitir override de inline styles via `
 - `header-inner` (Header), `price-value` (PricePanel), `position-grid` (PositionCard), `health-inner` (HealthGrid)
 - `col-type`, `col-pnl-usd`, `col-exit` (TradeLog), `col-sig`, `wallet-addr` (WhaleLog)
 
+## Profile Selector
+
+El dashboard incluye un dropdown para cambiar el perfil de estrategia del bot en tiempo real:
+- **GET /api/profile** — devuelve perfil activo + lista de perfiles disponibles con label, description, color
+- **POST /api/profile** — escribe nuevo perfil a Redis (`qf:bot:strategy_profile`)
+- El bot lee el perfil desde Redis al inicio de cada pipeline cycle (`main.py: _sync_profile_from_redis()`)
+- **CORS** actualizado a `GET + POST` (antes solo GET)
+- Color indicators: verde (default), amarillo (aggressive), rojo (scalping)
+- Warning badge pulsa cuando no está en default
+
 ## Limitaciones v1
 
 - Sin charting library (TradingView, etc.) — sparklines SVG
-- Sin ejecución de trades desde el dashboard — read-only
+- Sin ejecución de trades desde el dashboard — mayormente read-only (excepto profile switch)
 - Sin autenticación — localhost detrás del router
 - Sin backtesting UI o alertas en el dashboard (notificaciones push via Telegram — `shared/notifier.py`)

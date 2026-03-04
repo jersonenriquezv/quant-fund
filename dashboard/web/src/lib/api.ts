@@ -129,3 +129,25 @@ export interface WSMessage {
   prices: Record<string, { price: number; open: number; high: number; low: number; timestamp: number }>;
   positions: PositionData[];
 }
+
+export interface ProfileInfo {
+  label: string;
+  description: string;
+  color: string;
+}
+
+export interface ProfileResponse {
+  active: string;
+  profiles: Record<string, ProfileInfo>;
+}
+
+export async function postApi<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${getApiBase()}/api${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  return res.json();
+}

@@ -14,7 +14,7 @@ import asyncio
 import signal
 import sys
 
-from config.settings import settings
+from config.settings import settings, STRATEGY_PROFILES, apply_profile, reset_profile
 from shared.logger import setup_logger
 from shared.models import Candle
 from data_service.service import DataService
@@ -39,12 +39,30 @@ _notifier: TelegramNotifier | None = None
 # Pipeline callback — triggered on every confirmed candle
 # ================================================================
 
+async def _sync_profile_from_redis() -> None:
+    """Check Redis for a profile change from dashboard and apply it."""
+    if _data_service is None:
+        return
+    try:
+        stored = _data_service.redis.get_bot_state("strategy_profile")
+        if stored and stored in STRATEGY_PROFILES:
+            if stored != settings.STRATEGY_PROFILE:
+                reset_profile(settings)
+                apply_profile(settings, stored)
+                logger.info(f"Strategy profile switched to: {stored}")
+    except Exception:
+        pass  # Redis down — keep current profile
+
+
 async def on_candle_confirmed(candle: Candle) -> None:
     """Pipeline entry point: Data → Strategy → AI → Risk → Execution.
 
     Strategy Service evaluates LTF candles for SMC setups.
     AI/Risk/Execution layers are stubs — will be wired as they're built.
     """
+    # Check for profile changes from dashboard
+    await _sync_profile_from_redis()
+
     logger.info(
         f"Pipeline triggered: pair={candle.pair} tf={candle.timeframe} "
         f"close={candle.close} vol={candle.volume:.4f}"

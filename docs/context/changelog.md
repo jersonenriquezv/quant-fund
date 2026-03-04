@@ -1,5 +1,44 @@
 # Changelog — One-Man Quant Fund
 
+## [2026-03-04] — Strategy Profiles + Backtester + Dashboard Profile Switcher
+**Qué cambió:**
+
+**Backtester (`scripts/backtest.py`):**
+- Nuevo script que replays candles históricos (desde PostgreSQL) a través de StrategyService
+- Mock DataService con cursor temporal, SimulatedClock (patcha `time.time()`), RejectTracker (categoriza rechazos via loguru sink)
+- Flags: `--profile default|aggressive|scalping`, `--verbose`, `--pair`, `--warmup`
+- Resultados en 5.4 días de datos: default=6 setups (~1.1/día), aggressive=15 (~2.8/día), scalping=143 (~26.4/día)
+
+**Strategy Profiles (`config/settings.py`):**
+- 3 perfiles definidos en `STRATEGY_PROFILES`: default, aggressive, scalping
+- `apply_profile()` / `reset_profile()` para aplicar/resetear overrides
+- Se aplican al startup via env var `STRATEGY_PROFILE` o en runtime via Redis (`qf:bot:strategy_profile`)
+- 3 nuevos settings configurables (antes hardcoded):
+  - `REQUIRE_HTF_LTF_ALIGNMENT` — LTF debe alinear con HTF (default: True, scalping: False)
+  - `ALLOW_EQUILIBRIUM_TRADES` — permitir trades en zona equilibrium (default: False, scalping: True)
+  - `HTF_BIAS_REQUIRE_4H` — 4H debe definir trend (default: True, scalping: False)
+
+**Strategy code changes:**
+- `strategy_service/setups.py` — 3 checks hardcoded ahora respetan settings (CHoCH vs HTF, BOS vs HTF, equilibrium zone)
+- `strategy_service/service.py` — HTF bias logic respeta `HTF_BIAS_REQUIRE_4H`
+
+**Bot (`main.py`):**
+- `_sync_profile_from_redis()` — lee perfil de Redis al inicio de cada pipeline cycle, aplica hot-switch sin restart
+
+**Dashboard API:**
+- `dashboard/api/routes/profile.py` — GET/POST `/api/profile` (lee/escribe Redis)
+- `dashboard/api/main.py` — CORS actualizado a GET+POST, ruta profile montada
+
+**Dashboard frontend:**
+- `ProfileSelector.tsx` — dropdown con color-coded dot (verde/amarillo/rojo), warning badge pulsante cuando no está en default
+- `Header.tsx` — acepta children, ProfileSelector integrado junto a DEMO banner
+- `api.ts` — `postApi()` helper, tipos `ProfileResponse`/`ProfileInfo`
+- `globals.css` — estilos profile selector (responsive incluido)
+
+**Por qué:** El bot corría horas sin trades. El backtester demostró que la estrategia sí produce setups (~1/día con default), pero el mercado estaba en condiciones que no alineaban HTF con LTF. Los perfiles permiten experimentar con diferentes niveles de agresividad durante paper trading sin riesgo.
+**Impacto:** config/, strategy_service/, scripts/, dashboard/, main.py, docs/context/
+**Tests:** 291 passing (sin cambios en tests existentes).
+
 ## [2026-03-04] — Dashboard — Mobile Responsiveness
 **Qué cambió:**
 - `dashboard/web/src/app/globals.css` — 2 breakpoints: tablet (≤1023px, grid 2 columnas) y mobile (≤639px, grid 1 columna). Columnas low-priority ocultas en mobile, tablas con scroll horizontal, cards con padding reducido.

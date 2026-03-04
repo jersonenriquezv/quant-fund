@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from dashboard.api.database import init_db, close_db
-from dashboard.api.routes import health, market, trades, ai, risk, candles, stats, whales
+from dashboard.api.routes import health, market, trades, ai, risk, candles, stats, whales, profile
 from dashboard.api.ws import router as ws_router
 
 
@@ -26,7 +26,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
@@ -39,4 +39,5 @@ app.include_router(risk.router, prefix="/api")
 app.include_router(candles.router, prefix="/api")
 app.include_router(stats.router, prefix="/api")
 app.include_router(whales.router, prefix="/api")
+app.include_router(profile.router, prefix="/api")
 app.include_router(ws_router, prefix="/api")

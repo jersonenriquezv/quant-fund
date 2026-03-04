@@ -147,6 +147,16 @@ class Settings:
     # Max candles between sweep and CHoCH for Setup A validity
     SETUP_A_MAX_SWEEP_CHOCH_GAP: int = 20
 
+    # --- Strategy behavior (profile-controlled) ---
+    # If True, LTF structure (CHoCH/BOS) must align with HTF bias direction.
+    # Scalping sets False to allow LTF-only trades regardless of HTF.
+    REQUIRE_HTF_LTF_ALIGNMENT: bool = True
+    # If True, trades in the equilibrium zone (around 50% of range) are blocked.
+    # Scalping sets False to allow trading near equilibrium.
+    ALLOW_EQUILIBRIUM_TRADES: bool = False
+    # If True, 4H trend must be defined for HTF bias. If False, 1H alone is enough.
+    HTF_BIAS_REQUIRE_4H: bool = True
+
     # ========================
     # AI SERVICE — Claude Filter
     # ========================
@@ -348,5 +358,88 @@ class Settings:
     RECONNECT_BACKOFF_FACTOR: float = 2.0
 
 
+    # ========================
+    # STRATEGY PROFILE
+    # ========================
+    # Active profile name — set via env, Redis, or dashboard
+    STRATEGY_PROFILE: str = os.getenv("STRATEGY_PROFILE", "default")
+
+
+# ================================================================
+# Profile definitions — parameter overrides per profile
+# ================================================================
+# Only strategy-related settings are overridden. Risk guardrails
+# (MAX_DAILY_DRAWDOWN, MAX_OPEN_POSITIONS, etc.) are NEVER changed.
+
+STRATEGY_PROFILES: dict[str, dict] = {
+    "default": {
+        # No overrides — uses Settings() defaults
+    },
+    "aggressive": {
+        "OB_PROXIMITY_PCT": 0.005,
+        "PD_EQUILIBRIUM_BAND": 0.01,
+        "SETUP_A_MAX_SWEEP_CHOCH_GAP": 35,
+        "OB_MIN_VOLUME_RATIO": 1.2,
+        "SWEEP_MIN_VOLUME_RATIO": 1.5,
+        "MIN_RISK_REWARD": 1.2,
+        "OB_MAX_AGE_HOURS": 72,
+        "FVG_MAX_AGE_HOURS": 72,
+    },
+    "scalping": {
+        # Unlock hardcoded checks
+        "REQUIRE_HTF_LTF_ALIGNMENT": False,
+        "ALLOW_EQUILIBRIUM_TRADES": True,
+        "HTF_BIAS_REQUIRE_4H": False,
+        # Wider entry zones
+        "OB_PROXIMITY_PCT": 0.006,
+        "PD_EQUILIBRIUM_BAND": 0.005,
+        "SETUP_A_MAX_SWEEP_CHOCH_GAP": 40,
+        # Lower volume thresholds
+        "OB_MIN_VOLUME_RATIO": 1.0,
+        "SWEEP_MIN_VOLUME_RATIO": 1.2,
+        # Faster pattern turnover
+        "OB_MAX_AGE_HOURS": 24,
+        "FVG_MAX_AGE_HOURS": 24,
+        # Accept tighter R:R
+        "MIN_RISK_REWARD": 1.0,
+        # More trades allowed per day
+        "MAX_TRADES_PER_DAY": 20,
+        # Shorter cooldown
+        "COOLDOWN_MINUTES": 10,
+    },
+}
+
+
+def apply_profile(settings_obj: Settings, profile_name: str) -> str:
+    """Apply a strategy profile to the settings object.
+
+    Returns the applied profile name, or "default" if profile not found.
+    Only overrides keys defined in the profile — everything else stays.
+    """
+    if profile_name not in STRATEGY_PROFILES:
+        return "default"
+
+    overrides = STRATEGY_PROFILES[profile_name]
+    for key, value in overrides.items():
+        if hasattr(settings_obj, key):
+            setattr(settings_obj, key, value)
+    settings_obj.STRATEGY_PROFILE = profile_name
+    return profile_name
+
+
+def reset_profile(settings_obj: Settings) -> None:
+    """Reset all profile-overridable settings to defaults."""
+    defaults = Settings()
+    for profile_overrides in STRATEGY_PROFILES.values():
+        for key in profile_overrides:
+            if hasattr(defaults, key):
+                setattr(settings_obj, key, getattr(defaults, key))
+    settings_obj.STRATEGY_PROFILE = "default"
+
+
 # Instancia global — importar esta en todo el proyecto
 settings = Settings()
+
+# Apply profile from env var at startup
+if settings.STRATEGY_PROFILE != "default":
+    apply_profile(settings, settings.STRATEGY_PROFILE)

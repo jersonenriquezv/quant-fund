@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { usePolling } from "@/lib/hooks";
 import type { HealthData } from "@/lib/api";
 
-export function Header() {
+export function Header({ children }: { children?: React.ReactNode }) {
   const { data: health } = usePolling<HealthData>("/health", 10000);
   const [clock, setClock] = useState("");
 
@@ -28,8 +28,11 @@ export function Header() {
         </span>
       </div>
 
-      <div className="demo-banner" style={{ padding: "3px 16px", borderRadius: 3, fontSize: 11 }}>
-        DEMO MODE
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <div className="demo-banner" style={{ padding: "3px 16px", borderRadius: 3, fontSize: 11 }}>
+          DEMO MODE
+        </div>
+        {children}
       </div>
 
       <div style={{ color: "var(--text-muted)", fontSize: 13, fontVariantNumeric: "tabular-nums" }}>

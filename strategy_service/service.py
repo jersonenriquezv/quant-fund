@@ -193,11 +193,14 @@ class StrategyService:
     def _determine_htf_bias(self, state_4h, state_1h) -> str:
         """Determine HTF bias from 4H and 1H analysis.
 
-        4H trend dominates. If 4H is undefined, use 1H.
-        If both are undefined, no trading.
+        Default (HTF_BIAS_REQUIRE_4H=True): 4H must define trend, 1H fallback.
+        Scalping (HTF_BIAS_REQUIRE_4H=False): 1H alone is sufficient.
+        If all required timeframes are undefined, no trading.
         """
         if state_4h.trend != "undefined":
             return state_4h.trend
         if state_1h.trend != "undefined":
+            if settings.HTF_BIAS_REQUIRE_4H:
+                logger.debug("4H trend undefined, falling back to 1H")
             return state_1h.trend
         return "undefined"

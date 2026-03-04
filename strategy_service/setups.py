@@ -79,7 +79,8 @@ class SetupEvaluator:
         # This means we only trade when LTF structure confirms HTF direction.
         # Reversal setups (CHoCH opposing HTF) are intentionally excluded
         # because they have lower win rates without additional confirmation.
-        if direction != htf_bias:
+        # Profiles (e.g. scalping) can disable this requirement.
+        if settings.REQUIRE_HTF_LTF_ALIGNMENT and direction != htf_bias:
             logger.debug(f"Setup A [{pair}]: CHoCH {direction} != HTF {htf_bias}")
             return None
 
@@ -228,8 +229,8 @@ class SetupEvaluator:
         latest_bos = bos_breaks[-1]
         direction = latest_bos.direction
 
-        # Direction must align with HTF bias
-        if direction != htf_bias:
+        # Direction must align with HTF bias (unless profile disables it)
+        if settings.REQUIRE_HTF_LTF_ALIGNMENT and direction != htf_bias:
             logger.debug(f"Setup B [{pair}]: BOS {direction} != HTF {htf_bias}")
             return None
 
@@ -465,7 +466,7 @@ class SetupEvaluator:
             return False
         if direction == "bearish" and pd_zone.zone == "discount":
             return False
-        if pd_zone.zone == "equilibrium":
+        if pd_zone.zone == "equilibrium" and not settings.ALLOW_EQUILIBRIUM_TRADES:
             return False
 
         return True

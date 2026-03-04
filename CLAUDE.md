@@ -11,6 +11,13 @@ If any layer says NO, the trade does NOT execute.
 ## Language Rule
 ALL code, comments, variable names, docstrings, commit messages, and log messages MUST be in English. No exceptions. The docs/context/ files can be in Spanish (they are for the user). Agent instructions are in Spanish but all output code is in English.
 
+## Mobile Responsiveness Rule
+ALL dashboard UI changes MUST work on mobile (375px+). The dashboard uses 2 CSS breakpoints in `globals.css`: tablet (≤1023px, 2-column grid) and mobile (≤639px, single column). When adding or modifying any component in `dashboard/web/`:
+* Test at 375px width (iPhone SE) — nothing should overflow or be unusable
+* Use CSS classes instead of inline styles for any layout property that needs to change on mobile (grid-template-columns, font-size, flex-wrap, etc.)
+* Hide low-priority table columns on mobile via `display: none` classes
+* Tables must scroll horizontally on narrow screens (`.scroll-y` already handles this)
+
 ## Technical Stack
 
 * **Language:** Python (entire system)
