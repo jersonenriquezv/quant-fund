@@ -70,6 +70,7 @@ AIDecision { confidence, approved, reasoning, adjustments, warnings }
 - `max_retries=2` con backoff del SDK
 - Strip de markdown code fences si Claude wrappea el JSON
 - Validación de campos requeridos (confidence, approved, reasoning)
+- Logs token usage on every successful call: `Claude tokens: input=X output=Y total=Z`
 - Todo error → retorna None (fail-safe)
 
 ### `ai_service/service.py` — Facade (AIService)
@@ -109,7 +110,7 @@ AIDecision { confidence, approved, reasoning, adjustments, warnings }
 Temperature 0 puede hacer que Claude sea demasiado repetitivo con las mismas razones. 0.3 da decisiones consistentes pero permite variación en el razonamiento. En fondos cuantitativos, el modelo no debe ser creativo — debe ser consistente.
 
 **¿Cuánto cuesta por evaluación?**
-~400 tokens input + ~300 tokens output ≈ $0.003/evaluación con Sonnet. Con 5-15 setups/semana ≈ $0.10-0.30/semana. Negligible.
+~1,100 tokens input + ~200 tokens output ≈ $0.006/evaluación con Sonnet ($3/MTok input, $15/MTok output). Con 5-15 setups/semana ≈ $0.12-0.36/mes. El uso exacto se loguea en cada llamada (`Claude tokens: input=X output=Y total=Z`).
 
 **¿Por qué no streaming?**
 La respuesta completa es ~200-400 tokens. No hay beneficio en recibir token por token. Un `await` simple es suficiente.

@@ -44,6 +44,14 @@ class ClaudeClient:
                 temperature=settings.AI_TEMPERATURE,
             )
 
+            # Log token usage for cost tracking
+            usage = response.usage
+            logger.info(
+                f"Claude tokens: input={usage.input_tokens} "
+                f"output={usage.output_tokens} "
+                f"total={usage.input_tokens + usage.output_tokens}"
+            )
+
             raw_text = response.content[0].text
 
             # Strip markdown code fences if Claude wraps the JSON

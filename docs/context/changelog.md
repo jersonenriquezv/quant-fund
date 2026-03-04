@@ -1,5 +1,12 @@
 # Changelog — One-Man Quant Fund
 
+## [2026-03-04] — AI Service: Token usage logging
+**Qué cambió:**
+- `ai_service/claude_client.py` — Loguea `response.usage` (input_tokens, output_tokens, total) después de cada llamada exitosa a Claude. Permite rastrear consumo real de tokens por evaluación.
+- `docs/context/03-ai-filter.md` — Actualizado: documenta token logging, corrige estimación de costo (~1,100 input + ~200 output ≈ $0.006/eval)
+
+---
+
 ## [2026-03-04] — Dashboard: Order Block Panel + HTF Bias Indicator
 **Qué cambió:**
 
