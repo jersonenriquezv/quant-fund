@@ -20,10 +20,11 @@ logger = setup_logger("risk_service")
 class RiskService:
     """Layer 4 — enforces non-negotiable guardrails before trade execution."""
 
-    def __init__(self, capital: float) -> None:
+    def __init__(self, capital: float, data_service=None) -> None:
         self._sizer = PositionSizer()
         self._guardrails = Guardrails()
         self._state = RiskStateTracker(capital)
+        self._data_service = data_service
         logger.info(f"Risk Service initialized with capital=${capital:.2f}")
 
     # ================================================================
@@ -60,6 +61,11 @@ class RiskService:
         for passed, reason in checks:
             if not passed:
                 logger.warning(f"Trade REJECTED: {reason} | {setup.pair} {setup.direction}")
+                self._persist_risk_event("guardrail_rejected", {
+                    "pair": setup.pair,
+                    "direction": setup.direction,
+                    "reason": reason,
+                })
                 return RiskApproval(
                     approved=False,
                     position_size=0.0,
@@ -119,3 +125,12 @@ class RiskService:
     def update_capital(self, amount: float) -> None:
         """Update tracked capital (e.g. from exchange balance query)."""
         self._state.set_capital(amount)
+
+    def _persist_risk_event(self, event_type: str, details: dict) -> None:
+        """Write risk event to PostgreSQL (fire-and-forget)."""
+        if self._data_service is None:
+            return
+        try:
+            self._data_service.postgres.insert_risk_event(event_type, details)
+        except Exception as e:
+            logger.error(f"Failed to persist risk event: {e}")

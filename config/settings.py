@@ -40,6 +40,12 @@ class Settings:
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 
     # ========================
+    # TELEGRAM NOTIFICATIONS
+    # ========================
+    TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
+
+    # ========================
     # BASE DE DATOS
     # ========================
     POSTGRES_HOST: str = os.getenv("POSTGRES_HOST", "localhost")

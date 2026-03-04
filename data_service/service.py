@@ -104,6 +104,16 @@ class DataService:
         """Get recent whale movements from Etherscan."""
         return self._etherscan.get_recent_movements(hours)
 
+    @property
+    def postgres(self) -> PostgresStore:
+        """Direct access to PostgreSQL store for trade persistence."""
+        return self._postgres
+
+    @property
+    def redis(self) -> RedisStore:
+        """Direct access to Redis store for state caching."""
+        return self._redis
+
     def get_market_snapshot(self, pair: str) -> MarketSnapshot:
         """Assemble a complete MarketSnapshot for a pair.
 

@@ -13,3 +13,5 @@ logs/
 *.md
 .env
 config/.env
+dashboard/web/node_modules/
+dashboard/web/.next/

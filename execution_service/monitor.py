@@ -24,6 +24,7 @@ Critical safety:
 """
 
 import asyncio
+import json
 import time
 from typing import Optional
 
@@ -38,9 +39,12 @@ logger = setup_logger("execution_service")
 class PositionMonitor:
     """Background loop managing open positions through their lifecycle."""
 
-    def __init__(self, executor: OrderExecutor, risk_service) -> None:
+    def __init__(self, executor: OrderExecutor, risk_service,
+                 data_store=None, notifier=None) -> None:
         self._executor = executor
         self._risk = risk_service
+        self._data_store = data_store  # DataService for DB persistence
+        self._notifier = notifier      # TelegramNotifier (optional)
         self._positions: dict[str, ManagedPosition] = {}  # keyed by pair
         self._running = False
         self._task: Optional[asyncio.Task] = None
@@ -84,6 +88,7 @@ class PositionMonitor:
     def register(self, pos: ManagedPosition) -> None:
         """Register a new position for monitoring."""
         self._positions[pos.pair] = pos
+        self._update_positions_cache()
         logger.info(f"Position registered: {pos.pair} {pos.direction} phase={pos.phase}")
 
     # ================================================================
@@ -169,6 +174,11 @@ class PositionMonitor:
 
         if sl_order is None:
             logger.error(f"SL placement FAILED after entry fill — EMERGENCY CLOSE: {pos.pair}")
+            # Telegram: emergency close
+            if self._notifier is not None:
+                asyncio.ensure_future(
+                    self._notifier.notify_emergency(pos, "SL placement failed — market closed")
+                )
             await self._executor.close_position_market(
                 pos.pair, close_side, pos.filled_size
             )
@@ -205,6 +215,13 @@ class PositionMonitor:
         pos.phase = "active"
         logger.info(f"Position ACTIVE: {pos.pair} {pos.direction} "
                      f"entry={pos.actual_entry_price} size={pos.filled_size:.6f}")
+
+        # Telegram: trade opened
+        if self._notifier is not None:
+            asyncio.ensure_future(self._notifier.notify_trade_opened(pos))
+
+        # Persist trade to PostgreSQL
+        self._persist_trade_open(pos)
 
     # ================================================================
     # State: active / tp1_hit / tp2_hit
@@ -354,9 +371,100 @@ class PositionMonitor:
             f"pnl={pos.pnl_pct*100:.2f}%"
         )
 
+        # Telegram: trade closed (skip cancelled entries — no real trade)
+        if self._notifier is not None and reason != "cancelled":
+            asyncio.ensure_future(self._notifier.notify_trade_closed(pos))
+
+        # Persist trade close to PostgreSQL
+        self._persist_trade_close(pos)
+
+        # Update Redis positions cache
+        self._update_positions_cache()
+
         # Notify Risk Service
         if self._risk is not None:
             self._risk.on_trade_closed(pos.pair, pos.pnl_pct, pos.closed_at)
 
         # Remove from tracking
         self._positions.pop(pos.pair, None)
+
+    # ================================================================
+    # DB persistence helpers
+    # ================================================================
+
+    def _persist_trade_open(self, pos: ManagedPosition) -> None:
+        """Insert trade into PostgreSQL on entry fill."""
+        if self._data_store is None:
+            return
+        try:
+            trade_id = self._data_store.postgres.insert_trade(
+                pair=pos.pair,
+                direction=pos.direction,
+                setup_type=pos.setup_type,
+                entry_price=pos.entry_price,
+                sl_price=pos.sl_price,
+                tp1_price=pos.tp1_price,
+                tp2_price=pos.tp2_price,
+                tp3_price=pos.tp3_price,
+                position_size=pos.filled_size,
+                ai_confidence=pos.ai_confidence,
+                actual_entry=pos.actual_entry_price,
+            )
+            pos.db_trade_id = trade_id
+        except Exception as e:
+            logger.error(f"Failed to persist trade open: {pos.pair} {e}")
+
+    def _persist_trade_close(self, pos: ManagedPosition) -> None:
+        """Update trade in PostgreSQL on position close."""
+        if self._data_store is None:
+            return
+        trade_id = getattr(pos, "db_trade_id", None)
+        if trade_id is None:
+            return
+        try:
+            # Calculate USD PnL
+            pnl_usd = None
+            if pos.actual_entry_price and pos.filled_size and pos.pnl_pct:
+                pnl_usd = pos.actual_entry_price * pos.filled_size * pos.pnl_pct
+
+            self._data_store.postgres.update_trade(
+                trade_id=trade_id,
+                actual_exit=None,  # We don't track exact exit price
+                exit_reason=pos.close_reason,
+                pnl_usd=pnl_usd,
+                pnl_pct=pos.pnl_pct,
+                status="closed",
+            )
+        except Exception as e:
+            logger.error(f"Failed to persist trade close: {pos.pair} {e}")
+
+    def _update_positions_cache(self) -> None:
+        """Write current open positions to Redis for dashboard consumption."""
+        if self._data_store is None:
+            return
+        try:
+            positions_data = []
+            for pair, pos in self._positions.items():
+                if pos.phase == "closed":
+                    continue
+                positions_data.append({
+                    "pair": pos.pair,
+                    "direction": pos.direction,
+                    "setup_type": pos.setup_type,
+                    "phase": pos.phase,
+                    "entry_price": pos.entry_price,
+                    "actual_entry_price": pos.actual_entry_price,
+                    "sl_price": pos.sl_price,
+                    "tp1_price": pos.tp1_price,
+                    "tp2_price": pos.tp2_price,
+                    "tp3_price": pos.tp3_price,
+                    "filled_size": pos.filled_size,
+                    "leverage": pos.leverage,
+                    "ai_confidence": pos.ai_confidence,
+                    "pnl_pct": pos.pnl_pct,
+                    "created_at": pos.created_at,
+                    "filled_at": pos.filled_at,
+                })
+            self._data_store.redis.set_positions(json.dumps(positions_data))
+        except Exception as e:
+            logger.error(f"Failed to update positions cache: {e}")

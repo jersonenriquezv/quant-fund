@@ -54,10 +54,11 @@ tp2_hit ──[SL fills]───> closed
 
 ## Reglas de seguridad críticas
 
-1. **Entry fill + SL falla → EMERGENCY market close.** Nunca hay posición abierta sin SL.
+1. **Entry fill + SL falla → EMERGENCY market close.** Nunca hay posición abierta sin SL. Envía alerta Telegram.
 2. **Ajuste de SL: nuevo ANTES de cancelar viejo.** Cero ventana sin protección.
 3. **Notificación a Risk: en PLACE, no en fill.** Si hay 2 entries pendientes, Risk los cuenta como 2 posiciones abiertas.
 4. **Shutdown: cancela entries pendientes, NO cierra posiciones activas.** Los SL/TP viven en el exchange y sobreviven al bot.
+5. **Telegram notifications:** Entry fill → `notify_trade_opened`, position close → `notify_trade_closed`, SL fail → `notify_emergency`. Fire-and-forget via `asyncio.ensure_future`.
 
 ## Slippage tracking
 
@@ -73,7 +74,7 @@ Slippage: BTC/USDT expected=50000.00 actual=50025.00 diff=0.0500%
 | `execution_service/__init__.py` | Exporta ExecutionService |
 | `execution_service/service.py` | Facade — execute(), start(), stop(), health() |
 | `execution_service/executor.py` | Wrapper ccxt — place/cancel/fetch orders |
-| `execution_service/monitor.py` | Background loop — máquina de estados |
+| `execution_service/monitor.py` | Background loop — máquina de estados + notificaciones Telegram |
 | `execution_service/models.py` | ManagedPosition (estado mutable interno) |
 
 ## Settings

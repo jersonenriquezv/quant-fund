@@ -46,6 +46,34 @@ services:
       - ./logs:/app/logs
     stop_grace_period: 30s
 
+  api:
+    build:
+      context: .
+      dockerfile: dashboard/api/Dockerfile
+      network: host
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./config/.env:/app/config/.env:ro
+
+  web:
+    build:
+      context: ./dashboard/web
+      network: host
+      args:
+        NEXT_PUBLIC_API_URL: "http://192.168.1.238:8000"
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - api
+    environment:
+      PORT: "3000"
+
 volumes:
   pgdata:
   redisdata:

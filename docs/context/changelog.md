@@ -1,5 +1,34 @@
 # Changelog — One-Man Quant Fund
 
+## [2026-03-04] — Telegram Notifications
+**Qué cambió:**
+- `shared/notifier.py` — Nuevo módulo `TelegramNotifier`. Envía mensajes via Telegram Bot API (httpx POST). Fire-and-forget: si Telegram falla, el bot continúa. 6 métodos: `notify_setup_detected`, `notify_ai_decision`, `notify_risk_rejected`, `notify_trade_opened`, `notify_trade_closed`, `notify_emergency`.
+- `config/settings.py` — 2 settings nuevos: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (desde .env).
+- `main.py` — Inicializa `TelegramNotifier` al startup. Notifica en pipeline: setup detected, AI decision (approved/rejected), risk rejected.
+- `execution_service/service.py` — Acepta `notifier` parameter, pasa a `PositionMonitor`.
+- `execution_service/monitor.py` — Acepta `notifier` parameter. Notifica: trade opened (entry fill), trade closed (SL/TP/timeout), emergency close (SL placement failure).
+
+**Por qué:** Monitorear el bot desde el celular sin revisar el dashboard constantemente. Push notifications instantáneas en Telegram para cada evento clave.
+**Impacto:** shared/notifier.py, config/settings.py, main.py, execution_service/
+
+## [2026-03-04] — Dashboard — Phase 6
+**Qué cambió:**
+- **Trade persistence** — Bot ahora escribe a PostgreSQL: `insert_trade()`, `update_trade()`, `insert_ai_decision()`, `insert_risk_event()` en `data_store.py`. Wired en `monitor.py` (entry fill/close), `main.py` (AI decisions), `risk_service/service.py` (guardrail events). Redis key `qf:bot:positions` para posiciones abiertas.
+- **FastAPI backend** (`dashboard/api/`) — 8 endpoints read-only + WebSocket. asyncpg + redis.asyncio. Pydantic schemas. Health check con PG + Redis ping.
+- **Next.js frontend** (`dashboard/web/`) — Single-page "VAULT" theme: dark (#0a0e17), monospace, tabular-nums. 8 componentes: Header, PricePanel, RiskGauge (SVG arc DD gauges), PositionCard, PnLChart (SVG sparkline), TradeLog, AILog (confidence bars), HealthGrid.
+- **Docker** — 2 nuevos servicios en `docker-compose.yml`: `api` (python:3.12-slim, port 8000) y `web` (node:20-alpine, port 3000). `network_mode: host`.
+- `execution_service/models.py` — Campo `db_trade_id` para tracking en PostgreSQL
+- `execution_service/monitor.py` — `data_store` parameter, `_persist_trade_open/close()`, `_update_positions_cache()`
+- `execution_service/service.py` — Acepta `data_service` parameter, pasa a PositionMonitor
+- `risk_service/service.py` — Acepta `data_service` parameter, `_persist_risk_event()` en guardrail hits
+- `data_service/service.py` — Properties `postgres` y `redis` para acceso directo
+- `data_service/data_store.py` — 4 métodos nuevos en PostgresStore, `set/get_positions` en RedisStore
+- `main.py` — Pasa `data_service` a Risk y Execution. Persiste AI decisions y risk events en pipeline.
+- `docs/context/06-dashboard.md` — Documentación completa
+
+**Por qué:** Sexto paso — monitorear el bot sin `docker compose logs`. Dashboard en http://192.168.1.238:3000.
+**Impacto:** dashboard/, data_service/, execution_service/, risk_service/, main.py, docker-compose.yml, docs/
+
 ## [2026-03-04] — Docker Compose deployment
 **Qué cambió:**
 - `.dockerignore` — Excluye .git, venv, tests, docs, .env del build context

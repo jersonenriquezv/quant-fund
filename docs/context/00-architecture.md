@@ -50,6 +50,15 @@ Sin esta arquitectura, tendríamos un solo programa gigante donde todo está mez
                 ┌──────────────┐
                 │   OKX API    │
                 └──────────────┘
+
+        ┌─────────────────────────────┐
+        │  TELEGRAM NOTIFIER          │ ← Push al celular
+        │  (observador silencioso)    │
+        └─────────────────────────────┘
+          ↑ Notifica en cada evento clave:
+          │ setup detectado, AI aprobó/rechazó,
+          │ risk rechazó, trade abierto/cerrado,
+          │ emergencias
 ```
 
 ## Cómo se comunican los servicios
@@ -64,6 +73,8 @@ Sin esta arquitectura, tendríamos un solo programa gigante donde todo está mez
 9. PositionMonitor gestiona el ciclo de vida: entry fill → TP1 (SL→breakeven) → TP2 (SL→TP1) → TP3/SL
 
 **Regla clave:** Si CUALQUIER servicio dice NO, el trade se descarta. No hay "pero" ni "tal vez".
+
+**Notificaciones Telegram:** En cada paso del pipeline (setup detectado, AI decision, risk rejection, trade abierto/cerrado, emergencias), el bot envía push notification al celular via Telegram Bot API. Fire-and-forget — si Telegram falla, el bot sigue operando.
 
 ## Detalles técnicos
 
@@ -156,6 +167,7 @@ Actualmente TP3 usa una limit order fija al siguiente nivel de liquidez. CLAUDE.
 - Reconstruir estado de Risk Service desde PostgreSQL al arrancar
 
 ## Cambios recientes
+- 2026-03-04: Telegram notifications — push al celular en cada evento clave del pipeline (`shared/notifier.py`).
 - 2026-03-04: Docker Compose deployment — bot + PostgreSQL + Redis containerizados.
 - 2026-03-04: Las 5 capas implementadas. Pipeline completo Data → Strategy → AI → Risk → Execution.
 - 2026-03-03: Documento inicial creado con arquitectura de 5 capas.

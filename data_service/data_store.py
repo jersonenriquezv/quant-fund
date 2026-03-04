@@ -178,6 +178,20 @@ class RedisStore:
         key = _redis_key("bot", key_name)
         return self._client.get(key)
 
+    def set_positions(self, positions_json: str) -> None:
+        """Cache current open positions as JSON."""
+        if not self._client:
+            return
+        key = _redis_key("bot", "positions")
+        self._client.set(key, positions_json, ex=86400)
+
+    def get_positions(self) -> Optional[str]:
+        """Get cached open positions JSON."""
+        if not self._client:
+            return None
+        key = _redis_key("bot", "positions")
+        return self._client.get(key)
+
     def set_last_candle_ts(self, pair: str, timeframe: str, timestamp: int) -> None:
         """Track timestamp of last processed candle per pair/tf."""
         if not self._client:
@@ -371,6 +385,146 @@ class PostgresStore:
         except psycopg2.Error as e:
             logger.error(f"PostgreSQL candle load failed: pair={pair} tf={timeframe} error={e}")
             return []
+
+    # --- Trade Storage ---
+
+    def insert_trade(
+        self,
+        pair: str,
+        direction: str,
+        setup_type: str,
+        entry_price: float,
+        sl_price: float,
+        tp1_price: float,
+        tp2_price: float,
+        tp3_price: float,
+        position_size: float,
+        ai_confidence: float,
+        actual_entry: float | None = None,
+    ) -> int | None:
+        """Insert a new trade record. Returns trade id or None on failure."""
+        if not self._conn:
+            return None
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO trades
+                       (pair, direction, setup_type, entry_price, sl_price,
+                        tp1_price, tp2_price, tp3_price, position_size,
+                        ai_confidence, actual_entry, opened_at, status)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), 'open')
+                       RETURNING id""",
+                    (pair, direction, setup_type, entry_price, sl_price,
+                     tp1_price, tp2_price, tp3_price, position_size,
+                     ai_confidence, actual_entry),
+                )
+                row = cur.fetchone()
+                trade_id = row[0] if row else None
+            logger.info(f"PostgreSQL: inserted trade id={trade_id} {pair} {direction}")
+            return trade_id
+        except psycopg2.Error as e:
+            logger.error(f"PostgreSQL trade insert failed: {e}")
+            return None
+
+    def update_trade(
+        self,
+        trade_id: int,
+        actual_entry: float | None = None,
+        actual_exit: float | None = None,
+        exit_reason: str | None = None,
+        pnl_usd: float | None = None,
+        pnl_pct: float | None = None,
+        status: str | None = None,
+    ) -> bool:
+        """Update an existing trade record. Only sets non-None fields."""
+        if not self._conn or trade_id is None:
+            return False
+
+        fields = []
+        values = []
+        if actual_entry is not None:
+            fields.append("actual_entry = %s")
+            values.append(actual_entry)
+        if actual_exit is not None:
+            fields.append("actual_exit = %s")
+            values.append(actual_exit)
+        if exit_reason is not None:
+            fields.append("exit_reason = %s")
+            values.append(exit_reason)
+        if pnl_usd is not None:
+            fields.append("pnl_usd = %s")
+            values.append(pnl_usd)
+        if pnl_pct is not None:
+            fields.append("pnl_pct = %s")
+            values.append(pnl_pct)
+        if status is not None:
+            fields.append("status = %s")
+            values.append(status)
+            if status == "closed":
+                fields.append("closed_at = NOW()")
+
+        if not fields:
+            return True
+
+        values.append(trade_id)
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE trades SET {', '.join(fields)} WHERE id = %s",
+                    values,
+                )
+            logger.info(f"PostgreSQL: updated trade id={trade_id} status={status}")
+            return True
+        except psycopg2.Error as e:
+            logger.error(f"PostgreSQL trade update failed: id={trade_id} {e}")
+            return False
+
+    def insert_ai_decision(
+        self,
+        trade_id: int | None,
+        confidence: float,
+        reasoning: str,
+        adjustments: dict | None = None,
+        warnings: list | None = None,
+    ) -> int | None:
+        """Insert an AI decision record. trade_id can be None for rejections."""
+        if not self._conn:
+            return None
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO ai_decisions
+                       (trade_id, confidence, reasoning, adjustments, warnings)
+                       VALUES (%s, %s, %s, %s, %s)
+                       RETURNING id""",
+                    (trade_id, confidence, reasoning,
+                     json.dumps(adjustments or {}),
+                     json.dumps(warnings or [])),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+        except psycopg2.Error as e:
+            logger.error(f"PostgreSQL ai_decision insert failed: {e}")
+            return None
+
+    def insert_risk_event(
+        self, event_type: str, details: dict
+    ) -> int | None:
+        """Insert a risk event record."""
+        if not self._conn:
+            return None
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO risk_events (event_type, details)
+                       VALUES (%s, %s) RETURNING id""",
+                    (event_type, json.dumps(details)),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+        except psycopg2.Error as e:
+            logger.error(f"PostgreSQL risk_event insert failed: {e}")
+            return None
 
     def close(self) -> None:
         if self._conn:

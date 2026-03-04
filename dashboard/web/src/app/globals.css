@@ -1,0 +1,221 @@
+:root {
+  --bg-primary: #0a0e17;
+  --bg-secondary: #111827;
+  --bg-card: #151c2c;
+  --border: #1e293b;
+  --text-primary: #e2e8f0;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --accent: #3b82f6;
+  --long: #10b981;
+  --short: #ef4444;
+  --warning: #f59e0b;
+  --demo-banner: #d97706;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.dashboard {
+  display: grid;
+  grid-template-columns: 1fr 1fr 340px;
+  grid-template-rows: auto auto 1fr 1fr auto;
+  gap: 1px;
+  min-height: 100vh;
+  max-width: 1920px;
+  margin: 0 auto;
+  padding: 0;
+}
+
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  padding: 16px;
+  overflow: hidden;
+}
+
+.card-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+
+/* Header spans full width */
+.header { grid-column: 1 / -1; }
+
+/* Row 2: price panels + risk */
+.price-panel { }
+.risk-gauge { grid-row: 2; grid-column: 3; }
+
+/* Row 3: positions + equity */
+.positions { grid-column: 1 / 3; }
+.equity { grid-column: 3; }
+
+/* Row 4: trade log + AI log */
+.trade-log { grid-column: 1 / 3; }
+.ai-log { grid-column: 3; }
+
+/* Row 5: health bar full width */
+.health-bar { grid-column: 1 / -1; }
+
+/* Number formatting */
+.num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.pnl-positive { color: var(--long); }
+.pnl-negative { color: var(--short); }
+
+/* Confidence bar */
+.conf-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-secondary);
+  overflow: hidden;
+}
+
+.conf-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+/* Table styles */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--text-muted);
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+tr:last-child td {
+  border-bottom: none;
+}
+
+/* Skeleton loading */
+.skeleton {
+  background: linear-gradient(90deg, var(--bg-secondary) 25%, var(--bg-card) 50%, var(--bg-secondary) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: 4px;
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Status dot */
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+}
+
+.status-dot.ok { background: var(--long); }
+.status-dot.down { background: var(--short); }
+.status-dot.warn { background: var(--warning); }
+
+/* Demo banner */
+.demo-banner {
+  background: var(--demo-banner);
+  color: #000;
+  text-align: center;
+  padding: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+}
+
+/* Direction badges */
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.badge-long {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--long);
+}
+
+.badge-short {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--short);
+}
+
+/* Scrollable containers */
+.scroll-y {
+  overflow-y: auto;
+  max-height: 300px;
+}
+
+.scroll-y::-webkit-scrollbar {
+  width: 4px;
+}
+
+.scroll-y::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scroll-y::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 2px;
+}
+
+/* Animation for new entries */
+@keyframes slideIn {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-in {
+  animation: slideIn 0.3s ease;
+}
+
+/* Pulse for status changes */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.pulse {
+  animation: pulse 2s ease-in-out infinite;
+}

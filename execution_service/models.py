@@ -62,3 +62,6 @@ class ManagedPosition:
     # Exit info
     close_reason: Optional[str] = None  # "tp1", "tp2", "tp3", "sl", "timeout", "emergency", "cancelled"
     pnl_pct: float = 0.0
+
+    # Database tracking
+    db_trade_id: Optional[int] = None

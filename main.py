@@ -22,6 +22,7 @@ from strategy_service import StrategyService
 from ai_service import AIService
 from risk_service import RiskService
 from execution_service import ExecutionService
+from shared.notifier import TelegramNotifier
 
 logger = setup_logger("main")
 
@@ -31,6 +32,7 @@ _strategy_service: StrategyService | None = None
 _ai_service: AIService | None = None
 _risk_service: RiskService | None = None
 _execution_service: ExecutionService | None = None
+_notifier: TelegramNotifier | None = None
 
 
 # ================================================================
@@ -63,11 +65,23 @@ async def on_candle_confirmed(candle: Candle) -> None:
         f"confluences={setup.confluences}"
     )
 
+    # Telegram: setup detected
+    if _notifier is not None:
+        await _notifier.notify_setup_detected(setup)
+
     # Layer 3: AI Service — Claude filter
     decision = None
     if _ai_service is not None and _data_service is not None:
         snapshot = _data_service.get_market_snapshot(candle.pair)
         decision = await _ai_service.evaluate(setup, snapshot)
+
+        # Persist AI decision (approved or rejected)
+        _persist_ai_decision(None, decision, setup)
+
+        # Telegram: AI decision (approved or rejected)
+        if _notifier is not None:
+            await _notifier.notify_ai_decision(setup, decision)
+
         if not decision.approved:
             logger.info(
                 f"AI rejected: confidence={decision.confidence:.2f} "
@@ -82,6 +96,14 @@ async def on_candle_confirmed(candle: Candle) -> None:
         approval = _risk_service.check(setup)
         if not approval.approved:
             logger.info(f"Risk rejected: {approval.reason}")
+            _persist_risk_event("trade_rejected", {
+                "pair": setup.pair,
+                "direction": setup.direction,
+                "reason": approval.reason,
+            })
+            # Telegram: risk rejected
+            if _notifier is not None:
+                await _notifier.notify_risk_rejected(setup, approval.reason)
             return
         logger.info(
             f"Risk approved: size={approval.position_size:.6f} "
@@ -92,6 +114,36 @@ async def on_candle_confirmed(candle: Candle) -> None:
     if _execution_service is not None and approval is not None and approval.approved:
         ai_confidence = decision.confidence if decision else 0.0
         await _execution_service.execute(setup, approval, ai_confidence)
+
+
+# ================================================================
+# Persistence helpers (called from pipeline callback)
+# ================================================================
+
+def _persist_ai_decision(trade_id, decision, setup) -> None:
+    """Write AI decision to PostgreSQL (fire-and-forget)."""
+    if _data_service is None:
+        return
+    try:
+        _data_service.postgres.insert_ai_decision(
+            trade_id=trade_id,
+            confidence=decision.confidence,
+            reasoning=decision.reasoning,
+            adjustments=decision.adjustments,
+            warnings=list(decision.warnings),
+        )
+    except Exception as e:
+        logger.error(f"Failed to persist AI decision: {e}")
+
+
+def _persist_risk_event(event_type: str, details: dict) -> None:
+    """Write risk event to PostgreSQL (fire-and-forget)."""
+    if _data_service is None:
+        return
+    try:
+        _data_service.postgres.insert_risk_event(event_type, details)
+    except Exception as e:
+        logger.error(f"Failed to persist risk event: {e}")
 
 
 # ================================================================
@@ -135,7 +187,10 @@ async def main() -> None:
         logger.error("Config validation failed. Exiting.")
         sys.exit(1)
 
-    global _data_service, _strategy_service, _ai_service, _risk_service, _execution_service
+    global _data_service, _strategy_service, _ai_service, _risk_service, _execution_service, _notifier
+
+    # Create Telegram notifier (disabled gracefully if not configured)
+    _notifier = TelegramNotifier(settings.TELEGRAM_BOT_TOKEN, settings.TELEGRAM_CHAT_ID)
 
     # Create DataService with pipeline callback
     _data_service = DataService(on_candle_confirmed=on_candle_confirmed)
@@ -148,10 +203,10 @@ async def main() -> None:
     _ai_service = AIService(_data_service)
 
     # Create RiskService — Layer 4 ($100 demo capital)
-    _risk_service = RiskService(capital=100.0)
+    _risk_service = RiskService(capital=100.0, data_service=_data_service)
 
     # Create ExecutionService — Layer 5
-    _execution_service = ExecutionService(_risk_service)
+    _execution_service = ExecutionService(_risk_service, _data_service, notifier=_notifier)
     await _execution_service.start()
 
     # Handle graceful shutdown
