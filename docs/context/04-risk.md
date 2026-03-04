@@ -79,10 +79,10 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
   1. Corre los 6 guardrails en orden (fail fast)
   2. Calcula position size y leverage
   3. Retorna RiskApproval (approved/rejected con razón)
-- **Para Execution Service (futuro):**
-  - `on_trade_opened(pair, direction, entry_price, timestamp)`
-  - `on_trade_closed(pair, pnl_pct, timestamp)`
-  - `update_capital(amount)`
+- **Para Execution Service (implementado):**
+  - `on_trade_opened(pair, direction, entry_price, timestamp)` — llamado al colocar entry order
+  - `on_trade_closed(pair, pnl_pct, timestamp)` — llamado al cerrar posición (SL, TP, timeout, emergency)
+  - `update_capital(amount)` — disponible para futuro sync con balance del exchange
 
 ### `risk_service/__init__.py`
 - Exporta `RiskService`
@@ -116,21 +116,21 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 TP1 cierra 50% de la posición a 1:1 por diseño — es un partial close, no el target real. TP2 (1:2) es donde se evalúa si el trade vale la pena.
 
 **¿Por qué estado en memoria y no en PostgreSQL?**
-Los checks son CPU puro (microsegundos). Depender de una DB haría los checks lentos y frágiles. Cuando el Execution Service esté listo, actualizará el estado via `on_trade_opened/closed`. Redis como backup opcional.
+Los checks son CPU puro (microsegundos). Depender de una DB haría los checks lentos y frágiles. El Execution Service actualiza el estado via `on_trade_opened/closed`. Redis como backup planeado para v2.
 
 **¿Por qué fail fast?**
 Si el cooldown está activo, no tiene sentido calcular position size. El primer NO es el NO final.
 
 **¿Qué pasa si el bot se reinicia?**
-Estado se pierde (es in-memory). Empezaría con 0 trades hoy, 0 DD. Esto es conservador — permite tradear inmediatamente. Cuando Execution Service esté listo, reconstruiremos estado desde PostgreSQL al arrancar.
+Estado se pierde (es in-memory). Empezaría con 0 trades hoy, 0 DD. Esto es conservador — permite tradear inmediatamente. Planeado para v2: reconstruir estado desde PostgreSQL al arrancar.
 
 **¿Qué pasa si `record_trade_closed()` recibe un pair que no está abierto?**
 No crashea. El trade se registra igual (P&L, cooldown, trades_today), pero emite un `logger.warning()` porque probablemente indica un bug en el pipeline (nombre de par inconsistente entre layers, o cierre duplicado). Busca en logs: `"Closed trade for X but no matching open position found"`.
 
 ## Limitaciones conocidas
 
-- **Estado in-memory**: Se pierde al reiniciar. Planeado para Phase 2 (Execution Service + Redis persistence).
-- **Max trade duration (12h)**: El setting existe (`MAX_TRADE_DURATION_HOURS`) pero NO se enforcea aquí — es responsabilidad del Execution Service (monitoreo de posiciones abiertas).
+- **Estado in-memory**: Se pierde al reiniciar. Planeado para v2 (Redis persistence).
+- **Max trade duration (12h)**: Enforceado por el Execution Service (`PositionMonitor` cierra posiciones después de `MAX_TRADE_DURATION_SECONDS`).
 - **Tracking por pair, no por trade ID**: Si hubiera 2 trades abiertos en el mismo pair (improbable con MAX_OPEN_POSITIONS=3 y solo BTC/ETH), el cierre matchearía el primero.
 
 ## Cambios recientes

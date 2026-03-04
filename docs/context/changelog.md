@@ -1,5 +1,48 @@
 # Changelog — One-Man Quant Fund
 
+## [2026-03-04] — Docker Compose deployment
+**Qué cambió:**
+- `.dockerignore` — Excluye .git, venv, tests, docs, .env del build context
+- `Dockerfile` — python:3.12-slim, pip install, `python -u main.py`, healthcheck via pgrep
+- `docker-compose.yml` — 3 servicios: postgres:16-alpine, redis:7-alpine, bot. Healthchecks, named volumes (`pgdata`, `redisdata`), `restart: unless-stopped`, `stop_grace_period: 30s`
+- `.env` (root) — Variable `POSTGRES_PASSWORD` para Docker Compose interpolation
+- `config/.env` — Template con todos los secrets del bot (montado read-only en container)
+- `docs/context/00-architecture.md` — Sección "Docker Compose — Deployment" con tabla de servicios, archivos, configuración, y comandos
+- `docs/context/01-data-service.md` — Status actualizado de "ready for integration" a "running in Docker"
+- `main.py` — Docstring actualizado (ya no dice "stub")
+- `docs/to-fix.md` — Issues pendientes documentados
+
+**Nota técnica:** Bot usa `network_mode: host` porque Docker bridge no tiene NAT configurado en el server. Build usa `network: host` para pip install. Dos `.env` necesarios: root para Compose interpolation, `config/.env` para el bot Python.
+
+**Por qué:** Sexto paso — containerizar el bot con sus dependencias (PostgreSQL, Redis) para correr 24/7.
+**Impacto:** Dockerfile, docker-compose.yml, .dockerignore, .env, config/.env, docs/
+
+## [2026-03-04] — Docs sync + trailing stop v2 roadmap
+**Qué cambió:**
+- `docs/context/00-architecture.md` — Estado actualizado a "5/5 capas implementadas". Removido Coinglass. Tabla de estado por capa con conteo de tests (280 total). Sección roadmap v2 con trailing stop y otras mejoras.
+- `docs/context/01-data-service.md` — main.py ya no es "stub", pipeline completo.
+- `docs/context/03-ai-filter.md` — "adjustments" actualizado: Execution Service ya existe, aplicar ajustes es para v2.
+- `docs/context/04-risk.md` — 3 referencias a "Execution Service (futuro)" actualizadas a "(implementado)". Max trade duration ahora es enforceado por PositionMonitor.
+- `docs/context/05-execution.md` — Roadmap v2 detallado para trailing stop: API de OKX, settings nuevos, cambios en monitor/executor, consideraciones de testing y fallback.
+
+**Por qué:** Los docs referenciaban Execution Service como futuro cuando ya está implementado. El usuario pidió documentar trailing stop para v2.
+**Impacto:** docs/context/ (6 archivos)
+
+## [2026-03-04] — Execution Service — Layer 5 implementado
+**Qué cambió:**
+- `execution_service/models.py` — ManagedPosition: estado mutable del ciclo de vida de cada trade (phase, order IDs, fills, PnL)
+- `execution_service/executor.py` — OrderExecutor: wrapper ccxt para OKX (limit, stop-market, TP, cancel, fetch, emergency close, fetch_position)
+- `execution_service/monitor.py` — PositionMonitor: loop async polling cada 5s, máquina de estados (pending_entry → active → tp1_hit → tp2_hit → closed)
+- `execution_service/service.py` — ExecutionService facade: execute(), start(), stop(), health()
+- `execution_service/__init__.py` — Exporta ExecutionService
+- `config/settings.py` — 4 settings nuevos: ENTRY_TIMEOUT_SECONDS, ORDER_POLL_INTERVAL, MARGIN_MODE, MAX_TRADE_DURATION_SECONDS
+- `main.py` — Pipeline completo 5 capas: Data → Strategy → AI → Risk → Execution. Variable scoping fix para decision/approval. Graceful shutdown del Execution Service.
+- `tests/test_execution.py` — 20 tests (facade, entry fill/timeout, TP1/TP2/SL lifecycle, emergency close, slippage, PnL, health)
+- `docs/context/05-execution.md` — Documentación completa del servicio
+
+**Por qué:** Quinto y último paso del build order. Sin Execution Service, los trades aprobados nunca se ejecutaban en OKX.
+**Impacto:** execution_service/, config/settings.py, main.py, tests/, docs/context/
+
 ## [2026-03-03] — Strategy Service review — 6 fixes
 **Qué cambió:**
 - `strategy_service/market_structure.py` — Solo un break por candle. Si una vela grande rompe múltiples swing levels, solo se registra el más significativo (mayor distancia). Los demás se marcan como consumidos.

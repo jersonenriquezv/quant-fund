@@ -118,4 +118,4 @@ La respuesta completa es ~200-400 tokens. No hay beneficio en recibir token por 
 Si Claude no está disponible, rechazamos. Un fallback a otro modelo necesita otro prompt y testing separado. Con 99.9% uptime de Anthropic, no vale la complejidad.
 
 **¿Qué pasa con los "adjustments"?**
-Claude puede sugerir modificar SL/TP. El campo se pasa en `AIDecision.adjustments`, pero ni Risk ni Execution lo leen todavía. Se implementará cuando Execution Service esté listo.
+Claude puede sugerir modificar SL/TP. El campo se pasa en `AIDecision.adjustments`, pero ni Risk ni Execution lo leen todavía. Planeado para v2 — aplicar ajustes de SL/TP antes de pasar al Execution Service.

@@ -4,8 +4,7 @@ Entry point for the One-Man Quant Fund trading bot.
 Single Python process running all 5 layers:
     Data Service → Strategy Service → AI Service → Risk Service → Execution Service
 
-Current state: Data Service + Strategy Service + AI Service + Risk Service.
-Execution Service is a stub that will be wired when built.
+Runs in Docker via docker-compose.yml (bot + PostgreSQL + Redis).
 
 Usage:
     python main.py
@@ -22,6 +21,7 @@ from data_service.service import DataService
 from strategy_service import StrategyService
 from ai_service import AIService
 from risk_service import RiskService
+from execution_service import ExecutionService
 
 logger = setup_logger("main")
 
@@ -30,6 +30,7 @@ _data_service: DataService | None = None
 _strategy_service: StrategyService | None = None
 _ai_service: AIService | None = None
 _risk_service: RiskService | None = None
+_execution_service: ExecutionService | None = None
 
 
 # ================================================================
@@ -63,6 +64,7 @@ async def on_candle_confirmed(candle: Candle) -> None:
     )
 
     # Layer 3: AI Service — Claude filter
+    decision = None
     if _ai_service is not None and _data_service is not None:
         snapshot = _data_service.get_market_snapshot(candle.pair)
         decision = await _ai_service.evaluate(setup, snapshot)
@@ -75,6 +77,7 @@ async def on_candle_confirmed(candle: Candle) -> None:
         logger.info(f"AI approved: confidence={decision.confidence:.2f}")
 
     # Layer 4: Risk Service — enforce guardrails + position sizing
+    approval = None
     if _risk_service is not None:
         approval = _risk_service.check(setup)
         if not approval.approved:
@@ -85,8 +88,10 @@ async def on_candle_confirmed(candle: Candle) -> None:
             f"leverage={approval.leverage:.2f}x risk={approval.risk_pct*100:.1f}%"
         )
 
-    # TODO: Wire Execution Service here
-    # execution_service.execute(setup, approval)
+    # Layer 5: Execution Service — place orders on exchange
+    if _execution_service is not None and approval is not None and approval.approved:
+        ai_confidence = decision.confidence if decision else 0.0
+        await _execution_service.execute(setup, approval, ai_confidence)
 
 
 # ================================================================
@@ -130,7 +135,7 @@ async def main() -> None:
         logger.error("Config validation failed. Exiting.")
         sys.exit(1)
 
-    global _data_service, _strategy_service, _ai_service, _risk_service
+    global _data_service, _strategy_service, _ai_service, _risk_service, _execution_service
 
     # Create DataService with pipeline callback
     _data_service = DataService(on_candle_confirmed=on_candle_confirmed)
@@ -144,6 +149,10 @@ async def main() -> None:
 
     # Create RiskService — Layer 4 ($100 demo capital)
     _risk_service = RiskService(capital=100.0)
+
+    # Create ExecutionService — Layer 5
+    _execution_service = ExecutionService(_risk_service)
+    await _execution_service.start()
 
     # Handle graceful shutdown
     shutdown_event = asyncio.Event()
@@ -164,6 +173,8 @@ async def main() -> None:
 
     # Graceful shutdown
     logger.info("Shutting down...")
+    if _execution_service is not None:
+        await _execution_service.stop()
     if _ai_service is not None:
         await _ai_service.close()
     await _data_service.stop()

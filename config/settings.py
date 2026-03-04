@@ -216,6 +216,18 @@ class Settings:
     })
 
     # ========================
+    # EXECUTION SERVICE
+    # ========================
+    # Seconds to wait for entry order to fill before cancelling
+    ENTRY_TIMEOUT_SECONDS: int = int(os.getenv("ENTRY_TIMEOUT_SECONDS", "900"))  # 15 min
+    # Seconds between order status polls
+    ORDER_POLL_INTERVAL: float = float(os.getenv("ORDER_POLL_INTERVAL", "5.0"))
+    # Margin mode for perpetual positions
+    MARGIN_MODE: str = "isolated"
+    # Max seconds a trade can stay open (12 hours)
+    MAX_TRADE_DURATION_SECONDS: int = int(os.getenv("MAX_TRADE_DURATION_SECONDS", "43200"))
+
+    # ========================
     # RECONNECTION
     # ========================
     # Segundos iniciales de espera para reconexión

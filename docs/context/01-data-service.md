@@ -1,6 +1,6 @@
 # Data Service
-> Last updated: 2026-03-03
-> Status: implemented (core complete, ready for integration)
+> Last updated: 2026-03-04
+> Status: implemented (complete, running in Docker)
 
 ## What it does (30 seconds)
 The Data Service is the bot's eyes and ears. It connects to OKX 24/7, collecting price data (candles), trade flow (CVD), market indicators (funding rate, open interest), liquidation cascades (via OI proxy), and whale movements. Every other service gets clean, validated, typed data through here.
@@ -141,7 +141,7 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 ### `main.py` — Entry Point
 - Single process, handles SIGINT/SIGTERM for graceful shutdown
 - Creates DataService with pipeline callback
-- Pipeline stub ready for Strategy → AI → Risk → Execution wiring
+- Pipeline completo: Data → Strategy → AI → Risk → Execution (5 capas wired)
 
 ## Configuration (`config/settings.py`)
 
