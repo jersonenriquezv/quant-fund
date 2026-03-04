@@ -46,7 +46,7 @@ class OrderExecutor:
 
     async def _run_sync(self, func, *args, **kwargs):
         """Run a sync ccxt call in the default executor."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, lambda: func(*args, **kwargs))
 
     # ================================================================
@@ -130,7 +130,11 @@ class OrderExecutor:
         """
         symbol = self._ccxt_symbol(pair)
         try:
-            params = {"reduceOnly": True, "triggerPrice": trigger_price}
+            params = {
+                "reduceOnly": True,
+                "triggerPrice": trigger_price,
+                "ordType": "conditional",
+            }
             order = await self._run_sync(
                 self._exchange.create_order,
                 symbol, "market", side, amount, None, params
@@ -216,7 +220,7 @@ class OrderExecutor:
             return False
 
     async def fetch_order(self, order_id: str, pair: str) -> Optional[dict]:
-        """Fetch order status. Returns order dict or None."""
+        """Fetch order status. Tries regular orders first, then algo orders."""
         symbol = self._ccxt_symbol(pair)
         try:
             order = await self._run_sync(
@@ -224,13 +228,41 @@ class OrderExecutor:
             )
             return order
         except ccxt.OrderNotFound:
-            logger.warning(f"Fetch: order not found: {order_id}")
-            return None
+            # SL/TP are algo orders on OKX — try algo endpoint
+            return await self._fetch_algo_order(order_id, pair)
         except ccxt.NetworkError as e:
             logger.error(f"Fetch order network error: {pair} order_id={order_id} {e}")
             return None
         except ccxt.ExchangeError as e:
             logger.error(f"Fetch order exchange error: {pair} order_id={order_id} {e}")
+            return None
+
+    async def _fetch_algo_order(self, order_id: str, pair: str) -> Optional[dict]:
+        """Fetch an algo/conditional order (SL/TP) from OKX."""
+        symbol = self._ccxt_symbol(pair)
+        try:
+            # Check pending algo orders
+            orders = await self._run_sync(
+                self._exchange.fetch_open_orders,
+                symbol, None, None, {"ordType": "conditional"}
+            )
+            for o in orders:
+                if o.get("id") == order_id:
+                    return o
+
+            # Check algo order history (filled/cancelled)
+            orders = await self._run_sync(
+                self._exchange.fetch_canceled_and_closed_orders,
+                symbol, None, None, {"ordType": "conditional"}
+            )
+            for o in orders:
+                if o.get("id") == order_id:
+                    return o
+
+            logger.warning(f"Algo order not found: {order_id}")
+            return None
+        except (ccxt.NetworkError, ccxt.ExchangeError) as e:
+            logger.error(f"Fetch algo order error: {pair} order_id={order_id} {e}")
             return None
 
     # ================================================================

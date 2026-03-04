@@ -114,6 +114,17 @@ export interface PositionData {
   filled_at: number | null;
 }
 
+export interface WhaleMovement {
+  timestamp: number;
+  wallet: string;
+  label: string;
+  action: string;
+  amount: number;
+  exchange: string;
+  significance: string;
+  chain: string;
+}
+
 export interface WSMessage {
   prices: Record<string, { price: number; open: number; high: number; low: number; timestamp: number }>;
   positions: PositionData[];

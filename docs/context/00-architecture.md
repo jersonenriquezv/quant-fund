@@ -1,6 +1,6 @@
 # Arquitectura del Sistema
 > Última actualización: 2026-03-04
-> Estado: **5/5 capas implementadas** — pipeline completo Data → Strategy → AI → Risk → Execution
+> Estado: **5/5 capas implementadas** — pipeline completo Data → Strategy → AI → Risk → Execution. Auditoría completa realizada: 12 CRITICALs corregidos.
 
 ## Qué hace (para entenderlo rápido)
 El sistema es un bot de trading que funciona como una línea de ensamblaje. Los datos entran por un lado, pasan por 5 filtros en orden, y si todos dicen "sí", se ejecuta el trade. Si cualquier filtro dice "no", el trade se descarta.
@@ -143,11 +143,11 @@ docker compose build --no-cache  # Rebuild después de cambios en código
 
 | Capa | Estado | Tests | Archivo principal |
 |------|--------|-------|-------------------|
-| 1. Data Service | Implementado | 88 | `data_service/service.py` |
-| 2. Strategy Service | Implementado | 76 | `strategy_service/service.py` |
+| 1. Data Service | Implementado + auditoría | 81 | `data_service/service.py` |
+| 2. Strategy Service | Implementado + auditoría | 76 | `strategy_service/service.py` |
 | 3. AI Service | Implementado | 34 | `ai_service/service.py` |
 | 4. Risk Service | Implementado | 69 | `risk_service/service.py` |
-| 5. Execution Service | Implementado | 20 | `execution_service/service.py` |
+| 5. Execution Service | Implementado + auditoría | 20 | `execution_service/service.py` |
 | **Total** | **5/5 completas** | **280** | `main.py` (pipeline completo) |
 
 ## Roadmap v2
@@ -165,8 +165,11 @@ Actualmente TP3 usa una limit order fija al siguiente nivel de liquidez. CLAUDE.
 - Detección de posiciones huérfanas al reiniciar
 - Aplicar `AIDecision.adjustments` a SL/TP antes de ejecutar
 - Reconstruir estado de Risk Service desde PostgreSQL al arrancar
+- Ver `docs/to-fix.md` para backlog completo (~30 IMPORTANT + 29 MINOR issues)
 
 ## Cambios recientes
+- 2026-03-04: **Auditoría completa** — 12 CRITICAL corregidos (PG reconnection, pipeline locks, OKX algo orders, emergency close retry, sweep temporal guard, OB break_timestamp, etc.). 28 IMPORTANT + 29 MINOR documentados en `docs/to-fix.md`.
+- 2026-03-04: BTC whale tracking via mempool.space.
 - 2026-03-04: Telegram notifications — push al celular en cada evento clave del pipeline (`shared/notifier.py`).
 - 2026-03-04: Docker Compose deployment — bot + PostgreSQL + Redis containerizados.
 - 2026-03-04: Las 5 capas implementadas. Pipeline completo Data → Strategy → AI → Risk → Execution.

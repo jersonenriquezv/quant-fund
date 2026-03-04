@@ -31,6 +31,7 @@ from data_service.websocket_feeds import OKXWebSocketFeed
 from data_service.cvd_calculator import CVDCalculator
 from data_service.oi_liquidation_proxy import OILiquidationProxy
 from data_service.etherscan_client import EtherscanClient
+from data_service.btc_whale_client import BtcWhaleClient
 from data_service.data_store import RedisStore, PostgresStore
 
 logger = setup_logger("data_service")
@@ -43,14 +44,16 @@ class DataService:
     No direct imports of sub-modules outside of data_service/.
     """
 
-    def __init__(self, on_candle_confirmed=None):
+    def __init__(self, on_candle_confirmed=None, notifier=None):
         """
         Args:
             on_candle_confirmed: Optional async callback triggered on each
                 confirmed candle. Signature: async fn(candle: Candle).
                 This is how main.py hooks the Strategy → AI → Risk → Execution pipeline.
+            notifier: Optional TelegramNotifier for whale movement alerts.
         """
         self._pipeline_callback = on_candle_confirmed
+        self._notifier = notifier
 
         # Sub-modules
         self._exchange = ExchangeClient()
@@ -58,6 +61,7 @@ class DataService:
         self._cvd = CVDCalculator()
         self._oi_proxy = OILiquidationProxy()
         self._etherscan = EtherscanClient()
+        self._btc_whale = BtcWhaleClient()
         self._redis = RedisStore()
         self._postgres = PostgresStore()
 
@@ -101,8 +105,12 @@ class DataService:
         return self._oi_proxy.get_aggregated_stats(pair, minutes)
 
     def get_whale_movements(self, hours: int = 24) -> list[WhaleMovement]:
-        """Get recent whale movements from Etherscan."""
-        return self._etherscan.get_recent_movements(hours)
+        """Get recent whale movements from Etherscan (ETH) and mempool.space (BTC)."""
+        eth = self._etherscan.get_recent_movements(hours)
+        btc = self._btc_whale.get_recent_movements(hours)
+        combined = eth + btc
+        combined.sort(key=lambda m: m.timestamp, reverse=True)
+        return combined
 
     @property
     def postgres(self) -> PostgresStore:
@@ -127,7 +135,7 @@ class DataService:
             oi=self._redis.get_open_interest(pair),
             cvd=self._cvd.get_cvd(pair),
             recent_liquidations=self._oi_proxy.get_recent_liquidations(pair, minutes=60),
-            whale_movements=self._etherscan.get_recent_movements(hours=24),
+            whale_movements=self.get_whale_movements(hours=24),
         )
 
     # ================================================================
@@ -174,7 +182,8 @@ class DataService:
         self._tasks = [
             asyncio.create_task(self._ws_feed.start(), name="okx_ws"),
             asyncio.create_task(self._cvd.start(), name="okx_cvd_ws"),
-            asyncio.create_task(self._etherscan.start(), name="etherscan"),
+            asyncio.create_task(self._etherscan_loop(), name="etherscan"),
+            asyncio.create_task(self._btc_whale_loop(), name="btc_whale"),
             asyncio.create_task(self._funding_rate_loop(), name="funding_loop"),
             asyncio.create_task(self._oi_loop(), name="oi_loop"),
             asyncio.create_task(self._health_check_loop(), name="health_check"),
@@ -197,6 +206,7 @@ class DataService:
         await self._ws_feed.stop()
         await self._cvd.stop()
         await self._etherscan.stop()
+        await self._btc_whale.stop()
 
         # Cancel remaining tasks
         for task in self._tasks:
@@ -237,7 +247,7 @@ class DataService:
         Runs in executor to avoid blocking the event loop (ccxt is synchronous).
         Stores results in memory (WebSocket feed) and PostgreSQL.
         """
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         all_timeframes = settings.HTF_TIMEFRAMES + settings.LTF_TIMEFRAMES
 
         for pair in settings.TRADING_PAIRS:
@@ -308,7 +318,7 @@ class DataService:
 
         # Store in PostgreSQL (run in executor since psycopg2 is sync)
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             await loop.run_in_executor(
                 None, self._postgres.store_candles, [candle]
             )
@@ -331,9 +341,66 @@ class DataService:
     # Internal: Polling loops
     # ================================================================
 
+    async def _etherscan_loop(self) -> None:
+        """Run Etherscan polling and publish whale movements to Redis after each cycle."""
+        if not self._etherscan._api_key or not self._etherscan._whale_wallets:
+            logger.info("Etherscan: no API key or wallets configured, polling disabled")
+            return
+
+        self._etherscan._running = True
+        logger.info(f"Etherscan loop started: monitoring {len(self._etherscan._whale_wallets)} wallets "
+                    f"every {settings.ETHERSCAN_CHECK_INTERVAL}s")
+
+        while self._running:
+            before_ids = {id(m) for m in self._etherscan._movements}
+            await self._etherscan._poll_all_wallets()
+            await self._notify_new_movements(self._etherscan._movements, before_ids)
+            self._publish_whale_movements()
+            await asyncio.sleep(settings.ETHERSCAN_CHECK_INTERVAL)
+
+    async def _btc_whale_loop(self) -> None:
+        """Run BTC whale polling via mempool.space and publish to Redis after each cycle."""
+        if not self._btc_whale._whale_wallets:
+            logger.info("BTC whale: no wallets configured, polling disabled")
+            return
+
+        self._btc_whale._running = True
+        logger.info(f"BTC whale loop started: monitoring {len(self._btc_whale._whale_wallets)} wallets "
+                    f"every {settings.MEMPOOL_CHECK_INTERVAL}s")
+
+        while self._running:
+            before_ids = {id(m) for m in self._btc_whale._movements}
+            await self._btc_whale._poll_all_wallets()
+            await self._notify_new_movements(self._btc_whale._movements, before_ids)
+            self._publish_whale_movements()
+            await asyncio.sleep(settings.MEMPOOL_CHECK_INTERVAL)
+
+    async def _notify_new_movements(self, movements: list, before_ids: set) -> None:
+        """Send Telegram alert for each new whale movement detected this cycle."""
+        if self._notifier is None:
+            return
+        new_movements = [m for m in movements if id(m) not in before_ids]
+        for m in new_movements:
+            try:
+                await self._notifier.notify_whale_movement(m)
+            except Exception as e:
+                logger.error(f"Failed to send whale Telegram notification: {e}")
+
+    def _publish_whale_movements(self) -> None:
+        """Merge ETH + BTC whale movements and publish to Redis."""
+        try:
+            import json
+            eth_records = json.loads(self._etherscan.serialize_movements(hours=24))
+            btc_records = self._btc_whale.serialize_movements(hours=24)
+            combined = eth_records + btc_records
+            combined.sort(key=lambda r: r["timestamp"], reverse=True)
+            self._redis.set_whale_movements(json.dumps(combined))
+        except Exception as e:
+            logger.error(f"Failed to publish whale movements to Redis: {e}")
+
     async def _funding_rate_loop(self) -> None:
         """Poll funding rates every FUNDING_RATE_INTERVAL seconds."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         while self._running:
             await asyncio.sleep(settings.FUNDING_RATE_INTERVAL)
@@ -350,7 +417,7 @@ class DataService:
 
     async def _oi_loop(self) -> None:
         """Poll open interest every OI_CHECK_INTERVAL seconds."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         while self._running:
             await asyncio.sleep(settings.OI_CHECK_INTERVAL)

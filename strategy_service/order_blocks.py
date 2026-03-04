@@ -36,6 +36,7 @@ class OrderBlock:
     volume_ratio: float         # OB volume / average volume
     mitigated: bool             # True if price closed through full OB
     associated_break: StructureBreak  # The structure break this OB is tied to
+    break_timestamp: int = 0    # Timestamp of the candle that broke structure (for mitigation guard)
 
 
 class OrderBlockDetector:
@@ -177,6 +178,7 @@ class OrderBlockDetector:
             volume_ratio=volume_ratio,
             mitigated=False,
             associated_break=brk,
+            break_timestamp=brk.timestamp,
         )
 
     def _compute_avg_volume(self, candles: list[Candle]) -> float:
@@ -200,8 +202,10 @@ class OrderBlockDetector:
             if ob.mitigated:
                 continue
 
+            # Skip candles up to the break candle — they cannot mitigate the OB
+            skip_ts = ob.break_timestamp if ob.break_timestamp else ob.timestamp
             for candle in candles:
-                if candle.timestamp <= ob.timestamp:
+                if candle.timestamp <= skip_ts:
                     continue
 
                 if ob.direction == "bullish" and candle.close < ob.low:

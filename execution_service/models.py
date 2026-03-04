@@ -63,5 +63,8 @@ class ManagedPosition:
     close_reason: Optional[str] = None  # "tp1", "tp2", "tp3", "sl", "timeout", "emergency", "cancelled"
     pnl_pct: float = 0.0
 
+    # Emergency close retry tracking
+    emergency_retries: int = 0
+
     # Database tracking
     db_trade_id: Optional[int] = None

@@ -546,19 +546,26 @@ class TestBinanceLiquidationParsing:
 
 class TestEtherscanProcessing:
 
+    def _patch_settings(self):
+        patcher = patch("data_service.etherscan_client.settings")
+        mock_settings = patcher.start()
+        mock_settings.ETHERSCAN_API_KEY = "test_key"
+        mock_settings.ETHERSCAN_CHECK_INTERVAL = 300
+        mock_settings.WHALE_MIN_ETH = 100.0
+        mock_settings.WHALE_HIGH_ETH = 1000.0
+        mock_settings.WHALE_WALLETS = {"0xWhale1": "Test Whale"}
+        mock_settings.EXCHANGE_ADDRESSES = {
+            "0xBinance": "Binance",
+            "0xCoinbase": "Coinbase",
+        }
+        return patcher
+
     def _make_client(self):
-        with patch("data_service.etherscan_client.settings") as mock_settings:
-            mock_settings.ETHERSCAN_API_KEY = "test_key"
-            mock_settings.ETHERSCAN_CHECK_INTERVAL = 300
-            mock_settings.WHALE_MIN_ETH = 10.0
-            mock_settings.WHALE_HIGH_ETH = 100.0
-            mock_settings.WHALE_WALLETS = ["0xWhale1"]
-            mock_settings.EXCHANGE_ADDRESSES = {
-                "0xBinance": "Binance",
-                "0xCoinbase": "Coinbase",
-            }
-            from data_service.etherscan_client import EtherscanClient
-            client = EtherscanClient()
+        patcher = self._patch_settings()
+        from data_service.etherscan_client import EtherscanClient
+        client = EtherscanClient()
+        # Keep patch active — caller must stop it
+        client._patcher = patcher
         return client
 
     def test_deposit_to_exchange(self):
@@ -566,7 +573,7 @@ class TestEtherscanProcessing:
         tx = {
             "from": "0xWhale1",
             "to": "0xBinance",
-            "value": str(int(50 * 1e18)),  # 50 ETH
+            "value": str(int(500 * 1e18)),  # 500 ETH
             "timeStamp": str(int(time.time())),
             "hash": "0x123",
         }
@@ -576,13 +583,14 @@ class TestEtherscanProcessing:
         assert movements[0].action == "exchange_deposit"
         assert movements[0].exchange == "Binance"
         assert movements[0].significance == "medium"
+        client._patcher.stop()
 
     def test_withdrawal_from_exchange(self):
         client = self._make_client()
         tx = {
             "from": "0xCoinbase",
             "to": "0xWhale1",
-            "value": str(int(150 * 1e18)),  # 150 ETH
+            "value": str(int(1500 * 1e18)),  # 1500 ETH
             "timeStamp": str(int(time.time())),
             "hash": "0x456",
         }
@@ -591,31 +599,34 @@ class TestEtherscanProcessing:
         assert len(movements) == 1
         assert movements[0].action == "exchange_withdrawal"
         assert movements[0].exchange == "Coinbase"
-        assert movements[0].significance == "high"  # >100 ETH
+        assert movements[0].significance == "high"  # >1000 ETH
+        client._patcher.stop()
 
     def test_small_transfer_ignored(self):
         client = self._make_client()
         tx = {
             "from": "0xWhale1",
             "to": "0xBinance",
-            "value": str(int(5 * 1e18)),  # 5 ETH — below 10 ETH threshold
+            "value": str(int(50 * 1e18)),  # 50 ETH — below 100 ETH threshold
             "timeStamp": str(int(time.time())),
             "hash": "0x789",
         }
         client._process_transaction("0xWhale1", tx)
         assert len(client.get_recent_movements(hours=1)) == 0
+        client._patcher.stop()
 
     def test_non_exchange_transfer_ignored(self):
         client = self._make_client()
         tx = {
             "from": "0xWhale1",
             "to": "0xRandomWallet",  # Not in exchange addresses
-            "value": str(int(500 * 1e18)),
+            "value": str(int(5000 * 1e18)),
             "timeStamp": str(int(time.time())),
             "hash": "0xabc",
         }
         client._process_transaction("0xWhale1", tx)
         assert len(client.get_recent_movements(hours=1)) == 0
+        client._patcher.stop()
 
     def test_prune_old_movements(self):
         client = self._make_client()
@@ -623,10 +634,11 @@ class TestEtherscanProcessing:
 
         client._movements.append(WhaleMovement(
             timestamp=old_ts, wallet="0xWhale1", action="exchange_deposit",
-            amount_eth=50.0, exchange="Binance", significance="medium",
+            amount=50.0, exchange="Binance", significance="medium", chain="ETH",
         ))
         client._prune_old_movements()
         assert len(client._movements) == 0
+        client._patcher.stop()
 
 
 # ============================================================
@@ -740,11 +752,13 @@ class TestPostgresRoundtrip:
 
     def test_store_candles_no_connection(self):
         store = self._make_store()
+        store.connect = lambda: False  # Prevent reconnection
         result = store.store_candles([make_candle()])
         assert result == 0
 
     def test_load_candles_no_connection(self):
         store = self._make_store()
+        store.connect = lambda: False  # Prevent reconnection
         result = store.load_candles("BTC/USDT", "5m", 100)
         assert result == []
 
@@ -772,7 +786,7 @@ class TestMarketSnapshotAssembly:
                 LiquidationEvent(ts, "BTC/USDT", "long", 50000, 50000, "oi_proxy"),
             ],
             whale_movements=[
-                WhaleMovement(ts, "0xWhale", "exchange_deposit", 100.0, "Binance", "high"),
+                WhaleMovement(ts, "0xWhale", "exchange_deposit", 100.0, "Binance", "high", "ETH"),
             ],
         )
         assert snapshot.pair == "BTC/USDT"

@@ -112,6 +112,20 @@ class TelegramNotifier:
         )
         await self.send(msg)
 
+    async def notify_whale_movement(self, movement) -> None:
+        """Large whale transfer detected (ETH or BTC)."""
+        action = "deposited to" if movement.action == "exchange_deposit" else "withdrew from"
+        emoji = "\U0001f433"  # whale
+        signal = "\U0001f534 BEARISH" if movement.action == "exchange_deposit" else "\U0001f7e2 BULLISH"
+        decimals = 4 if movement.chain == "BTC" else 2
+        msg = (
+            f"{emoji} <b>WHALE MOVEMENT</b>\n"
+            f"{movement.amount:.{decimals}f} {movement.chain} {action} {movement.exchange}\n"
+            f"Signal: {signal}\n"
+            f"Significance: {movement.significance}"
+        )
+        await self.send(msg)
+
     async def notify_emergency(self, pos, reason: str) -> None:
         """Critical event — SL placement failure, emergency close."""
         msg = (

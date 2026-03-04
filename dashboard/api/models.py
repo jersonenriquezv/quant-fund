@@ -94,6 +94,17 @@ class StatsResponse(BaseModel):
     avg_rr: float = 0.0
 
 
+class WhaleMovementRecord(BaseModel):
+    timestamp: int
+    wallet: str
+    label: str
+    action: str
+    amount: float
+    exchange: str
+    significance: str
+    chain: str
+
+
 class PositionData(BaseModel):
     pair: str
     direction: str

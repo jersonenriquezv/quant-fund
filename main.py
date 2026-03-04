@@ -192,8 +192,8 @@ async def main() -> None:
     # Create Telegram notifier (disabled gracefully if not configured)
     _notifier = TelegramNotifier(settings.TELEGRAM_BOT_TOKEN, settings.TELEGRAM_CHAT_ID)
 
-    # Create DataService with pipeline callback
-    _data_service = DataService(on_candle_confirmed=on_candle_confirmed)
+    # Create DataService with pipeline callback + notifier for whale alerts
+    _data_service = DataService(on_candle_confirmed=on_candle_confirmed, notifier=_notifier)
 
     # Create StrategyService — Layer 2
     _strategy_service = StrategyService(_data_service)

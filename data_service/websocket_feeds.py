@@ -77,6 +77,9 @@ class OKXWebSocketFeed:
         self._running = False
         self._connected = False
 
+        # Per-pair locks to serialize pipeline execution
+        self._pipeline_locks: dict[str, asyncio.Lock] = {}
+
         # Reconnection backoff state
         self._reconnect_delay = settings.RECONNECT_INITIAL_DELAY
         self._last_message_time = 0.0
@@ -304,11 +307,33 @@ class OKXWebSocketFeed:
             logger.info(f"Candle confirmed: pair={pair} tf={timeframe} "
                         f"close={c} vol={vol:.4f} ts={ts}")
 
-            # Trigger pipeline callback
+            # Trigger pipeline callback (serialized per pair)
             if self._on_candle_confirmed:
-                asyncio.get_running_loop().create_task(
-                    self._on_candle_confirmed(candle)
+                task = asyncio.get_running_loop().create_task(
+                    self._run_pipeline_serialized(candle)
                 )
+                task.add_done_callback(self._pipeline_task_done)
+
+    # ================================================================
+    # Pipeline serialization
+    # ================================================================
+
+    async def _run_pipeline_serialized(self, candle: Candle) -> None:
+        """Run pipeline callback while holding the per-pair lock."""
+        if candle.pair not in self._pipeline_locks:
+            self._pipeline_locks[candle.pair] = asyncio.Lock()
+
+        async with self._pipeline_locks[candle.pair]:
+            await self._on_candle_confirmed(candle)
+
+    @staticmethod
+    def _pipeline_task_done(task: asyncio.Task) -> None:
+        """Log exceptions from pipeline tasks."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error(f"Pipeline task failed: {exc}", exc_info=exc)
 
     # ================================================================
     # Validation

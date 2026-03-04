@@ -20,6 +20,7 @@ Si el dashboard crashea, el bot sigue operando normalmente.
 | `GET /api/risk` | Redis + PG risk_events | DD, cooldown, eventos recientes |
 | `GET /api/candles/{pair}/{tf}?count=100` | PG candles | OHLCV para sparklines |
 | `GET /api/stats` | PG trades (closed) | Win rate, P&L, profit factor |
+| `GET /api/whales?hours=24` | Redis (whale_movements) | Whale movements last N hours |
 | `WS /api/ws` | Redis poll cada 2s | Precio live + posiciones |
 
 ## Frontend — Layout
@@ -29,6 +30,7 @@ HEADER: Bot status + Mode (DEMO) + UTC clock
 ├── BTC/USDT panel | ETH/USDT panel | Risk gauges (DD arcos)
 ├── Open Positions (cards)        | Equity curve (SVG sparkline)
 ├── Trade Log (tabla, últimos 20) | AI Decision Log (barras de confianza)
+├── Whale Movements Log (full width, últimas 24h)
 └── System Health: Redis + PG + API status dots
 ```
 
@@ -50,6 +52,7 @@ Para que el dashboard muestre datos, el bot ahora escribe a PostgreSQL:
 - **`main.py`** — AI evaluation → `insert_ai_decision()`, risk rejection → `insert_risk_event()`
 - **`risk_service/service.py`** — Guardrail hit → `insert_risk_event()`
 - **Redis** — `qf:bot:positions` → JSON de posiciones abiertas actuales
+- **Redis** — `qf:bot:whale_movements` → JSON de whale movements (TTL 600s, actualizado cada poll de Etherscan)
 
 ## Docker
 
@@ -84,14 +87,15 @@ dashboard/
 │   │   ├── ai.py        # GET /api/ai/decisions
 │   │   ├── risk.py      # GET /api/risk
 │   │   ├── candles.py   # GET /api/candles/{pair}/{tf}
-│   │   └── stats.py     # GET /api/stats
+│   │   ├── stats.py     # GET /api/stats
+│   │   └── whales.py    # GET /api/whales
 │   ├── ws.py            # WS /api/ws
 │   ├── requirements.txt
 │   └── Dockerfile
 └── web/
     ├── src/
     │   ├── app/          # Next.js app router
-    │   ├── components/   # 8 componentes UI
+    │   ├── components/   # 9 componentes UI
     │   └── lib/          # API client, hooks
     ├── package.json
     ├── Dockerfile

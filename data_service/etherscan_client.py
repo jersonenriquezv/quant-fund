@@ -12,6 +12,7 @@ Rate limit: 5 calls/sec with free API key. Our usage: ~10 calls/5min = safe.
 
 import asyncio
 import functools
+import json
 import time
 
 import requests
@@ -22,10 +23,12 @@ from shared.models import WhaleMovement
 
 logger = setup_logger("data_service")
 
-_ETHERSCAN_BASE = "https://api.etherscan.io/api"
+_ETHERSCAN_BASE = "https://api.etherscan.io/v2/api"
 
 # Rate limit: minimum seconds between API calls
-_MIN_CALL_INTERVAL = 0.22  # ~4.5 calls/sec, safely under 5/sec limit
+# Free tier: 5 calls/sec, but V2 API is stricter under load.
+# 30 wallets × 0.35s = ~10.5s per cycle — safe margin.
+_MIN_CALL_INTERVAL = 0.35
 
 
 class EtherscanClient:
@@ -56,6 +59,12 @@ class EtherscanClient:
 
         self._running = False
 
+        # Build address → label lookup
+        self._wallet_labels: dict[str, str] = {
+            addr.lower(): label
+            for addr, label in self._whale_wallets.items()
+        }
+
         if not self._api_key:
             logger.warning("Etherscan API key not set — whale monitoring disabled")
         if not self._whale_wallets:
@@ -69,6 +78,24 @@ class EtherscanClient:
         """Get whale movements from the last N hours."""
         cutoff = int((time.time() - hours * 3600) * 1000)
         return [m for m in self._movements if m.timestamp >= cutoff]
+
+    def serialize_movements(self, hours: int = 24) -> str:
+        """Serialize recent movements to JSON including wallet labels."""
+        movements = self.get_recent_movements(hours)
+        records = []
+        for m in movements:
+            label = self._wallet_labels.get(m.wallet.lower(), m.wallet[:10] + "...")
+            records.append({
+                "timestamp": m.timestamp,
+                "wallet": m.wallet,
+                "label": label,
+                "action": m.action,
+                "amount": m.amount,
+                "exchange": m.exchange,
+                "significance": m.significance,
+                "chain": m.chain,
+            })
+        return json.dumps(records)
 
     # ================================================================
     # Polling loop
@@ -95,7 +122,7 @@ class EtherscanClient:
 
     async def _poll_all_wallets(self) -> None:
         """Poll each wallet for recent transactions."""
-        for wallet in self._whale_wallets:
+        for wallet in self._whale_wallets.keys():
             if not self._running:
                 break
             try:
@@ -108,6 +135,7 @@ class EtherscanClient:
         await self._rate_limit()
 
         params = {
+            "chainid": 1,  # Ethereum mainnet
             "module": "account",
             "action": "txlist",
             "address": wallet,
@@ -141,7 +169,7 @@ class EtherscanClient:
             if "NOTOK" in str(message) or "rate limit" in str(result).lower():
                 logger.warning(f"Etherscan rate limited: wallet={wallet[:10]}... "
                                f"msg={message} result={result}")
-                await asyncio.sleep(1)
+                await asyncio.sleep(5)
                 return
             # "No transactions found" is status "0" but not an error
             if "No transactions found" in str(data.get("result", "")):
@@ -204,9 +232,10 @@ class EtherscanClient:
                 timestamp=tx_timestamp,
                 wallet=wallet,
                 action="exchange_deposit",
-                amount_eth=value_eth,
+                amount=value_eth,
                 exchange=exchange,
                 significance=significance,
+                chain="ETH",
             )
             self._movements.append(movement)
             logger.info(f"Whale deposit: {value_eth:.2f} ETH → {exchange} "
@@ -219,9 +248,10 @@ class EtherscanClient:
                 timestamp=tx_timestamp,
                 wallet=wallet,
                 action="exchange_withdrawal",
-                amount_eth=value_eth,
+                amount=value_eth,
                 exchange=exchange,
                 significance=significance,
+                chain="ETH",
             )
             self._movements.append(movement)
             logger.info(f"Whale withdrawal: {value_eth:.2f} ETH ← {exchange} "

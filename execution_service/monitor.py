@@ -115,6 +115,8 @@ class PositionMonitor:
                 await self._check_pending_entry(pos)
             elif pos.phase in ("active", "tp1_hit", "tp2_hit"):
                 await self._check_active_position(pos)
+            elif pos.phase == "emergency_pending":
+                await self._retry_emergency_close(pos)
 
     # ================================================================
     # State: pending_entry
@@ -179,9 +181,14 @@ class PositionMonitor:
                 asyncio.ensure_future(
                     self._notifier.notify_emergency(pos, "SL placement failed — market closed")
                 )
-            await self._executor.close_position_market(
+            result = await self._executor.close_position_market(
                 pos.pair, close_side, pos.filled_size
             )
+            if result is None:
+                logger.critical(f"EMERGENCY CLOSE FAILED: {pos.pair} — will retry on next poll cycle")
+                pos.phase = "emergency_pending"
+                pos.emergency_retries = 1
+                return
             self._close_position(pos, "emergency")
             return
 
@@ -276,6 +283,33 @@ class PositionMonitor:
                 self._calculate_pnl(pos, pos.tp3_price)
                 self._close_position(pos, "tp3")
                 return
+
+    # ================================================================
+    # State: emergency_pending (retry failed emergency close)
+    # ================================================================
+
+    async def _retry_emergency_close(self, pos: ManagedPosition) -> None:
+        """Retry emergency market close (max 3 attempts)."""
+        close_side = "sell" if pos.direction == "long" else "buy"
+        result = await self._executor.close_position_market(
+            pos.pair, close_side, pos.filled_size
+        )
+        if result is not None:
+            logger.info(f"Emergency close succeeded on retry {pos.emergency_retries}: {pos.pair}")
+            self._close_position(pos, "emergency")
+            return
+
+        pos.emergency_retries += 1
+        if pos.emergency_retries >= 3:
+            logger.critical(
+                f"EMERGENCY CLOSE FAILED after 3 retries: {pos.pair} — "
+                f"requires manual intervention"
+            )
+            pos.phase = "emergency_failed"
+        else:
+            logger.error(
+                f"Emergency close retry {pos.emergency_retries}/3 failed: {pos.pair}"
+            )
 
     # ================================================================
     # SL adjustment — new SL first, then cancel old (zero gap)
@@ -381,8 +415,8 @@ class PositionMonitor:
         # Update Redis positions cache
         self._update_positions_cache()
 
-        # Notify Risk Service
-        if self._risk is not None:
+        # Notify Risk Service (skip cancelled entries — not a real trade)
+        if self._risk is not None and reason != "cancelled":
             self._risk.on_trade_closed(pos.pair, pos.pnl_pct, pos.closed_at)
 
         # Remove from tracking

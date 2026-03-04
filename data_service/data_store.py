@@ -163,6 +163,22 @@ class RedisStore:
             return None
         return OpenInterest(**json.loads(raw))
 
+    # --- Whale Movements ---
+
+    def set_whale_movements(self, json_str: str) -> None:
+        """Cache serialized whale movements. TTL 600s (polled every 5min)."""
+        if not self._client:
+            return
+        key = _redis_key("bot", "whale_movements")
+        self._client.set(key, json_str, ex=600)
+
+    def get_whale_movements(self) -> Optional[str]:
+        """Get cached whale movements JSON."""
+        if not self._client:
+            return None
+        key = _redis_key("bot", "whale_movements")
+        return self._client.get(key)
+
     # --- Bot State ---
 
     def set_bot_state(self, key_name: str, value: str, ttl: int = 86400) -> None:
@@ -249,6 +265,26 @@ class PostgresStore:
         except psycopg2.Error:
             return False
 
+    def _ensure_connected(self) -> bool:
+        """Check connection and reconnect if stale/closed. Returns True if connected."""
+        if self._conn:
+            try:
+                if not self._conn.closed:
+                    with self._conn.cursor() as cur:
+                        cur.execute("SELECT 1")
+                    return True
+            except psycopg2.Error:
+                pass
+            # Connection is stale/broken — close and reconnect
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
+
+        logger.warning("PostgreSQL connection lost — attempting reconnect")
+        return self.connect()
+
     def _create_tables(self) -> None:
         """Create tables if they don't exist. Schema from CLAUDE.md."""
         with self._conn.cursor() as cur:
@@ -327,64 +363,78 @@ class PostgresStore:
         """Batch insert candles. Skips duplicates via ON CONFLICT.
         Returns number of candles actually inserted.
         """
-        if not self._conn or not candles:
+        if not candles:
             return 0
 
-        values = [
-            (c.pair, c.timeframe, c.timestamp, c.open, c.high, c.low,
-             c.close, c.volume, c.volume_quote)
-            for c in candles
-        ]
-
-        try:
-            with self._conn.cursor() as cur:
-                psycopg2.extras.execute_values(
-                    cur,
-                    """INSERT INTO candles (pair, timeframe, timestamp, open, high, low,
-                                           close, volume, volume_quote)
-                       VALUES %s
-                       ON CONFLICT (pair, timeframe, timestamp) DO NOTHING""",
-                    values,
-                    page_size=100,
-                )
-                inserted = cur.rowcount
-            logger.info(f"PostgreSQL: stored {inserted}/{len(candles)} candles "
-                        f"(pair={candles[0].pair} tf={candles[0].timeframe})")
-            return inserted
-        except psycopg2.Error as e:
-            logger.error(f"PostgreSQL candle insert failed: {e}")
-            return 0
+        for attempt in range(2):
+            if not self._ensure_connected():
+                return 0
+            try:
+                values = [
+                    (c.pair, c.timeframe, c.timestamp, c.open, c.high, c.low,
+                     c.close, c.volume, c.volume_quote)
+                    for c in candles
+                ]
+                with self._conn.cursor() as cur:
+                    psycopg2.extras.execute_values(
+                        cur,
+                        """INSERT INTO candles (pair, timeframe, timestamp, open, high, low,
+                                               close, volume, volume_quote)
+                           VALUES %s
+                           ON CONFLICT (pair, timeframe, timestamp) DO NOTHING""",
+                        values,
+                        page_size=100,
+                    )
+                    inserted = cur.rowcount
+                logger.info(f"PostgreSQL: stored {inserted}/{len(candles)} candles "
+                            f"(pair={candles[0].pair} tf={candles[0].timeframe})")
+                return inserted
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                logger.warning(f"PostgreSQL candle insert connection error (attempt {attempt+1}): {e}")
+                self._conn = None
+                if attempt == 1:
+                    return 0
+            except psycopg2.Error as e:
+                logger.error(f"PostgreSQL candle insert failed: {e}")
+                return 0
+        return 0
 
     def load_candles(self, pair: str, timeframe: str,
                      count: int = 500) -> list[Candle]:
         """Load last N candles from PostgreSQL. Returns oldest-first."""
-        if not self._conn:
-            return []
+        for attempt in range(2):
+            if not self._ensure_connected():
+                return []
+            try:
+                with self._conn.cursor() as cur:
+                    cur.execute(
+                        """SELECT timestamp, open, high, low, close, volume, volume_quote
+                           FROM candles
+                           WHERE pair = %s AND timeframe = %s
+                           ORDER BY timestamp DESC
+                           LIMIT %s""",
+                        (pair, timeframe, count),
+                    )
+                    rows = cur.fetchall()
 
-        try:
-            with self._conn.cursor() as cur:
-                cur.execute(
-                    """SELECT timestamp, open, high, low, close, volume, volume_quote
-                       FROM candles
-                       WHERE pair = %s AND timeframe = %s
-                       ORDER BY timestamp DESC
-                       LIMIT %s""",
-                    (pair, timeframe, count),
-                )
-                rows = cur.fetchall()
-
-            candles = [
-                Candle(
-                    timestamp=row[0], open=row[1], high=row[2], low=row[3],
-                    close=row[4], volume=row[5], volume_quote=row[6],
-                    pair=pair, timeframe=timeframe, confirmed=True,
-                )
-                for row in reversed(rows)  # Reverse to get oldest-first
-            ]
-            return candles
-        except psycopg2.Error as e:
-            logger.error(f"PostgreSQL candle load failed: pair={pair} tf={timeframe} error={e}")
-            return []
+                candles = [
+                    Candle(
+                        timestamp=row[0], open=row[1], high=row[2], low=row[3],
+                        close=row[4], volume=row[5], volume_quote=row[6],
+                        pair=pair, timeframe=timeframe, confirmed=True,
+                    )
+                    for row in reversed(rows)  # Reverse to get oldest-first
+                ]
+                return candles
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                logger.warning(f"PostgreSQL candle load connection error (attempt {attempt+1}): {e}")
+                self._conn = None
+                if attempt == 1:
+                    return []
+            except psycopg2.Error as e:
+                logger.error(f"PostgreSQL candle load failed: pair={pair} tf={timeframe} error={e}")
+                return []
+        return []
 
     # --- Trade Storage ---
 
@@ -403,28 +453,35 @@ class PostgresStore:
         actual_entry: float | None = None,
     ) -> int | None:
         """Insert a new trade record. Returns trade id or None on failure."""
-        if not self._conn:
-            return None
-        try:
-            with self._conn.cursor() as cur:
-                cur.execute(
-                    """INSERT INTO trades
-                       (pair, direction, setup_type, entry_price, sl_price,
-                        tp1_price, tp2_price, tp3_price, position_size,
-                        ai_confidence, actual_entry, opened_at, status)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), 'open')
-                       RETURNING id""",
-                    (pair, direction, setup_type, entry_price, sl_price,
-                     tp1_price, tp2_price, tp3_price, position_size,
-                     ai_confidence, actual_entry),
-                )
-                row = cur.fetchone()
-                trade_id = row[0] if row else None
-            logger.info(f"PostgreSQL: inserted trade id={trade_id} {pair} {direction}")
-            return trade_id
-        except psycopg2.Error as e:
-            logger.error(f"PostgreSQL trade insert failed: {e}")
-            return None
+        for attempt in range(2):
+            if not self._ensure_connected():
+                return None
+            try:
+                with self._conn.cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO trades
+                           (pair, direction, setup_type, entry_price, sl_price,
+                            tp1_price, tp2_price, tp3_price, position_size,
+                            ai_confidence, actual_entry, opened_at, status)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), 'open')
+                           RETURNING id""",
+                        (pair, direction, setup_type, entry_price, sl_price,
+                         tp1_price, tp2_price, tp3_price, position_size,
+                         ai_confidence, actual_entry),
+                    )
+                    row = cur.fetchone()
+                    trade_id = row[0] if row else None
+                logger.info(f"PostgreSQL: inserted trade id={trade_id} {pair} {direction}")
+                return trade_id
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                logger.warning(f"PostgreSQL trade insert connection error (attempt {attempt+1}): {e}")
+                self._conn = None
+                if attempt == 1:
+                    return None
+            except psycopg2.Error as e:
+                logger.error(f"PostgreSQL trade insert failed: {e}")
+                return None
+        return None
 
     def update_trade(
         self,
@@ -437,7 +494,7 @@ class PostgresStore:
         status: str | None = None,
     ) -> bool:
         """Update an existing trade record. Only sets non-None fields."""
-        if not self._conn or trade_id is None:
+        if trade_id is None:
             return False
 
         fields = []
@@ -467,17 +524,26 @@ class PostgresStore:
             return True
 
         values.append(trade_id)
-        try:
-            with self._conn.cursor() as cur:
-                cur.execute(
-                    f"UPDATE trades SET {', '.join(fields)} WHERE id = %s",
-                    values,
-                )
-            logger.info(f"PostgreSQL: updated trade id={trade_id} status={status}")
-            return True
-        except psycopg2.Error as e:
-            logger.error(f"PostgreSQL trade update failed: id={trade_id} {e}")
-            return False
+        for attempt in range(2):
+            if not self._ensure_connected():
+                return False
+            try:
+                with self._conn.cursor() as cur:
+                    cur.execute(
+                        f"UPDATE trades SET {', '.join(fields)} WHERE id = %s",
+                        values,
+                    )
+                logger.info(f"PostgreSQL: updated trade id={trade_id} status={status}")
+                return True
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                logger.warning(f"PostgreSQL trade update connection error (attempt {attempt+1}): {e}")
+                self._conn = None
+                if attempt == 1:
+                    return False
+            except psycopg2.Error as e:
+                logger.error(f"PostgreSQL trade update failed: id={trade_id} {e}")
+                return False
+        return False
 
     def insert_ai_decision(
         self,
@@ -488,43 +554,57 @@ class PostgresStore:
         warnings: list | None = None,
     ) -> int | None:
         """Insert an AI decision record. trade_id can be None for rejections."""
-        if not self._conn:
-            return None
-        try:
-            with self._conn.cursor() as cur:
-                cur.execute(
-                    """INSERT INTO ai_decisions
-                       (trade_id, confidence, reasoning, adjustments, warnings)
-                       VALUES (%s, %s, %s, %s, %s)
-                       RETURNING id""",
-                    (trade_id, confidence, reasoning,
-                     json.dumps(adjustments or {}),
-                     json.dumps(warnings or [])),
-                )
-                row = cur.fetchone()
-                return row[0] if row else None
-        except psycopg2.Error as e:
-            logger.error(f"PostgreSQL ai_decision insert failed: {e}")
-            return None
+        for attempt in range(2):
+            if not self._ensure_connected():
+                return None
+            try:
+                with self._conn.cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO ai_decisions
+                           (trade_id, confidence, reasoning, adjustments, warnings)
+                           VALUES (%s, %s, %s, %s, %s)
+                           RETURNING id""",
+                        (trade_id, confidence, reasoning,
+                         json.dumps(adjustments or {}),
+                         json.dumps(warnings or [])),
+                    )
+                    row = cur.fetchone()
+                    return row[0] if row else None
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                logger.warning(f"PostgreSQL ai_decision insert connection error (attempt {attempt+1}): {e}")
+                self._conn = None
+                if attempt == 1:
+                    return None
+            except psycopg2.Error as e:
+                logger.error(f"PostgreSQL ai_decision insert failed: {e}")
+                return None
+        return None
 
     def insert_risk_event(
         self, event_type: str, details: dict
     ) -> int | None:
         """Insert a risk event record."""
-        if not self._conn:
-            return None
-        try:
-            with self._conn.cursor() as cur:
-                cur.execute(
-                    """INSERT INTO risk_events (event_type, details)
-                       VALUES (%s, %s) RETURNING id""",
-                    (event_type, json.dumps(details)),
-                )
-                row = cur.fetchone()
-                return row[0] if row else None
-        except psycopg2.Error as e:
-            logger.error(f"PostgreSQL risk_event insert failed: {e}")
-            return None
+        for attempt in range(2):
+            if not self._ensure_connected():
+                return None
+            try:
+                with self._conn.cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO risk_events (event_type, details)
+                           VALUES (%s, %s) RETURNING id""",
+                        (event_type, json.dumps(details)),
+                    )
+                    row = cur.fetchone()
+                    return row[0] if row else None
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                logger.warning(f"PostgreSQL risk_event insert connection error (attempt {attempt+1}): {e}")
+                self._conn = None
+                if attempt == 1:
+                    return None
+            except psycopg2.Error as e:
+                logger.error(f"PostgreSQL risk_event insert failed: {e}")
+                return None
+        return None
 
     def close(self) -> None:
         if self._conn:

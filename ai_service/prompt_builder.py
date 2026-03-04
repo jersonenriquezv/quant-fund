@@ -182,13 +182,13 @@ class PromptBuilder:
     def _build_whale_section(self, snapshot: MarketSnapshot) -> str:
         whales = snapshot.whale_movements
         if not whales:
-            return "## Whale Activity (ETH)\nNo significant whale activity"
+            return "## Whale Activity\nNo significant whale activity"
 
-        lines = ["## Whale Activity (ETH)"]
+        lines = ["## Whale Activity"]
         for w in whales:
             action = "deposited to" if w.action == "exchange_deposit" else "withdrew from"
             lines.append(
-                f"- {w.amount_eth:.1f} ETH {action} {w.exchange} "
+                f"- {w.amount:.1f} {w.chain} {action} {w.exchange} "
                 f"(significance: {w.significance})"
             )
         return "\n".join(lines)

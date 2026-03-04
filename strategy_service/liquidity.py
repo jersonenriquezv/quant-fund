@@ -297,7 +297,12 @@ class LiquidityAnalyzer:
             if level.swept:
                 continue
 
+            # Temporal guard: only check candles AFTER the level was formed
+            level_max_ts = max(level.timestamps) if level.timestamps else 0
+
             for candle in candles:
+                if candle.timestamp <= level_max_ts:
+                    continue
                 vol_ratio = (
                     candle.volume / avg_volume if avg_volume > 0 else 0.0
                 )

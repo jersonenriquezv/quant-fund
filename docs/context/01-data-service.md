@@ -1,6 +1,6 @@
 # Data Service
 > Last updated: 2026-03-04
-> Status: implemented (complete, running in Docker)
+> Status: implemented (complete, running in Docker). Audited — 4 CRITICAL fixes applied.
 
 ## What it does (30 seconds)
 The Data Service is the bot's eyes and ears. It connects to OKX 24/7, collecting price data (candles), trade flow (CVD), market indicators (funding rate, open interest), liquidation cascades (via OI proxy), and whale movements. Every other service gets clean, validated, typed data through here.
@@ -20,7 +20,8 @@ Without real-time market data, the Strategy Service has nothing to analyze. With
 | OKX REST (ccxt) | Funding rate | `fetch_funding_rate()` via ccxt | Every 8 hours |
 | OKX REST (ccxt) | Open Interest | `fetch_open_interest()` via ccxt | Every 5 minutes |
 | OI Proxy | Liquidation cascades | OI drop >2% in 5min = cascade | Every 5 minutes (fed by OI poll) |
-| Etherscan REST | Whale movements | Transaction polling, 5 calls/sec limit | Every 5 minutes |
+| Etherscan REST | ETH whale movements | Transaction polling, 5 calls/sec limit | Every 5 minutes |
+| mempool.space REST | BTC whale movements | UTXO transaction polling, no API key | Every 5 minutes |
 
 ### Pipeline Flow
 ```
@@ -47,7 +48,7 @@ All 5 layers run in the same Python process. The Data Service exposes methods th
 - **OpenInterest** — in contracts, base currency, and USD
 - **CVDSnapshot** — cumulative volume delta for 5m, 15m, 1h windows + buy/sell volume
 - **LiquidationEvent** — from OI proxy (OI drop >2% = cascade), with side and size_usd
-- **WhaleMovement** — Etherscan whale transfers to/from exchanges
+- **WhaleMovement** — Whale transfers to/from exchanges (ETH via Etherscan, BTC via mempool.space). Fields: `amount` (ETH or BTC), `chain` ("ETH" or "BTC")
 - **MarketSnapshot** — wraps funding, OI, CVD, liquidations, whales for a pair
 - **TradeSetup** — detected setup from Strategy Service
 - **AIDecision** — Claude's evaluation with confidence score
@@ -79,6 +80,7 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Stores last 600 candles per pair/timeframe in memory
 - Public methods: `get_latest_candle(pair, tf)`, `get_candles(pair, tf, count)`
 - `store_candles()` accepts backfilled candles with deduplication
+- **Pipeline serialization:** Per-pair `asyncio.Lock` prevents concurrent pipeline runs on the same pair. Exception logging via `task.add_done_callback()`.
 - Callback `on_candle_confirmed` triggers the main pipeline
 - Handles OKX text "pong" keepalive messages
 - Reconnection: exponential backoff 1s → 2s → 4s → ... → 60s max
@@ -109,14 +111,24 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Geo-blocked from Canada — kept in codebase but not launched as a task
 - If Binance becomes accessible, can be re-enabled by adding it back to DataService
 
-### `data_service/etherscan_client.py` — Whale Wallet Monitor
+### `data_service/etherscan_client.py` — ETH Whale Wallet Monitor
 - Polls configured wallets every `ETHERSCAN_CHECK_INTERVAL` seconds (default 300)
-- **Unchanged** — Etherscan monitoring is independent of trading exchange
 - Detects transfers to/from known exchange deposit addresses
 - Whale → exchange = `exchange_deposit` (bearish signal)
 - Exchange → whale = `exchange_withdrawal` (bullish signal)
 - Significance: >100 ETH = "high", >10 ETH = "medium", <10 ETH ignored
 - Rate limit enforced: max 4.5 calls/sec (safely under Etherscan's 5/sec)
+- Creates `WhaleMovement(chain="ETH")`
+
+### `data_service/btc_whale_client.py` — BTC Whale Wallet Monitor
+- Polls configured wallets every `MEMPOOL_CHECK_INTERVAL` seconds (default 300)
+- API: `https://mempool.space/api/address/{addr}/txs` — no API key needed
+- Parses BTC UTXO model: `vin[].prevout.scriptpubkey_address` (senders) and `vout[].scriptpubkey_address` (recipients)
+- Values in satoshis (÷ 1e8 = BTC)
+- Detects deposits/withdrawals to known exchange addresses (Binance, Robinhood, Bitfinex, OKX, Kraken, etc.)
+- Significance: >100 BTC = "high", >10 BTC = "medium", <10 BTC ignored
+- Rate limit: 0.5s between calls (~10 req/min, safe for public instance)
+- Creates `WhaleMovement(chain="BTC")`
 
 ### `data_service/data_store.py` — Redis + PostgreSQL
 **Redis (real-time cache):**
@@ -130,13 +142,16 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - `store_candles()` with batch insert + ON CONFLICT DO NOTHING (dedup)
 - `load_candles()` returns oldest-first ordering
 - Index on `(pair, timeframe, timestamp DESC)` for fast lookups
+- **Auto-reconnection:** `_ensure_connected()` checks connection health (sends `SELECT 1`). All DB methods (`store_candles`, `load_candles`, `insert_trade`, `update_trade`, `insert_ai_decision`, `insert_risk_event`) retry once on `psycopg2.OperationalError` / `InterfaceError` — sets `_conn = None` and reconnects.
 
 ### `data_service/service.py` — DataService Facade
-- Wires all 7 sub-modules into a single interface
+- Wires all 8 sub-modules into a single interface
 - Public methods: `get_latest_candle()`, `get_candles()`, `get_market_snapshot()`, `get_cvd()`, etc.
 - Manages startup (backfill → WebSockets → polling loops) and graceful shutdown
 - On confirmed candle: stores to Redis + PostgreSQL, triggers pipeline callback
 - Health check loop every 30 seconds
+- Uses `asyncio.get_running_loop()` (not deprecated `get_event_loop()`)
+- **Whale notification stability:** Uses `id()` snapshot before polling to detect new movements, preventing index instability if pruning occurs during poll
 
 ### `main.py` — Entry Point
 - Single process, handles SIGINT/SIGTERM for graceful shutdown
@@ -159,6 +174,9 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 | `ETHERSCAN_CHECK_INTERVAL` | `300` (5min) | Polling schedule |
 | `WHALE_MIN_ETH` | `10.0` | Etherscan filter threshold |
 | `WHALE_HIGH_ETH` | `100.0` | Significance threshold |
+| `WHALE_MIN_BTC` | `10.0` | BTC whale filter threshold |
+| `WHALE_HIGH_BTC` | `100.0` | BTC significance threshold |
+| `MEMPOOL_CHECK_INTERVAL` | `300` (5min) | BTC polling schedule |
 | `RECONNECT_INITIAL_DELAY` | `1.0` | Backoff start |
 | `RECONNECT_MAX_DELAY` | `60.0` | Backoff ceiling |
 | `OI_DROP_THRESHOLD_PCT` | `0.02` (2%) | OI proxy cascade threshold |

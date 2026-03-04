@@ -39,13 +39,9 @@ _CONTRACT_SIZES = {
     "ETH/USDT": 0.1,    # 1 contract = 0.1 ETH
 }
 
-# Timeframe strings accepted by OKX via ccxt
-_TIMEFRAME_MAP = {
-    "5m": "5m",
-    "15m": "15m",
-    "1h": "1H",
-    "4h": "4H",
-}
+# ccxt expects lowercase timeframes: "5m", "15m", "1h", "4h"
+# OKX API uses "1H"/"4H" but ccxt handles the conversion internally.
+# Do NOT map to uppercase — that bypasses ccxt and breaks sandbox mode.
 
 
 class ExchangeClient:
@@ -66,6 +62,15 @@ class ExchangeClient:
             logger.info("OKX client initialized in DEMO/SANDBOX mode")
         else:
             logger.info("OKX client initialized in LIVE mode")
+
+        # Separate production client for public market data (candles, funding, OI).
+        # Sandbox prices differ from real market — market data must always come
+        # from production so the dashboard shows real prices.
+        if settings.OKX_SANDBOX:
+            self._market_exchange = ccxt.okx({"enableRateLimit": True})
+            logger.info("OKX market data client: using PRODUCTION for real prices")
+        else:
+            self._market_exchange = self._exchange
 
     def _ccxt_symbol(self, pair: str) -> str:
         """Convert our pair format to ccxt symbol for OKX.
@@ -117,7 +122,7 @@ class ExchangeClient:
         Returns:
             List of Candle sorted by timestamp ascending (oldest first).
         """
-        tf = _TIMEFRAME_MAP.get(timeframe, timeframe)
+        tf = timeframe  # Pass as-is; ccxt maps to OKX format internally
         symbol = self._ccxt_symbol(pair)
         candles: list[Candle] = []
         since = None
@@ -129,7 +134,7 @@ class ExchangeClient:
         while len(all_ohlcv) < count:
             try:
                 limit = min(_MAX_CANDLES_PER_REQUEST, count - len(all_ohlcv))
-                batch = self._exchange.fetch_ohlcv(
+                batch = self._market_exchange.fetch_ohlcv(
                     symbol, tf, since=since, limit=limit
                 )
                 requests_made += 1
@@ -199,7 +204,7 @@ class ExchangeClient:
         """
         try:
             symbol = self._ccxt_symbol(pair)
-            data = self._exchange.fetch_funding_rate(symbol)
+            data = self._market_exchange.fetch_funding_rate(symbol)
 
             rate = data.get("fundingRate")
             next_rate = data.get("nextFundingRate")
@@ -245,7 +250,7 @@ class ExchangeClient:
         """
         try:
             symbol = self._ccxt_symbol(pair)
-            data = self._exchange.fetch_open_interest(symbol)
+            data = self._market_exchange.fetch_open_interest(symbol)
 
             oi_value = data.get("openInterestAmount") or data.get("openInterest")
             if oi_value is None:
@@ -256,7 +261,7 @@ class ExchangeClient:
             ts = data.get("timestamp") or int(time.time() * 1000)
 
             # Get current price for USD conversion
-            ticker = self._exchange.fetch_ticker(symbol)
+            ticker = self._market_exchange.fetch_ticker(symbol)
             price = ticker.get("last", 0)
 
             # Derive contract count from base amount and contract size

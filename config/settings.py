@@ -198,27 +198,131 @@ class Settings:
     # ========================
     # ETHERSCAN — Whale monitoring
     # ========================
-    # Minimum ETH transfer to track (ignore dust)
-    WHALE_MIN_ETH: float = 10.0
+    # Minimum ETH transfer to track
+    WHALE_MIN_ETH: float = 100.0
     # High significance threshold
-    WHALE_HIGH_ETH: float = 100.0
-    # Wallets to monitor — add real whale addresses here
-    WHALE_WALLETS: List[str] = field(default_factory=lambda: [
-        # Placeholder addresses — replace with real whale wallets
-        # Sources: Etherscan whale label, top 100 holders, known fund addresses
-    ])
-    # Known exchange deposit addresses
+    WHALE_HIGH_ETH: float = 1000.0
+    # Wallets to monitor — address → label
+    # Individual whales, institutional funds, market makers, and foundations.
+    # Excludes: exchange cold storage, smart contracts, bridges.
+    WHALE_WALLETS: dict = field(default_factory=lambda: {
+        # --- Individual whales ---
+        "0xd8da6bf26964af9d7eed9e03e53415d37aa96045": "Vitalik Buterin",
+        "0x220866b1a2219f40e72f5c628b65d54268ca3a9d": "Vitalik (Vb 3)",
+        "0x2b6ed29a95753c3ad948348e3e7b1a251080ffb9": "Rain Lohmus",
+        "0xa1a45e91164cdab8fa596809a9b24f8d4fdbe0f3": "Jeffrey Wilcke",
+        "0x176f3dab24a159341c0509bb36b833e7fdd0a132": "Justin Sun",
+        # --- Institutional funds & trading firms ---
+        "0x15abb66ba754f05cbc0165a64a11cded1543de48": "Galaxy Digital",
+        "0x33566c9d8be6cf0b23795e0d380e112be9d75836": "Galaxy Digital OTC",
+        "0xad6eaa735d9df3d7696fd03984379dae02ed8862": "Cumberland (DRW)",
+        "0xb99a2c4c1c4f1fc27150681b740396f6ce1cbcf5": "Abraxas Capital",
+        "0x0000006daea1723962647b7e189d311d757fb793": "Wintermute",
+        "0x376c3e5547c68bc26240d8dcc6729fff665a4448": "Iconomi MultiSig",
+        "0xb61a16bda6d61d9b8ad493bf05962c5b98d1712f": "Deribit (Coinbase Custody)",
+        "0x7bbfaa2f8b2d2a613b4439be3428dfbf0f405390": "Paxos",
+        # --- Ethereum Foundation ---
+        "0xc06145782f31030db1c40b203be6b0fd53410b6d": "Ethereum Foundation",
+        # --- Unlabeled mega-wallets (>100K ETH, likely institutions) ---
+        "0xca8fa8f0b631ecdb18cda619c4fc9d197c8affca": "Unknown Whale (325K ETH)",
+        "0x1b3cb81e51011b549d78bf720b0d924ac763a7c2": "Unknown Whale (243K ETH)",
+        "0xde6cf64ec6ad9fc35b38fff55cae1f469cbc1703": "Unknown Whale (201K ETH)",
+        "0x2f2d854c1d6d5bb8936bb85bc07c28ebb42c9b10": "Unknown Whale (168K ETH)",
+        "0x0161c59eef4639625b18757790da141aeb9114b5": "Unknown Whale (166K ETH)",
+        "0x7d9557f7cec9a8077379e6235cfcc60b93e2ef11": "Unknown Whale (135K ETH)",
+        "0x0100dc5672f702e705fc693218a3ad38fed6553d": "Unknown Whale (133K ETH)",
+        "0xafa2a89cb43619677d9c72e81f6d4c8a730a1022": "Unknown Whale (122K ETH)",
+        "0x8ae880b5d35305da48b63ce3e52b22d17859f293": "Unknown Whale (107K ETH)",
+        "0x5b16fda29c71de07d5e0610c112e16a64baaffb0": "Unknown Whale (105K ETH)",
+        "0xbed96d0840201011df1467379a5d311e0040073a": "Unknown Whale (103K ETH)",
+    })
+    # Known exchange addresses — used to detect deposit/withdrawal direction
     EXCHANGE_ADDRESSES: dict = field(default_factory=lambda: {
-        # Binance hot wallets
+        # Binance
         "0x28C6c06298d514Db089934071355E5743bf21d60": "Binance",
         "0x21a31Ee1afC51d94C2eFcCAa2092aD1028285549": "Binance",
+        "0xbe0eb53f46cd790cd13851d5eff43d12404d33e8": "Binance",
+        "0xf977814e90da44bfa03b6295a0616a897441acec": "Binance",
+        "0x47ac0fb4f2d84898e4d9e7b4dab3c24507a6d503": "Binance",
         # Coinbase
         "0x71660c4005BA85c37ccec55d0C4493E66Fe775d3": "Coinbase",
         "0x503828976D22510aad0201ac7EC88293211D23Da": "Coinbase",
         # OKX
         "0x6cC5F688a315f3dC28A7781717a9A798a59fDA7b": "OKX",
+        "0x539c92186f7c6cc4cbf443f26ef84c595babbca1": "OKX",
+        "0xbfbbfaccd1126a11b8f84c60b09859f80f3bd10f": "OKX",
+        "0x868dab0b8e21ec0a48b726a1ccf25826c78c6d7f": "OKX",
+        "0x9c22a4039f269e72de6b029b273be059cdbb831c": "OKX",
         # Kraken
         "0x2910543Af39abA0Cd09dBb2D50200b3E800A63D2": "Kraken",
+        "0x9f1799fb47b1514f453bcebbc37ecfe883756e83": "Kraken",
+        "0x8d05d9924fe935bd533a844271a1b2078eae6fcf": "Kraken",
+        "0xf30ba13e4b04ce5dc4d254ae5fa95477800f0eb0": "Kraken",
+        "0xd2dd7b597fd2435b6db61ddf48544fd931e6869f": "Kraken",
+        # Bitfinex
+        "0xe92d1a43df510f82c66382592a047d288f85226f": "Bitfinex",
+        "0x8103683202aa8da10536036edef04cdd865c225e": "Bitfinex",
+        "0x5a710a3cdf2af218740384c52a10852d8870626a": "Bitfinex",
+        "0xc61b9bb3a7a0767e3179713f3a5c7a9aedce193c": "Bitfinex",
+        # Gemini
+        "0xafcd96e580138cfa2332c632e66308eacd45c5da": "Gemini",
+        # Robinhood
+        "0x40b38765696e3d5d8d9d834d8aad4bb6e418e489": "Robinhood",
+        "0x73af3bcf944a6559933396c1577b257e2054d935": "Robinhood",
+        # Upbit
+        "0x0e58e8993100f1cbe45376c410f97f4893d9bfcd": "Upbit",
+        # Bithumb
+        "0x17e5545b11b468072283cee1f066a059fb0dbf24": "Bithumb",
+        # Crypto.com
+        "0xa023f08c70a23abc7edfc5b6b5e171d78dfc947e": "Crypto.com",
+        # Gate.io
+        "0xc882b111a75c0c657fc507c04fbfcd2cc984f071": "Gate.io",
+    })
+
+    # ========================
+    # BTC WHALE MONITORING — mempool.space
+    # ========================
+    WHALE_MIN_BTC: float = 10.0     # ~$700K at current prices
+    WHALE_HIGH_BTC: float = 100.0   # ~$7M
+    MEMPOOL_CHECK_INTERVAL: int = 300  # 5 min (same as Etherscan)
+    # BTC whale wallets — address → label
+    BTC_WHALE_WALLETS: dict = field(default_factory=lambda: {
+        # --- Individual whales / unlabeled mega-wallets ---
+        "bc1q8yj0herd4r4yxszw3nkfvt53433thk0f5qst4g": "Unknown Whale (78K BTC)",
+        "bc1qa5wkgaew2dkv56kfvj49j0av5nml45x9ek9hz6": "US Gov (Silk Road)",
+        "bc1qazcm763858nkj2dj986etajv6wquslv8uxwczt": "Bitfinex Hack Recovery",
+        "1LQoWist8KkaUXSPKZHNvEyFrWnPUiUhTJ": "Unknown Whale (79K BTC)",
+        "37XuVSEpWW4trkfmvWzegTHQt7BdktSKUs": "Unknown Whale (94K BTC)",
+        "1FeexV6bAHb8ybZjqQMjJrcCrHGW9sb6uF": "Unknown Whale (80K BTC)",
+        "bc1qx9t2l3pyny2spqpqlye8svce70nppwtaxwdrp4": "Unknown Whale (44K BTC)",
+        # --- El Salvador treasury ---
+        "32ixEdpwzGTGFCo5tPAGRDqBqXcY2ACoyg": "El Salvador Treasury",
+        # --- Mt. Gox trustee ---
+        "1HeKStJGYTXLpJCGrAQnbyicoGBJFRepGA": "Mt. Gox Trustee",
+        "1AsHPP7WcGRsBYmAuXUojh2DSfmHmPp3F8": "Mt. Gox Trustee 2",
+        # --- Block.one (EOS) ---
+        "3MfN5to5K5be2RupWE8rjJPQ6X9FqRC9BM": "Block.one (EOS)",
+    })
+    # Known BTC exchange addresses — used to detect deposit/withdrawal direction
+    BTC_EXCHANGE_ADDRESSES: dict = field(default_factory=lambda: {
+        # Binance
+        "34xp4vRoCGJym3xR7yCVPFHoCNxv4Twseo": "Binance",
+        "3M219KR5vEneNb47ewrPfWyb5jQ2DjxRP6": "Binance",
+        "bc1qm34lsc65zpw79lxes69zkqmk6ee3ewf0j77s3h": "Binance",
+        # Robinhood
+        "bc1ql49ydapnjafl5t2cp9zqpjwe6pdgmxy98859v2": "Robinhood",
+        # Bitfinex
+        "bc1qgdjqv0av3q56jvd82tkdjpy7gdp9ut8tlqmgrpmv24sq90ecnvqqjwvw97": "Bitfinex",
+        "3JZq4atUahhuA9rLhXLMhhTo133J9rF97j": "Bitfinex",
+        # OKX
+        "bc1q2s3rjwvam9dt2ftt4sqxqjf3twav0gdx0lt02y": "OKX",
+        # Kraken
+        "bc1qxhmdufsvnuaaaer4ynz88fspdsxq2h9e9cetdj": "Kraken",
+        "3AfP4FT2oXCBT2E5gTrQayNnGFGmjayY1Q": "Kraken",
+        # Crypto.com
+        "bc1q4c8n5t00jmj8temxdgcc3t32nkg2wjwz24lywv": "Crypto.com",
+        # Gate.io
+        "1C2DYGhcnNBYmKKSzByYE4FCoFkNkMuh2H": "Gate.io",
     })
 
     # ========================

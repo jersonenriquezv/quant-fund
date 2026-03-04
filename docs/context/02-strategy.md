@@ -1,6 +1,6 @@
 # Strategy Service
-> Última actualización: 2026-03-03
-> Estado: implementado (completo, integrado en main.py)
+> Última actualización: 2026-03-04
+> Estado: implementado (completo, integrado en main.py). Audited — 3 CRITICAL fixes applied.
 
 ## Qué hace (30 segundos)
 El Strategy Service es el detective del sistema. Analiza los datos del Data Service buscando patrones de Smart Money Concepts (SMC): rupturas de estructura (BOS/CHoCH), order blocks, fair value gaps, sweeps de liquidez, y zonas premium/discount. Cuando encuentra un setup con suficiente confluencia, genera un `TradeSetup` para evaluación.
@@ -23,6 +23,7 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
 - Entry: 50% del body de la vela
 - Validación: volumen >1.5x promedio, máximo 48h de edad
 - Deduplicación por break asociado
+- **`break_timestamp`:** Cada OB almacena el timestamp de la vela que rompió estructura. La mitigación solo evalúa velas posteriores al `break_timestamp`, evitando que la propia vela de ruptura (o anteriores) invalide el OB prematuramente.
 
 ### `strategy_service/fvg.py` — Fair Value Gaps
 - Gap de 3 velas donde wick de vela 1 no toca wick de vela 3
@@ -36,9 +37,11 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
 - Volumen mínimo 2x para confirmar sweep institucional
 - Zonas premium (>52%), discount (<48%), **equilibrium (48%-52%)** con banda de tolerancia configurable (`PD_EQUILIBRIUM_BAND`)
 - **Persistencia de swept status** — niveles que ya fueron sweepados mantienen su estado entre llamadas para evitar sweeps duplicados
+- **Temporal guard:** Solo evalúa candles cuyo timestamp es > `max(level.timestamps)`. Previene que velas históricas (usadas para formar el nivel) lo "sweepeen" falsamente.
 
 ### `strategy_service/setups.py` — Setup A/B + Confluencia
 - **Setup A** (primario): Sweep + CHoCH + OB en discount/premium
+  - **Patrón de CONTINUACIÓN**: CHoCH debe alinearse con HTF bias. Solo se opera cuando la estructura LTF confirma la dirección HTF. Setups de reversión (CHoCH opuesto a HTF) excluidos intencionalmente por menor win rate.
   - **Orden temporal obligatorio**: sweep ANTES del CHoCH
   - **Proximidad temporal**: sweep dentro de `SETUP_A_MAX_SWEEP_CHOCH_GAP` candles del CHoCH
 - **Setup B** (secundario): BOS + FVG adyacente a OB

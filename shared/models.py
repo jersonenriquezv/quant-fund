@@ -81,16 +81,17 @@ class LiquidationEvent:
 
 @dataclass(frozen=True)
 class WhaleMovement:
-    """Large ETH transfer detected via Etherscan.
+    """Large crypto transfer detected via Etherscan (ETH) or mempool.space (BTC).
     Exchange deposit = bearish signal (potential sell).
     Exchange withdrawal = bullish signal (accumulation).
     """
     timestamp: int
     wallet: str
     action: str             # "exchange_deposit" or "exchange_withdrawal"
-    amount_eth: float
+    amount: float           # ETH or BTC amount
     exchange: str           # "Binance", "OKX", "Coinbase", etc.
-    significance: str       # "high" (>100 ETH), "medium" (>10 ETH)
+    significance: str       # "high" or "medium"
+    chain: str              # "ETH" or "BTC"
 
 
 @dataclass

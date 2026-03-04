@@ -73,7 +73,10 @@ class SetupEvaluator:
         latest_choch = choch_breaks[-1]
         direction = latest_choch.direction  # "bullish" or "bearish"
 
-        # Direction must align with HTF bias
+        # Setup A is CONTINUATION: CHoCH must align with HTF bias.
+        # This means we only trade when LTF structure confirms HTF direction.
+        # Reversal setups (CHoCH opposing HTF) are intentionally excluded
+        # because they have lower win rates without additional confirmation.
         if direction != htf_bias:
             return None
 

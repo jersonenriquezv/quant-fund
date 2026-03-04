@@ -1,5 +1,6 @@
 # Execution Service (Layer 5)
-> Estado: **implementado** — 20 tests passing
+> Última actualización: 2026-03-04
+> Estado: **implementado** — 20 tests passing. Audited — 5 CRITICAL fixes applied.
 
 El brazo ejecutor del bot. Recibe trades aprobados por Risk Service y los ejecuta en OKX via ccxt.
 
@@ -25,17 +26,21 @@ ExecutionService (facade)
 
 ```
 pending_entry ──[fill]──────> active         (coloca SL + TP1/TP2/TP3)
-pending_entry ──[15min]─────> closed         (cancela entry)
+pending_entry ──[15min]─────> closed         (cancela entry, NO cuenta como trade en Risk)
 
 active ──[TP1 fills]──> tp1_hit              (SL → breakeven)
 active ──[SL fills]───> closed               (cancela todos los TPs)
 active ──[12h]────────> closed               (market close todo)
+active ──[SL fail]────> emergency_pending    (SL placement fails → emergency retry)
 
 tp1_hit ──[TP2 fills]──> tp2_hit             (SL → nivel TP1)
 tp1_hit ──[SL fills]───> closed
 
 tp2_hit ──[TP3 fills]──> closed              (posición completamente cerrada)
 tp2_hit ──[SL fills]───> closed
+
+emergency_pending ──[retry ok]──> closed     (market close exitoso)
+emergency_pending ──[3 fails]──> emergency_failed  (requiere intervención manual)
 ```
 
 ## Tipos de órdenes
@@ -43,7 +48,7 @@ tp2_hit ──[SL fills]───> closed
 | Orden | Tipo | Por qué |
 |-------|------|---------|
 | Entry | Limit | Control de slippage. Cancela si no se llena en 15 min |
-| Stop Loss | Stop-market | Ejecución garantizada en crashes. NO stop-limit |
+| Stop Loss | Stop-market (algo order) | Ejecución garantizada en crashes. OKX `ordType: "conditional"` para routing correcto de algo orders |
 | TP1/TP2/TP3 | Limit (reduceOnly) | Precios exactos, sin slippage en take profits |
 
 ## Distribución de TPs
@@ -54,11 +59,12 @@ tp2_hit ──[SL fills]───> closed
 
 ## Reglas de seguridad críticas
 
-1. **Entry fill + SL falla → EMERGENCY market close.** Nunca hay posición abierta sin SL. Envía alerta Telegram.
+1. **Entry fill + SL falla → EMERGENCY market close con retry.** Nunca hay posición abierta sin SL. Máximo 3 reintentos (fase `emergency_pending`). Tras 3 fallos → `emergency_failed`, se mantiene en tracking para intervención manual. Envía alerta Telegram.
 2. **Ajuste de SL: nuevo ANTES de cancelar viejo.** Cero ventana sin protección.
 3. **Notificación a Risk: en PLACE, no en fill.** Si hay 2 entries pendientes, Risk los cuenta como 2 posiciones abiertas.
-4. **Shutdown: cancela entries pendientes, NO cierra posiciones activas.** Los SL/TP viven en el exchange y sobreviven al bot.
-5. **Telegram notifications:** Entry fill → `notify_trade_opened`, position close → `notify_trade_closed`, SL fail → `notify_emergency`. Fire-and-forget via `asyncio.ensure_future`.
+4. **Cancelled entries no cuentan como trades.** Si el entry timeout cancela una orden que nunca se llenó, no se notifica a Risk ni se envía Telegram de trade cerrado.
+5. **Shutdown: cancela entries pendientes, NO cierra posiciones activas.** Los SL/TP viven en el exchange y sobreviven al bot.
+6. **Telegram notifications:** Entry fill → `notify_trade_opened`, position close → `notify_trade_closed`, SL fail → `notify_emergency`. Fire-and-forget via `asyncio.ensure_future`.
 
 ## Slippage tracking
 
@@ -73,9 +79,9 @@ Slippage: BTC/USDT expected=50000.00 actual=50025.00 diff=0.0500%
 |---------|-------------|
 | `execution_service/__init__.py` | Exporta ExecutionService |
 | `execution_service/service.py` | Facade — execute(), start(), stop(), health() |
-| `execution_service/executor.py` | Wrapper ccxt — place/cancel/fetch orders |
+| `execution_service/executor.py` | Wrapper ccxt — place/cancel/fetch orders (con fallback a algo orders) |
 | `execution_service/monitor.py` | Background loop — máquina de estados + notificaciones Telegram |
-| `execution_service/models.py` | ManagedPosition (estado mutable interno) |
+| `execution_service/models.py` | ManagedPosition (estado mutable interno, incluye `emergency_retries` counter) |
 
 ## Settings
 
@@ -98,6 +104,14 @@ Slippage: BTC/USDT expected=50000.00 actual=50025.00 diff=0.0500%
 - Emergency close: SL falla → market close
 - Slippage: logging verificado
 - PnL: cálculo correcto long/short profit/loss
+
+## OKX Algo Order Handling
+
+OKX trata stop-market orders como "algo orders" con routing separado:
+- **`place_stop_market()`** envía `params["ordType"] = "conditional"` para que ccxt/OKX use el endpoint de algo orders.
+- **`fetch_order()`** intenta primero fetch normal; si recibe `OrderNotFound`, hace fallback a `_fetch_algo_order()`.
+- **`_fetch_algo_order()`** busca en `fetch_open_orders` y `fetch_canceled_and_closed_orders` con `{"ordType": "conditional"}`.
+- Usa `asyncio.get_running_loop()` (no el deprecated `get_event_loop()`).
 
 ## Decisiones de diseño
 

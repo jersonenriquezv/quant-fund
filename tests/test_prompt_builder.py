@@ -162,7 +162,7 @@ class TestEvaluationPrompt:
         whales = [
             WhaleMovement(
                 timestamp=ts, wallet="0xabc", action="exchange_deposit",
-                amount_eth=150.0, exchange="Binance", significance="high",
+                amount=150.0, exchange="Binance", significance="high", chain="ETH",
             ),
         ]
         setup = _make_setup()

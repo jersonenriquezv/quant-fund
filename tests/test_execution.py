@@ -265,7 +265,8 @@ class TestEntryTimeout:
         executor.cancel_order.assert_called_once_with("ord-entry", "BTC/USDT")
         assert pos.phase == "closed"
         assert pos.close_reason == "cancelled"
-        risk.on_trade_closed.assert_called_once()
+        # Cancelled entries are not real trades — Risk Service should NOT be notified
+        risk.on_trade_closed.assert_not_called()
 
 
 class TestTP1Hit:

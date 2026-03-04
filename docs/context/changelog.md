@@ -1,5 +1,65 @@
 # Changelog — One-Man Quant Fund
 
+## [2026-03-04] — Full Audit — 12 CRITICAL fixes
+**Qué cambió:**
+Auditoría completa de las 5 capas. 12 issues CRITICAL corregidos, 28 IMPORTANT + 29 MINOR documentados en `docs/to-fix.md`.
+
+**Fixes aplicados:**
+1. **Wallet dedup** (`config/settings.py`) — Removidas 5 ETH exchange hot wallets de `WHALE_WALLETS` que también estaban en `EXCHANGE_ADDRESSES` (Binance, Kraken, Bithumb, Crypto.com, Gate.io). Removidos 3 BTC duplicados (MicroStrategy/Bitfinex Hack Recovery, Bitfinex exchange, Binance).
+2. **PostgreSQL reconnection** (`data_service/data_store.py`) — `_ensure_connected()` con `SELECT 1` health check. Todos los métodos DB retry una vez en `OperationalError`/`InterfaceError`.
+3. **Pipeline serialization** (`data_service/websocket_feeds.py`) — Per-pair `asyncio.Lock` previene pipelines concurrentes en el mismo par. `task.add_done_callback()` para logging de excepciones.
+4. **asyncio.get_running_loop()** (`data_service/service.py`, `execution_service/executor.py`) — Reemplaza todas las llamadas a `get_event_loop()` (deprecated).
+5. **OKX algo orders** (`execution_service/executor.py`) — `ordType: "conditional"` para SL stop-market orders. `fetch_order()` con fallback a `_fetch_algo_order()`.
+6. **Emergency close retry** (`execution_service/monitor.py`) — Verifica return value de `close_position_market()`. Fase `emergency_pending` con máximo 3 reintentos. Tras 3 fallos → `emergency_failed`.
+7. **Cancelled entries** (`execution_service/monitor.py`) — Entries canceladas (timeout sin fill) no notifican a Risk ni envían Telegram de trade cerrado.
+8. **Sweep temporal guard** (`strategy_service/liquidity.py`) — Solo evalúa candles con timestamp > `max(level.timestamps)` para prevenir sweeps falsos.
+9. **OB break_timestamp** (`strategy_service/order_blocks.py`) — Campo `break_timestamp` en OrderBlock. Mitigación solo evalúa candles posteriores a la vela de ruptura.
+10. **Setup A documentation** (`strategy_service/setups.py`) — Comentario explicando que Setup A es patrón de CONTINUACIÓN (CHoCH alineado con HTF bias) — decisión intencional, no bug.
+11. **Whale notification stability** (`data_service/service.py`) — Usa `id()` snapshot antes del polling para detectar nuevos movimientos sin depender de índices de lista.
+
+**Nuevos campos:**
+- `ManagedPosition.emergency_retries: int = 0`
+- `OrderBlock.break_timestamp: int = 0`
+
+**Tests:** 280/280 passing. 3 tests actualizados (PG no-connection mocking, cancelled entry assertion).
+
+**Por qué:** Auditoría pre-producción para eliminar bugs críticos antes de activar trading en sandbox.
+**Impacto:** config/, data_service/, strategy_service/, execution_service/, tests/, docs/
+
+## [2026-03-04] — BTC Whale Movement Tracking
+**Qué cambió:**
+- `shared/models.py` — WhaleMovement generalizado: `amount_eth` → `amount`, nuevo campo `chain` ("ETH" o "BTC"). Soporta ambas cadenas.
+- `config/settings.py` — 15 BTC whale wallets (mega-wallets, gobiernos, Mt. Gox, MicroStrategy, etc.), 11 exchange addresses (Binance, Robinhood, Bitfinex, OKX, Kraken, etc.), `WHALE_MIN_BTC=10`, `WHALE_HIGH_BTC=100`, `MEMPOOL_CHECK_INTERVAL=300`.
+- `data_service/btc_whale_client.py` — NUEVO. Cliente mempool.space REST API. Parsea modelo UTXO (vin/vout) para detectar deposits/withdrawals a exchanges conocidos. Rate limit 0.5s entre calls. Misma API pública que EtherscanClient.
+- `data_service/etherscan_client.py` — Usa `amount=` y `chain="ETH"`. `serialize_movements()` incluye `chain` en JSON.
+- `data_service/service.py` — Integra `BtcWhaleClient`. `get_whale_movements()` y `get_market_snapshot()` mergean ETH+BTC. Nuevo `_btc_whale_loop()`. `_publish_whale_movements()` centraliza publicación a Redis (ETH+BTC combinados).
+- `ai_service/prompt_builder.py` — Sección whale dinámica: "150.0 ETH" o "10.5 BTC" según chain.
+- `dashboard/api/models.py` — `WhaleMovementRecord`: `amount_eth` → `amount`, nuevo `chain`.
+- `dashboard/web/src/lib/api.ts` — Interface actualizada: `amount`, `chain`.
+- `dashboard/web/src/components/WhaleLog.tsx` — Título "Whale Movements (24h)", columna Amount muestra "500.00 ETH" o "10.5000 BTC", decimales dinámicos por chain.
+- `tests/` — Fixtures actualizadas en test_data_service.py y test_prompt_builder.py.
+
+**Por qué:** ETH whale tracking estaba funcionando pero BTC no se monitoreaba. BTC es el par principal del bot. mempool.space es gratis, sin API key, y cubre Bitcoin mainnet.
+**Impacto:** shared/, config/, data_service/, ai_service/, dashboard/, tests/
+
+## [2026-03-04] — Dashboard — Whale Movements Section
+**Qué cambió:**
+- `config/settings.py` — `WHALE_WALLETS` cambiado de `List[str]` a `dict[str, str]` (address → label). Permite mostrar nombres legibles en el dashboard.
+- `data_service/etherscan_client.py` — Itera `.keys()` del dict. Nuevo método `serialize_movements()` que incluye label de cada wallet en el JSON.
+- `data_service/data_store.py` — 2 métodos nuevos en RedisStore: `set_whale_movements()` / `get_whale_movements()`. Key: `qf:bot:whale_movements`, TTL 600s.
+- `data_service/service.py` — Etherscan ya no se lanza como tarea independiente. Nuevo `_etherscan_loop()` que ejecuta el poll y publica a Redis después de cada ciclo.
+- `dashboard/api/models.py` — Nuevo modelo `WhaleMovementRecord` (timestamp, wallet, label, action, amount_eth, exchange, significance).
+- `dashboard/api/routes/whales.py` — Nuevo endpoint `GET /api/whales?hours=24`. Lee Redis, filtra por timestamp.
+- `dashboard/api/main.py` — Router de whales registrado.
+- `dashboard/web/src/lib/api.ts` — Interface `WhaleMovement` TypeScript.
+- `dashboard/web/src/components/WhaleLog.tsx` — Tabla: Time, Wallet (label + truncated addr), Action (deposit=red, withdrawal=green badge), Amount ETH, Exchange, Significance. Polls cada 30s.
+- `dashboard/web/src/app/page.tsx` — WhaleLog agregado al grid entre trade/AI logs y health bar.
+- `dashboard/web/src/app/globals.css` — Grid row 5 para whale-log (full width), health bar movido a row 6.
+- `tests/test_data_service.py` — Tests Etherscan actualizados para usar dict en vez de list.
+
+**Por qué:** Whale movements solo vivían en memoria del bot. El dashboard (proceso separado) necesita leerlos via Redis.
+**Impacto:** config/, data_service/, dashboard/, tests/
+
 ## [2026-03-04] — Telegram Notifications
 **Qué cambió:**
 - `shared/notifier.py` — Nuevo módulo `TelegramNotifier`. Envía mensajes via Telegram Bot API (httpx POST). Fire-and-forget: si Telegram falla, el bot continúa. 6 métodos: `notify_setup_detected`, `notify_ai_decision`, `notify_risk_rejected`, `notify_trade_opened`, `notify_trade_closed`, `notify_emergency`.
