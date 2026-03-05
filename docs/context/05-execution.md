@@ -1,5 +1,5 @@
 # Execution Service (Layer 5)
-> Última actualización: 2026-03-04
+> Última actualización: 2026-03-05
 > Estado: **implementado** — 25 tests passing. Audited — 5 CRITICAL + 6 IMPORTANT + 3 MINOR fixes applied.
 
 El brazo ejecutor del bot. Recibe trades aprobados por Risk Service y los ejecuta en OKX via ccxt.
@@ -49,7 +49,7 @@ emergency_pending ──[3 fails]──> emergency_failed  (requiere intervenci�
 | Orden | Tipo | Por qué |
 |-------|------|---------|
 | Entry | Limit | Control de slippage. Cancela si no se llena en 15 min |
-| Stop Loss | Stop-market (algo order) | Ejecución garantizada en crashes. OKX `ordType: "conditional"` para routing correcto de algo orders |
+| Stop Loss | Stop-market (algo order) | Ejecución garantizada en crashes. ccxt `stopLossPrice` param → OKX `slTriggerPx` internamente |
 | TP1/TP2/TP3 | Limit (reduceOnly) | Precios exactos, sin slippage en take profits |
 
 ## Distribución de TPs
@@ -83,7 +83,7 @@ Slippage: BTC/USDT expected=50000.00 actual=50025.00 diff=0.0500%
 |---------|-------------|
 | `execution_service/__init__.py` | Exporta ExecutionService |
 | `execution_service/service.py` | Facade — execute(), start(), stop(), health() |
-| `execution_service/executor.py` | Wrapper ccxt — place/cancel/fetch orders (con fallback a algo orders) |
+| `execution_service/executor.py` | Wrapper ccxt — place/cancel/fetch orders (con fallback a algo orders). Init: set one-way position mode + isolated margin |
 | `execution_service/monitor.py` | Background loop — máquina de estados + notificaciones Telegram |
 | `execution_service/models.py` | ManagedPosition (estado mutable interno, incluye `emergency_retries`, `realized_pnl_usd`) |
 
@@ -123,10 +123,19 @@ Cada vez que un TP llena, `_accumulate_realized_pnl()` calcula y suma el PnL de 
 - Slippage: logging verificado
 - PnL: cálculo correcto long/short profit/loss, **blended PnL con realized**
 
+## OKX Account Configuration at Init
+
+`OrderExecutor.__init__()` configura la cuenta OKX al arrancar:
+
+1. **Position mode → one-way (net):** `set_position_mode(hedged=False)`. Evita el error `Parameter posSide error` que OKX devuelve en hedge mode. El bot no necesita long+short simultáneo en el mismo par.
+2. **Margin mode → isolated** (per-pair): `set_margin_mode("isolated", symbol, {"lever": leverage})`. Se ejecuta en `configure_pair()` antes de cada trade. El parámetro `lever` es requerido por OKX — sin él, la API devuelve `lever should be between 1 and 125`.
+
+Ambas configuraciones manejan el caso "already set" silenciosamente (no es un error real).
+
 ## OKX Algo Order Handling
 
 OKX trata stop-market orders como "algo orders" con routing separado:
-- **`place_stop_market()`** envía `params["ordType"] = "conditional"` para que ccxt/OKX use el endpoint de algo orders.
+- **`place_stop_market()`** usa `params["stopLossPrice"]` (ccxt unified API). ccxt internamente mapea esto a `slTriggerPx` de OKX y usa el endpoint de algo orders. Nota: el parámetro anterior `triggerPrice` + `ordType: "conditional"` no funcionaba — OKX devolvía error 50015 ("Either parameter tpTriggerPx or slTriggerPx is required").
 - **`fetch_order()`** intenta primero fetch normal; si recibe `OrderNotFound`, hace fallback a `_fetch_algo_order()`.
 - **`_fetch_algo_order()`** busca en `fetch_open_orders` y `fetch_canceled_and_closed_orders` con `{"ordType": "conditional"}`.
 - Usa `asyncio.get_running_loop()` (no el deprecated `get_event_loop()`).

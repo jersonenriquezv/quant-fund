@@ -34,7 +34,7 @@ ALL dashboard UI changes MUST work on mobile (375px+). The dashboard uses 2 CSS 
 ---
 ## Infrastructure
 - **Server:** Acer Nitro 5 (i5-9300H, 4 cores/8 threads, 16GB RAM, SSD 240GB) running Ubuntu Server 24.04 — dedicated 24/7 server, no GUI
-- **IP:** 192.168.1.238 (static, local network)
+- **IP:** 192.168.1.236 (static, local network)
 - **Internet:** Direct connection, no proxy. Required for OKX WebSocket, Etherscan API, Claude API.
 - **Docker + Docker Compose:** Installed and ready
 - **Python:** 3.12 with venv at ~/quant-fund/venv

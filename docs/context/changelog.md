@@ -1,5 +1,16 @@
 # Changelog — One-Man Quant Fund
 
+## [2026-03-05] — Fix: SL placement failing on OKX (error 50015)
+**Qué cambió:**
+- `execution_service/executor.py` — `place_stop_market()` params changed from `{"triggerPrice": x, "ordType": "conditional"}` to `{"stopLossPrice": x}`. The old params caused OKX to reject every SL order with error 50015 ("Either parameter tpTriggerPx or slTriggerPx is required"), triggering EMERGENCY CLOSE on every trade. The ccxt unified `stopLossPrice` param correctly maps to OKX's `slTriggerPx` internally.
+- `docs/context/05-execution.md` — Updated algo order handling section and order types table to reflect the fix.
+
+**Por qué:** Every trade the bot executed was immediately emergency-closed because the SL order was rejected by OKX. The bot was placing entries but could never protect them with a stop-loss. Root cause: ccxt 4.5.40 on OKX requires `stopLossPrice` (unified API), not `triggerPrice` + `ordType` (which was a guess at OKX-native params that ccxt didn't map correctly).
+**Impacto:** execution_service/executor.py, docs/context/
+**Tests:** 25/25 passing (no test changes needed — tests mock ccxt).
+
+---
+
 ## [2026-03-05] — Docs sync: test counts, pipeline description, dates
 **Qué cambió:**
 - `docs/context/00-architecture.md` — Test counts actualizados (291→296). Pipeline steps 5-7 describen pre-filter + hybrid scalping. Cambios recientes actualizado. Notificaciones Telegram incluyen pre-filter.

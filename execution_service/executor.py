@@ -40,6 +40,16 @@ class OrderExecutor:
         else:
             logger.info("OrderExecutor initialized in LIVE mode")
 
+        # Set one-way (net) position mode — avoids posSide errors
+        try:
+            self._exchange.set_position_mode(hedged=False)
+            logger.info("Position mode set to one-way (net)")
+        except Exception as e:
+            if "already" in str(e).lower():
+                logger.debug("Position mode already set to one-way")
+            else:
+                logger.warning(f"Failed to set position mode: {e}")
+
     def _ccxt_symbol(self, pair: str) -> str:
         """Convert pair format to ccxt symbol. "BTC/USDT" → "BTC/USDT:USDT"."""
         return f"{pair}:USDT"
@@ -132,8 +142,7 @@ class OrderExecutor:
         try:
             params = {
                 "reduceOnly": True,
-                "triggerPrice": trigger_price,
-                "ordType": "conditional",
+                "stopLossPrice": trigger_price,
             }
             order = await self._run_sync(
                 self._exchange.create_order,
