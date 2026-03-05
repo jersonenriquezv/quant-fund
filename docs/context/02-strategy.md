@@ -1,5 +1,5 @@
 # Strategy Service
-> Última actualización: 2026-03-04
+> Última actualización: 2026-03-05
 > Estado: implementado (completo, integrado en main.py). Audited — 3 CRITICAL fixes applied.
 
 ## Qué hace (30 segundos)
@@ -64,9 +64,10 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
 - `PD_EQUILIBRIUM_BAND: float = 0.02` — banda ±2% alrededor del 50% para zona equilibrium
 - `OB_PROXIMITY_PCT: float = 0.003` — 0.3% del precio como margen de proximidad al OB
 - `SETUP_A_MAX_SWEEP_CHOCH_GAP: int = 20` — máximo candles entre sweep y CHoCH
-- `REQUIRE_HTF_LTF_ALIGNMENT: bool = True` — si LTF debe alinearse con HTF (scalping: False)
+- `REQUIRE_HTF_LTF_ALIGNMENT: bool = True` — si LTF debe alinearse con HTF (scalping: False, aggressive: False)
+- `REQUIRE_PD_ALIGNMENT: bool = True` — si premium/discount zone debe alinear con dirección (aggressive: False). Bloqueador #1 de setups (40% de rechazos con default)
 - `ALLOW_EQUILIBRIUM_TRADES: bool = False` — permitir trades en zona equilibrium (scalping: True)
-- `HTF_BIAS_REQUIRE_4H: bool = True` — si 4H debe definir trend o 1H solo basta (scalping: False)
+- `HTF_BIAS_REQUIRE_4H: bool = True` — si 4H debe definir trend o 1H solo basta (scalping: False, aggressive: False)
 
 ## Sistema de perfiles (`STRATEGY_PROFILE`)
 
@@ -75,7 +76,7 @@ El bot soporta 3 perfiles de estrategia, switcheables desde dashboard o env var:
 | Perfil | Setups/día | Descripción |
 |--------|-----------|-------------|
 | `default` | ~1-2 | Conservador — todos los filtros activos |
-| `aggressive` | ~3-5 | Zonas más amplias, umbrales más bajos, mismos filtros estructurales |
+| `aggressive` | ~5-10 | PD alignment off, FORCE_MAX_LEVERAGE, OB proximity 0.8%, R:R min 1.0, AI confidence 0.50, 20 trades/día |
 | `scalping` | ~10-20+ | Permite trades contra HTF, en equilibrium, R:R mínimo 1.0 |
 
 Los perfiles se definen en `STRATEGY_PROFILES` (config/settings.py) y se aplican via `apply_profile()`. Risk guardrails (DD, max positions) **nunca cambian** entre perfiles.

@@ -218,6 +218,7 @@ class EtherscanClient:
         to_addr = tx.get("to", "").lower()
         wallet_lower = wallet.lower()
         tx_timestamp = int(tx.get("timeStamp", "0")) * 1000  # Convert to ms
+        label = self._whale_wallets.get(wallet, "")
 
         # Determine significance
         if value_eth >= settings.WHALE_HIGH_ETH:
@@ -236,6 +237,7 @@ class EtherscanClient:
                 exchange=exchange,
                 significance=significance,
                 chain="ETH",
+                wallet_label=label,
             )
             self._movements.append(movement)
             logger.info(f"Whale deposit: {value_eth:.2f} ETH → {exchange} "
@@ -252,6 +254,7 @@ class EtherscanClient:
                 exchange=exchange,
                 significance=significance,
                 chain="ETH",
+                wallet_label=label,
             )
             self._movements.append(movement)
             logger.info(f"Whale withdrawal: {value_eth:.2f} ETH ← {exchange} "
@@ -268,6 +271,7 @@ class EtherscanClient:
                 exchange=truncated,
                 significance=significance,
                 chain="ETH",
+                wallet_label=label,
             )
             self._movements.append(movement)
             logger.info(f"Whale transfer out: {value_eth:.2f} ETH → {truncated} "
@@ -284,6 +288,7 @@ class EtherscanClient:
                 exchange=truncated,
                 significance=significance,
                 chain="ETH",
+                wallet_label=label,
             )
             self._movements.append(movement)
             logger.info(f"Whale transfer in: {value_eth:.2f} ETH ← {truncated} "

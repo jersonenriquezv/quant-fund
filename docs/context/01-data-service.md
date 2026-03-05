@@ -1,6 +1,6 @@
 # Data Service
-> Last updated: 2026-03-04
-> Status: implemented (complete, running in Docker). Audited — 4 CRITICAL fixes applied. Whale tracking expanded to all large movements.
+> Last updated: 2026-03-05
+> Status: implemented (complete, running in Docker). Audited — 4 CRITICAL fixes applied. Whale tracking expanded to all large movements. Whale notifications enriched with wallet labels.
 
 ## What it does (30 seconds)
 The Data Service is the bot's eyes and ears. It connects to OKX 24/7, collecting price data (candles), trade flow (CVD), market indicators (funding rate, open interest), liquidation cascades (via OI proxy), and whale movements. Every other service gets clean, validated, typed data through here.
@@ -48,7 +48,7 @@ All 5 layers run in the same Python process. The Data Service exposes methods th
 - **OpenInterest** — in contracts, base currency, and USD
 - **CVDSnapshot** — cumulative volume delta for 5m, 15m, 1h windows + buy/sell volume
 - **LiquidationEvent** — from OI proxy (OI drop >2% = cascade), with side and size_usd
-- **WhaleMovement** — Whale transfers (ETH via Etherscan, BTC via mempool.space). 4 action types: `exchange_deposit` (bearish), `exchange_withdrawal` (bullish), `transfer_out` (neutral), `transfer_in` (neutral). Fields: `amount` (ETH or BTC), `chain` ("ETH" or "BTC"), `exchange` (exchange name or truncated address)
+- **WhaleMovement** — Whale transfers (ETH via Etherscan, BTC via mempool.space). 4 action types: `exchange_deposit` (bearish), `exchange_withdrawal` (bullish), `transfer_out` (neutral), `transfer_in` (neutral). Fields: `amount` (ETH or BTC), `chain` ("ETH" or "BTC"), `exchange` (exchange name or truncated address), `wallet_label` (human-readable name from settings, e.g., "Vitalik Buterin")
 - **MarketSnapshot** — wraps funding, OI, CVD, liquidations, whales for a pair
 - **TradeSetup** — detected setup from Strategy Service
 - **AIDecision** — Claude's evaluation with confidence score
@@ -120,7 +120,7 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Non-exchange → whale = `transfer_in` (neutral, `exchange` = truncated address)
 - Significance: >100 ETH = "high", >10 ETH = "medium", <10 ETH ignored
 - Rate limit enforced: max 4.5 calls/sec (safely under Etherscan's 5/sec)
-- Creates `WhaleMovement(chain="ETH")`
+- Creates `WhaleMovement(chain="ETH", wallet_label=label)` — label from `WHALE_WALLETS` dict
 
 ### `data_service/btc_whale_client.py` — BTC Whale Wallet Monitor
 - Polls configured wallets every `MEMPOOL_CHECK_INTERVAL` seconds (default 300)
@@ -134,7 +134,7 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
   - Non-exchange → wallet = `transfer_in` (neutral)
 - Significance: >100 BTC = "high", >10 BTC = "medium", <10 BTC ignored
 - Rate limit: 0.5s between calls (~10 req/min, safe for public instance)
-- Creates `WhaleMovement(chain="BTC")`
+- Creates `WhaleMovement(chain="BTC", wallet_label=label)` — label from `BTC_WHALE_WALLETS` dict
 
 ### `data_service/data_store.py` — Redis + PostgreSQL
 **Redis (real-time cache):**
@@ -165,6 +165,7 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Pipeline completo: Data → Strategy → Pre-filter → AI → Risk → Execution (5 capas wired)
 - Pre-filter determinístico antes de Claude: funding extreme + CVD divergencia
 - Hybrid scalping: HTF-aligned scalps pasan por Claude, LTF-only scalps lo bypassean
+- 4H OB summary: cuando cierra la vela 4H, envía resumen de OBs activos via Telegram
 
 ## Configuration (`config/settings.py`)
 

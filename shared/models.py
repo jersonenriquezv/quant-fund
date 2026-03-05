@@ -93,6 +93,7 @@ class WhaleMovement:
     exchange: str           # Exchange name ("Binance", "OKX") or truncated address ("0xab12...ef34")
     significance: str       # "high" or "medium"
     chain: str              # "ETH" or "BTC"
+    wallet_label: str = ""  # Human-readable label ("Vitalik Buterin", "Galaxy Digital")
 
 
 @dataclass

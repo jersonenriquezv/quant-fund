@@ -179,6 +179,7 @@ class BtcWhaleClient:
         - Values in satoshis (÷ 1e8 = BTC)
         """
         wallet_lower = wallet.lower()
+        label = self._whale_wallets.get(wallet, "")
 
         # Get all input addresses
         input_addrs: dict[str, int] = {}  # addr → total satoshis
@@ -224,6 +225,7 @@ class BtcWhaleClient:
                         exchange=exchange,
                         significance=significance,
                         chain="BTC",
+                        wallet_label=label,
                     )
                     self._movements.append(movement)
                     logger.info(f"BTC whale deposit: {value_btc:.4f} BTC → {exchange} "
@@ -251,6 +253,7 @@ class BtcWhaleClient:
                         exchange=truncated,
                         significance=significance,
                         chain="BTC",
+                        wallet_label=label,
                     )
                     self._movements.append(movement)
                     logger.info(f"BTC whale transfer out: {value_btc:.4f} BTC → {truncated} "
@@ -275,6 +278,7 @@ class BtcWhaleClient:
                         exchange=exchange,
                         significance=significance,
                         chain="BTC",
+                        wallet_label=label,
                     )
                     self._movements.append(movement)
                     logger.info(f"BTC whale withdrawal: {value_btc:.4f} BTC ← {exchange} "
@@ -298,6 +302,7 @@ class BtcWhaleClient:
                     exchange=truncated,
                     significance=significance,
                     chain="BTC",
+                    wallet_label=label,
                 )
                 self._movements.append(movement)
                 logger.info(f"BTC whale transfer in: {value_btc:.4f} BTC ← {truncated} "

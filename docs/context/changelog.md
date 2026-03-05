@@ -1,5 +1,44 @@
 # Changelog — One-Man Quant Fund
 
+## [2026-03-05] — Whale notification enrichment + 4H OB summary
+**Qué cambió:**
+- `shared/models.py` — `WhaleMovement` dataclass: nuevo campo `wallet_label: str = ""` para nombre legible de la wallet (e.g., "Vitalik Buterin", "Galaxy Digital").
+- `data_service/etherscan_client.py` — `_process_transaction()` ahora pasa `wallet_label=label` a los 4 constructores de WhaleMovement (deposit, withdrawal, transfer_out, transfer_in). Label viene de `WHALE_WALLETS` dict (address → name).
+- `data_service/btc_whale_client.py` — Misma lógica: `label = self._whale_wallets.get(wallet, "")` y `wallet_label=label` en los 5 constructores de WhaleMovement.
+- `shared/notifier.py` — `notify_whale_movement()` ahora muestra wallet name en bold (o dirección truncada como fallback). Nuevo `notify_ob_summary()` para resumen de Order Blocks activos cuando cierra la vela 4H.
+- `main.py` — En `on_candle_confirmed()`, cuando `candle.timeframe == "4h"`, recolecta OBs activos y envía resumen via Telegram.
+
+**Por qué:** Las notificaciones de whale solo mostraban el monto y la acción, sin identificar quién. Ahora muestran el nombre de la wallet. El resumen de OBs en 4H permite monitorear qué zonas está trackeando el bot sin revisar logs.
+**Impacto:** shared/models.py, data_service/, shared/notifier.py, main.py
+**Tests:** 303/303 passing (sin nuevos tests — cambios en notificaciones y labels).
+
+---
+
+## [2026-03-05] — Aggressive profile overhaul + FORCE_MAX_LEVERAGE + PD alignment optional
+**Qué cambió:**
+- `config/settings.py` — 2 nuevos settings: `FORCE_MAX_LEVERAGE: bool = False` (modo sizing fijo), `REQUIRE_PD_ALIGNMENT: bool = True` (validación premium/discount). Perfil `aggressive` expandido masivamente: `REQUIRE_PD_ALIGNMENT: False`, `FORCE_MAX_LEVERAGE: True`, `MAX_DAILY_DRAWDOWN: 0.20` (20%), `MAX_WEEKLY_DRAWDOWN: 0.40` (40%), `COOLDOWN_MINUTES: 10`, `MAX_TRADES_PER_DAY: 20`, `AI_MIN_CONFIDENCE: 0.50`, `OB_PROXIMITY_PCT: 0.008`, `OB_MIN_VOLUME_RATIO: 1.0`, `SWEEP_MIN_VOLUME_RATIO: 1.2`, `MIN_RISK_REWARD: 1.0`, `OB_MAX_AGE_HOURS: 72`, `FVG_MAX_AGE_HOURS: 72`.
+- `risk_service/position_sizer.py` — Nuevo modo `FORCE_MAX_LEVERAGE`: `position_size = capital * MAX_LEVERAGE / entry_price` (ignora risk-based sizing, usa capital completo con max leverage).
+- `strategy_service/setups.py` — `_check_pd_alignment()` respeta `REQUIRE_PD_ALIGNMENT` — retorna True siempre si desactivado.
+- `docker-compose.yml` — `STRATEGY_PROFILE: aggressive` en env del bot service.
+- `tests/test_execution.py` — 4 tests nuevos: `TestAlgoOrderFetch` (pending, filled, cancelled, error throttling).
+- `tests/test_position_sizer.py` — 3 tests nuevos: `TestForceMaxLeverage` (BTC, ETH, ignores SL distance).
+
+**Por qué:** El bot no entraba en ningún trade con el perfil default/aggressive anterior. Investigación reveló que 40% de setups se rechazaban por PD misalignment (bloqueador #1) y el risk-based sizing generaba posiciones de $2 en vez de $100. El perfil aggressive ahora permite explorar la estrategia con capital completo a 5x leverage.
+**Impacto:** config/, risk_service/, strategy_service/, execution_service/, docker-compose.yml, tests/
+**Tests:** 303/303 passing (7 nuevos).
+
+---
+
+## [2026-03-05] — Algo order fetch rewrite (OKX native API)
+**Qué cambió:**
+- `execution_service/executor.py` — `_fetch_algo_order()` completamente reescrito. Antes usaba `fetch_open_orders` y `fetch_canceled_and_closed_orders` con `{"ordType": "conditional"}`, que internamente llamaba a `fetchCanceledAndClosedOrders()` — método no soportado por ccxt 4.5.40 para OKX. Causaba ~6,871 errores repetidos en logs. Ahora usa OKX native API methods: `privateGetTradeOrdersAlgoPending` (paso 1: busca en pending), `privateGetTradeOrdersAlgoHistory` con `state: "effective"` (paso 2: busca triggered/filled), y con `state: "canceled"` (paso 3: busca cancelados). Nuevo `self._algo_fetch_errors: dict[str, int]` para throttling de errores (logea solo el primero y cada 12vo).
+
+**Por qué:** ccxt v4.5.40 `fetch_open_orders` con `{"ordType": "conditional"}` se redirigía internamente a `fetchCanceledAndClosedOrders()` que no está implementado para OKX, generando miles de errores por hora sin resultado útil.
+**Impacto:** execution_service/executor.py, tests/test_execution.py
+**Tests:** 303/303 passing (4 nuevos en TestAlgoOrderFetch).
+
+---
+
 ## [2026-03-05] — Fix: SL placement failing on OKX (error 50015)
 **Qué cambió:**
 - `execution_service/executor.py` — `place_stop_market()` params changed from `{"triggerPrice": x, "ordType": "conditional"}` to `{"stopLossPrice": x}`. The old params caused OKX to reject every SL order with error 50015 ("Either parameter tpTriggerPx or slTriggerPx is required"), triggering EMERGENCY CLOSE on every trade. The ccxt unified `stopLossPrice` param correctly maps to OKX's `slTriggerPx` internally.

@@ -169,6 +169,11 @@ class PositionMonitor:
         """Entry filled — place SL + TPs. If SL fails → emergency close."""
         close_side = "sell" if pos.direction == "long" else "buy"
 
+        # In sandbox mode, remap SL/TP relative to actual fill price
+        # (sandbox prices differ from real market; preserve R:R ratios)
+        if settings.OKX_SANDBOX and pos.actual_entry_price and pos.entry_price:
+            self._remap_sandbox_prices(pos)
+
         # Place stop-loss FIRST (most critical)
         sl_order = await self._executor.place_stop_market(
             pos.pair, close_side, pos.filled_size, pos.sl_price
@@ -245,6 +250,7 @@ class PositionMonitor:
             return
 
         pos.phase = "active"
+        self._update_positions_cache()
         logger.info(f"Position ACTIVE: {pos.pair} {pos.direction} "
                      f"entry={pos.actual_entry_price} size={pos.filled_size:.6f}")
 
@@ -391,6 +397,33 @@ class PositionMonitor:
         else:
             pnl = (pos.actual_entry_price - fill_price) * tranche_size
         pos.realized_pnl_usd += pnl
+
+    @staticmethod
+    def _remap_sandbox_prices(pos: ManagedPosition) -> None:
+        """Remap SL/TP prices relative to actual fill price in sandbox.
+
+        Sandbox prices differ from real market. This preserves the percentage
+        distance of SL/TP from the intended entry so the trade lifecycle
+        (SL trigger, TP fills, SL adjustments) works correctly in demo mode.
+        """
+        intended = pos.entry_price
+        actual = pos.actual_entry_price
+        if not intended or not actual or intended == 0:
+            return
+
+        ratio = actual / intended
+
+        old_sl = pos.sl_price
+        pos.sl_price = round(pos.sl_price * ratio, 2)
+        pos.tp1_price = round(pos.tp1_price * ratio, 2)
+        pos.tp2_price = round(pos.tp2_price * ratio, 2)
+        pos.tp3_price = round(pos.tp3_price * ratio, 2)
+
+        logger.info(
+            f"Sandbox price remap: {pos.pair} ratio={ratio:.4f} "
+            f"sl={old_sl:.2f}->{pos.sl_price:.2f} "
+            f"tp1={pos.tp1_price:.2f} tp2={pos.tp2_price:.2f} tp3={pos.tp3_price:.2f}"
+        )
 
     def _remaining_size(self, pos: ManagedPosition) -> float:
         """Calculate remaining position size based on phase."""

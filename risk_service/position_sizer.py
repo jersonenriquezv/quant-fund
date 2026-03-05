@@ -42,7 +42,14 @@ class PositionSizer:
         if distance == 0:
             raise ValueError("Entry and stop-loss cannot be the same price")
 
-        # Position size in base currency
+        if settings.FORCE_MAX_LEVERAGE:
+            # Fixed-margin mode: always use full capital at max leverage
+            leverage = float(settings.MAX_LEVERAGE)
+            notional = capital * leverage
+            position_size = notional / entry
+            return position_size, leverage
+
+        # Risk-based position sizing
         risk_amount = capital * risk_pct
         position_size = risk_amount / distance
 

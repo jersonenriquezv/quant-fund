@@ -1,6 +1,6 @@
 # Arquitectura del Sistema
 > Última actualización: 2026-03-05
-> Estado: **5/5 capas implementadas** — pipeline completo Data → Strategy → AI → Risk → Execution. Auditoría completa realizada: 12 CRITICALs corregidos.
+> Estado: **5/5 capas implementadas** — pipeline completo Data → Strategy → AI → Risk → Execution. Auditoría completa realizada: 12 CRITICALs corregidos. Perfil aggressive configurado con FORCE_MAX_LEVERAGE y PD alignment desactivado.
 
 ## Qué hace (para entenderlo rápido)
 El sistema es un bot de trading que funciona como una línea de ensamblaje. Los datos entran por un lado, pasan por 5 filtros en orden, y si todos dicen "sí", se ejecuta el trade. Si cualquier filtro dice "no", el trade se descarta.
@@ -75,7 +75,7 @@ Sin esta arquitectura, tendríamos un solo programa gigante donde todo está mez
 
 **Regla clave:** Si CUALQUIER servicio dice NO, el trade se descarta. No hay "pero" ni "tal vez".
 
-**Notificaciones Telegram:** En cada paso del pipeline (setup detectado, AI pre-filtered, AI decision, AI skipped, risk rejection, trade abierto/cerrado, emergencias), el bot envía push notification al celular via Telegram Bot API. Fire-and-forget — si Telegram falla, el bot sigue operando.
+**Notificaciones Telegram:** En cada paso del pipeline (setup detectado, AI pre-filtered, AI decision, AI skipped, risk rejection, trade abierto/cerrado, emergencias, whale movements con nombre de wallet, resumen de OBs cada 4H), el bot envía push notification al celular via Telegram Bot API. Fire-and-forget — si Telegram falla, el bot sigue operando.
 
 ## Detalles técnicos
 
@@ -148,8 +148,8 @@ docker compose build --no-cache  # Rebuild después de cambios en código
 | 2. Strategy Service | Implementado + auditoría | 76 | `strategy_service/service.py` |
 | 3. AI Service | Implementado | 41 | `ai_service/service.py` |
 | 4. Risk Service | Implementado | 72 | `risk_service/service.py` |
-| 5. Execution Service | Implementado + auditoría | 25 | `execution_service/service.py` |
-| **Total** | **5/5 completas** | **296** | `main.py` (pipeline completo) |
+| 5. Execution Service | Implementado + auditoría | 32 | `execution_service/service.py` |
+| **Total** | **5/5 completas** | **303** | `main.py` (pipeline completo) |
 
 ## Roadmap v2
 
@@ -169,6 +169,9 @@ Actualmente TP3 usa una limit order fija al siguiente nivel de liquidez. CLAUDE.
 - Ver `docs/to-fix.md` para backlog completo (~30 IMPORTANT + 29 MINOR issues)
 
 ## Cambios recientes
+- 2026-03-05: **Whale notifications + 4H OB summary** — Notificaciones whale ahora muestran nombre de wallet (campo `wallet_label`). Nuevo `notify_ob_summary()` envía resumen de OBs activos cada 4H.
+- 2026-03-05: **Aggressive profile overhaul** — `FORCE_MAX_LEVERAGE` (sizing fijo con capital completo), `REQUIRE_PD_ALIGNMENT=False`, DD limits al 20%/40%, AI confidence 0.50, 20 trades/día. Perfil configurado en docker-compose.yml.
+- 2026-03-05: **Algo order fetch rewrite** — `_fetch_algo_order` usa OKX native API (`privateGetTradeOrdersAlgoPending`/`History`) en vez de ccxt `fetch_open_orders` que causaba 6,871 errores repetidos.
 - 2026-03-05: **Hybrid scalping + pre-filter** — Scalping profile ahora es híbrido: HTF-aligned scalps pasan por Claude, LTF-only scalps bypasean. Pre-filter determinístico (funding extreme, CVD divergencia) rechaza setups obvios antes de llamar a Claude (todas las profiles). Nuevo `notify_ai_pre_filtered()` en Telegram.
 - 2026-03-04: **Strategy profiles** — 3 perfiles (default/aggressive/scalping) switcheables desde dashboard o env var. Backtester en `scripts/backtest.py` para replay histórico.
 - 2026-03-04: **Whale tracking completo** — Todas las transferencias grandes se trackean (no solo exchange). 4 acciones: deposit (bearish), withdrawal (bullish), transfer_out (neutral), transfer_in (neutral). ETH + BTC.

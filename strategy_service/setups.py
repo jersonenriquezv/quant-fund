@@ -458,7 +458,11 @@ class SetupEvaluator:
 
         Long only in discount, short only in premium.
         If no PD zone data, allow the trade (don't block on missing data).
+        Profiles can disable this check entirely via REQUIRE_PD_ALIGNMENT.
         """
+        if not settings.REQUIRE_PD_ALIGNMENT:
+            return True
+
         if pd_zone is None or pd_zone.zone == "undefined":
             return True
 

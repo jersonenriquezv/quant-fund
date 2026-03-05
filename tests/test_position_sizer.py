@@ -1,6 +1,7 @@
 """Tests for risk_service.position_sizer — formula, leverage cap, edge cases."""
 
 import pytest
+from unittest.mock import patch
 from risk_service.position_sizer import PositionSizer
 from config.settings import settings
 
@@ -129,3 +130,43 @@ class TestEdgeCases:
         # risk = 1, distance = 1000, size = 0.001
         assert pytest.approx(size, rel=1e-6) == 0.001
         assert pytest.approx(lev, rel=1e-6) == 1.0
+
+
+# ============================================================
+# Force max leverage mode
+# ============================================================
+
+class TestForceMaxLeverage:
+    """FORCE_MAX_LEVERAGE ignores risk-based sizing and uses full capital."""
+
+    def test_force_max_leverage_btc(self, sizer):
+        """$100 capital at 5x → $500 notional for BTC."""
+        with patch.object(settings, "FORCE_MAX_LEVERAGE", True):
+            size, lev = sizer.calculate(
+                entry=50000, sl=49000, capital=100, risk_pct=0.02
+            )
+        # notional = 100 * 5 = 500, size = 500 / 50000 = 0.01
+        assert lev == float(settings.MAX_LEVERAGE)
+        assert pytest.approx(size, rel=1e-6) == 0.01
+
+    def test_force_max_leverage_eth(self, sizer):
+        """$100 capital at 5x → $500 notional for ETH."""
+        with patch.object(settings, "FORCE_MAX_LEVERAGE", True):
+            size, lev = sizer.calculate(
+                entry=2500, sl=2400, capital=100, risk_pct=0.02
+            )
+        # notional = 500, size = 500 / 2500 = 0.2
+        assert lev == float(settings.MAX_LEVERAGE)
+        assert pytest.approx(size, rel=1e-6) == 0.2
+
+    def test_force_max_leverage_ignores_sl_distance(self, sizer):
+        """Position size should be the same regardless of SL distance."""
+        with patch.object(settings, "FORCE_MAX_LEVERAGE", True):
+            size1, lev1 = sizer.calculate(
+                entry=50000, sl=49000, capital=100, risk_pct=0.02
+            )
+            size2, lev2 = sizer.calculate(
+                entry=50000, sl=49900, capital=100, risk_pct=0.02
+            )
+        assert size1 == size2
+        assert lev1 == lev2

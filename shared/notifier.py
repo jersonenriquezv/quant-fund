@@ -143,11 +143,47 @@ class TelegramNotifier:
         )
         emoji = "\U0001f433"  # whale
         decimals = 4 if movement.chain == "BTC" else 2
+        wallet_line = ""
+        if movement.wallet_label:
+            wallet_line = f"Wallet: <b>{movement.wallet_label}</b>\n"
+        else:
+            truncated = movement.wallet[:6] + "..." + movement.wallet[-4:]
+            wallet_line = f"Wallet: {truncated}\n"
         msg = (
             f"{emoji} <b>WHALE MOVEMENT</b>\n"
+            f"{wallet_line}"
             f"{movement.amount:.{decimals}f} {movement.chain} {action} {movement.exchange}\n"
             f"Signal: {signal}\n"
             f"Significance: {movement.significance}"
+        )
+        await self.send(msg)
+
+    async def notify_ob_summary(self, pair: str, obs: list, htf_bias: str) -> None:
+        """Summary of active Order Blocks when 4H candle closes."""
+        if not obs:
+            msg = (
+                f"\U0001f4e6 <b>4H OB SUMMARY — {pair}</b>\n"
+                f"HTF Bias: {htf_bias.upper()}\n"
+                f"No active Order Blocks"
+            )
+            await self.send(msg)
+            return
+
+        lines = []
+        for ob in obs:
+            arrow = "\U0001f7e2" if ob.direction == "bullish" else "\U0001f534"
+            lines.append(
+                f"  {arrow} {ob.direction.upper()} {ob.timeframe} "
+                f"| {ob.low:.2f}-{ob.high:.2f} "
+                f"| Entry: {ob.entry_price:.2f} "
+                f"| Vol: {ob.volume_ratio:.1f}x"
+            )
+        ob_text = "\n".join(lines)
+        msg = (
+            f"\U0001f4e6 <b>4H OB SUMMARY — {pair}</b>\n"
+            f"HTF Bias: {htf_bias.upper()}\n"
+            f"Active OBs ({len(obs)}):\n"
+            f"{ob_text}"
         )
         await self.send(msg)
 

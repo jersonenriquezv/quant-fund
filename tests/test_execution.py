@@ -18,6 +18,7 @@ import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from config.settings import settings
 from shared.models import TradeSetup, RiskApproval
 from execution_service.models import ManagedPosition
 from execution_service.executor import OrderExecutor
@@ -143,7 +144,7 @@ class TestExecutionServiceExecute:
         monitor.positions = {}
 
         executor.configure_pair = AsyncMock(return_value=True)
-        executor.place_limit_order = AsyncMock(return_value=make_order("ord-1"))
+        executor.place_market_order = AsyncMock(return_value=make_order("ord-1"))
 
         service = _make_service(executor, monitor, risk)
 
@@ -151,8 +152,8 @@ class TestExecutionServiceExecute:
 
         assert result is True
         executor.configure_pair.assert_called_once_with("BTC/USDT", 3)
-        executor.place_limit_order.assert_called_once_with(
-            "BTC/USDT", "buy", 0.002, 50000.0
+        executor.place_market_order.assert_called_once_with(
+            "BTC/USDT", "buy", 0.002
         )
         monitor.register.assert_called_once()
         risk.on_trade_opened.assert_called_once()
@@ -164,7 +165,7 @@ class TestExecutionServiceExecute:
         monitor.positions = {}
 
         executor.configure_pair = AsyncMock(return_value=True)
-        executor.place_limit_order = AsyncMock(return_value=make_order("ord-2"))
+        executor.place_market_order = AsyncMock(return_value=make_order("ord-2"))
 
         service = _make_service(executor, monitor, risk)
 
@@ -177,8 +178,8 @@ class TestExecutionServiceExecute:
         )
 
         assert result is True
-        executor.place_limit_order.assert_called_once_with(
-            "BTC/USDT", "sell", 0.002, 50000.0
+        executor.place_market_order.assert_called_once_with(
+            "BTC/USDT", "sell", 0.002
         )
 
     def test_skips_if_pair_already_managed(self):
@@ -206,7 +207,7 @@ class TestExecutionServiceExecute:
         monitor = MagicMock(spec=PositionMonitor)
         monitor.positions = {}
         executor.configure_pair = AsyncMock(return_value=True)
-        executor.place_limit_order = AsyncMock(return_value=None)
+        executor.place_market_order = AsyncMock(return_value=None)
 
         service = _make_service(executor, monitor)
 
@@ -569,10 +570,10 @@ class TestAdjustSLFailure:
 
 
 class TestSLTPValidation:
-    """I-E4: SL/TP price ordering validation."""
+    """I-E4: SL/TP price ordering validation (live mode only)."""
 
     def test_long_invalid_sl_above_entry_rejected(self):
-        """Long: SL > entry should be rejected."""
+        """Long: SL > entry should be rejected in live mode."""
         risk = MagicMock()
         executor = MagicMock(spec=OrderExecutor)
         monitor = MagicMock(spec=PositionMonitor)
@@ -580,11 +581,12 @@ class TestSLTPValidation:
         service = _make_service(executor, monitor, risk)
 
         setup = make_setup(sl=50500.0, entry=50000.0)  # SL above entry
-        result = asyncio.run(service.execute(setup, make_approval(), 0.85))
+        with patch.object(settings, "OKX_SANDBOX", False):
+            result = asyncio.run(service.execute(setup, make_approval(), 0.85))
         assert result is False
 
     def test_short_invalid_sl_below_entry_rejected(self):
-        """Short: SL < entry should be rejected."""
+        """Short: SL < entry should be rejected in live mode."""
         risk = MagicMock()
         executor = MagicMock(spec=OrderExecutor)
         monitor = MagicMock(spec=PositionMonitor)
@@ -595,8 +597,103 @@ class TestSLTPValidation:
             direction="short", sl=49500.0, entry=50000.0,
             tp1=49000.0, tp2=48000.0, tp3=47000.0
         )
-        result = asyncio.run(service.execute(setup, make_approval(), 0.85))
+        with patch.object(settings, "OKX_SANDBOX", False):
+            result = asyncio.run(service.execute(setup, make_approval(), 0.85))
         assert result is False
+
+
+class TestAlgoOrderFetch:
+    """Algo order fetching via OKX native API."""
+
+    def test_algo_order_pending(self):
+        """Pending algo order returns open status."""
+        executor = OrderExecutor.__new__(OrderExecutor)
+        executor._exchange = MagicMock()
+        executor._algo_fetch_errors = {}
+
+        executor._exchange.privateGetTradeOrdersAlgoPending = MagicMock(
+            return_value={"data": [{"algoId": "algo-123", "sz": "0.1"}]}
+        )
+
+        async def run():
+            return await executor._fetch_algo_order("algo-123", "ETH/USDT")
+
+        result = asyncio.run(run())
+        assert result is not None
+        assert result["status"] == "open"
+        assert result["id"] == "algo-123"
+
+    def test_algo_order_filled(self):
+        """Filled algo order returns closed status with fill data."""
+        executor = OrderExecutor.__new__(OrderExecutor)
+        executor._exchange = MagicMock()
+        executor._algo_fetch_errors = {}
+
+        executor._exchange.privateGetTradeOrdersAlgoPending = MagicMock(
+            return_value={"data": []}
+        )
+        executor._exchange.privateGetTradeOrdersAlgoHistory = MagicMock(
+            return_value={"data": [
+                {"algoId": "algo-456", "sz": "0.5", "avgPx": "2100.5"}
+            ]}
+        )
+
+        async def run():
+            return await executor._fetch_algo_order("algo-456", "ETH/USDT")
+
+        result = asyncio.run(run())
+        assert result is not None
+        assert result["status"] == "closed"
+        assert result["filled"] == 0.5
+        assert result["average"] == 2100.5
+
+    def test_algo_order_cancelled(self):
+        """Cancelled algo order returns canceled status."""
+        executor = OrderExecutor.__new__(OrderExecutor)
+        executor._exchange = MagicMock()
+        executor._algo_fetch_errors = {}
+
+        executor._exchange.privateGetTradeOrdersAlgoPending = MagicMock(
+            return_value={"data": []}
+        )
+        # First history call (effective) returns empty
+        # Second history call (canceled) finds the order
+        executor._exchange.privateGetTradeOrdersAlgoHistory = MagicMock(
+            side_effect=[
+                {"data": []},
+                {"data": [{"algoId": "algo-789"}]},
+            ]
+        )
+
+        async def run():
+            return await executor._fetch_algo_order("algo-789", "ETH/USDT")
+
+        result = asyncio.run(run())
+        assert result is not None
+        assert result["status"] == "canceled"
+
+    def test_algo_order_error_throttling(self):
+        """Repeated errors are throttled — first logged, then every 12th."""
+        executor = OrderExecutor.__new__(OrderExecutor)
+        executor._exchange = MagicMock()
+        executor._algo_fetch_errors = {}
+
+        executor._exchange.privateGetTradeOrdersAlgoPending = MagicMock(
+            side_effect=Exception("API error")
+        )
+
+        async def run():
+            results = []
+            for _ in range(25):
+                r = await executor._fetch_algo_order("algo-err", "ETH/USDT")
+                results.append(r)
+            return results
+
+        results = asyncio.run(run())
+        # All return None
+        assert all(r is None for r in results)
+        # Error counter tracks
+        assert executor._algo_fetch_errors["algo-err"] == 25
 
 
 class TestHealthCheck:

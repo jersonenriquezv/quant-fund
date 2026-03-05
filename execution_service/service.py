@@ -76,25 +76,26 @@ class ExecutionService:
             )
             return False
 
-        # Validate SL/TP price ordering
-        if setup.direction == "long":
-            if not (setup.sl_price < setup.entry_price < setup.tp1_price
-                    < setup.tp2_price < setup.tp3_price):
-                logger.error(
-                    f"Invalid price ordering for LONG: "
-                    f"sl={setup.sl_price} entry={setup.entry_price} "
-                    f"tp1={setup.tp1_price} tp2={setup.tp2_price} tp3={setup.tp3_price}"
-                )
-                return False
-        else:
-            if not (setup.sl_price > setup.entry_price > setup.tp1_price
-                    > setup.tp2_price > setup.tp3_price):
-                logger.error(
-                    f"Invalid price ordering for SHORT: "
-                    f"sl={setup.sl_price} entry={setup.entry_price} "
-                    f"tp1={setup.tp1_price} tp2={setup.tp2_price} tp3={setup.tp3_price}"
-                )
-                return False
+        # Validate SL/TP price ordering (skip in sandbox — prices are remapped)
+        if not settings.OKX_SANDBOX:
+            if setup.direction == "long":
+                if not (setup.sl_price < setup.entry_price < setup.tp1_price
+                        < setup.tp2_price < setup.tp3_price):
+                    logger.error(
+                        f"Invalid price ordering for LONG: "
+                        f"sl={setup.sl_price} entry={setup.entry_price} "
+                        f"tp1={setup.tp1_price} tp2={setup.tp2_price} tp3={setup.tp3_price}"
+                    )
+                    return False
+            else:
+                if not (setup.sl_price > setup.entry_price > setup.tp1_price
+                        > setup.tp2_price > setup.tp3_price):
+                    logger.error(
+                        f"Invalid price ordering for SHORT: "
+                        f"sl={setup.sl_price} entry={setup.entry_price} "
+                        f"tp1={setup.tp1_price} tp2={setup.tp2_price} tp3={setup.tp3_price}"
+                    )
+                    return False
 
         # Check if already managing a position for this pair
         if setup.pair in self._monitor.positions:
@@ -110,11 +111,16 @@ class ExecutionService:
             logger.error(f"Failed to configure pair: {setup.pair}")
             return False
 
-        # Place limit entry order
+        # Place entry order (market in sandbox, limit in live)
         side = "buy" if setup.direction == "long" else "sell"
-        order = await self._executor.place_limit_order(
-            setup.pair, side, approval.position_size, setup.entry_price
-        )
+        if settings.OKX_SANDBOX:
+            order = await self._executor.place_market_order(
+                setup.pair, side, approval.position_size
+            )
+        else:
+            order = await self._executor.place_limit_order(
+                setup.pair, side, approval.position_size, setup.entry_price
+            )
 
         if order is None:
             logger.error(f"Entry order placement failed: {setup.pair} {setup.direction}")

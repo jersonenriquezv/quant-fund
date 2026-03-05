@@ -107,6 +107,13 @@ async def on_candle_confirmed(candle: Candle) -> None:
 
     setup = _strategy_service.evaluate(candle.pair, candle)
     _publish_strategy_state(candle.pair)
+
+    # Send OB summary on every 4H candle close
+    if candle.timeframe == "4h" and _notifier is not None:
+        obs = _strategy_service.get_active_order_blocks(candle.pair)
+        htf_bias = _strategy_service.get_htf_bias(candle.pair)
+        await _notifier.notify_ob_summary(candle.pair, obs, htf_bias)
+
     if setup is None:
         return
 

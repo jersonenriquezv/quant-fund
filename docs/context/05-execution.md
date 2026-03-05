@@ -1,6 +1,6 @@
 # Execution Service (Layer 5)
 > Última actualización: 2026-03-05
-> Estado: **implementado** — 25 tests passing. Audited — 5 CRITICAL + 6 IMPORTANT + 3 MINOR fixes applied.
+> Estado: **implementado** — 32 tests passing. Audited — 5 CRITICAL + 6 IMPORTANT + 3 MINOR fixes applied. Algo order fetch rewritten to use OKX native API.
 
 El brazo ejecutor del bot. Recibe trades aprobados por Risk Service y los ejecuta en OKX via ccxt.
 
@@ -107,7 +107,7 @@ pnl_pct = total_pnl_usd / (entry_price × filled_size)
 
 Cada vez que un TP llena, `_accumulate_realized_pnl()` calcula y suma el PnL de esa tranche a `pos.realized_pnl_usd`. Al cerrar (SL, timeout, TP3), `_calculate_pnl()` combina ambos para el PnL final reportado a Risk Service.
 
-## Tests (25)
+## Tests (32)
 
 - Facade: disabled sin API key, happy path, short/sell side, pair ya gestionado, fallos
 - **SL/TP validation**: long inválido (SL arriba de entry), short inválido (SL abajo de entry)
@@ -122,6 +122,7 @@ Cada vez que un TP llena, `_accumulate_realized_pnl()` calcula y suma el PnL de 
 - **SL adjustment failure**: mantiene SL viejo si nuevo falla
 - Slippage: logging verificado
 - PnL: cálculo correcto long/short profit/loss, **blended PnL con realized**
+- **Algo order fetch** (4 tests): pending found, filled found, cancelled found, error throttling
 
 ## OKX Account Configuration at Init
 
@@ -137,7 +138,12 @@ Ambas configuraciones manejan el caso "already set" silenciosamente (no es un er
 OKX trata stop-market orders como "algo orders" con routing separado:
 - **`place_stop_market()`** usa `params["stopLossPrice"]` (ccxt unified API). ccxt internamente mapea esto a `slTriggerPx` de OKX y usa el endpoint de algo orders. Nota: el parámetro anterior `triggerPrice` + `ordType: "conditional"` no funcionaba — OKX devolvía error 50015 ("Either parameter tpTriggerPx or slTriggerPx is required").
 - **`fetch_order()`** intenta primero fetch normal; si recibe `OrderNotFound`, hace fallback a `_fetch_algo_order()`.
-- **`_fetch_algo_order()`** busca en `fetch_open_orders` y `fetch_canceled_and_closed_orders` con `{"ordType": "conditional"}`.
+- **`_fetch_algo_order()`** usa OKX native API methods (no ccxt wrappers):
+  1. `privateGetTradeOrdersAlgoPending` — busca en pending (status: open)
+  2. `privateGetTradeOrdersAlgoHistory` con `state: "effective"` — busca triggered/filled (status: closed)
+  3. `privateGetTradeOrdersAlgoHistory` con `state: "canceled"` — busca cancelados
+  - **Error throttling:** `_algo_fetch_errors` dict logea solo el primer error y cada 12vo por order_id, previniendo spam de logs.
+  - **Por qué rewrite:** ccxt v4.5.40 `fetch_open_orders` con `{"ordType": "conditional"}` se redirigía a `fetchCanceledAndClosedOrders()` — método no implementado para OKX — causando ~6,871 errores repetidos por sesión.
 - Usa `asyncio.get_running_loop()` (no el deprecated `get_event_loop()`).
 
 ## Decisiones de diseño

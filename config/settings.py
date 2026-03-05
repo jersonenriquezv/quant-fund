@@ -156,6 +156,12 @@ class Settings:
     ALLOW_EQUILIBRIUM_TRADES: bool = False
     # If True, 4H trend must be defined for HTF bias. If False, 1H alone is enough.
     HTF_BIAS_REQUIRE_4H: bool = True
+    # If True, position sizing uses capital * MAX_LEVERAGE / entry_price
+    # instead of risk-based sizing. Risk per trade varies with SL distance.
+    FORCE_MAX_LEVERAGE: bool = False
+    # If True, Premium/Discount zone alignment is enforced (long=discount, short=premium).
+    # If False, trades are allowed in any zone regardless of direction.
+    REQUIRE_PD_ALIGNMENT: bool = True
 
     # ========================
     # AI SERVICE — Claude Filter
@@ -376,12 +382,22 @@ STRATEGY_PROFILES: dict[str, dict] = {
         # No overrides — uses Settings() defaults
     },
     "aggressive": {
-        "OB_PROXIMITY_PCT": 0.005,
-        "PD_EQUILIBRIUM_BAND": 0.01,
-        "SETUP_A_MAX_SWEEP_CHOCH_GAP": 35,
-        "OB_MIN_VOLUME_RATIO": 1.2,
-        "SWEEP_MIN_VOLUME_RATIO": 1.5,
-        "MIN_RISK_REWARD": 1.2,
+        "REQUIRE_HTF_LTF_ALIGNMENT": False,
+        "REQUIRE_PD_ALIGNMENT": False,
+        "ALLOW_EQUILIBRIUM_TRADES": True,
+        "HTF_BIAS_REQUIRE_4H": False,
+        "FORCE_MAX_LEVERAGE": True,
+        "MAX_DAILY_DRAWDOWN": 0.20,   # 20% ($20 on $100)
+        "MAX_WEEKLY_DRAWDOWN": 0.40,  # 40% ($40 on $100)
+        "COOLDOWN_MINUTES": 10,
+        "MAX_TRADES_PER_DAY": 20,
+        "AI_MIN_CONFIDENCE": 0.50,
+        "OB_PROXIMITY_PCT": 0.008,
+        "PD_EQUILIBRIUM_BAND": 0.005,
+        "SETUP_A_MAX_SWEEP_CHOCH_GAP": 40,
+        "OB_MIN_VOLUME_RATIO": 1.0,
+        "SWEEP_MIN_VOLUME_RATIO": 1.2,
+        "MIN_RISK_REWARD": 1.0,
         "OB_MAX_AGE_HOURS": 72,
         "FVG_MAX_AGE_HOURS": 72,
     },

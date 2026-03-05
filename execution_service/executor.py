@@ -33,6 +33,7 @@ class OrderExecutor:
         }
 
         self._exchange = ccxt.okx(config)
+        self._algo_fetch_errors: dict[str, int] = {}
 
         if settings.OKX_SANDBOX:
             self._exchange.set_sandbox_mode(True)
@@ -130,6 +131,38 @@ class OrderExecutor:
             logger.warning(f"Limit order rate limited: {pair} {side} {e}")
             return None
 
+    async def place_market_order(
+        self, pair: str, side: str, amount: float
+    ) -> Optional[dict]:
+        """Place a market entry order. Used in sandbox mode where limit prices
+        from real market data don't match sandbox prices."""
+        symbol = self._ccxt_symbol(pair)
+        try:
+            order = await self._run_sync(
+                self._exchange.create_order,
+                symbol, "market", side, amount
+            )
+            logger.info(
+                f"Market order placed: {pair} {side} amount={amount:.6f} "
+                f"order_id={order.get('id')}"
+            )
+            return order
+        except ccxt.InsufficientFunds as e:
+            logger.error(f"Market order insufficient funds: {pair} {side} {e}")
+            return None
+        except ccxt.InvalidOrder as e:
+            logger.error(f"Market order invalid: {pair} {side} {e}")
+            return None
+        except ccxt.NetworkError as e:
+            logger.error(f"Market order network error: {pair} {side} {e}")
+            return None
+        except ccxt.ExchangeError as e:
+            logger.error(f"Market order exchange error: {pair} {side} {e}")
+            return None
+        except ccxt.RateLimitExceeded as e:
+            logger.warning(f"Market order rate limited: {pair} {side} {e}")
+            return None
+
     async def place_stop_market(
         self, pair: str, side: str, amount: float, trigger_price: float
     ) -> Optional[dict]:
@@ -140,13 +173,9 @@ class OrderExecutor:
         """
         symbol = self._ccxt_symbol(pair)
         try:
-            params = {
-                "reduceOnly": True,
-                "stopLossPrice": trigger_price,
-            }
             order = await self._run_sync(
-                self._exchange.create_order,
-                symbol, "market", side, amount, None, params
+                self._exchange.create_stop_market_order,
+                symbol, side, amount, trigger_price
             )
             logger.info(
                 f"Stop-market placed: {pair} {side} amount={amount:.6f} "
@@ -247,31 +276,60 @@ class OrderExecutor:
             return None
 
     async def _fetch_algo_order(self, order_id: str, pair: str) -> Optional[dict]:
-        """Fetch an algo/conditional order (SL/TP) from OKX."""
-        symbol = self._ccxt_symbol(pair)
+        """Fetch an algo/conditional order (SL/TP) from OKX.
+
+        Uses OKX native REST API directly (privateGetTradeOrdersAlgo*)
+        to avoid ccxt v4 compatibility issues with fetch_open_orders
+        routing to unsupported fetchCanceledAndClosedOrders.
+        """
+        inst_id = pair.replace("/", "-") + "-SWAP"
         try:
-            # Check pending algo orders
-            orders = await self._run_sync(
-                self._exchange.fetch_open_orders,
-                symbol, None, None, {"ordType": "conditional"}
+            # Step 1: Check pending algo orders
+            response = await self._run_sync(
+                self._exchange.privateGetTradeOrdersAlgoPending,
+                {"ordType": "conditional", "instId": inst_id}
             )
-            for o in orders:
-                if o.get("id") == order_id:
-                    return o
+            for item in response.get("data", []):
+                if item.get("algoId") == order_id:
+                    self._algo_fetch_errors.pop(order_id, None)
+                    return {"id": order_id, "status": "open",
+                            "filled": 0, "average": 0}
 
-            # Check algo order history (filled/cancelled)
-            orders = await self._run_sync(
-                self._exchange.fetch_canceled_and_closed_orders,
-                symbol, None, None, {"ordType": "conditional"}
+            # Step 2: Check triggered/filled algo orders
+            response2 = await self._run_sync(
+                self._exchange.privateGetTradeOrdersAlgoHistory,
+                {"ordType": "conditional", "instId": inst_id, "state": "effective"}
             )
-            for o in orders:
-                if o.get("id") == order_id:
-                    return o
+            for item in response2.get("data", []):
+                if item.get("algoId") == order_id:
+                    self._algo_fetch_errors.pop(order_id, None)
+                    return {"id": order_id, "status": "closed",
+                            "filled": float(item.get("sz", 0)),
+                            "average": float(item.get("avgPx", 0) or 0)}
 
+            # Step 3: Check cancelled algo orders
+            response3 = await self._run_sync(
+                self._exchange.privateGetTradeOrdersAlgoHistory,
+                {"ordType": "conditional", "instId": inst_id, "state": "canceled"}
+            )
+            for item in response3.get("data", []):
+                if item.get("algoId") == order_id:
+                    self._algo_fetch_errors.pop(order_id, None)
+                    return {"id": order_id, "status": "canceled",
+                            "filled": 0, "average": 0}
+
+            self._algo_fetch_errors.pop(order_id, None)
             logger.warning(f"Algo order not found: {order_id}")
             return None
-        except (ccxt.NetworkError, ccxt.ExchangeError) as e:
-            logger.error(f"Fetch algo order error: {pair} order_id={order_id} {e}")
+        except Exception as e:
+            # Throttle repeated errors — log first occurrence then every ~60s
+            count = self._algo_fetch_errors.get(order_id, 0) + 1
+            self._algo_fetch_errors[order_id] = count
+            if count == 1 or count % 12 == 0:
+                logger.error(
+                    f"Fetch algo order error (#{count}): {pair} "
+                    f"order_id={order_id} {e}"
+                )
             return None
 
     # ================================================================
