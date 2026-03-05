@@ -15,6 +15,10 @@ async def list_ai_decisions(limit: int = Query(20, ge=1, le=100)):
         AIDecisionRecord(
             id=r["id"],
             trade_id=r.get("trade_id"),
+            pair=r.get("pair"),
+            direction=r.get("direction"),
+            setup_type=r.get("setup_type"),
+            approved=r.get("approved"),
             confidence=r.get("confidence"),
             reasoning=r.get("reasoning"),
             adjustments=r.get("adjustments"),

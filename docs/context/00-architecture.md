@@ -1,5 +1,5 @@
 # Arquitectura del Sistema
-> Última actualización: 2026-03-04
+> Última actualización: 2026-03-05
 > Estado: **5/5 capas implementadas** — pipeline completo Data → Strategy → AI → Risk → Execution. Auditoría completa realizada: 12 CRITICALs corregidos.
 
 ## Qué hace (para entenderlo rápido)
@@ -66,15 +66,16 @@ Sin esta arquitectura, tendríamos un solo programa gigante donde todo está mez
 2. Cuando hay una vela nueva (cada 5m/15m), manda los datos al Strategy Service
 3. Strategy Service analiza los datos buscando patrones SMC
 4. Si encuentra un setup completo (Setup A o B con confluencia), lo manda al AI Service
-5. AI Service le pregunta a Claude (Sonnet): "¿el contexto apoya este trade?"
-6. Si Claude dice sí (confianza ≥ 0.60), el setup pasa al Risk Service
-7. Risk Service verifica TODOS los guardrails y calcula el position size
-8. Execution Service coloca la orden limit en OKX, con SL (stop-market) y 3 TPs (limit)
-9. PositionMonitor gestiona el ciclo de vida: entry fill → TP1 (SL→breakeven) → TP2 (SL→TP1) → TP3/SL
+5. AI Service primero pasa el setup por un **pre-filter determinístico** (funding extreme, CVD divergencia) — si falla, se rechaza sin llamar a Claude
+6. Si pasa el pre-filter, Claude (Sonnet) evalúa: "¿el contexto apoya este trade?" — confianza ≥ 0.60 para aprobar
+7. **Scalping híbrido:** scalps alineados con HTF pasan por Claude; scalps LTF-only lo bypassean
+8. Risk Service verifica TODOS los guardrails y calcula el position size
+9. Execution Service coloca la orden limit en OKX, con SL (stop-market) y 3 TPs (limit)
+10. PositionMonitor gestiona el ciclo de vida: entry fill → TP1 (SL→breakeven) → TP2 (SL→TP1) → TP3/SL
 
 **Regla clave:** Si CUALQUIER servicio dice NO, el trade se descarta. No hay "pero" ni "tal vez".
 
-**Notificaciones Telegram:** En cada paso del pipeline (setup detectado, AI decision, risk rejection, trade abierto/cerrado, emergencias), el bot envía push notification al celular via Telegram Bot API. Fire-and-forget — si Telegram falla, el bot sigue operando.
+**Notificaciones Telegram:** En cada paso del pipeline (setup detectado, AI pre-filtered, AI decision, AI skipped, risk rejection, trade abierto/cerrado, emergencias), el bot envía push notification al celular via Telegram Bot API. Fire-and-forget — si Telegram falla, el bot sigue operando.
 
 ## Detalles técnicos
 
@@ -143,12 +144,12 @@ docker compose build --no-cache  # Rebuild después de cambios en código
 
 | Capa | Estado | Tests | Archivo principal |
 |------|--------|-------|-------------------|
-| 1. Data Service | Implementado + auditoría | 83 | `data_service/service.py` |
+| 1. Data Service | Implementado + auditoría | 82 | `data_service/service.py` |
 | 2. Strategy Service | Implementado + auditoría | 76 | `strategy_service/service.py` |
-| 3. AI Service | Implementado | 35 | `ai_service/service.py` |
-| 4. Risk Service | Implementado | 69 | `risk_service/service.py` |
-| 5. Execution Service | Implementado + auditoría | 28 | `execution_service/service.py` |
-| **Total** | **5/5 completas** | **291** | `main.py` (pipeline completo) |
+| 3. AI Service | Implementado | 41 | `ai_service/service.py` |
+| 4. Risk Service | Implementado | 72 | `risk_service/service.py` |
+| 5. Execution Service | Implementado + auditoría | 25 | `execution_service/service.py` |
+| **Total** | **5/5 completas** | **296** | `main.py` (pipeline completo) |
 
 ## Roadmap v2
 
@@ -168,6 +169,7 @@ Actualmente TP3 usa una limit order fija al siguiente nivel de liquidez. CLAUDE.
 - Ver `docs/to-fix.md` para backlog completo (~30 IMPORTANT + 29 MINOR issues)
 
 ## Cambios recientes
+- 2026-03-05: **Hybrid scalping + pre-filter** — Scalping profile ahora es híbrido: HTF-aligned scalps pasan por Claude, LTF-only scalps bypasean. Pre-filter determinístico (funding extreme, CVD divergencia) rechaza setups obvios antes de llamar a Claude (todas las profiles). Nuevo `notify_ai_pre_filtered()` en Telegram.
 - 2026-03-04: **Strategy profiles** — 3 perfiles (default/aggressive/scalping) switcheables desde dashboard o env var. Backtester en `scripts/backtest.py` para replay histórico.
 - 2026-03-04: **Whale tracking completo** — Todas las transferencias grandes se trackean (no solo exchange). 4 acciones: deposit (bearish), withdrawal (bullish), transfer_out (neutral), transfer_in (neutral). ETH + BTC.
 - 2026-03-04: **Auditoría completa** — 12 CRITICAL corregidos (PG reconnection, pipeline locks, OKX algo orders, emergency close retry, sweep temporal guard, OB break_timestamp, etc.). 28 IMPORTANT + 29 MINOR documentados en `docs/to-fix.md`.

@@ -77,6 +77,23 @@ class TelegramNotifier:
             )
         await self.send(msg)
 
+    async def notify_ai_skipped(self, setup) -> None:
+        """AI filter bypassed (scalping profile)."""
+        msg = (
+            f"\U0001f916 <b>AI SKIPPED</b> \u23ed (scalping)\n"
+            f"{setup.pair} {setup.direction.upper()}"
+        )
+        await self.send(msg)
+
+    async def notify_ai_pre_filtered(self, setup, reason: str) -> None:
+        """AI pre-filter rejected a setup before calling Claude."""
+        msg = (
+            f"\U0001f916 <b>AI PRE-FILTERED</b> \u26d4\n"
+            f"{setup.pair} {setup.direction.upper()}\n"
+            f"Reason: {reason}"
+        )
+        await self.send(msg)
+
     async def notify_risk_rejected(self, setup, reason: str) -> None:
         """Risk guardrail rejected a trade."""
         msg = (

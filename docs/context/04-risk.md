@@ -102,13 +102,13 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 
 ## Tests
 
-73 tests en 4 archivos:
-- `test_position_sizer.py` (10) — fórmula, leverage cap, edge cases
-- `test_guardrails.py` (17) — cada regla pass/fail/boundary
-- `test_state_tracker.py` (22) — lifecycle, DD, cooldown, date reset, year boundary, direction matching
-- `test_risk_service.py` (14) — check() integración: 3 approvals, 6 rejections, 4 lifecycle, 1 entry==SL
+72 tests en 4 archivos:
+- `test_position_sizer.py` (13) — fórmula, leverage cap, edge cases (zero/negative inputs)
+- `test_guardrails.py` (23) — cada regla pass/fail/boundary/edge
+- `test_state_tracker.py` (23) — lifecycle, DD, cooldown, date reset, year boundary, direction matching
+- `test_risk_service.py` (13) — check() integración: approvals, rejections, lifecycle, entry==SL
 
-Última corrida: 73 passed, 0 failed
+Última corrida: 72 passed, 0 failed
 
 ## FAQ
 

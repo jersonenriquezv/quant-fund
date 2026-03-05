@@ -1,6 +1,6 @@
 # Execution Service (Layer 5)
 > Última actualización: 2026-03-04
-> Estado: **implementado** — 28 tests passing. Audited — 5 CRITICAL + 6 IMPORTANT + 3 MINOR fixes applied.
+> Estado: **implementado** — 25 tests passing. Audited — 5 CRITICAL + 6 IMPORTANT + 3 MINOR fixes applied.
 
 El brazo ejecutor del bot. Recibe trades aprobados por Risk Service y los ejecuta en OKX via ccxt.
 
@@ -107,7 +107,7 @@ pnl_pct = total_pnl_usd / (entry_price × filled_size)
 
 Cada vez que un TP llena, `_accumulate_realized_pnl()` calcula y suma el PnL de esa tranche a `pos.realized_pnl_usd`. Al cerrar (SL, timeout, TP3), `_calculate_pnl()` combina ambos para el PnL final reportado a Risk Service.
 
-## Tests (28)
+## Tests (25)
 
 - Facade: disabled sin API key, happy path, short/sell side, pair ya gestionado, fallos
 - **SL/TP validation**: long inválido (SL arriba de entry), short inválido (SL abajo de entry)

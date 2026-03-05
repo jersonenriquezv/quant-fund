@@ -54,10 +54,32 @@ export function AILog() {
             padding: "8px 0",
             borderBottom: "1px solid var(--border)",
           }}>
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                {formatTime(d.created_at)}
-              </span>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                  {formatTime(d.created_at)}
+                </span>
+                {d.pair && (
+                  <span style={{ fontSize: 10, fontWeight: 600, color: "var(--text-secondary)" }}>
+                    {d.pair}
+                  </span>
+                )}
+                {d.direction && (
+                  <span className={d.direction === "long" ? "badge-long" : "badge-short"}
+                    style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3 }}>
+                    {d.direction.toUpperCase()}
+                  </span>
+                )}
+                {d.approved !== null && (
+                  <span style={{
+                    fontSize: 9, padding: "1px 5px", borderRadius: 3, fontWeight: 600,
+                    background: d.approved ? "rgba(0,200,120,0.15)" : "rgba(255,60,60,0.15)",
+                    color: d.approved ? "var(--long)" : "var(--short)",
+                  }}>
+                    {d.approved ? "APPROVED" : "REJECTED"}
+                  </span>
+                )}
+              </div>
               {d.trade_id && (
                 <span style={{ fontSize: 10, color: "var(--accent)" }}>
                   #{d.trade_id}

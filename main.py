@@ -121,26 +121,36 @@ async def on_candle_confirmed(candle: Candle) -> None:
     if _notifier is not None:
         await _notifier.notify_setup_detected(setup)
 
-    # Layer 3: AI Service — Claude filter
+    # Layer 3: AI Service — Claude filter (hybrid scalping + pre-filter)
     decision = None
-    if _ai_service is not None and _data_service is not None:
-        snapshot = _data_service.get_market_snapshot(candle.pair)
-        decision = await _ai_service.evaluate(setup, snapshot)
-
-        # Persist AI decision (approved or rejected)
-        _persist_ai_decision(None, decision, setup)
-
-        # Telegram: AI decision (approved or rejected)
-        if _notifier is not None:
-            await _notifier.notify_ai_decision(setup, decision)
-
+    if settings.STRATEGY_PROFILE == "scalping":
+        # Hybrid scalping: HTF-aligned scalps go to Claude, pure LTF scalps bypass
+        htf_bias = _strategy_service.get_htf_bias(setup.pair)
+        htf_aligned = (
+            (setup.direction == "long" and htf_bias == "bullish")
+            or (setup.direction == "short" and htf_bias == "bearish")
+        )
+        if htf_aligned:
+            # HTF-aligned scalp — worth Claude's analysis
+            logger.info(f"Scalping HTF-aligned ({setup.direction}/{htf_bias}) — sending to Claude")
+            decision = await _evaluate_with_claude(setup, candle)
+            if decision is None:
+                return  # pre-filter rejected or Claude rejected
+            if not decision.approved:
+                return
+        else:
+            # Pure LTF scalp — bypass Claude entirely
+            logger.info(f"AI SKIPPED: scalping LTF-only ({setup.direction}/{htf_bias}) — bypassing Claude")
+            _persist_ai_skip(setup)
+            if _notifier is not None:
+                await _notifier.notify_ai_skipped(setup)
+    elif _ai_service is not None and _data_service is not None:
+        # Default / Aggressive — always go through pre-filter + Claude
+        decision = await _evaluate_with_claude(setup, candle)
+        if decision is None:
+            return  # pre-filter rejected or Claude rejected
         if not decision.approved:
-            logger.info(
-                f"AI rejected: confidence={decision.confidence:.2f} "
-                f"reason={decision.reasoning}"
-            )
             return
-        logger.info(f"AI approved: confidence={decision.confidence:.2f}")
 
     # Layer 4: Risk Service — enforce guardrails + position sizing
     approval = None
@@ -183,9 +193,117 @@ def _persist_ai_decision(trade_id, decision, setup) -> None:
             reasoning=decision.reasoning,
             adjustments=decision.adjustments,
             warnings=list(decision.warnings),
+            pair=setup.pair,
+            direction=setup.direction,
+            setup_type=setup.setup_type,
+            approved=decision.approved,
         )
     except Exception as e:
         logger.error(f"Failed to persist AI decision: {e}")
+
+
+async def _evaluate_with_claude(setup, candle) -> "AIDecision | None":
+    """Run pre-filter then Claude evaluation. Returns AIDecision or None if rejected/failed."""
+    if _ai_service is None or _data_service is None:
+        return None
+
+    snapshot = _data_service.get_market_snapshot(candle.pair)
+
+    # Pre-filter: reject obvious losers before calling Claude
+    reject_reason = _pre_filter_for_claude(setup, snapshot)
+    if reject_reason:
+        logger.info(f"AI PRE-FILTERED: {reject_reason}")
+        _persist_ai_pre_filter(setup, reject_reason)
+        if _notifier is not None:
+            await _notifier.notify_ai_pre_filtered(setup, reject_reason)
+        return None
+
+    # Claude evaluation
+    decision = await _ai_service.evaluate(setup, snapshot)
+    _persist_ai_decision(None, decision, setup)
+    if _notifier is not None:
+        await _notifier.notify_ai_decision(setup, decision)
+
+    if not decision.approved:
+        logger.info(
+            f"AI rejected: confidence={decision.confidence:.2f} "
+            f"reason={decision.reasoning}"
+        )
+    else:
+        logger.info(f"AI approved: confidence={decision.confidence:.2f}")
+
+    return decision
+
+
+def _pre_filter_for_claude(setup, snapshot) -> str | None:
+    """Deterministic pre-filter before Claude API call.
+
+    Returns rejection reason string if setup should be rejected, None if it should
+    proceed to Claude. Conservative: skips checks when data is unavailable.
+    """
+    threshold = settings.FUNDING_EXTREME_THRESHOLD
+
+    # Check 1: Funding rate extreme against trade direction
+    if snapshot.funding is not None and snapshot.funding.current_rate is not None:
+        rate = snapshot.funding.current_rate
+        if setup.direction == "long" and rate > threshold:
+            return f"Funding extreme against long ({rate*100:.4f}% > {threshold*100:.4f}%)"
+        if setup.direction == "short" and rate < -threshold:
+            return f"Funding extreme against short ({rate*100:.4f}% < -{threshold*100:.4f}%)"
+
+    # Check 2: CVD strong divergence against trade direction
+    if snapshot.cvd is not None:
+        buy_vol = snapshot.cvd.buy_volume_5m
+        sell_vol = snapshot.cvd.sell_volume_5m
+        total_vol = buy_vol + sell_vol
+        if total_vol > 0:
+            buy_dominance = buy_vol / total_vol
+            if setup.direction == "long" and buy_dominance < 0.40:
+                return f"CVD divergence against long (buy dominance {buy_dominance*100:.1f}% < 40%)"
+            if setup.direction == "short" and buy_dominance > 0.60:
+                return f"CVD divergence against short (buy dominance {buy_dominance*100:.1f}% > 60%)"
+
+    return None
+
+
+def _persist_ai_pre_filter(setup, reason: str) -> None:
+    """Write synthetic AI decision for pre-filter rejection (audit trail)."""
+    if _data_service is None:
+        return
+    try:
+        _data_service.postgres.insert_ai_decision(
+            trade_id=None,
+            confidence=0.0,
+            reasoning=f"Pre-filter: {reason}",
+            adjustments=None,
+            warnings=[],
+            pair=setup.pair,
+            direction=setup.direction,
+            setup_type=setup.setup_type,
+            approved=False,
+        )
+    except Exception as e:
+        logger.error(f"Failed to persist AI pre-filter: {e}")
+
+
+def _persist_ai_skip(setup) -> None:
+    """Write synthetic AI decision for scalping bypass (audit trail)."""
+    if _data_service is None:
+        return
+    try:
+        _data_service.postgres.insert_ai_decision(
+            trade_id=None,
+            confidence=0.0,
+            reasoning="Scalping profile — AI filter bypassed",
+            adjustments=None,
+            warnings=[],
+            pair=setup.pair,
+            direction=setup.direction,
+            setup_type=setup.setup_type,
+            approved=True,
+        )
+    except Exception as e:
+        logger.error(f"Failed to persist AI skip: {e}")
 
 
 def _persist_risk_event(event_type: str, details: dict) -> None:

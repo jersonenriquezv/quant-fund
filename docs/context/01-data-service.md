@@ -162,7 +162,9 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 ### `main.py` — Entry Point
 - Single process, handles SIGINT/SIGTERM for graceful shutdown
 - Creates DataService with pipeline callback
-- Pipeline completo: Data → Strategy → AI → Risk → Execution (5 capas wired)
+- Pipeline completo: Data → Strategy → Pre-filter → AI → Risk → Execution (5 capas wired)
+- Pre-filter determinístico antes de Claude: funding extreme + CVD divergencia
+- Hybrid scalping: HTF-aligned scalps pasan por Claude, LTF-only scalps lo bypassean
 
 ## Configuration (`config/settings.py`)
 

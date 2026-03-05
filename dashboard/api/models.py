@@ -49,6 +49,10 @@ class TradeDetail(TradeRecord):
 class AIDecisionRecord(BaseModel):
     id: int
     trade_id: int | None
+    pair: str | None = None
+    direction: str | None = None
+    setup_type: str | None = None
+    approved: bool | None = None
     confidence: float | None
     reasoning: str | None
     adjustments: dict | None

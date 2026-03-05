@@ -1,5 +1,69 @@
 # Changelog — One-Man Quant Fund
 
+## [2026-03-05] — Docs sync: test counts, pipeline description, dates
+**Qué cambió:**
+- `docs/context/00-architecture.md` — Test counts actualizados (291→296). Pipeline steps 5-7 describen pre-filter + hybrid scalping. Cambios recientes actualizado. Notificaciones Telegram incluyen pre-filter.
+- `docs/context/01-data-service.md` — main.py description menciona pre-filter y hybrid scalping.
+- `docs/context/03-ai-filter.md` — Fecha actualizada, test counts corregidos (35→41 con desglose por archivo).
+- `docs/context/04-risk.md` — Test counts corregidos (73→72 con desglose real por archivo: 13+23+23+13).
+- `docs/context/05-execution.md` — Test count corregido (28→25).
+
+**Por qué:** Los conteos de tests estaban desactualizados después de múltiples adiciones. Los docs no reflejaban el pre-filter y hybrid scalping.
+**Impacto:** docs/context/
+
+---
+
+## [2026-03-05] — AI Filter: Hybrid Scalping Mode + Pre-Filter
+**Qué cambió:**
+- `main.py` — Scalping profile ahora es híbrido: HTF-aligned scalps pasan por Claude (via `_evaluate_with_claude()`), pure LTF scalps bypasean Claude (como antes). Nuevo `_pre_filter_for_claude()` que rechaza setups obvios antes de llamar a Claude (todas las profiles): funding extreme contra dirección y CVD divergencia fuerte. Nuevo `_persist_ai_pre_filter()` para audit trail. `_evaluate_with_claude()` centraliza el flujo pre-filter → Claude → persist → notify.
+- `shared/notifier.py` — Nuevo `notify_ai_pre_filtered()` para notificación Telegram de rechazos pre-filter.
+- `docs/context/03-ai-filter.md` — Sección "Pre-Filter" nueva, sección "Scalping Profile" reescrita para modo híbrido.
+
+**Por qué:** El bypass puro de scalping descartaba HTF-aligned scalps que se benefician del análisis macro de Claude. Además, todas las profiles gastaban tokens en setups que Claude rechazaría obviamente (funding extreme, CVD divergence). El pre-filter ahorra tokens; el modo híbrido preserva la calidad en scalps de mayor probabilidad.
+**Impacto:** main.py, shared/notifier.py, docs/context/
+
+---
+
+## [2026-03-05] — AI Filter: Bypass Claude for scalping profile
+**Qué cambió:**
+- `main.py` — When `STRATEGY_PROFILE == "scalping"`, pipeline skips AI evaluation entirely. Logs "AI SKIPPED", persists synthetic AI decision to PostgreSQL (audit trail), sends Telegram notification. New `_persist_ai_skip()` helper.
+- `shared/notifier.py` — New `notify_ai_skipped()` method for Telegram skip notification.
+- `docs/context/03-ai-filter.md` — Scalping profile section rewritten: Claude bypassed, not softened.
+
+**Por qué:** Claude evaluates macro context (1h+ CVD, funding, OI) irrelevant for 5-30 minute scalps. Previous approach (softening Claude's prompt) still caused rejections for valid scalping setups. Institutional HFT desks use deterministic rules without AI in the hot path — scalping profile now does the same. Risk Service guardrails (R:R, DD, position limits, cooldown) remain fully enforced.
+**Impacto:** main.py, shared/notifier.py, docs/context/
+
+---
+
+## [2026-03-05] — AI Filter: Profile-aware evaluation (scalping-friendly)
+**Qué cambió:**
+- `ai_service/prompt_builder.py` — New `_build_profile_section()`: when scalping profile is active, prepends a section telling Claude that HTF bias is "INFORMATIONAL ONLY". HTF Bias line annotated with "(informational — scalping profile does not require alignment)". No changes for default/aggressive profiles.
+- `ai_service/service.py` — `_get_candles_context()` includes 5m/15m timeframes when scalping profile is active, giving Claude LTF momentum data.
+- `config/settings.py` — `STRATEGY_PROFILES["scalping"]` gets `AI_MIN_CONFIDENCE: 0.50` (down from 0.60).
+- `tests/test_prompt_builder.py` — 3 new tests: scalping section included, default has no scalping section, HTF bias annotated.
+- `tests/test_ai_service.py` — 2 new tests: scalping approves at 0.50, default rejects at 0.50.
+- `docs/context/03-ai-filter.md` — New "Profile-Aware Evaluation" section.
+
+**Por qué:** Scalping profile relaxes HTF alignment in Strategy Service, but Claude didn't know about it — system prompt treated HTF conflict as a dealbreaker, causing 100% rejection of scalping shorts. Fix injects profile context in the user prompt (not system prompt, which is cached at init).
+**Impacto:** ai_service/, config/, tests/, docs/context/
+
+---
+
+## [2026-03-05] — AI Decisions: Add pair/direction/setup_type/approved to persistence
+**Qué cambió:**
+- `data_service/data_store.py` — `ai_decisions` table: 4 new columns (`pair VARCHAR(20)`, `direction VARCHAR(5)`, `setup_type VARCHAR(10)`, `approved BOOLEAN`). `ALTER TABLE ADD COLUMN IF NOT EXISTS` migration for existing DBs. `insert_ai_decision()` accepts and inserts new fields.
+- `main.py` — `_persist_ai_decision()` passes `setup.pair`, `setup.direction`, `setup.setup_type`, `decision.approved` to insert.
+- `dashboard/api/models.py` — `AIDecisionRecord`: 4 new optional fields.
+- `dashboard/api/routes/ai.py` — Maps new fields from query rows.
+- `dashboard/web/src/lib/api.ts` — `AIDecision` interface: 4 new fields.
+- `dashboard/web/src/components/AILog.tsx` — Shows pair, direction badge (LONG/SHORT), and APPROVED/REJECTED badge per decision.
+- `docs/context/03-ai-filter.md` — New "Persistence" section documenting what gets saved.
+
+**Por qué:** AI decisions were saved to PostgreSQL but missing crucial context (which pair? which direction? approved or rejected?). Without these, the dashboard AILog and historical analysis couldn't distinguish decisions.
+**Impacto:** data_service/, main.py, dashboard/, docs/context/
+
+---
+
 ## [2026-03-04] — AI Service: Token usage logging
 **Qué cambió:**
 - `ai_service/claude_client.py` — Loguea `response.usage` (input_tokens, output_tokens, total) después de cada llamada exitosa a Claude. Permite rastrear consumo real de tokens por evaluación.

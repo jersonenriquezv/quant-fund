@@ -213,3 +213,55 @@ class TestEvaluationPrompt:
         snapshot = _make_snapshot()
         prompt = builder.build_evaluation_prompt(setup, snapshot, {})
         assert prompt.strip().endswith("Evaluate this setup and respond with JSON only.")
+
+
+# ============================================================
+# Profile-aware prompts
+# ============================================================
+
+class TestProfileAwarePrompts:
+
+    def test_scalping_profile_section_included(self, builder):
+        """Scalping profile injects relaxation section before setup data."""
+        original = settings.STRATEGY_PROFILE
+        try:
+            settings.STRATEGY_PROFILE = "scalping"
+            setup = _make_setup(direction="short")
+            snapshot = _make_snapshot()
+            prompt = builder.build_evaluation_prompt(setup, snapshot, {})
+
+            assert "INFORMATIONAL ONLY" in prompt
+            assert "Active Profile: Scalping" in prompt
+            # Profile section should appear before Trade Setup
+            profile_pos = prompt.index("Active Profile: Scalping")
+            setup_pos = prompt.index("## Trade Setup")
+            assert profile_pos < setup_pos
+        finally:
+            settings.STRATEGY_PROFILE = original
+
+    def test_default_profile_no_scalping_section(self, builder):
+        """Default profile does NOT include scalping relaxation."""
+        original = settings.STRATEGY_PROFILE
+        try:
+            settings.STRATEGY_PROFILE = "default"
+            setup = _make_setup()
+            snapshot = _make_snapshot()
+            prompt = builder.build_evaluation_prompt(setup, snapshot, {})
+
+            assert "INFORMATIONAL ONLY" not in prompt
+            assert "Active Profile: Scalping" not in prompt
+        finally:
+            settings.STRATEGY_PROFILE = original
+
+    def test_scalping_htf_bias_annotated(self, builder):
+        """Scalping profile annotates HTF Bias line as informational."""
+        original = settings.STRATEGY_PROFILE
+        try:
+            settings.STRATEGY_PROFILE = "scalping"
+            setup = _make_setup(direction="short")
+            snapshot = _make_snapshot()
+            prompt = builder.build_evaluation_prompt(setup, snapshot, {})
+
+            assert "HTF Bias: bullish (informational" in prompt
+        finally:
+            settings.STRATEGY_PROFILE = original

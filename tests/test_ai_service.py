@@ -226,6 +226,56 @@ class TestConfidenceClamping:
 # Data service integration
 # ============================================================
 
+# ============================================================
+# Profile-aware confidence thresholds
+# ============================================================
+
+class TestProfileConfidence:
+
+    def test_scalping_min_confidence_050_approved(self):
+        """Scalping profile approves at confidence 0.50."""
+        service = _make_ai_service_with_mock({
+            "confidence": 0.50,
+            "approved": True,
+            "reasoning": "LTF momentum supports short despite HTF bullish",
+            "adjustments": {},
+            "warnings": [],
+        })
+        original = settings.AI_MIN_CONFIDENCE
+        try:
+            settings.AI_MIN_CONFIDENCE = 0.50  # scalping threshold
+            decision = asyncio.run(
+                service.evaluate(_make_setup(direction="short"), _make_snapshot())
+            )
+            assert decision.approved is True
+            assert decision.confidence == 0.50
+        finally:
+            settings.AI_MIN_CONFIDENCE = original
+
+    def test_default_min_confidence_rejects_050(self):
+        """Default profile rejects confidence 0.50 (below 0.60 threshold)."""
+        service = _make_ai_service_with_mock({
+            "confidence": 0.50,
+            "approved": True,
+            "reasoning": "Marginal setup",
+            "adjustments": {},
+            "warnings": [],
+        })
+        original = settings.AI_MIN_CONFIDENCE
+        try:
+            settings.AI_MIN_CONFIDENCE = 0.60  # default threshold
+            decision = asyncio.run(
+                service.evaluate(_make_setup(), _make_snapshot())
+            )
+            assert decision.approved is False
+        finally:
+            settings.AI_MIN_CONFIDENCE = original
+
+
+# ============================================================
+# Data service integration
+# ============================================================
+
 class TestDataServiceIntegration:
 
     def test_evaluate_without_data_service(self):

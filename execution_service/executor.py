@@ -62,7 +62,7 @@ class OrderExecutor:
         try:
             await self._run_sync(
                 self._exchange.set_margin_mode,
-                settings.MARGIN_MODE, symbol
+                settings.MARGIN_MODE, symbol, {"lever": leverage}
             )
         except (ccxt.ExchangeError, ccxt.NetworkError) as e:
             # "already set" is not a real error

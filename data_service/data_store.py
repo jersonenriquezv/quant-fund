@@ -332,6 +332,10 @@ class PostgresStore:
                 CREATE TABLE IF NOT EXISTS ai_decisions (
                     id SERIAL PRIMARY KEY,
                     trade_id INT REFERENCES trades(id),
+                    pair VARCHAR(20),
+                    direction VARCHAR(5),
+                    setup_type VARCHAR(10),
+                    approved BOOLEAN,
                     confidence DOUBLE PRECISION,
                     reasoning TEXT,
                     adjustments JSONB,
@@ -339,6 +343,15 @@ class PostgresStore:
                     created_at TIMESTAMP DEFAULT NOW()
                 )
             """)
+
+            # Migration: add columns for existing databases
+            for col, coltype in [
+                ("pair", "VARCHAR(20)"),
+                ("direction", "VARCHAR(5)"),
+                ("setup_type", "VARCHAR(10)"),
+                ("approved", "BOOLEAN"),
+            ]:
+                cur.execute(f"ALTER TABLE ai_decisions ADD COLUMN IF NOT EXISTS {col} {coltype}")
 
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS risk_events (
@@ -552,6 +565,10 @@ class PostgresStore:
         reasoning: str,
         adjustments: dict | None = None,
         warnings: list | None = None,
+        pair: str | None = None,
+        direction: str | None = None,
+        setup_type: str | None = None,
+        approved: bool | None = None,
     ) -> int | None:
         """Insert an AI decision record. trade_id can be None for rejections."""
         for attempt in range(2):
@@ -561,10 +578,12 @@ class PostgresStore:
                 with self._conn.cursor() as cur:
                     cur.execute(
                         """INSERT INTO ai_decisions
-                           (trade_id, confidence, reasoning, adjustments, warnings)
-                           VALUES (%s, %s, %s, %s, %s)
+                           (trade_id, pair, direction, setup_type, approved,
+                            confidence, reasoning, adjustments, warnings)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                            RETURNING id""",
-                        (trade_id, confidence, reasoning,
+                        (trade_id, pair, direction, setup_type, approved,
+                         confidence, reasoning,
                          json.dumps(adjustments or {}),
                          json.dumps(warnings or [])),
                     )

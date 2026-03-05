@@ -402,6 +402,8 @@ STRATEGY_PROFILES: dict[str, dict] = {
         "FVG_MAX_AGE_HOURS": 24,
         # Accept tighter R:R
         "MIN_RISK_REWARD": 1.0,
+        # Lower AI confidence threshold (prompt fix raises valid scalp confidence)
+        "AI_MIN_CONFIDENCE": 0.50,
         # More trades allowed per day
         "MAX_TRADES_PER_DAY": 20,
         # Shorter cooldown

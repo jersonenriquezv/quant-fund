@@ -59,6 +59,10 @@ export interface TradeRecord {
 export interface AIDecision {
   id: number;
   trade_id: number | null;
+  pair: string | null;
+  direction: string | null;
+  setup_type: string | null;
+  approved: boolean | null;
   confidence: number | null;
   reasoning: string | null;
   adjustments: Record<string, unknown> | null;

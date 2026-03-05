@@ -68,7 +68,14 @@ class PromptBuilder:
             snapshot: Current market data (funding, OI, CVD, liquidations, whales).
             candles_context: Dict with recent price changes per timeframe.
         """
-        sections = [
+        sections = []
+
+        # Profile section goes first so Claude reads it before seeing setup data
+        profile_section = self._build_profile_section()
+        if profile_section:
+            sections.append(profile_section)
+
+        sections.extend([
             self._build_setup_section(setup),
             self._build_funding_section(snapshot),
             self._build_oi_section(snapshot),
@@ -76,15 +83,36 @@ class PromptBuilder:
             self._build_liquidation_section(snapshot),
             self._build_whale_section(snapshot),
             self._build_price_context_section(candles_context),
-        ]
+        ])
 
         return "\n\n".join(sections) + "\n\nEvaluate this setup and respond with JSON only."
+
+    def _build_profile_section(self) -> str | None:
+        """Build profile context section. Only emitted for scalping."""
+        if settings.STRATEGY_PROFILE != "scalping":
+            return None
+
+        return (
+            "## Active Profile: Scalping\n"
+            "This trade was detected under the SCALPING profile. Key evaluation rules:\n"
+            "- HTF bias is INFORMATIONAL ONLY — do NOT reduce confidence solely because "
+            "trade direction opposes HTF bias.\n"
+            "- Focus on: LTF CVD alignment (5m/15m), OB freshness, volume confirmation, "
+            "and confluence count.\n"
+            "- These are short-duration LTF trades. HTF structural conflict is expected "
+            "and acceptable."
+        )
 
     def _build_setup_section(self, setup: TradeSetup) -> str:
         setup_names = {
             "setup_a": "Setup A (Sweep + CHoCH + OB)",
             "setup_b": "Setup B (BOS + FVG + OB)",
         }
+        is_scalping = settings.STRATEGY_PROFILE == "scalping"
+        htf_line = f"- HTF Bias: {setup.htf_bias}"
+        if is_scalping:
+            htf_line += " (informational — scalping profile does not require alignment)"
+
         return (
             f"## Trade Setup\n"
             f"- Pair: {setup.pair}\n"
@@ -95,7 +123,7 @@ class PromptBuilder:
             f"- TP1: {setup.tp1_price} (50% close at 1:1)\n"
             f"- TP2: {setup.tp2_price} (30% close at 1:2)\n"
             f"- TP3: {setup.tp3_price} (20% trailing)\n"
-            f"- HTF Bias: {setup.htf_bias}\n"
+            f"{htf_line}\n"
             f"- Confluences: {', '.join(setup.confluences)}\n"
             f"- OB Timeframe: {setup.ob_timeframe}"
         )
