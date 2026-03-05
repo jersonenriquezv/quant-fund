@@ -14,6 +14,7 @@ import asyncio
 import json
 import signal
 import sys
+import time
 
 from config.settings import settings, STRATEGY_PROFILES, apply_profile, reset_profile
 from shared.logger import setup_logger
@@ -324,6 +325,66 @@ def _persist_risk_event(event_type: str, details: dict) -> None:
 
 
 # ================================================================
+# Hourly status loop
+# ================================================================
+
+_bot_start_time: float = 0.0
+
+
+async def _hourly_status_loop() -> None:
+    """Send hourly status to Telegram."""
+    while True:
+        await asyncio.sleep(3600)  # Every hour
+        if _notifier is None:
+            continue
+        try:
+            # Uptime
+            elapsed = int(time.time() - _bot_start_time)
+            hours, remainder = divmod(elapsed, 3600)
+            minutes = remainder // 60
+            uptime_str = f"{hours}h {minutes}m"
+
+            # Prices
+            prices: dict[str, float] = {}
+            for pair in settings.TRADING_PAIRS:
+                if _data_service is not None:
+                    candle = _data_service.get_latest_candle(pair, "5m")
+                    if candle is not None:
+                        prices[pair] = candle.close
+
+            # HTF bias
+            htf_bias: dict[str, str] = {}
+            if _strategy_service is not None:
+                for pair in settings.TRADING_PAIRS:
+                    htf_bias[pair] = _strategy_service.get_htf_bias(pair)
+
+            # Risk state
+            open_positions = 0
+            trades_today = 0
+            daily_dd = 0.0
+            weekly_dd = 0.0
+            if _risk_service is not None:
+                tracker = _risk_service._state
+                open_positions = tracker.get_open_positions_count()
+                trades_today = tracker.get_trades_today_count()
+                daily_dd = tracker.get_daily_dd_pct()
+                weekly_dd = tracker.get_weekly_dd_pct()
+
+            await _notifier.notify_hourly_status(
+                uptime_str=uptime_str,
+                profile=settings.STRATEGY_PROFILE,
+                open_positions=open_positions,
+                trades_today=trades_today,
+                daily_dd_pct=daily_dd,
+                weekly_dd_pct=weekly_dd,
+                prices=prices,
+                htf_bias=htf_bias,
+            )
+        except Exception as e:
+            logger.error(f"Hourly status failed: {e}")
+
+
+# ================================================================
 # Config validation
 # ================================================================
 
@@ -400,6 +461,11 @@ async def main() -> None:
     # Start DataService in background
     data_task = asyncio.create_task(_data_service.start(), name="data_service")
 
+    # Start hourly status loop
+    global _bot_start_time
+    _bot_start_time = time.time()
+    status_task = asyncio.create_task(_hourly_status_loop(), name="hourly_status")
+
     # Wait for shutdown signal
     await shutdown_event.wait()
 
@@ -411,13 +477,14 @@ async def main() -> None:
         await _ai_service.close()
     await _data_service.stop()
 
-    # Cancel main task if still running
-    if not data_task.done():
-        data_task.cancel()
-        try:
-            await data_task
-        except asyncio.CancelledError:
-            pass
+    # Cancel background tasks
+    for task in [data_task, status_task]:
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
     logger.info("=" * 60)
     logger.info("ONE-MAN QUANT FUND — Stopped")

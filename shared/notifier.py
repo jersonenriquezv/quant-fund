@@ -187,6 +187,43 @@ class TelegramNotifier:
         )
         await self.send(msg)
 
+    async def notify_hourly_status(
+        self,
+        uptime_str: str,
+        profile: str,
+        open_positions: int,
+        trades_today: int,
+        daily_dd_pct: float,
+        weekly_dd_pct: float,
+        prices: dict[str, float],
+        htf_bias: dict[str, str],
+    ) -> None:
+        """Hourly bot status summary."""
+        # Prices
+        price_lines = []
+        for pair, price in prices.items():
+            short_pair = pair.replace("/USDT", "")
+            bias = htf_bias.get(pair, "?")
+            bias_icon = "\U0001f7e2" if bias == "bullish" else ("\U0001f534" if bias == "bearish" else "\u26aa")
+            price_lines.append(f"  {short_pair}: ${price:,.2f} {bias_icon} {bias}")
+        prices_text = "\n".join(price_lines) if price_lines else "  N/A"
+
+        dd_daily_str = f"{daily_dd_pct*100:.1f}%"
+        dd_weekly_str = f"{weekly_dd_pct*100:.1f}%"
+
+        msg = (
+            f"\U0001f4ca <b>HOURLY STATUS</b>\n"
+            f"Uptime: {uptime_str}\n"
+            f"Profile: <b>{profile}</b>\n"
+            f"\n"
+            f"Prices:\n{prices_text}\n"
+            f"\n"
+            f"Positions: {open_positions} open\n"
+            f"Trades today: {trades_today}\n"
+            f"DD daily: {dd_daily_str} | weekly: {dd_weekly_str}"
+        )
+        await self.send(msg)
+
     async def notify_emergency(self, pos, reason: str) -> None:
         """Critical event — SL placement failure, emergency close."""
         msg = (
