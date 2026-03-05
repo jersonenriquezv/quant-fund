@@ -152,8 +152,37 @@ async def on_candle_confirmed(candle: Candle) -> None:
             _persist_ai_skip(setup)
             if _notifier is not None:
                 await _notifier.notify_ai_skipped(setup)
+    elif settings.STRATEGY_PROFILE == "aggressive":
+        # Aggressive: auto-approve strong setups, only send borderline to Claude
+        htf_bias = _strategy_service.get_htf_bias(setup.pair) if _strategy_service else "undefined"
+        htf_aligned = (
+            (setup.direction == "long" and htf_bias == "bullish")
+            or (setup.direction == "short" and htf_bias == "bearish")
+        )
+        n_confluences = len(setup.confluences)
+
+        if htf_aligned and n_confluences >= 3:
+            # Strong setup — skip Claude, auto-approve
+            logger.info(
+                f"AI SKIPPED: aggressive auto-approve "
+                f"({n_confluences} confluences, HTF-aligned {setup.direction}/{htf_bias})"
+            )
+            _persist_ai_skip(setup)
+            if _notifier is not None:
+                await _notifier.notify_ai_skipped(setup)
+        else:
+            # Borderline — send to Claude
+            logger.info(
+                f"Aggressive sending to Claude "
+                f"({n_confluences} confluences, htf_aligned={htf_aligned})"
+            )
+            decision = await _evaluate_with_claude(setup, candle)
+            if decision is None:
+                return
+            if not decision.approved:
+                return
     elif _ai_service is not None and _data_service is not None:
-        # Default / Aggressive — always go through pre-filter + Claude
+        # Default — always go through pre-filter + Claude
         decision = await _evaluate_with_claude(setup, candle)
         if decision is None:
             return  # pre-filter rejected or Claude rejected
