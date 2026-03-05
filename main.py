@@ -251,8 +251,8 @@ def _pre_filter_for_claude(setup, snapshot) -> str | None:
     threshold = settings.FUNDING_EXTREME_THRESHOLD
 
     # Check 1: Funding rate extreme against trade direction
-    if snapshot.funding is not None and snapshot.funding.current_rate is not None:
-        rate = snapshot.funding.current_rate
+    if snapshot.funding is not None and snapshot.funding.rate is not None:
+        rate = snapshot.funding.rate
         if setup.direction == "long" and rate > threshold:
             return f"Funding extreme against long ({rate*100:.4f}% > {threshold*100:.4f}%)"
         if setup.direction == "short" and rate < -threshold:
@@ -260,8 +260,8 @@ def _pre_filter_for_claude(setup, snapshot) -> str | None:
 
     # Check 2: CVD strong divergence against trade direction
     if snapshot.cvd is not None:
-        buy_vol = snapshot.cvd.buy_volume_5m
-        sell_vol = snapshot.cvd.sell_volume_5m
+        buy_vol = snapshot.cvd.buy_volume
+        sell_vol = snapshot.cvd.sell_volume
         total_vol = buy_vol + sell_vol
         if total_vol > 0:
             buy_dominance = buy_vol / total_vol
