@@ -121,18 +121,12 @@ class SetupEvaluator:
             logger.debug(f"Setup A [{pair}]: no aligned OBs (total_obs={len(active_obs)} dir={direction})")
             return None
 
-        # Find the best OB (most recent, closest to current price)
+        # Find the best OB within max distance (zone-based — no proximity requirement)
         current_price = candles[-1].close if candles else 0
         best_ob = self._find_best_ob(aligned_obs, current_price, direction)
         if best_ob is None:
-            logger.debug(f"Setup A [{pair}]: OBs exist but price not near any "
+            logger.debug(f"Setup A [{pair}]: no OBs within range "
                          f"(price={current_price:.2f} obs={len(aligned_obs)})")
-            return None
-
-        # Check if price is near OB entry
-        if not self._is_price_near_ob(current_price, best_ob):
-            logger.debug(f"Setup A [{pair}]: price not near best OB "
-                         f"(price={current_price:.2f} ob={best_ob.body_low:.2f}-{best_ob.body_high:.2f})")
             return None
 
         # Volume confirmation
@@ -262,22 +256,23 @@ class SetupEvaluator:
         best_ob = None
         best_fvg = None
 
+        # Collect all adjacent pairs, then pick best by volume ratio + recency
+        candidates = []
         for ob in aligned_obs:
+            if not self._is_ob_within_range(current_price, ob):
+                continue
             for fvg in aligned_fvgs:
                 if self._is_fvg_adjacent_to_ob(fvg, ob):
-                    if best_ob is None or self._is_price_near_ob(current_price, ob):
-                        best_ob = ob
-                        best_fvg = fvg
+                    candidates.append((ob, fvg))
+
+        if candidates:
+            best_ob, best_fvg = max(
+                candidates, key=lambda pair: (pair[0].volume_ratio, pair[0].timestamp)
+            )
 
         if best_ob is None or best_fvg is None:
-            logger.debug(f"Setup B [{pair}]: no adjacent OB+FVG pair "
+            logger.debug(f"Setup B [{pair}]: no adjacent OB+FVG pair within range "
                          f"(obs={len(aligned_obs)} fvgs={len(aligned_fvgs)})")
-            return None
-
-        # Check if price is near entry zone
-        if not self._is_price_near_ob(current_price, best_ob):
-            logger.debug(f"Setup B [{pair}]: price not near OB "
-                         f"(price={current_price:.2f} ob={best_ob.body_low:.2f}-{best_ob.body_high:.2f})")
             return None
 
         # Volume + CVD confirmation
@@ -510,23 +505,33 @@ class SetupEvaluator:
 
         return False
 
+    def _is_ob_within_range(self, current_price: float,
+                            ob: OrderBlock) -> bool:
+        """Check if OB is within OB_MAX_DISTANCE_PCT of current price.
+
+        Prevents placing limit orders at absurdly distant OBs.
+        """
+        if current_price <= 0:
+            return False
+        distance = abs(current_price - ob.entry_price) / current_price
+        return distance <= settings.OB_MAX_DISTANCE_PCT
+
     def _find_best_ob(
         self,
         obs: list[OrderBlock],
         current_price: float,
         direction: str,
     ) -> Optional[OrderBlock]:
-        """Find the best OB — most recent one that price is near."""
+        """Find the best OB within max distance — highest volume ratio, tiebreak by recency."""
         candidates = [
             ob for ob in obs
-            if self._is_price_near_ob(current_price, ob)
+            if self._is_ob_within_range(current_price, ob)
         ]
 
         if not candidates:
             return None
 
-        # Return most recent
-        return max(candidates, key=lambda ob: ob.timestamp)
+        return max(candidates, key=lambda ob: (ob.volume_ratio, ob.timestamp))
 
     def _compute_blended_rr(
         self,

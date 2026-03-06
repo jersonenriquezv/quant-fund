@@ -265,7 +265,7 @@ class TestEntryFill:
 
 
 class TestEntryTimeout:
-    """Entry not filled within 15 minutes → cancel."""
+    """Entry not filled within timeout → cancel."""
 
     def test_entry_timeout_cancels_order(self):
         executor = MagicMock(spec=OrderExecutor)
@@ -273,7 +273,7 @@ class TestEntryTimeout:
         monitor = PositionMonitor(executor, risk)
 
         pos = make_position()
-        pos.created_at = int(time.time()) - 1000  # 16+ min ago
+        pos.created_at = int(time.time()) - 15000  # Well past 4h
         monitor.register(pos)
 
         executor.cancel_order = AsyncMock(return_value=True)
@@ -285,6 +285,45 @@ class TestEntryTimeout:
         assert pos.close_reason == "cancelled"
         # Cancelled entries are not real trades — Risk Service should NOT be notified
         risk.on_trade_closed.assert_not_called()
+
+    def test_quick_setup_uses_shorter_timeout(self):
+        """Quick setups (C/D/E) use ENTRY_TIMEOUT_QUICK_SECONDS."""
+        executor = MagicMock(spec=OrderExecutor)
+        risk = MagicMock()
+        monitor = PositionMonitor(executor, risk)
+
+        pos = make_position()
+        pos.setup_type = "setup_c"
+        # 2 hours ago — past 1h quick timeout but within 4h swing timeout
+        pos.created_at = int(time.time()) - 7200
+        monitor.register(pos)
+
+        executor.cancel_order = AsyncMock(return_value=True)
+
+        asyncio.run(monitor._check_all_positions())
+
+        assert pos.phase == "closed"
+        assert pos.close_reason == "cancelled"
+
+    def test_swing_setup_not_timed_out_at_2h(self):
+        """Swing setup (A/B) should NOT time out at 2 hours (within 4h timeout)."""
+        executor = MagicMock(spec=OrderExecutor)
+        risk = MagicMock()
+        monitor = PositionMonitor(executor, risk)
+
+        pos = make_position()
+        pos.setup_type = "setup_a"
+        # 2 hours ago — within 4h swing timeout
+        pos.created_at = int(time.time()) - 7200
+        monitor.register(pos)
+
+        executor.fetch_order = AsyncMock(return_value=make_order(
+            "ord-entry", status="open", filled=0
+        ))
+
+        asyncio.run(monitor._check_all_positions())
+
+        assert pos.phase == "pending_entry"  # Still waiting
 
 
 class TestTP1Hit:

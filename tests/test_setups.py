@@ -489,7 +489,7 @@ class TestBlendedRR:
 
 
 # ============================================================
-# OB Proximity tests
+# OB Proximity tests (legacy — _is_price_near_ob still used by notifier)
 # ============================================================
 
 class TestOBProximity:
@@ -516,6 +516,164 @@ class TestOBProximity:
         # margin at price 95 = 95*0.003 = 0.285
         # extended_low = 100 - 0.285 = 99.715 → 95 < 99.715
         assert evaluator._is_price_near_ob(95.0, ob) is False
+
+
+# ============================================================
+# Zone-based OB selection tests
+# ============================================================
+
+class TestZoneBasedOB:
+    """Test zone-based OB selection (no proximity requirement)."""
+
+    def test_ob_within_max_distance(self):
+        """OB within OB_MAX_DISTANCE_PCT is accepted."""
+        evaluator = SetupEvaluator()
+        ob = _make_ob(entry_price=99.0)  # 1% from price=100
+        assert evaluator._is_ob_within_range(100.0, ob) is True
+
+    def test_ob_beyond_max_distance(self):
+        """OB beyond OB_MAX_DISTANCE_PCT is rejected."""
+        evaluator = SetupEvaluator()
+        ob = _make_ob(entry_price=90.0)  # 10% from price=100
+        assert evaluator._is_ob_within_range(100.0, ob) is False
+
+    def test_ob_at_exact_boundary(self):
+        """OB exactly at OB_MAX_DISTANCE_PCT boundary is accepted."""
+        evaluator = SetupEvaluator()
+        # OB_MAX_DISTANCE_PCT = 0.05 → at price 100, max distance = 5
+        ob = _make_ob(entry_price=95.0)
+        assert evaluator._is_ob_within_range(100.0, ob) is True
+
+    def test_find_best_ob_selects_highest_volume(self):
+        """_find_best_ob returns OB with highest volume ratio."""
+        evaluator = SetupEvaluator()
+        ob_low_vol = _make_ob(entry_price=99.0, volume_ratio=1.5, timestamp=9000)
+        ob_high_vol = _make_ob(entry_price=98.0, volume_ratio=3.0, timestamp=8000)
+        best = evaluator._find_best_ob([ob_low_vol, ob_high_vol], 100.0, "bullish")
+        assert best is ob_high_vol
+
+    def test_find_best_ob_tiebreak_by_recency(self):
+        """_find_best_ob tiebreaks by most recent timestamp."""
+        evaluator = SetupEvaluator()
+        ob_old = _make_ob(entry_price=99.0, volume_ratio=2.0, timestamp=7000)
+        ob_new = _make_ob(entry_price=98.0, volume_ratio=2.0, timestamp=9000)
+        best = evaluator._find_best_ob([ob_old, ob_new], 100.0, "bullish")
+        assert best is ob_new
+
+    def test_setup_a_creates_without_proximity(self):
+        """Setup A created when OB is within range but price not adjacent."""
+        evaluator = SetupEvaluator()
+        state = _make_structure_state(
+            trend="bullish", break_type="choch", break_direction="bullish",
+        )
+        # OB at 97 — price at 101 is 4% away (within 5% max distance)
+        obs = [_make_ob(direction="bullish", entry_price=97.0,
+                        body_high=98.0, body_low=96.0, high=99.0, low=95.0)]
+        sweeps = [_make_sweep(direction="bullish")]
+        pd = _make_pd_zone("discount")
+        snapshot = make_market_snapshot(
+            cvd_15m=100.0,
+            liquidations=[
+                LiquidationEvent(
+                    timestamp=9000, pair="BTC/USDT", side="long",
+                    size_usd=50000, price=94.5, source="oi_proxy",
+                ),
+            ],
+        )
+        candles = _make_candles_near_ob(101.0)
+
+        setup = evaluator.evaluate_setup_a(
+            structure_state=state, active_obs=obs,
+            recent_sweeps=sweeps, pd_zone=pd,
+            market_snapshot=snapshot, candles=candles,
+            pair="BTC/USDT", htf_bias="bullish", liquidity_levels=[],
+        )
+        assert setup is not None
+        assert setup.entry_price == 97.0
+
+    def test_setup_a_rejects_ob_beyond_max_distance(self):
+        """Setup A rejected when OB is beyond OB_MAX_DISTANCE_PCT."""
+        evaluator = SetupEvaluator()
+        state = _make_structure_state(
+            trend="bullish", break_type="choch", break_direction="bullish",
+        )
+        # OB at 80 — price at 101 is ~21% away (way beyond 5%)
+        obs = [_make_ob(direction="bullish", entry_price=80.0,
+                        body_high=81.0, body_low=79.0, high=82.0, low=78.0)]
+        sweeps = [_make_sweep(direction="bullish")]
+        pd = _make_pd_zone("discount")
+        candles = _make_candles_near_ob(101.0)
+
+        setup = evaluator.evaluate_setup_a(
+            structure_state=state, active_obs=obs,
+            recent_sweeps=sweeps, pd_zone=pd,
+            market_snapshot=None, candles=candles,
+            pair="BTC/USDT", htf_bias="bullish", liquidity_levels=[],
+        )
+        assert setup is None
+
+
+# ============================================================
+# Bidirectional trading tests
+# ============================================================
+
+class TestBidirectionalTrading:
+    """Test counter-trend setups (LTF opposes HTF)."""
+
+    def test_counter_trend_setup_a_allowed(self):
+        """Setup A with bullish CHoCH + bearish HTF should be created."""
+        evaluator = SetupEvaluator()
+        state = _make_structure_state(
+            trend="bullish", break_type="choch", break_direction="bullish",
+        )
+        obs = [_make_ob(direction="bullish", entry_price=101.0)]
+        sweeps = [_make_sweep(direction="bullish")]
+        pd = _make_pd_zone("discount")
+        snapshot = make_market_snapshot(
+            cvd_15m=100.0,
+            liquidations=[
+                LiquidationEvent(
+                    timestamp=9000, pair="BTC/USDT", side="long",
+                    size_usd=50000, price=94.5, source="oi_proxy",
+                ),
+            ],
+        )
+        candles = _make_candles_near_ob(101.0)
+
+        setup = evaluator.evaluate_setup_a(
+            structure_state=state, active_obs=obs,
+            recent_sweeps=sweeps, pd_zone=pd,
+            market_snapshot=snapshot, candles=candles,
+            pair="BTC/USDT", htf_bias="bearish",  # Counter-trend
+            liquidity_levels=[],
+        )
+        assert setup is not None
+        assert setup.direction == "long"
+        assert setup.htf_bias == "bearish"
+
+    def test_counter_trend_setup_b_allowed(self):
+        """Setup B with bullish BOS + bearish HTF should be created."""
+        evaluator = SetupEvaluator()
+        state = _make_structure_state(
+            trend="bullish", break_type="bos", break_direction="bullish",
+        )
+        obs = [_make_ob(direction="bullish", entry_price=101.0,
+                        high=103.0, low=98.0, body_high=102.0, body_low=100.0)]
+        fvgs = [_make_fvg(direction="bullish", high=103.0, low=100.5)]
+        pd = _make_pd_zone("discount")
+        snapshot = make_market_snapshot(cvd_15m=100.0)
+        candles = _make_candles_near_ob(101.0)
+
+        setup = evaluator.evaluate_setup_b(
+            structure_state=state, active_obs=obs,
+            active_fvgs=fvgs, pd_zone=pd,
+            market_snapshot=snapshot, candles=candles,
+            pair="BTC/USDT", htf_bias="bearish",  # Counter-trend
+            liquidity_levels=[],
+        )
+        assert setup is not None
+        assert setup.direction == "long"
+        assert setup.htf_bias == "bearish"
 
 
 # ============================================================

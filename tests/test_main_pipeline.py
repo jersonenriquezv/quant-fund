@@ -245,8 +245,8 @@ class TestRiskRejection:
 
 class TestPreFilter:
 
-    def test_htf_conflict_long_bearish(self):
-        """Long + HTF bearish → rejected."""
+    def test_htf_conflict_long_bearish_not_blocked(self):
+        """Long + HTF bearish → NOT rejected (HTF is contextual, not a gate)."""
         setup = _make_setup(direction="long")
         snapshot = _make_snapshot()
         strategy = MagicMock()
@@ -254,11 +254,10 @@ class TestPreFilter:
         main._strategy_service = strategy
 
         reason = main._pre_filter_for_claude(setup, snapshot)
-        assert reason is not None
-        assert "long" in reason and "bearish" in reason
+        assert reason is None
 
-    def test_htf_conflict_short_bullish(self):
-        """Short + HTF bullish → rejected."""
+    def test_htf_conflict_short_bullish_not_blocked(self):
+        """Short + HTF bullish → NOT rejected (HTF is contextual, not a gate)."""
         setup = _make_setup(direction="short")
         snapshot = _make_snapshot()
         strategy = MagicMock()
@@ -266,8 +265,7 @@ class TestPreFilter:
         main._strategy_service = strategy
 
         reason = main._pre_filter_for_claude(setup, snapshot)
-        assert reason is not None
-        assert "short" in reason and "bullish" in reason
+        assert reason is None
 
     def test_htf_aligned_passes(self):
         """Long + HTF bullish → passes pre-filter."""

@@ -31,7 +31,7 @@ logger = setup_logger("main")
 # Setup deduplication cache — prevents sending the same setup to Claude every 5m candle.
 # Key: (pair, direction, setup_type, entry_price), Value: unix timestamp of last eval.
 _setup_dedup_cache: dict[tuple, float] = {}
-_SETUP_DEDUP_TTL_SECONDS = 900  # 15 min — re-evaluate if OB changed or price moved
+_SETUP_DEDUP_TTL_SECONDS = 3600  # 1 hour — prevents re-sending same setup while limit order is pending
 
 # Module-level references set by main() so the callback can access them
 _data_service: DataService | None = None
@@ -258,14 +258,9 @@ def _pre_filter_for_claude(setup, snapshot) -> str | None:
 
     Setup C skips funding check (extreme funding IS the signal).
     """
-    # Check 0: HTF bias conflicts with trade direction
-    # This catches 90%+ of Claude rejections — free and deterministic.
-    if _strategy_service is not None:
-        htf_bias = _strategy_service.get_htf_bias(setup.pair)
-        if setup.direction == "long" and htf_bias == "bearish":
-            return f"Direction (long) conflicts with HTF bias (bearish)"
-        if setup.direction == "short" and htf_bias == "bullish":
-            return f"Direction (short) conflicts with HTF bias (bullish)"
+    # HTF bias is no longer a hard gate — Claude evaluates it as context.
+    # LTF structure (CHoCH/BOS) drives trade direction; strong counter-trend
+    # setups with clear LTF structure can proceed to Claude for evaluation.
 
     threshold = settings.FUNDING_EXTREME_THRESHOLD
 

@@ -41,15 +41,19 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
 
 ### `strategy_service/setups.py` — Setup A/B + Confluencia
 - **Setup A** (primario): Sweep + CHoCH + OB en discount/premium
-  - **Patrón de CONTINUACIÓN**: CHoCH debe alinearse con HTF bias. `REQUIRE_HTF_LTF_ALIGNMENT` siempre activo.
+  - **Bidireccional**: LTF CHoCH/BOS determina dirección del trade. HTF bias es contexto para Claude, no un gate.
+  - `REQUIRE_HTF_LTF_ALIGNMENT` default `False` — permite counter-trend setups con estructura LTF clara.
   - **Orden temporal obligatorio**: sweep ANTES del CHoCH
   - **Proximidad temporal**: sweep dentro de `SETUP_A_MAX_SWEEP_CHOCH_GAP` candles del CHoCH
 - **Setup B** (secundario): BOS + FVG adyacente a OB
-  - Dirección BOS debe alinear con HTF bias
+  - Dirección BOS determina dirección del trade (bidireccional como Setup A)
+- **Zone-based orders** — no requiere proximidad al OB. El bot coloca limit orders al 50% del OB y espera fill.
+  - `_find_best_ob()` selecciona por calidad: mayor `volume_ratio`, tiebreak por timestamp más reciente
+  - `_is_ob_within_range()` filtra OBs más allá de `OB_MAX_DISTANCE_PCT` (5%) del precio actual
+  - `_is_price_near_ob()` se mantiene para notificaciones de OB summary, pero no bloquea setups
 - Mínimo 2 confluencias obligatorio (no configurable — hardcoded)
 - Cálculo de TP1 (1:1), TP2 (1:2), TP3 (trailing/liquidity)
 - **R:R blended** — validación ponderada: 50%×TP1 + 30%×TP2 + 20%×TP3 ≥ `MIN_RISK_REWARD`
-- **Proximidad OB basada en precio** — `OB_PROXIMITY_PCT` (0.3% del precio), no % del body
 - **Validación premium/discount** — equilibrium zone bloquea trades por defecto, configurable via `ALLOW_EQUILIBRIUM_TRADES`
 
 ### `strategy_service/quick_setups.py` — Quick Setups (C, D, E)
@@ -79,9 +83,10 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 
 ## Settings (config/settings.py)
 - `PD_EQUILIBRIUM_BAND: float = 0.02` — banda ±2% alrededor del 50% para zona equilibrium
-- `OB_PROXIMITY_PCT: float = 0.003` — 0.3% del precio como margen de proximidad al OB
+- `OB_PROXIMITY_PCT: float = 0.003` — 0.3% del precio como margen de proximidad al OB (solo para notificaciones)
+- `OB_MAX_DISTANCE_PCT: float = 0.05` — 5% máximo de distancia del precio al OB para zone-based orders
 - `SETUP_A_MAX_SWEEP_CHOCH_GAP: int = 20` — máximo candles entre sweep y CHoCH
-- `REQUIRE_HTF_LTF_ALIGNMENT: bool = True` — LTF debe alinearse con HTF (nunca se desactiva)
+- `REQUIRE_HTF_LTF_ALIGNMENT: bool = False` — si True, LTF debe alinearse con HTF; default False para bidireccional
 - `REQUIRE_PD_ALIGNMENT: bool = True` — premium/discount zone debe alinear con dirección (nunca se desactiva — core SMC)
 - `ALLOW_EQUILIBRIUM_TRADES: bool = False` — permitir trades en zona equilibrium
 - `HTF_BIAS_REQUIRE_4H: bool = True` — si 4H debe definir trend o 1H solo basta (aggressive: False)
@@ -107,7 +112,6 @@ El bot soporta 2 perfiles de estrategia, switcheables desde dashboard o env var:
 
 **Reglas que NUNCA cambian entre perfiles:**
 - PD alignment (long=discount, short=premium) — core SMC
-- HTF/LTF alignment — sin esto, trades contra tendencia
 - AI filter obligatorio para swing setups (A/B) — todo trade pasa por Claude
 - Quick setups (C/D/E) skip AI por diseño — los datos son la señal
 - Max positions (3), max leverage (5x)

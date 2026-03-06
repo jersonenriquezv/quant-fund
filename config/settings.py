@@ -146,6 +146,10 @@ class Settings:
     # Max % of price that current price can be from OB entry to trigger setup
     OB_PROXIMITY_PCT: float = 0.003  # 0.3%
 
+    # Max distance (% of price) from current price to consider an OB for zone-based orders.
+    # OBs beyond this distance are ignored to avoid absurdly distant limit orders.
+    OB_MAX_DISTANCE_PCT: float = 0.05  # 5%
+
     # --- Setup A temporal ---
     # Max candles between sweep and CHoCH for Setup A validity
     SETUP_A_MAX_SWEEP_CHOCH_GAP: int = 20
@@ -173,7 +177,7 @@ class Settings:
 
     # --- Strategy behavior (profile-controlled) ---
     # If True, LTF structure (CHoCH/BOS) must align with HTF bias direction.
-    REQUIRE_HTF_LTF_ALIGNMENT: bool = True
+    REQUIRE_HTF_LTF_ALIGNMENT: bool = False
     # If True, trades in the equilibrium zone (around 50% of range) are blocked.
     ALLOW_EQUILIBRIUM_TRADES: bool = False
     # If True, 4H trend must be defined for HTF bias. If False, 1H alone is enough.
@@ -368,8 +372,10 @@ class Settings:
     # ========================
     # EXECUTION SERVICE
     # ========================
-    # Seconds to wait for entry order to fill before cancelling
-    ENTRY_TIMEOUT_SECONDS: int = int(os.getenv("ENTRY_TIMEOUT_SECONDS", "900"))  # 15 min
+    # Seconds to wait for entry order to fill before cancelling (swing setups)
+    ENTRY_TIMEOUT_SECONDS: int = int(os.getenv("ENTRY_TIMEOUT_SECONDS", "14400"))  # 4 hours
+    # Shorter timeout for quick setups (C/D/E)
+    ENTRY_TIMEOUT_QUICK_SECONDS: int = int(os.getenv("ENTRY_TIMEOUT_QUICK_SECONDS", "3600"))  # 1 hour
     # Seconds between order status polls
     ORDER_POLL_INTERVAL: float = float(os.getenv("ORDER_POLL_INTERVAL", "5.0"))
     # Margin mode for perpetual positions
@@ -432,6 +438,9 @@ STRATEGY_PROFILES: dict[str, dict] = {
         "MIN_RISK_REWARD": 1.2,               # 1:1.2 (default 1:1.5)
         "SWEEP_MIN_VOLUME_RATIO": 1.5,        # 1.5x (default 2.0x)
         "PD_EQUILIBRIUM_BAND": 0.01,          # 1% (default 2%)
+        # Zone-based orders — wider range in aggressive mode
+        "OB_MAX_DISTANCE_PCT": 0.08,          # 8% (default 5%)
+        "ENTRY_TIMEOUT_SECONDS": 21600,       # 6 hours (default 4h)
         # Quick setups — more lenient in aggressive mode
         "QUICK_SETUP_COOLDOWN": 1800,         # 30 min (default 1h)
         "MOMENTUM_CVD_LONG_MIN": 0.52,        # 52% (default 55%)

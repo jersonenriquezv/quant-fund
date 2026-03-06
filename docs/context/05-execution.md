@@ -27,7 +27,7 @@ ExecutionService (facade)
 
 ```
 pending_entry ──[fill]──────> active         (coloca SL + TP1/TP2/TP3)
-pending_entry ──[15min]─────> closed         (cancela entry, NO cuenta como trade en Risk)
+pending_entry ──[4h/1h]─────> closed         (cancela entry — 4h swing, 1h quick; NO cuenta como trade en Risk)
 
 active ──[TP1 fills]──> tp1_hit              (SL → breakeven)
 active ──[SL fills]───> closed               (cancela todos los TPs)
@@ -48,7 +48,7 @@ emergency_pending ──[3 fails]──> emergency_failed  (requiere intervenci�
 
 | Orden | Tipo | Por qué |
 |-------|------|---------|
-| Entry | Limit | Control de slippage. Cancela si no se llena en 15 min |
+| Entry | Limit | Control de slippage. Cancela si no se llena en 4h (swing) / 1h (quick) |
 | Stop Loss | Stop-market (algo order, reduceOnly) | Ejecución garantizada en crashes. `reduceOnly=True` previene apertura de posición inversa en race conditions |
 | TP1/TP2/TP3 | Limit (reduceOnly) | Precios exactos, sin slippage en take profits |
 
@@ -91,7 +91,8 @@ Slippage: BTC/USDT expected=50000.00 actual=50025.00 diff=0.0500%
 
 | Setting | Default | Descripción |
 |---------|---------|-------------|
-| `ENTRY_TIMEOUT_SECONDS` | 900 (15 min) | Tiempo máximo de espera para fill |
+| `ENTRY_TIMEOUT_SECONDS` | 14400 (4h) | Tiempo máximo de espera para fill (swing setups A/B) |
+| `ENTRY_TIMEOUT_QUICK_SECONDS` | 3600 (1h) | Tiempo máximo de espera para fill (quick setups C/D/E) |
 | `ORDER_POLL_INTERVAL` | 5.0s | Intervalo de polling del monitor |
 | `MARGIN_MODE` | "isolated" | Modo de margen (más seguro) |
 | `MAX_TRADE_DURATION_SECONDS` | 43200 (12h) | Duración máxima de un trade (swing A/B) |
@@ -113,7 +114,7 @@ Cada vez que un TP llena, `_accumulate_realized_pnl()` calcula y suma el PnL de 
 - Facade: disabled sin API key, happy path, short/sell side, pair ya gestionado, fallos
 - **SL/TP validation**: long inválido (SL arriba de entry), short inválido (SL abajo de entry)
 - Entry fill: coloca SL + 3 TPs
-- Entry timeout: cancela después de 15 min
+- Entry timeout: cancela después de 4h (swing) / 1h (quick), per-setup-type
 - TP1 hit: SL → breakeven
 - TP2 hit: SL → nivel TP1
 - **TP3 hit**: posición cerrada, SL cancelado

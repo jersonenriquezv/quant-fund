@@ -1,6 +1,6 @@
 # AI Service
 > Última actualización: 2026-03-06
-> Estado: implementado (completo, integrado en main.py). Pre-filter determinístico (HTF bias + funding + CVD). AI obligatorio en todas las profiles. Setup dedup cache.
+> Estado: implementado (completo, integrado en main.py). Pre-filter determinístico (funding + CVD). HTF bias es contexto para Claude, no hard gate. AI obligatorio en todas las profiles. Setup dedup cache.
 
 ## Qué hace (30 segundos)
 El AI Service es el consultor senior del sistema. Recibe cada trade setup del Strategy Service y lo pasa por Claude (Sonnet) para que evalúe si el contexto de mercado apoya ejecutarlo. Claude analiza funding rate, open interest, CVD, liquidaciones, whale movements y precio reciente. Si confidence >= 0.60 y approved=true, el trade pasa al Risk Service. Si no, se descarta.
@@ -38,13 +38,14 @@ AIDecision { confidence, approved, reasoning, adjustments, warnings }
 **System prompt** (se reconstruye por evaluación con threshold actual):
 - Rol: senior crypto trading analyst en fondo cuantitativo
 - Instrucción: responder SOLO con JSON válido
-- HTF alignment ya garantizado por pre-filter — Claude no debe rechazar por HTF
+- HTF bias es CONTEXTO, no garantía. Claude evalúa counter-trend setups con criterio propio
+- Si HTF alineado → high-conviction trend trade. Si HTF opuesto → counter-trend, puede ser válido si LTF structure + CVD + funding apoyan
 - 7 factores a evaluar: funding, CVD (más peso), liquidaciones, whales, OI (snapshot-only), calidad del setup con confluences etiquetadas, R:R
-- Reglas críticas: no aprobar solo por patrón, funding extremo = escepticismo, CVD multi-timeframe divergente = warning
+- Reglas críticas: no aprobar solo por patrón, funding extremo = escepticismo, CVD multi-timeframe divergente = warning, no auto-rechazar counter-trend
 - Sin cuota de aprobación — aprobar solo cuando evidencia claramente apoya
 
 **User prompt** (por cada evaluación):
-- Setup completo: pair, direction, entry, SL, TPs, R:R computado (TP1/TP2/TP3/blended)
+- Setup completo: pair, direction, entry, SL, TPs, R:R computado (TP1/TP2/TP3/blended), HTF bias labeled as "aligned" or "COUNTER-TREND"
 - Confluences etiquetadas: cada una marcada como [SUPPORTING] o [CONTEXT] con descripción humana
 - Funding rate con interpretación (normal/extreme)
 - Open interest (snapshot sin tendencia — solo contexto de tamaño de mercado)
@@ -121,12 +122,9 @@ The dashboard AILog component shows pair, direction badge, and approved/rejected
 
 ## Pre-Filter (todas las profiles)
 
-Antes de llamar a Claude API, `main.py:_pre_filter_for_claude()` ejecuta 3 checks determinísticos que rechazan setups obvios sin gastar tokens. Los checks son conservadores — si los datos no están disponibles, el check se salta (no genera falsos rechazos).
+Antes de llamar a Claude API, `main.py:_pre_filter_for_claude()` ejecuta 2 checks determinísticos que rechazan setups obvios sin gastar tokens. Los checks son conservadores — si los datos no están disponibles, el check se salta (no genera falsos rechazos).
 
-### Check 0: HTF bias conflict
-- Long + HTF bias "bearish" → rechaza
-- Short + HTF bias "bullish" → rechaza
-- **Atrapa ~90% de los rechazos de Claude** — gratis y determinístico
+**Nota:** El check de HTF bias conflict fue removido — HTF bias ahora es contexto para Claude, no un hard gate. Esto permite counter-trend setups con estructura LTF clara.
 
 ### Check 1: Funding extreme contra dirección
 - Long + `funding_rate > FUNDING_EXTREME_THRESHOLD` (0.03%) → rechaza
@@ -149,7 +147,7 @@ Antes de llamar a Claude API, `main.py:_pre_filter_for_claude()` ejecuta 3 check
 `main.py` mantiene un cache de deduplicación para evitar re-enviar el mismo setup a Claude cada 5 minutos (cuando cierra la misma candle LTF):
 
 - Key: `(pair, direction, setup_type, entry_price_rounded)`
-- TTL: 15 minutos (`_SETUP_DEDUP_TTL_SECONDS = 900`)
+- TTL: 1 hora (`_SETUP_DEDUP_TTL_SECONDS = 3600`) — prevents re-sending while limit order is pending
 - Si el setup ya fue evaluado dentro del TTL → skip (log debug, return None)
 - El cache se actualiza DESPUÉS de la evaluación exitosa de Claude
 
@@ -160,7 +158,7 @@ Setup detected (default o aggressive)
   |
   +-- Dedup cache hit? --> skip (ya evaluado)
   |
-  +-- pre-filter (HTF bias, funding, CVD) --> rechaza sin Claude
+  +-- pre-filter (funding, CVD) --> rechaza sin Claude
   |
   +-- Claude evalúa --> AIDecision
   |

@@ -10,7 +10,7 @@ from shared.models import TradeSetup, MarketSnapshot
 
 _SYSTEM_PROMPT_TEMPLATE = """You are a senior crypto trading analyst at a quantitative fund. Your job is to evaluate trade setups detected by an automated SMC (Smart Money Concepts) system and decide whether the current market context supports the trade.
 
-You are a FILTER — you do NOT generate trades. The system has already detected a valid pattern with HTF alignment confirmed. Your job is to evaluate whether market conditions (funding, volume, flow) support executing it NOW.
+You are a FILTER — you do NOT generate trades. The system has already detected a valid SMC pattern with confirmed LTF structure (CHoCH or BOS). Your job is to evaluate whether market conditions (funding, volume, flow, HTF context) support executing it NOW.
 
 You must respond ONLY with valid JSON in this exact format:
 {{
@@ -40,7 +40,10 @@ Factors to evaluate:
 7. RISK/REWARD: The blended R:R is provided. Below 1.5 = tighter, needs strong conviction. Above 2.0 = favorable risk profile.
 
 CRITICAL RULES:
-- HTF alignment is ALREADY guaranteed by the system — do NOT reject based on HTF direction.
+- HTF BIAS is provided as CONTEXT, not a guarantee. The trade direction is driven by LTF structure (CHoCH/BOS).
+  - If HTF aligns with trade direction: this is a high-conviction trend trade — approve if other factors support it.
+  - If HTF opposes trade direction: this is a counter-trend setup. These CAN be valid (LTF reversals often lead HTF). Evaluate the strength of LTF structure, CVD, and funding. Approve with moderate confidence if data supports it, reject only if data actively contradicts.
+  - Do NOT auto-reject counter-trend setups — they are the most profitable when they work.
 - If funding rate is extreme (>0.03% or <-0.03%), increase skepticism for trades in the crowded direction.
 - If major liquidation cascade just happened in the trade direction, the move may be exhausted — reduce confidence.
 - If CVD diverges from trade direction across multiple timeframes (5m, 15m, 1h), the move lacks conviction — reduce confidence.
@@ -119,10 +122,19 @@ class PromptBuilder:
             f"- TP2: {setup.tp2_price} (30% close)\n"
             f"- TP3: {setup.tp3_price} (20% trailing)\n"
             f"{rr_line}\n"
-            f"- HTF Bias: {setup.htf_bias} (confirmed aligned with direction)\n"
+            f"- HTF Bias: {setup.htf_bias} ({'aligned' if self._is_htf_aligned(setup) else 'COUNTER-TREND'})\n"
             f"- OB Timeframe: {setup.ob_timeframe}\n"
             f"- Confluences:\n{confluence_lines}"
         )
+
+    @staticmethod
+    def _is_htf_aligned(setup: TradeSetup) -> bool:
+        """Check if trade direction aligns with HTF bias."""
+        if setup.direction == "long" and setup.htf_bias == "bullish":
+            return True
+        if setup.direction == "short" and setup.htf_bias == "bearish":
+            return True
+        return False
 
     def _format_confluences(
         self, confluences: list, direction: str

@@ -1,5 +1,14 @@
 # Changelog — One-Man Quant Fund
 
+## [2026-03-06] — Zone-based orders + bidirectional trading + entry timeout increase
+**Qué cambió:**
+- `strategy_service/setups.py` — Removed `_is_price_near_ob()` gate from Setup A/B. Bot now places limit orders at OB entry and waits for fill (zone-based). `_find_best_ob()` selects by volume ratio + recency. Added `_is_ob_within_range()` (5% max distance). Setup B OB+FVG selection uses same quality-based ranking.
+- `config/settings.py` — Added `OB_MAX_DISTANCE_PCT` (5%), `ENTRY_TIMEOUT_QUICK_SECONDS` (1h). Changed `ENTRY_TIMEOUT_SECONDS` default 15min→4h. Changed `REQUIRE_HTF_LTF_ALIGNMENT` default True→False. Aggressive profile adds `OB_MAX_DISTANCE_PCT: 0.08`, `ENTRY_TIMEOUT_SECONDS: 21600`.
+- `main.py` — Removed HTF bias direction hard gate from `_pre_filter_for_claude()`. Increased `_SETUP_DEDUP_TTL_SECONDS` 15min→1h.
+- `execution_service/monitor.py` — Entry timeout now per-setup-type: swing (A/B) uses `ENTRY_TIMEOUT_SECONDS`, quick (C/D/E) uses `ENTRY_TIMEOUT_QUICK_SECONDS`.
+- `ai_service/prompt_builder.py` — Updated Claude prompt: HTF bias is context not guarantee, counter-trend setups allowed, HTF label shows "aligned" or "COUNTER-TREND" honestly.
+- Tests: Added zone-based OB tests, bidirectional trading tests, per-setup-type timeout tests. Updated pre-filter tests for bidirectional behavior.
+
 ## [2026-03-06] — Dynamic capital from exchange + FIXED_TRADE_MARGIN sizing
 **Qué cambió:**
 - `config/settings.py` — Added `INITIAL_CAPITAL` env var (fallback if balance fetch fails). Renamed `SANDBOX_MARGIN_PER_TRADE` → `FIXED_TRADE_MARGIN` (works in both sandbox and live when > 0, set 0 for risk-based sizing).

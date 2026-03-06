@@ -129,9 +129,12 @@ class PositionMonitor:
         """Check if entry order filled or timed out."""
         now = int(time.time())
 
-        # Timeout check
-        if now - pos.created_at >= settings.ENTRY_TIMEOUT_SECONDS:
-            logger.info(f"Entry timeout: {pos.pair} after {settings.ENTRY_TIMEOUT_SECONDS}s")
+        # Timeout check — quick setups get shorter timeout
+        timeout = (settings.ENTRY_TIMEOUT_QUICK_SECONDS
+                   if pos.setup_type in QUICK_SETUP_TYPES
+                   else settings.ENTRY_TIMEOUT_SECONDS)
+        if now - pos.created_at >= timeout:
+            logger.info(f"Entry timeout: {pos.pair} after {timeout}s")
             if pos.entry_order_id:
                 await self._executor.cancel_order(pos.entry_order_id, pos.pair)
             self._close_position(pos, "cancelled")
