@@ -8,6 +8,80 @@ A personal automated trading system that uses Smart Money Concepts (SMC) to dete
 If any layer says NO, the trade does NOT execute.
 
 ---
+
+## How a Trade Opens (Simple Version)
+
+The bot watches 5m and 15m candles on BTC and ETH. When a candle closes, it passes through 5 filters in sequence — if any one says NO, the trade does not execute.
+
+### 1. Strategy detects an SMC pattern
+
+The bot looks for 2 types of setup:
+
+**Setup A (primary) — Liquidity Sweep + CHoCH + Order Block:**
+- Price sweeps retail stops (liquidity sweep)
+- Then reverses direction (CHoCH)
+- And retraces to a fresh Order Block (zone where institutions bought/sold)
+- Entry: 50% of the OB body
+
+**Setup B — BOS + FVG + Order Block:**
+- Price breaks structure (BOS) confirming the trend
+- Leaves a gap (FVG) inside or near an OB
+- Entry: 50% of the FVG or OB
+
+**Mandatory rules:**
+- Minimum 2 confluences (OB alone = no trade)
+- Long only in discount (below 50% of the range)
+- Short only in premium (above 50%)
+- 4H/1H trend must align with trade direction
+
+### 2. Pre-filter (free, no Claude)
+
+3 instant checks that catch ~90% of bad trades:
+- HTF bias against direction → reject (long + bearish trend = no)
+- Extreme funding rate against direction → reject
+- Strong CVD (volume) divergence → reject
+
+### 3. Claude evaluates the context
+
+Claude receives the setup + market data (funding, CVD, liquidations, whales, OI) and decides if the context supports the trade. It does not see the chart pattern — it evaluates whether conditions are favorable to execute now.
+
+Requires: confidence >= 0.50 (aggressive) or 0.60 (default) + approved=true
+
+### 4. Risk Service checks guardrails
+
+- No more than 3 open positions
+- Daily drawdown < 5%
+- Weekly drawdown < 10%
+- 15min cooldown after a loss
+- Minimum R:R 1.2:1
+- Calculates size: (capital x 2%) / distance to SL
+
+### 5. Execution places orders
+
+- Entry: limit order at the OB price
+- SL: stop-market (guaranteed fill on crash)
+- TP1: 50% of position at 1:1 R:R → SL moves to breakeven
+- TP2: 30% at 2:1 R:R → SL moves to TP1
+- TP3: remaining 20% at the next liquidity level
+
+### The ideal setup
+
+A perfect long looks like this:
+
+1. ETH drops, sweeps the lows (liquidity sweep) — retailers get liquidated
+2. Immediately reverses and breaks opposite structure (bullish CHoCH)
+3. Leaves a fresh OB in the discount zone with 2x+ average volume
+4. Price retraces to 50% of the OB — this is where the bot enters
+5. Funding rate is negative (shorts overcrowded = fuel to go up)
+6. CVD is positive (buyers dominating)
+7. Whales withdrawing from exchanges (accumulating)
+8. Claude says "yes, everything aligns" with 70%+ confidence
+9. Risk approves: there is capital, no drawdown, R:R is good
+10. Limit order at 50% of OB, SL below OB, scaled TPs above
+
+**In short:** institutions hunt stops → confirmed reversal → bot enters where institutions entered → Claude validates macro is not against it → risk controls the size.
+
+---
 ## Language Rule
 ALL code, comments, variable names, docstrings, commit messages, and log messages MUST be in English. No exceptions. The docs/context/ files can be in Spanish (they are for the user). Agent instructions are in Spanish but all output code is in English.
 

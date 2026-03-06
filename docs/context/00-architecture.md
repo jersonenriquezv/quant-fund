@@ -75,7 +75,7 @@ Sin esta arquitectura, tendríamos un solo programa gigante donde todo está mez
 
 **Regla clave:** Si CUALQUIER servicio dice NO, el trade se descarta. No hay "pero" ni "tal vez".
 
-**Notificaciones Telegram:** En cada paso del pipeline (setup detectado, AI pre-filtered, AI decision, risk rejection, trade abierto/cerrado, emergencias, whale movements con nombre de wallet, resumen de OBs cada 4H), el bot envía push notification al celular via Telegram Bot API. Fire-and-forget — si Telegram falla, el bot sigue operando.
+**Notificaciones Telegram:** En cada paso del pipeline (setup detectado, AI pre-filtered, AI decision, risk rejection, trade abierto/cerrado, emergencias, whale exchange deposits/withdrawals con USD y nombre de wallet, resumen de OBs cada 4H), el bot envía push notification al celular via Telegram Bot API. Whale transfers neutrales (transfer_in/transfer_out) se loguean pero no generan notificación. Fire-and-forget — si Telegram falla, el bot sigue operando.
 
 ## Detalles técnicos
 
@@ -149,7 +149,7 @@ docker compose build --no-cache  # Rebuild después de cambios en código
 | 3. AI Service | Implementado | 41 | `ai_service/service.py` |
 | 4. Risk Service | Implementado | 72 | `risk_service/service.py` |
 | 5. Execution Service | Implementado + auditoría | 32 | `execution_service/service.py` |
-| **Total** | **5/5 completas** | **303** | `main.py` (pipeline completo) |
+| **Total** | **5/5 completas** | **356** | `main.py` (pipeline completo) |
 
 ## Roadmap v2
 

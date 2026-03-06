@@ -2,9 +2,13 @@
 
 Mocks all 5 services to test the on_candle_confirmed callback
 and _pre_filter_for_claude / _evaluate_with_claude logic.
+
+Note: main.py import triggers logger file creation (owned by Docker/root).
+We patch setup_logger before importing to avoid PermissionError.
 """
 
 import time
+import sys
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -12,7 +16,24 @@ from shared.models import (
     Candle, TradeSetup, AIDecision, RiskApproval,
     MarketSnapshot, FundingRate, CVDSnapshot,
 )
-import main
+
+
+# Patch setup_logger to return a no-op logger before importing main.
+# This avoids loguru trying to open root-owned log files in tests.
+def _noop_logger(name=""):
+    from loguru import logger
+    return logger
+
+
+# Remove main from cache if previously imported, then import with patched logger
+if "main" in sys.modules:
+    del sys.modules["main"]
+
+with patch("shared.logger.setup_logger", side_effect=_noop_logger):
+    # Need to reload notifier too since it calls setup_logger at module level
+    if "shared.notifier" in sys.modules:
+        del sys.modules["shared.notifier"]
+    import main
 
 
 # ============================================================
@@ -133,9 +154,9 @@ def _wire_services(
 
 class TestPipelineHappyPath:
 
-    @pytest.mark.asyncio
-    async def test_setup_approved_and_executed(self):
+    def test_setup_approved_and_executed(self):
         """Full pipeline: setup → AI approves → risk approves → executed."""
+        import asyncio
         setup = _make_setup()
         decision = AIDecision(
             confidence=0.80, approved=True,
@@ -149,18 +170,18 @@ class TestPipelineHappyPath:
             setup=setup, decision=decision, approval=approval,
         )
 
-        await main.on_candle_confirmed(_make_candle())
+        asyncio.run(main.on_candle_confirmed(_make_candle()))
 
         ai.evaluate.assert_called_once()
         risk.check.assert_called_once_with(setup)
         execution.execute.assert_called_once()
 
-    @pytest.mark.asyncio
-    async def test_no_setup_detected_stops_early(self):
+    def test_no_setup_detected_stops_early(self):
         """No setup → pipeline stops after strategy."""
+        import asyncio
         _, _, ai, risk, execution, _ = _wire_services(setup=None)
 
-        await main.on_candle_confirmed(_make_candle())
+        asyncio.run(main.on_candle_confirmed(_make_candle()))
 
         ai.evaluate.assert_not_called()
         risk.check.assert_not_called()
@@ -173,9 +194,9 @@ class TestPipelineHappyPath:
 
 class TestAIRejection:
 
-    @pytest.mark.asyncio
-    async def test_ai_rejects_stops_pipeline(self):
+    def test_ai_rejects_stops_pipeline(self):
         """AI rejects setup → risk and execution never called."""
+        import asyncio
         setup = _make_setup()
         decision = AIDecision(
             confidence=0.40, approved=False,
@@ -185,7 +206,7 @@ class TestAIRejection:
             setup=setup, decision=decision,
         )
 
-        await main.on_candle_confirmed(_make_candle())
+        asyncio.run(main.on_candle_confirmed(_make_candle()))
 
         risk.check.assert_not_called()
         execution.execute.assert_not_called()
@@ -197,9 +218,9 @@ class TestAIRejection:
 
 class TestRiskRejection:
 
-    @pytest.mark.asyncio
-    async def test_risk_rejects_stops_execution(self):
+    def test_risk_rejects_stops_execution(self):
         """Risk rejects → execution never called."""
+        import asyncio
         setup = _make_setup()
         decision = AIDecision(
             confidence=0.80, approved=True,
@@ -213,7 +234,7 @@ class TestRiskRejection:
             setup=setup, decision=decision, approval=approval,
         )
 
-        await main.on_candle_confirmed(_make_candle())
+        asyncio.run(main.on_candle_confirmed(_make_candle()))
 
         execution.execute.assert_not_called()
 
@@ -297,9 +318,9 @@ class TestPreFilter:
 
 class TestDedupCache:
 
-    @pytest.mark.asyncio
-    async def test_dedup_blocks_duplicate_setup(self):
+    def test_dedup_blocks_duplicate_setup(self):
         """Same setup within TTL should not be sent to Claude twice."""
+        import asyncio
         setup = _make_setup()
         decision = AIDecision(
             confidence=0.80, approved=True,
@@ -314,8 +335,8 @@ class TestDedupCache:
         )
 
         candle = _make_candle()
-        await main.on_candle_confirmed(candle)
-        await main.on_candle_confirmed(candle)
+        asyncio.run(main.on_candle_confirmed(candle))
+        asyncio.run(main.on_candle_confirmed(candle))
 
         # Claude should only be called once — second call is deduped
         assert ai.evaluate.call_count == 1

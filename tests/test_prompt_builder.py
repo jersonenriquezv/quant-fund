@@ -180,8 +180,10 @@ class TestEvaluationPrompt:
         snapshot = _make_snapshot(whales=whales)
         prompt = builder.build_evaluation_prompt(setup, snapshot, {})
 
-        assert "150.0 ETH" in prompt
+        assert "150.00 ETH" in prompt
         assert "Binance" in prompt
+        assert "exchange_deposit" not in prompt  # Should use human-readable label
+        assert "deposited to" in prompt
 
     def test_extreme_funding_flagged(self, builder):
         setup = _make_setup()

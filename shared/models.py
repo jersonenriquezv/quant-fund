@@ -94,6 +94,8 @@ class WhaleMovement:
     significance: str       # "high" or "medium"
     chain: str              # "ETH" or "BTC"
     wallet_label: str = ""  # Human-readable label ("Vitalik Buterin", "Galaxy Digital")
+    amount_usd: float = 0.0    # USD value at time of detection
+    market_price: float = 0.0  # Asset price (USD) when movement was detected
 
 
 @dataclass

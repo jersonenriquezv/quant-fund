@@ -190,6 +190,43 @@ class TestFiltering:
         assert len(client.get_recent_movements()) == 0
 
 
+class TestUSDEnrichment:
+
+    def test_price_provider_computes_usd(self):
+        """With a price provider, movements should have amount_usd and market_price."""
+        with patch("data_service.btc_whale_client.settings") as mock_settings:
+            mock_settings.BTC_WHALE_WALLETS = {WHALE_WALLET: WHALE_LABEL}
+            mock_settings.BTC_EXCHANGE_ADDRESSES = {EXCHANGE_ADDR: EXCHANGE_NAME}
+            mock_settings.WHALE_MIN_BTC = 10.0
+            mock_settings.WHALE_HIGH_BTC = 100.0
+            mock_settings.MEMPOOL_CHECK_INTERVAL = 300
+            client = BtcWhaleClient(price_provider=lambda: 70000.0)
+
+        tx = _make_tx(
+            inputs=[(WHALE_WALLET, 50_0000_0000)],  # 50 BTC
+            outputs=[(EXCHANGE_ADDR, 50_0000_0000)],
+            block_time=int(time.time()),
+        )
+        client._process_transaction(WHALE_WALLET, tx)
+
+        m = client.get_recent_movements()[0]
+        assert m.market_price == 70000.0
+        assert m.amount_usd == pytest.approx(50 * 70000.0, rel=1e-2)
+
+    def test_no_price_provider_zero_usd(self, client):
+        """Without a price provider, amount_usd and market_price should be 0."""
+        tx = _make_tx(
+            inputs=[(WHALE_WALLET, 50_0000_0000)],
+            outputs=[(EXCHANGE_ADDR, 50_0000_0000)],
+            block_time=int(time.time()),
+        )
+        client._process_transaction(WHALE_WALLET, tx)
+
+        m = client.get_recent_movements()[0]
+        assert m.market_price == 0.0
+        assert m.amount_usd == 0.0
+
+
 class TestSerialization:
 
     def test_serialize_includes_label(self, client):
@@ -205,3 +242,16 @@ class TestSerialization:
         assert len(records) == 1
         assert records[0]["label"] == WHALE_LABEL
         assert records[0]["chain"] == "BTC"
+
+    def test_serialize_includes_usd_fields(self, client):
+        """serialize_movements() should include amount_usd and market_price."""
+        tx = _make_tx(
+            inputs=[(WHALE_WALLET, 50_0000_0000)],
+            outputs=[(EXCHANGE_ADDR, 50_0000_0000)],
+            block_time=int(time.time()),
+        )
+        client._process_transaction(WHALE_WALLET, tx)
+
+        records = client.serialize_movements()
+        assert "amount_usd" in records[0]
+        assert "market_price" in records[0]

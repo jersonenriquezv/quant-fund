@@ -274,7 +274,7 @@ class PromptBuilder:
     def _build_whale_section(self, snapshot: MarketSnapshot) -> str:
         whales = snapshot.whale_movements
         if not whales:
-            return "## Whale Activity\nNo significant whale activity"
+            return "## Whale Activity\nNo significant whale movements in last 24h"
 
         _ACTION_LABELS = {
             "exchange_deposit": "deposited to",
@@ -282,13 +282,50 @@ class PromptBuilder:
             "transfer_out": "transferred out to",
             "transfer_in": "received from",
         }
-        lines = ["## Whale Activity"]
-        for w in whales:
-            action = _ACTION_LABELS.get(w.action, w.action)
-            lines.append(
-                f"- {w.amount:.1f} {w.chain} {action} {w.exchange} "
-                f"(significance: {w.significance})"
-            )
+
+        lines = ["## Whale Activity (last 24h)"]
+
+        # Net flow summary — exchange deposits vs withdrawals
+        deposit_usd = sum(w.amount_usd for w in whales if w.action == "exchange_deposit")
+        withdrawal_usd = sum(w.amount_usd for w in whales if w.action == "exchange_withdrawal")
+        if deposit_usd > 0 or withdrawal_usd > 0:
+            net = withdrawal_usd - deposit_usd
+            direction = "net withdrawal (bullish — accumulation)" if net > 0 else "net deposit (bearish — selling pressure)"
+            lines.append(f"- Net exchange flow: ${abs(net):,.0f} {direction}")
+            lines.append(f"  Deposited: ${deposit_usd:,.0f} | Withdrawn: ${withdrawal_usd:,.0f}")
+
+        # Count by type
+        n_deposits = sum(1 for w in whales if w.action == "exchange_deposit")
+        n_withdrawals = sum(1 for w in whales if w.action == "exchange_withdrawal")
+        n_transfers = sum(1 for w in whales if w.action in ("transfer_out", "transfer_in"))
+        lines.append(f"- Movements: {n_deposits} deposits, {n_withdrawals} withdrawals, {n_transfers} transfers")
+
+        # Individual movements (exchange movements first, then transfers)
+        exchange_moves = [w for w in whales if w.action in ("exchange_deposit", "exchange_withdrawal")]
+        other_moves = [w for w in whales if w.action not in ("exchange_deposit", "exchange_withdrawal")]
+
+        if exchange_moves:
+            lines.append("Exchange movements:")
+            for w in exchange_moves:
+                action = _ACTION_LABELS.get(w.action, w.action)
+                label = w.wallet_label or (w.wallet[:8] + "...")
+                usd_part = f" (${w.amount_usd:,.0f})" if w.amount_usd > 0 else ""
+                lines.append(
+                    f"  [{w.significance.upper()}] {label}: "
+                    f"{w.amount:.2f} {w.chain}{usd_part} {action} {w.exchange}"
+                )
+
+        if other_moves:
+            lines.append("Other transfers:")
+            for w in other_moves:
+                action = _ACTION_LABELS.get(w.action, w.action)
+                label = w.wallet_label or (w.wallet[:8] + "...")
+                usd_part = f" (${w.amount_usd:,.0f})" if w.amount_usd > 0 else ""
+                lines.append(
+                    f"  [{w.significance.upper()}] {label}: "
+                    f"{w.amount:.2f} {w.chain}{usd_part} {action} {w.exchange}"
+                )
+
         return "\n".join(lines)
 
     def _build_price_context_section(self, candles_context: dict) -> str:

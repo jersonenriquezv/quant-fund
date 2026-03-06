@@ -22,6 +22,7 @@ from strategy_service.order_blocks import OrderBlock, OrderBlockDetector
 from strategy_service.fvg import FVGDetector
 from strategy_service.liquidity import LiquidityAnalyzer
 from strategy_service.setups import SetupEvaluator
+from strategy_service.quick_setups import QuickSetupEvaluator
 
 logger = setup_logger("strategy_service")
 
@@ -49,9 +50,13 @@ class StrategyService:
         self._fvg = FVGDetector()
         self._liquidity = LiquidityAnalyzer()
         self._setups = SetupEvaluator()
+        self._quick_setups = QuickSetupEvaluator()
 
         # Cached HTF bias per pair (updated on every evaluate call)
         self._cached_htf_bias: dict[str, str] = {}
+
+        # Quick setup cooldown: (pair, setup_type) → last trigger timestamp
+        self._quick_setup_last: dict[tuple[str, str], float] = {}
 
     def evaluate(self, pair: str,
                  trigger_candle: Candle) -> Optional[TradeSetup]:
@@ -199,7 +204,74 @@ class StrategyService:
                 )
                 return setup
 
+        # ============================================================
+        # Step 5: Quick setups (C, D, E) — only if no swing setup found
+        # ============================================================
+        quick_setup = self._evaluate_quick_setups(
+            pair, htf_bias, candles_5m, market_snapshot, pd_zone,
+        )
+        if quick_setup is not None:
+            return quick_setup
+
         return None
+
+    def _evaluate_quick_setups(
+        self,
+        pair: str,
+        htf_bias: str,
+        candles_5m: list[Candle],
+        market_snapshot,
+        pd_zone,
+    ) -> Optional[TradeSetup]:
+        """Try quick setups C → D → E in order. Respects per-type cooldown."""
+        if not candles_5m:
+            return None
+
+        current_price = candles_5m[-1].close
+        now = time.time()
+
+        # Setup C — Funding Squeeze
+        if not self._is_quick_cooldown_active(pair, "setup_c", now):
+            setup = self._quick_setups.evaluate_setup_c(
+                pair, htf_bias, market_snapshot, current_price, candles_5m,
+            )
+            if setup is not None:
+                self._quick_setup_last[(pair, "setup_c")] = now
+                return setup
+
+        # Setup D — LTF Structure Scalp (5m only)
+        if not self._is_quick_cooldown_active(pair, "setup_d", now):
+            state_5m = self._market_structure.get_state(pair, "5m")
+            if state_5m is not None:
+                active_obs_5m = self._order_blocks.get_active_obs(pair, "5m")
+                setup = self._quick_setups.evaluate_setup_d(
+                    pair, htf_bias, state_5m, active_obs_5m, pd_zone, candles_5m,
+                )
+                if setup is not None:
+                    self._quick_setup_last[(pair, "setup_d")] = now
+                    return setup
+
+        # Setup E — Cascade Reversal
+        if not self._is_quick_cooldown_active(pair, "setup_e", now):
+            active_obs_5m = self._order_blocks.get_active_obs(pair, "5m")
+            setup = self._quick_setups.evaluate_setup_e(
+                pair, htf_bias, market_snapshot, active_obs_5m, candles_5m,
+                current_price,
+            )
+            if setup is not None:
+                self._quick_setup_last[(pair, "setup_e")] = now
+                return setup
+
+        return None
+
+    def _is_quick_cooldown_active(
+        self, pair: str, setup_type: str, now: float,
+    ) -> bool:
+        """Check if cooldown is active for a quick setup type on a pair."""
+        last = self._quick_setup_last.get((pair, setup_type))
+        if last is None:
+            return False
+        return (now - last) < settings.QUICK_SETUP_COOLDOWN
 
     def get_active_order_blocks(self, pair: str) -> list[OrderBlock]:
         """Get all active OBs for a pair across LTF timeframes."""

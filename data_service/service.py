@@ -60,8 +60,8 @@ class DataService:
         self._ws_feed = OKXWebSocketFeed(on_candle_confirmed=self._on_candle)
         self._cvd = CVDCalculator()
         self._oi_proxy = OILiquidationProxy()
-        self._etherscan = EtherscanClient()
-        self._btc_whale = BtcWhaleClient()
+        self._etherscan = EtherscanClient(price_provider=self._get_eth_price)
+        self._btc_whale = BtcWhaleClient(price_provider=self._get_btc_price)
         self._redis = RedisStore()
         self._postgres = PostgresStore()
 
@@ -137,6 +137,20 @@ class DataService:
             recent_liquidations=self._oi_proxy.get_recent_liquidations(pair, minutes=60),
             whale_movements=self.get_whale_movements(hours=24),
         )
+
+    # ================================================================
+    # Price providers for whale USD conversion
+    # ================================================================
+
+    def _get_eth_price(self) -> float:
+        """Return latest ETH/USDT price from candle data."""
+        candle = self._ws_feed.get_latest_candle("ETH/USDT", "5m")
+        return candle.close if candle else 0.0
+
+    def _get_btc_price(self) -> float:
+        """Return latest BTC/USDT price from candle data."""
+        candle = self._ws_feed.get_latest_candle("BTC/USDT", "5m")
+        return candle.close if candle else 0.0
 
     # ================================================================
     # Health check
@@ -376,11 +390,18 @@ class DataService:
             await asyncio.sleep(settings.MEMPOOL_CHECK_INTERVAL)
 
     async def _notify_new_movements(self, movements: list, before_ids: set) -> None:
-        """Send Telegram alert for each new whale movement detected this cycle."""
+        """Send Telegram alert for new whale movements with tiering.
+
+        Tier 1 (always notify): Exchange deposits/withdrawals (actionable signals)
+        Tier 2 (log only): Non-exchange transfers (informational, too noisy for Telegram)
+        """
         if self._notifier is None:
             return
         new_movements = [m for m in movements if id(m) not in before_ids]
         for m in new_movements:
+            # Only send Telegram for exchange-related movements
+            if m.action not in ("exchange_deposit", "exchange_withdrawal"):
+                continue
             try:
                 await self._notifier.notify_whale_movement(m)
             except Exception as e:

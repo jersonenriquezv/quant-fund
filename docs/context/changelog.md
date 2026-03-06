@@ -1,5 +1,29 @@
 # Changelog — One-Man Quant Fund
 
+## [2026-03-06] — Whale monitoring overhaul: USD enrichment, smart notifications, richer Claude prompt
+**Qué cambió:**
+- `shared/models.py` — WhaleMovement gains `amount_usd` and `market_price` fields (default 0.0 for backwards compat)
+- `data_service/etherscan_client.py` + `btc_whale_client.py` — Accept `price_provider` callback; compute USD at detection time
+- `data_service/service.py` — Passes price providers (`_get_eth_price`/`_get_btc_price` from latest 5m candle) to whale clients. Notification tiering: only exchange deposits/withdrawals go to Telegram, neutral transfers logged only.
+- `ai_service/prompt_builder.py` — Whale section rewritten: net exchange flow summary (deposit vs withdrawal with bullish/bearish label), USD values, wallet labels, grouped by type
+- `shared/notifier.py` — Whale Telegram notification shows USD value prominently, header says DEPOSIT/WITHDRAWAL
+- `config/settings.py` — Added Coinbase (3 addresses) and Gemini (1 address) to `BTC_EXCHANGE_ADDRESSES`
+- `tests/test_btc_whale_client.py` — 3 new tests: price_provider USD enrichment, no-provider zero USD, serialize includes USD fields
+- `tests/test_prompt_builder.py` — Updated whale assertion to match new format
+
+## [2026-03-06] — Quick Setups C, D, E: data-driven trades with 4h max duration
+**Qué cambió:**
+- **NEW** `strategy_service/quick_setups.py` — `QuickSetupEvaluator` con 3 nuevos tipos de setup:
+  - Setup C (Funding Squeeze): funding extremo + CVD alignment → momentum entry
+  - Setup D (LTF Structure Scalp): CHoCH/BOS en 5m + OB, sin sweep/FVG necesario
+  - Setup E (Cascade Reversal): liquidation cascade + CVD reversal → catch the bounce
+- `config/settings.py` — Nuevos settings: `QUICK_SETUP_TYPES`, `MIN_RISK_REWARD_QUICK` (1.0), `MAX_TRADE_DURATION_QUICK` (4h), `QUICK_SETUP_COOLDOWN` (1h), thresholds para C/E. Aggressive profile con cooldown reducido.
+- `strategy_service/service.py` — Quick setups evaluados después de A/B. Cooldown tracking per (pair, setup_type).
+- `main.py` — Quick setups skip Claude AI filter (synthetic `AIDecision`). Setup C skip funding pre-filter. Risk check sigue aplicando.
+- `risk_service/guardrails.py` — `check_rr_ratio()` usa `MIN_RISK_REWARD_QUICK` para quick setups.
+- `execution_service/monitor.py` — Timeout usa `MAX_TRADE_DURATION_QUICK` (4h) para quick setups.
+- **NEW** `tests/test_quick_setups.py` — 25 tests: C/D/E validación, rejections, cooldown, R:R quick vs swing.
+
 ## [2026-03-06] — Dead code cleanup: binance_liq removed, DB indexes, scalping refs cleaned
 **Qué cambió:**
 - `data_service/binance_liq.py` — Eliminado (geo-blocked desde Canada, reemplazado por OI proxy).

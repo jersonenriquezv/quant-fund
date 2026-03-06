@@ -16,9 +16,9 @@ import signal
 import sys
 import time
 
-from config.settings import settings, STRATEGY_PROFILES, apply_profile, reset_profile
+from config.settings import settings, STRATEGY_PROFILES, QUICK_SETUP_TYPES, apply_profile, reset_profile
 from shared.logger import setup_logger
-from shared.models import Candle
+from shared.models import Candle, AIDecision
 from data_service.service import DataService
 from strategy_service import StrategyService
 from ai_service import AIService
@@ -134,9 +134,19 @@ async def on_candle_confirmed(candle: Candle) -> None:
     if _notifier is not None:
         await _notifier.notify_setup_detected(setup)
 
-    # Layer 3: AI Service — Claude filter (every trade, every profile)
+    # Layer 3: AI Service — Claude filter
+    # Quick setups (C/D/E) bypass Claude — the data IS the signal
     decision = None
-    if _ai_service is not None and _data_service is not None:
+    if setup.setup_type in QUICK_SETUP_TYPES:
+        decision = AIDecision(
+            confidence=1.0,
+            approved=True,
+            reasoning=f"Data-driven quick setup ({setup.setup_type}) — AI bypass",
+            adjustments={},
+            warnings=[],
+        )
+        logger.info(f"AI bypass: {setup.setup_type} — data-driven quick setup")
+    elif _ai_service is not None and _data_service is not None:
         decision = await _evaluate_with_claude(setup, candle)
         if decision is None:
             return  # pre-filter rejected or Claude failed
@@ -245,6 +255,8 @@ def _pre_filter_for_claude(setup, snapshot) -> str | None:
 
     Returns rejection reason string if setup should be rejected, None if it should
     proceed to Claude. Conservative: skips checks when data is unavailable.
+
+    Setup C skips funding check (extreme funding IS the signal).
     """
     # Check 0: HTF bias conflicts with trade direction
     # This catches 90%+ of Claude rejections — free and deterministic.
@@ -258,12 +270,14 @@ def _pre_filter_for_claude(setup, snapshot) -> str | None:
     threshold = settings.FUNDING_EXTREME_THRESHOLD
 
     # Check 1: Funding rate extreme against trade direction
-    if snapshot.funding is not None and snapshot.funding.rate is not None:
-        rate = snapshot.funding.rate
-        if setup.direction == "long" and rate > threshold:
-            return f"Funding extreme against long ({rate*100:.4f}% > {threshold*100:.4f}%)"
-        if setup.direction == "short" and rate < -threshold:
-            return f"Funding extreme against short ({rate*100:.4f}% < -{threshold*100:.4f}%)"
+    # Skip for Setup C — extreme funding IS the signal
+    if setup.setup_type != "setup_c":
+        if snapshot.funding is not None and snapshot.funding.rate is not None:
+            rate = snapshot.funding.rate
+            if setup.direction == "long" and rate > threshold:
+                return f"Funding extreme against long ({rate*100:.4f}% > {threshold*100:.4f}%)"
+            if setup.direction == "short" and rate < -threshold:
+                return f"Funding extreme against short ({rate*100:.4f}% < -{threshold*100:.4f}%)"
 
     # Check 2: CVD strong divergence against trade direction
     if snapshot.cvd is not None:

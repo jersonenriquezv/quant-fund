@@ -5,7 +5,7 @@ No state. Each method takes the values it needs and returns a verdict.
 All thresholds come from config.settings.
 """
 
-from config.settings import settings
+from config.settings import settings, QUICK_SETUP_TYPES
 from shared.models import TradeSetup
 
 
@@ -13,7 +13,11 @@ class Guardrails:
     """Non-negotiable risk checks. If any fails, the trade does NOT execute."""
 
     def check_rr_ratio(self, setup: TradeSetup) -> tuple[bool, str]:
-        """Check that TP2 reward/risk >= MIN_RISK_REWARD (1.5)."""
+        """Check that TP2 reward/risk >= minimum R:R.
+
+        Uses MIN_RISK_REWARD_QUICK (1.0) for quick setups (C/D/E),
+        MIN_RISK_REWARD (1.5) for swing setups (A/B).
+        """
         risk = abs(setup.entry_price - setup.sl_price)
         if risk == 0:
             return False, "Risk is zero (entry == SL)"
@@ -21,8 +25,12 @@ class Guardrails:
         reward = abs(setup.tp2_price - setup.entry_price)
         rr = reward / risk
 
-        if rr < settings.MIN_RISK_REWARD:
-            return False, f"R:R {rr:.2f} below minimum {settings.MIN_RISK_REWARD}"
+        min_rr = (settings.MIN_RISK_REWARD_QUICK
+                  if setup.setup_type in QUICK_SETUP_TYPES
+                  else settings.MIN_RISK_REWARD)
+
+        if rr < min_rr:
+            return False, f"R:R {rr:.2f} below minimum {min_rr}"
         return True, f"R:R {rr:.2f} OK"
 
     def check_cooldown(

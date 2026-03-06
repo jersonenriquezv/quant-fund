@@ -1,6 +1,6 @@
 # Data Service
-> Last updated: 2026-03-05
-> Status: implemented (complete, running in Docker). Audited — 4 CRITICAL fixes applied. Whale tracking expanded to all large movements. Whale notifications enriched with wallet labels.
+> Last updated: 2026-03-06
+> Status: implemented (complete, running in Docker). Audited — 4 CRITICAL fixes applied. Whale tracking with USD enrichment, tiered Telegram notifications, Coinbase/Gemini BTC exchange addresses.
 
 ## What it does (30 seconds)
 The Data Service is the bot's eyes and ears. It connects to OKX 24/7, collecting price data (candles), trade flow (CVD), market indicators (funding rate, open interest), liquidation cascades (via OI proxy), and whale movements. Every other service gets clean, validated, typed data through here.
@@ -48,7 +48,7 @@ All 5 layers run in the same Python process. The Data Service exposes methods th
 - **OpenInterest** — in contracts, base currency, and USD
 - **CVDSnapshot** — cumulative volume delta for 5m, 15m, 1h windows + buy/sell volume
 - **LiquidationEvent** — from OI proxy (OI drop >2% = cascade), with side and size_usd
-- **WhaleMovement** — Whale transfers (ETH via Etherscan, BTC via mempool.space). 4 action types: `exchange_deposit` (bearish), `exchange_withdrawal` (bullish), `transfer_out` (neutral), `transfer_in` (neutral). Fields: `amount` (ETH or BTC), `chain` ("ETH" or "BTC"), `exchange` (exchange name or truncated address), `wallet_label` (human-readable name from settings, e.g., "Vitalik Buterin")
+- **WhaleMovement** — Whale transfers (ETH via Etherscan, BTC via mempool.space). 4 action types: `exchange_deposit` (bearish), `exchange_withdrawal` (bullish), `transfer_out` (neutral), `transfer_in` (neutral). Fields: `amount` (ETH or BTC), `chain` ("ETH" or "BTC"), `exchange` (exchange name or truncated address), `wallet_label` (human-readable name from settings, e.g., "Vitalik Buterin"), `amount_usd` (USD value at detection time), `market_price` (asset price in USD when detected). USD fields default to 0.0 if price provider unavailable.
 - **MarketSnapshot** — wraps funding, OI, CVD, liquidations, whales for a pair
 - **TradeSetup** — detected setup from Strategy Service
 - **AIDecision** — Claude's evaluation with confidence score
@@ -108,6 +108,7 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 
 ### `data_service/etherscan_client.py` — ETH Whale Wallet Monitor
 - Polls configured wallets every `ETHERSCAN_CHECK_INTERVAL` seconds (default 300)
+- Constructor accepts `price_provider` callback (returns current ETH price in USD) for USD enrichment
 - Detects ALL large transfers from monitored wallets (not just exchange transfers)
 - Whale → exchange = `exchange_deposit` (bearish signal)
 - Exchange → whale = `exchange_withdrawal` (bullish signal)
@@ -115,10 +116,11 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Non-exchange → whale = `transfer_in` (neutral, `exchange` = truncated address)
 - Significance: >100 ETH = "high", >10 ETH = "medium", <10 ETH ignored
 - Rate limit enforced: max 4.5 calls/sec (safely under Etherscan's 5/sec)
-- Creates `WhaleMovement(chain="ETH", wallet_label=label)` — label from `WHALE_WALLETS` dict
+- Creates `WhaleMovement(chain="ETH", wallet_label=label, amount_usd=..., market_price=...)` — USD computed at detection time
 
 ### `data_service/btc_whale_client.py` — BTC Whale Wallet Monitor
 - Polls configured wallets every `MEMPOOL_CHECK_INTERVAL` seconds (default 300)
+- Constructor accepts `price_provider` callback (returns current BTC price in USD) for USD enrichment
 - API: `https://mempool.space/api/address/{addr}/txs` — no API key needed
 - Parses BTC UTXO model: `vin[].prevout.scriptpubkey_address` (senders) and `vout[].scriptpubkey_address` (recipients)
 - Values in satoshis (÷ 1e8 = BTC)
@@ -129,7 +131,7 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
   - Non-exchange → wallet = `transfer_in` (neutral)
 - Significance: >100 BTC = "high", >10 BTC = "medium", <10 BTC ignored
 - Rate limit: 0.5s between calls (~10 req/min, safe for public instance)
-- Creates `WhaleMovement(chain="BTC", wallet_label=label)` — label from `BTC_WHALE_WALLETS` dict
+- Creates `WhaleMovement(chain="BTC", wallet_label=label, amount_usd=..., market_price=...)` — USD computed at detection time
 
 ### `data_service/data_store.py` — Redis + PostgreSQL
 **Redis (real-time cache):**
@@ -153,6 +155,8 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Health check loop every 30 seconds
 - Uses `asyncio.get_running_loop()` (not deprecated `get_event_loop()`)
 - **Whale notification stability:** Uses `id()` snapshot before polling to detect new movements, preventing index instability if pruning occurs during poll
+- **Price providers:** `_get_eth_price()` and `_get_btc_price()` return latest 5m candle close, passed to whale clients for USD conversion
+- **Whale notification tiering:** Only exchange deposits/withdrawals trigger Telegram notifications. Non-exchange transfers (transfer_in/transfer_out) are logged but not pushed to Telegram (reduces noise)
 
 ### `main.py` — Entry Point
 - Single process, handles SIGINT/SIGTERM for graceful shutdown

@@ -147,6 +147,27 @@ class Settings:
     # Max candles between sweep and CHoCH for Setup A validity
     SETUP_A_MAX_SWEEP_CHOCH_GAP: int = 20
 
+    # ========================
+    # QUICK SETUPS (C, D, E) — Data-driven, shorter duration
+    # ========================
+    # Minimum R:R for quick setups (lower than swing setups)
+    MIN_RISK_REWARD_QUICK: float = 1.0
+    # Max trade duration for quick setups (4 hours in seconds)
+    MAX_TRADE_DURATION_QUICK: int = 14400
+    # Cooldown per (pair, setup_type) for quick setups (1 hour)
+    QUICK_SETUP_COOLDOWN: int = 3600
+
+    # Setup C — Funding Squeeze
+    MOMENTUM_FUNDING_THRESHOLD: float = 0.0003  # Same as FUNDING_EXTREME_THRESHOLD
+    MOMENTUM_CVD_LONG_MIN: float = 0.55          # Buy dominance > 55% for long
+    MOMENTUM_CVD_SHORT_MAX: float = 0.45          # Buy dominance < 45% for short
+    MOMENTUM_SL_PCT: float = 0.005                # 0.5% SL distance
+
+    # Setup E — Cascade Reversal
+    CASCADE_CVD_REVERSAL_LONG: float = 0.50       # Buy dominance > 50% after long cascade
+    CASCADE_CVD_REVERSAL_SHORT: float = 0.50      # Buy dominance < 50% after short cascade
+    CASCADE_MAX_AGE_SECONDS: int = 900            # 15 min — cascade must be recent
+
     # --- Strategy behavior (profile-controlled) ---
     # If True, LTF structure (CHoCH/BOS) must align with HTF bias direction.
     REQUIRE_HTF_LTF_ALIGNMENT: bool = True
@@ -319,6 +340,12 @@ class Settings:
         "34xp4vRoCGJym3xR7yCVPFHoCNxv4Twseo": "Binance",
         "3M219KR5vEneNb47ewrPfWyb5jQ2DjxRP6": "Binance",
         "bc1qm34lsc65zpw79lxes69zkqmk6ee3ewf0j77s3h": "Binance",
+        # Coinbase
+        "3Kzh9qAqVWQhEsfQz7zEQL1EuSx5tyNLNS": "Coinbase",
+        "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh": "Coinbase",
+        "bc1q7e6qu5smalrpgqrx9k2gnf0hgjyref5p36ru2m": "Coinbase",
+        # Gemini
+        "3Bi8Vq4E6dyTpwtp5BoE8NNgUaC5X49zqF": "Gemini",
         # Robinhood
         "bc1ql49ydapnjafl5t2cp9zqpjwe6pdgmxy98859v2": "Robinhood",
         # Bitfinex
@@ -367,6 +394,10 @@ class Settings:
     STRATEGY_PROFILE: str = os.getenv("STRATEGY_PROFILE", "default")
 
 
+# Quick setup type identifiers
+QUICK_SETUP_TYPES = ("setup_c", "setup_d", "setup_e")
+
+
 # ================================================================
 # Profile definitions — parameter overrides per profile
 # ================================================================
@@ -395,6 +426,10 @@ STRATEGY_PROFILES: dict[str, dict] = {
         "MIN_RISK_REWARD": 1.2,               # 1:1.2 (default 1:1.5)
         "SWEEP_MIN_VOLUME_RATIO": 1.5,        # 1.5x (default 2.0x)
         "PD_EQUILIBRIUM_BAND": 0.01,          # 1% (default 2%)
+        # Quick setups — more lenient in aggressive mode
+        "QUICK_SETUP_COOLDOWN": 1800,         # 30 min (default 1h)
+        "MOMENTUM_CVD_LONG_MIN": 0.52,        # 52% (default 55%)
+        "MOMENTUM_CVD_SHORT_MAX": 0.48,       # 48% (default 45%)
     },
 }
 

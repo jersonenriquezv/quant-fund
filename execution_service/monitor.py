@@ -28,7 +28,7 @@ import json
 import time
 from typing import Optional
 
-from config.settings import settings
+from config.settings import settings, QUICK_SETUP_TYPES
 from shared.logger import setup_logger
 from execution_service.models import ManagedPosition
 from execution_service.executor import OrderExecutor
@@ -272,11 +272,14 @@ class PositionMonitor:
         """Check SL and TP order statuses, advance state machine."""
         now = int(time.time())
 
-        # Max duration timeout (12 hours)
+        # Max duration timeout (4h for quick setups, 12h for swing)
+        max_duration = (settings.MAX_TRADE_DURATION_QUICK
+                        if pos.setup_type in QUICK_SETUP_TYPES
+                        else settings.MAX_TRADE_DURATION_SECONDS)
         created = pos.filled_at or pos.created_at
-        if now - created >= settings.MAX_TRADE_DURATION_SECONDS:
+        if now - created >= max_duration:
             logger.info(f"Trade duration timeout: {pos.pair} after "
-                        f"{settings.MAX_TRADE_DURATION_SECONDS}s")
+                        f"{max_duration}s")
             await self._close_all_orders_and_market_close(pos)
             return
 

@@ -1,6 +1,6 @@
 # Strategy Service
-> Última actualización: 2026-03-05
-> Estado: implementado (completo, integrado en main.py). Audited — 3 CRITICAL fixes applied.
+> Última actualización: 2026-03-06
+> Estado: implementado (completo, integrado en main.py). Audited — 3 CRITICAL fixes applied. Quick Setups C/D/E added.
 
 ## Qué hace (30 segundos)
 El Strategy Service es el detective del sistema. Analiza los datos del Data Service buscando patrones de Smart Money Concepts (SMC): rupturas de estructura (BOS/CHoCH), order blocks, fair value gaps, sweeps de liquidez, y zonas premium/discount. Cuando encuentra un setup con suficiente confluencia, genera un `TradeSetup` para evaluación.
@@ -52,10 +52,27 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
 - **Proximidad OB basada en precio** — `OB_PROXIMITY_PCT` (0.3% del precio), no % del body
 - **Validación premium/discount** — equilibrium zone bloquea trades por defecto, configurable via `ALLOW_EQUILIBRIUM_TRADES`
 
+### `strategy_service/quick_setups.py` — Quick Setups (C, D, E)
+Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan cuando no hay swing setup (A/B).
+
+- **Setup C — Funding Squeeze:** Funding rate extremo + CVD buy dominance alineado + HTF bias. Entry: precio actual. SL: 0.5%. TPs: 1:1, 1.5:1, 2:1.
+  - Long: funding < -0.03%, buy dominance > 55%
+  - Short: funding > +0.03%, buy dominance < 45%
+- **Setup D — LTF Structure Scalp:** CHoCH o BOS en 5m + OB fresco cerca del precio. No requiere sweep ni FVG. HTF bias + PD zone alineados. Entry: 50% del OB. TPs: 1:1, 1.5:1, 2:1.
+- **Setup E — Cascade Reversal:** Caída de OI >2% (cascade proxy) + CVD revertiendo. Long después de cascade de longs, short después de cascade de shorts. Usa OB cercano como anchor o precio actual. TPs: 1:1, 1.5:1, 2:1.
+
+**Diferencias clave vs A/B:**
+- Skip Claude AI filter (los datos SON la señal)
+- Setup C skipea funding pre-filter (extreme funding ES el signal)
+- R:R mínimo: 1.0 (vs 1.5 para swing)
+- Timeout: 4h (vs 12h para swing)
+- Cooldown: 1h por (par, tipo) para evitar re-triggering
+
 ### `strategy_service/service.py` — Facade
 - `StrategyService(data_service)` — obtiene candles del DataService
-- `evaluate(pair, candle)` — evalúa LTF candles, retorna `TradeSetup | None`
+- `evaluate(pair, candle)` — evalúa LTF candles: A → B → C → D → E, retorna `TradeSetup | None`
 - Coordina todos los módulos internos
+- Quick setup cooldown tracking per (pair, setup_type)
 
 ### `strategy_service/__init__.py`
 - Exporta `StrategyService`
@@ -68,6 +85,16 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
 - `REQUIRE_PD_ALIGNMENT: bool = True` — premium/discount zone debe alinear con dirección (nunca se desactiva — core SMC)
 - `ALLOW_EQUILIBRIUM_TRADES: bool = False` — permitir trades en zona equilibrium
 - `HTF_BIAS_REQUIRE_4H: bool = True` — si 4H debe definir trend o 1H solo basta (aggressive: False)
+- `MIN_RISK_REWARD_QUICK: float = 1.0` — R:R mínimo para quick setups (C/D/E)
+- `MAX_TRADE_DURATION_QUICK: int = 14400` — timeout 4h para quick setups
+- `QUICK_SETUP_COOLDOWN: int = 3600` — cooldown 1h por (pair, setup_type)
+- `MOMENTUM_FUNDING_THRESHOLD: float = 0.0003` — umbral funding rate para Setup C
+- `MOMENTUM_CVD_LONG_MIN: float = 0.55` — buy dominance mínimo para long (Setup C)
+- `MOMENTUM_CVD_SHORT_MAX: float = 0.45` — buy dominance máximo para short (Setup C)
+- `MOMENTUM_SL_PCT: float = 0.005` — SL distance 0.5% para Setup C
+- `CASCADE_CVD_REVERSAL_LONG: float = 0.50` — buy dominance para reversal long (Setup E)
+- `CASCADE_CVD_REVERSAL_SHORT: float = 0.50` — buy dominance para reversal short (Setup E)
+- `CASCADE_MAX_AGE_SECONDS: int = 900` — cascade debe ser <15min (Setup E)
 
 ## Sistema de perfiles (`STRATEGY_PROFILE`)
 
@@ -81,7 +108,8 @@ El bot soporta 2 perfiles de estrategia, switcheables desde dashboard o env var:
 **Reglas que NUNCA cambian entre perfiles:**
 - PD alignment (long=discount, short=premium) — core SMC
 - HTF/LTF alignment — sin esto, trades contra tendencia
-- AI filter obligatorio — todo trade pasa por Claude
+- AI filter obligatorio para swing setups (A/B) — todo trade pasa por Claude
+- Quick setups (C/D/E) skip AI por diseño — los datos son la señal
 - Max positions (3), max leverage (5x)
 
 Los perfiles se definen en `STRATEGY_PROFILES` (config/settings.py) y se aplican via `apply_profile()`.
@@ -89,9 +117,10 @@ Los perfiles se definen en `STRATEGY_PROFILES` (config/settings.py) y se aplican
 El perfil activo se almacena en Redis (`qf:bot:strategy_profile`) y se sincroniza al inicio de cada pipeline cycle en `main.py`.
 
 ## Tests
-76 tests en 5 archivos:
+101 tests en 6 archivos:
 - `test_market_structure.py` — swings, BOS, CHoCH, single break per candle
 - `test_order_blocks.py` — detección, volumen, expiración, mitigación
 - `test_fvg.py` — detección, fill, expiración
 - `test_liquidity.py` — clustering, sweeps, premium/discount, equilibrium band, swept persistence
 - `test_setups.py` — Setup A/B, confluencia, TPs, PD alignment, blended R:R, OB proximity, temporal ordering
+- `test_quick_setups.py` — Setup C/D/E, cooldowns, R:R quick vs swing, AI bypass, data validation

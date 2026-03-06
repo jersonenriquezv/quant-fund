@@ -37,10 +37,16 @@ class EtherscanClient:
     Other services call get_recent_movements() directly.
     """
 
-    def __init__(self):
+    def __init__(self, price_provider=None):
+        """
+        Args:
+            price_provider: Optional callable returning current ETH price in USD.
+                            Used for USD conversion on whale movements.
+        """
         self._api_key = settings.ETHERSCAN_API_KEY
         self._whale_wallets = settings.WHALE_WALLETS
         self._exchange_addresses = settings.EXCHANGE_ADDRESSES
+        self._price_provider = price_provider
 
         # Normalize exchange addresses to lowercase for comparison
         self._exchange_lookup: dict[str, str] = {
@@ -91,6 +97,8 @@ class EtherscanClient:
                 "label": label,
                 "action": m.action,
                 "amount": m.amount,
+                "amount_usd": m.amount_usd,
+                "market_price": m.market_price,
                 "exchange": m.exchange,
                 "significance": m.significance,
                 "chain": m.chain,
@@ -226,6 +234,15 @@ class EtherscanClient:
         else:
             significance = "medium"
 
+        # USD conversion
+        market_price = 0.0
+        if self._price_provider:
+            try:
+                market_price = self._price_provider()
+            except Exception:
+                pass
+        amount_usd = value_eth * market_price if market_price > 0 else 0.0
+
         # Wallet sends TO an exchange → deposit (bearish)
         if from_addr == wallet_lower and to_addr in self._exchange_lookup:
             exchange = self._exchange_lookup[to_addr]
@@ -238,10 +255,13 @@ class EtherscanClient:
                 significance=significance,
                 chain="ETH",
                 wallet_label=label,
+                amount_usd=amount_usd,
+                market_price=market_price,
             )
             self._movements.append(movement)
-            logger.info(f"Whale deposit: {value_eth:.2f} ETH → {exchange} "
-                        f"from {wallet[:10]}... significance={significance}")
+            usd_str = f" (~${amount_usd:,.0f})" if amount_usd > 0 else ""
+            logger.info(f"Whale deposit: {value_eth:.2f} ETH{usd_str} → {exchange} "
+                        f"from {label or wallet[:10] + '...'} significance={significance}")
 
         # Wallet receives FROM an exchange → withdrawal (bullish)
         elif to_addr == wallet_lower and from_addr in self._exchange_lookup:
@@ -255,10 +275,13 @@ class EtherscanClient:
                 significance=significance,
                 chain="ETH",
                 wallet_label=label,
+                amount_usd=amount_usd,
+                market_price=market_price,
             )
             self._movements.append(movement)
-            logger.info(f"Whale withdrawal: {value_eth:.2f} ETH ← {exchange} "
-                        f"to {wallet[:10]}... significance={significance}")
+            usd_str = f" (~${amount_usd:,.0f})" if amount_usd > 0 else ""
+            logger.info(f"Whale withdrawal: {value_eth:.2f} ETH{usd_str} ← {exchange} "
+                        f"to {label or wallet[:10] + '...'} significance={significance}")
 
         # Wallet sends to non-exchange address → transfer out (neutral)
         elif from_addr == wallet_lower:
@@ -272,6 +295,8 @@ class EtherscanClient:
                 significance=significance,
                 chain="ETH",
                 wallet_label=label,
+                amount_usd=amount_usd,
+                market_price=market_price,
             )
             self._movements.append(movement)
             logger.info(f"Whale transfer out: {value_eth:.2f} ETH → {truncated} "
@@ -289,6 +314,8 @@ class EtherscanClient:
                 significance=significance,
                 chain="ETH",
                 wallet_label=label,
+                amount_usd=amount_usd,
+                market_price=market_price,
             )
             self._movements.append(movement)
             logger.info(f"Whale transfer in: {value_eth:.2f} ETH ← {truncated} "

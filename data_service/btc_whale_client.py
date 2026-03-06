@@ -34,9 +34,15 @@ _MIN_CALL_INTERVAL = 0.5
 class BtcWhaleClient:
     """Monitors BTC whale wallets for exchange deposits/withdrawals."""
 
-    def __init__(self):
+    def __init__(self, price_provider=None):
+        """
+        Args:
+            price_provider: Optional callable returning current BTC price in USD.
+                            Used for USD conversion on whale movements.
+        """
         self._whale_wallets = settings.BTC_WHALE_WALLETS
         self._exchange_addresses = settings.BTC_EXCHANGE_ADDRESSES
+        self._price_provider = price_provider
 
         # Normalize exchange addresses to lowercase for comparison
         self._exchange_lookup: dict[str, str] = {
@@ -85,6 +91,8 @@ class BtcWhaleClient:
                 "label": label,
                 "action": m.action,
                 "amount": m.amount,
+                "amount_usd": m.amount_usd,
+                "market_price": m.market_price,
                 "exchange": m.exchange,
                 "significance": m.significance,
                 "chain": m.chain,
@@ -181,6 +189,14 @@ class BtcWhaleClient:
         wallet_lower = wallet.lower()
         label = self._whale_wallets.get(wallet, "")
 
+        # USD conversion
+        market_price = 0.0
+        if self._price_provider:
+            try:
+                market_price = self._price_provider()
+            except Exception:
+                pass
+
         # Get all input addresses
         input_addrs: dict[str, int] = {}  # addr → total satoshis
         for vin in tx.get("vin", []):
@@ -217,6 +233,7 @@ class BtcWhaleClient:
                     found_exchange_output = True
                     exchange = self._exchange_lookup[out_addr]
                     significance = "high" if value_btc >= settings.WHALE_HIGH_BTC else "medium"
+                    amount_usd = value_btc * market_price if market_price > 0 else 0.0
                     movement = WhaleMovement(
                         timestamp=tx_timestamp,
                         wallet=wallet,
@@ -226,10 +243,13 @@ class BtcWhaleClient:
                         significance=significance,
                         chain="BTC",
                         wallet_label=label,
+                        amount_usd=amount_usd,
+                        market_price=market_price,
                     )
                     self._movements.append(movement)
-                    logger.info(f"BTC whale deposit: {value_btc:.4f} BTC → {exchange} "
-                                f"from {wallet[:10]}... significance={significance}")
+                    usd_str = f" (~${amount_usd:,.0f})" if amount_usd > 0 else ""
+                    logger.info(f"BTC whale deposit: {value_btc:.4f} BTC{usd_str} → {exchange} "
+                                f"from {label or wallet[:10] + '...'} significance={significance}")
 
             # No exchange output found → transfer out to non-exchange (neutral)
             if not found_exchange_output:
@@ -245,6 +265,7 @@ class BtcWhaleClient:
                     )
                     truncated = first_out[:6] + "..." + first_out[-4:] if first_out else "unknown"
                     significance = "high" if value_btc >= settings.WHALE_HIGH_BTC else "medium"
+                    amount_usd = value_btc * market_price if market_price > 0 else 0.0
                     movement = WhaleMovement(
                         timestamp=tx_timestamp,
                         wallet=wallet,
@@ -254,6 +275,8 @@ class BtcWhaleClient:
                         significance=significance,
                         chain="BTC",
                         wallet_label=label,
+                        amount_usd=amount_usd,
+                        market_price=market_price,
                     )
                     self._movements.append(movement)
                     logger.info(f"BTC whale transfer out: {value_btc:.4f} BTC → {truncated} "
@@ -270,6 +293,7 @@ class BtcWhaleClient:
                         continue
                     exchange = self._exchange_lookup[in_addr]
                     significance = "high" if value_btc >= settings.WHALE_HIGH_BTC else "medium"
+                    amount_usd = value_btc * market_price if market_price > 0 else 0.0
                     movement = WhaleMovement(
                         timestamp=tx_timestamp,
                         wallet=wallet,
@@ -279,10 +303,13 @@ class BtcWhaleClient:
                         significance=significance,
                         chain="BTC",
                         wallet_label=label,
+                        amount_usd=amount_usd,
+                        market_price=market_price,
                     )
                     self._movements.append(movement)
-                    logger.info(f"BTC whale withdrawal: {value_btc:.4f} BTC ← {exchange} "
-                                f"to {wallet[:10]}... significance={significance}")
+                    usd_str = f" (~${amount_usd:,.0f})" if amount_usd > 0 else ""
+                    logger.info(f"BTC whale withdrawal: {value_btc:.4f} BTC{usd_str} ← {exchange} "
+                                f"to {label or wallet[:10] + '...'} significance={significance}")
                 break  # Only count once per tx
 
         # Case 3: Wallet receives from non-exchange → transfer in (neutral)
@@ -294,6 +321,7 @@ class BtcWhaleClient:
                 first_in = next(iter(input_addrs), "")
                 truncated = first_in[:6] + "..." + first_in[-4:] if first_in else "unknown"
                 significance = "high" if value_btc >= settings.WHALE_HIGH_BTC else "medium"
+                amount_usd = value_btc * market_price if market_price > 0 else 0.0
                 movement = WhaleMovement(
                     timestamp=tx_timestamp,
                     wallet=wallet,
@@ -303,6 +331,8 @@ class BtcWhaleClient:
                     significance=significance,
                     chain="BTC",
                     wallet_label=label,
+                    amount_usd=amount_usd,
+                    market_price=market_price,
                 )
                 self._movements.append(movement)
                 logger.info(f"BTC whale transfer in: {value_btc:.4f} BTC ← {truncated} "

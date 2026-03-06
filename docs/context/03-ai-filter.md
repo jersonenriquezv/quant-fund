@@ -50,7 +50,7 @@ AIDecision { confidence, approved, reasoning, adjustments, warnings }
 - Open interest (snapshot sin tendencia — solo contexto de tamaño de mercado)
 - CVD con buy dominance %
 - Liquidaciones recientes (long vs short)
-- Whale activity (exchange transfers = bearish/bullish signal, non-exchange transfers = neutral/informational)
+- Whale activity with USD values, net exchange flow summary (deposits vs withdrawals with bullish/bearish interpretation), individual movements grouped by type (exchange first, then transfers), wallet labels prominent
 - Price context (cambio 1h, 4h)
 
 ## Archivos implementados
