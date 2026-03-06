@@ -1,5 +1,5 @@
 # Risk Service
-> Última actualización: 2026-03-06
+> Última actualización: 2026-03-07
 > Estado: implementado (completo, integrado en main.py). FORCE_MAX_LEVERAGE eliminado — risk-based sizing siempre.
 
 ## Qué hace (30 segundos)
@@ -58,7 +58,7 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
   - `check_rr_ratio(setup)` — R:R de TP2 >= MIN_RISK_REWARD (1.5 swing) o MIN_RISK_REWARD_QUICK (1.0 quick setups C/D/E)
   - `check_cooldown(last_loss_time, current_time)` — COOLDOWN_MINUTES (30) elapsed?
   - `check_max_trades_today(count)` — < MAX_TRADES_PER_DAY (5)?
-  - `check_max_open_positions(count)` — < MAX_OPEN_POSITIONS (3)?
+  - `check_max_open_positions(count)` — < MAX_OPEN_POSITIONS (5)?
   - `check_daily_drawdown(dd_pct)` — < MAX_DAILY_DRAWDOWN (3%)?
   - `check_weekly_drawdown(dd_pct)` — < MAX_WEEKLY_DRAWDOWN (5%)?
 
@@ -67,6 +67,7 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 - Lifecycle del trade:
   - `record_trade_opened(pair, direction, entry_price, timestamp)`
   - `record_trade_closed(pair, direction, pnl_pct, timestamp)` — matchea por `(pair, direction)`. Actualiza DD, activa cooldown si pérdida.
+- `record_trade_cancelled(pair, direction)` — removes cancelled pending entry from open positions without counting as a trade or affecting P&L.
 - Getters para guardrails: `get_trades_today_count()`, `get_open_positions_count()`, `get_daily_dd_pct()`, `get_weekly_dd_pct()`, `get_last_loss_time()`
 - `_check_date_reset()` — auto-reset al cambiar día/semana UTC. Usa `date()` objects (no `tm_yday`) para correcto reset en frontera de año.
 
@@ -82,7 +83,9 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 - **Para Execution Service (implementado):**
   - `on_trade_opened(pair, direction, entry_price, timestamp)` — llamado al colocar entry order
   - `on_trade_closed(pair, direction, pnl_pct, timestamp)` — llamado al cerrar posición (SL, TP, timeout, emergency). Matchea por `(pair, direction)` para cerrar la posición correcta.
+  - `on_trade_cancelled(pair, direction)` — llamado cuando un pending entry es cancelado (nunca llenó). Remueve de open positions sin contar como trade ni afectar P&L.
   - `update_capital(amount)` — disponible para futuro sync con balance del exchange
+  - **Exchange minimum order size check**: Después de position sizing, verifica contra `MIN_ORDER_SIZES`. Si el size calculado es menor que el mínimo del exchange, rechaza con mensaje claro (e.g., "Position size 0.001 below exchange minimum 0.01 for BTC/USDT").
 
 ### `risk_service/__init__.py`
 - Exporta `RiskService`
@@ -93,21 +96,22 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 |---|---|---|
 | `FIXED_TRADE_MARGIN` | `100` (env) | Margen fijo por trade (USDT). Cuando > 0, override risk-based sizing. 0 = usar fórmula clásica |
 | `RISK_PER_TRADE` | `0.02` (2%) | % del capital arriesgado por trade (solo en risk-based mode) |
-| `MAX_LEVERAGE` | `5` | Apalancamiento máximo permitido |
+| `MAX_LEVERAGE` | `7` | Apalancamiento máximo permitido |
 | `MAX_DAILY_DRAWDOWN` | `0.03` (3%) | DD diario máximo antes de pausar |
 | `MAX_WEEKLY_DRAWDOWN` | `0.05` (5%) | DD semanal máximo antes de pausar |
-| `MAX_OPEN_POSITIONS` | `3` | Posiciones simultáneas máximas |
+| `MAX_OPEN_POSITIONS` | `5` | Posiciones simultáneas máximas |
 | `MAX_TRADES_PER_DAY` | `5` | Trades por día máximo |
 | `COOLDOWN_MINUTES` | `30` | Minutos de espera post-pérdida |
 | `MIN_RISK_REWARD` | `1.5` | R:R mínimo para swing setups A/B (TP2 vs SL) |
 | `MIN_RISK_REWARD_QUICK` | `1.0` | R:R mínimo para quick setups C/D/E |
+| `MIN_ORDER_SIZES` | `{"BTC/USDT": 0.01}` | Mínimo de tamaño de orden por par (exchange-imposed). Trades menores se rechazan antes de llegar al exchange. |
 
 ## Tests
 
 75 tests en 4 archivos:
 - `test_position_sizer.py` — fórmula, leverage cap, edge cases
 - `test_guardrails.py` (23) — cada regla pass/fail/boundary/edge
-- `test_state_tracker.py` (23) — lifecycle, DD, cooldown, date reset, year boundary, direction matching
+- `test_state_tracker.py` (27) — lifecycle, DD, cooldown, date reset, year boundary, direction matching, trade cancelled (4 tests)
 - `test_risk_service.py` (13) — check() integración: approvals, rejections, lifecycle, entry==SL
 
 Última corrida: 75 passed, 0 failed
@@ -137,6 +141,7 @@ No crashea. El trade se registra igual (P&L, cooldown, trades_today), pero no re
 
 ## Cambios recientes
 
+- **2026-03-07** — `on_trade_cancelled()` method: removes cancelled pending entries from open positions without counting as trade or affecting P&L. `MIN_ORDER_SIZES` check: rejects trades below exchange minimum before reaching exchange API. `MAX_OPEN_POSITIONS` 3→5, `MAX_LEVERAGE` 5→7.
 - **2026-03-06** — `FIXED_TRADE_MARGIN` setting: cuando > 0, position sizing usa margen fijo en vez de risk-based. Reemplaza `SANDBOX_MARGIN_PER_TRADE`. Capital inicial del Risk Service ahora viene del exchange balance (fallback a `INITIAL_CAPITAL`).
 - **2026-03-06** — `check_rr_ratio()` ahora usa `MIN_RISK_REWARD_QUICK` (1.0) para quick setups (C/D/E) via `QUICK_SETUP_TYPES` check.
 - **2026-03-06** — `FORCE_MAX_LEVERAGE` eliminado. Risk-based sizing siempre. Aggressive profile: DD 5%/10% (era 20%/40%), R:R 1.2 (era 1.0).

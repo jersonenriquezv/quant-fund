@@ -62,7 +62,7 @@ emergency_pending ──[3 fails]──> emergency_failed  (requiere intervenci�
 ## Reglas de seguridad críticas
 
 1. **Validación de precios en execute().** Long: `sl < entry < tp1 < tp2 < tp3`. Short: `sl > entry > tp1 > tp2 > tp3`. Rechaza trades con precios inválidos antes de tocar el exchange.
-2. **Entry fill + SL falla → EMERGENCY market close con retry.** Nunca hay posición abierta sin SL. Máximo 3 reintentos (fase `emergency_pending`). Tras 3 fallos → `emergency_failed`, se mantiene en tracking para intervención manual. Envía alerta Telegram.
+2. **Entry fill + SL placement retries.** After entry fill, SL placement retries up to 3 times with 0.3s/0.6s delays before triggering emergency close. Handles OKX error 51205 ("Reduce Only is not available") caused by position state not propagating to OKX's algo order service (~300ms race window). If all 3 attempts fail → EMERGENCY market close. Máximo 3 reintentos adicionales en fase `emergency_pending`. Tras 3 fallos → `emergency_failed`, se mantiene en tracking para intervención manual. Envía alerta Telegram.
 3. **TP placement falla → EMERGENCY close.** Si cualquier TP falla al colocarse, cancela todos los TPs y SL colocados, y cierra por market. Un TP faltante impide mover SL a breakeven (TP1 nunca llena → SL nunca se ajusta).
 4. **Ajuste de SL: nuevo ANTES de cancelar viejo.** Cero ventana sin protección. Race window mitigada por `reduceOnly` en `place_stop_market()` — si ambos SL se ejecutan, el segundo cierra size=0 (no abre posición inversa). TODO: migrar a OKX amend-order API para updates atómicos.
 5. **Notificación a Risk: en PLACE, no en fill.** Si hay 2 entries pendientes, Risk los cuenta como 2 posiciones abiertas.
