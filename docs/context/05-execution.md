@@ -31,7 +31,7 @@ pending_entry ──[15min]─────> closed         (cancela entry, NO cu
 
 active ──[TP1 fills]──> tp1_hit              (SL → breakeven)
 active ──[SL fills]───> closed               (cancela todos los TPs)
-active ──[12h]────────> closed               (market close todo)
+active ──[12h/4h]─────> closed               (market close — 12h swing, 4h quick setups)
 active ──[SL fail]────> emergency_pending    (SL placement fails → emergency retry)
 
 tp1_hit ──[TP2 fills]──> tp2_hit             (SL → nivel TP1)
@@ -94,7 +94,8 @@ Slippage: BTC/USDT expected=50000.00 actual=50025.00 diff=0.0500%
 | `ENTRY_TIMEOUT_SECONDS` | 900 (15 min) | Tiempo máximo de espera para fill |
 | `ORDER_POLL_INTERVAL` | 5.0s | Intervalo de polling del monitor |
 | `MARGIN_MODE` | "isolated" | Modo de margen (más seguro) |
-| `MAX_TRADE_DURATION_SECONDS` | 43200 (12h) | Duración máxima de un trade |
+| `MAX_TRADE_DURATION_SECONDS` | 43200 (12h) | Duración máxima de un trade (swing A/B) |
+| `MAX_TRADE_DURATION_QUICK` | 14400 (4h) | Duración máxima de quick setups (C/D/E) |
 
 ## PnL Calculation — Blended
 

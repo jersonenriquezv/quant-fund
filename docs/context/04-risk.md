@@ -55,7 +55,7 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 - Cada método retorna `tuple[bool, str]` (passed, reason)
 - **Sin estado** — funciones puras, reciben valores y retornan veredicto
 - Checks:
-  - `check_rr_ratio(setup)` — R:R de TP2 >= MIN_RISK_REWARD (1.5)
+  - `check_rr_ratio(setup)` — R:R de TP2 >= MIN_RISK_REWARD (1.5 swing) o MIN_RISK_REWARD_QUICK (1.0 quick setups C/D/E)
   - `check_cooldown(last_loss_time, current_time)` — COOLDOWN_MINUTES (30) elapsed?
   - `check_max_trades_today(count)` — < MAX_TRADES_PER_DAY (5)?
   - `check_max_open_positions(count)` — < MAX_OPEN_POSITIONS (3)?
@@ -96,7 +96,8 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 | `MAX_OPEN_POSITIONS` | `3` | Posiciones simultáneas máximas |
 | `MAX_TRADES_PER_DAY` | `5` | Trades por día máximo |
 | `COOLDOWN_MINUTES` | `30` | Minutos de espera post-pérdida |
-| `MIN_RISK_REWARD` | `1.5` | R:R mínimo (TP2 vs SL) |
+| `MIN_RISK_REWARD` | `1.5` | R:R mínimo para swing setups A/B (TP2 vs SL) |
+| `MIN_RISK_REWARD_QUICK` | `1.0` | R:R mínimo para quick setups C/D/E |
 
 ## Tests
 
@@ -133,6 +134,7 @@ No crashea. El trade se registra igual (P&L, cooldown, trades_today), pero no re
 
 ## Cambios recientes
 
+- **2026-03-06** — `check_rr_ratio()` ahora usa `MIN_RISK_REWARD_QUICK` (1.0) para quick setups (C/D/E) via `QUICK_SETUP_TYPES` check.
 - **2026-03-06** — `FORCE_MAX_LEVERAGE` eliminado. Risk-based sizing siempre. Aggressive profile: DD 5%/10% (era 20%/40%), R:R 1.2 (era 1.0).
 - **2026-03-04** — I-R1: `record_trade_closed` ahora recibe `direction`, matchea por `(pair, direction)`. Todos los callers actualizados.
 - **2026-03-04** — M-R1: `_check_date_reset` usa `date()` en vez de `tm_yday` (fix año boundary Dec 31 → Jan 1).

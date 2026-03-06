@@ -65,10 +65,10 @@ Sin esta arquitectura, tendríamos un solo programa gigante donde todo está mez
 1. Data Service recoge datos de OKX, Etherscan (liquidaciones via OI proxy, no Binance)
 2. Cuando hay una vela nueva (cada 5m/15m), manda los datos al Strategy Service
 3. Strategy Service analiza los datos buscando patrones SMC
-4. Si encuentra un setup completo (Setup A o B con confluencia), lo manda al AI Service
-5. AI Service primero pasa el setup por un **pre-filter determinístico** (HTF bias conflict, funding extreme, CVD divergencia) — si falla, se rechaza sin llamar a Claude
-6. Si pasa el pre-filter, Claude (Sonnet) evalúa: "¿el contexto apoya este trade?" — confianza ≥ 0.60 para aprobar (0.50 en aggressive)
-7. **AI filter es OBLIGATORIO** — todo trade en toda profile pasa por Claude. Sin excepciones.
+4. Si encuentra un setup completo (Setup A/B swing, o C/D/E quick si no hay swing), lo pasa al siguiente filtro
+5. **Swing setups (A/B):** Pre-filter determinístico (HTF bias, funding extreme, CVD divergencia) → Claude evalúa → confianza ≥ 0.60 (0.50 aggressive)
+6. **Quick setups (C/D/E):** Skip Claude AI filter (los datos SON la señal). Setup C también skipea funding pre-filter. Se genera `AIDecision` sintético con confidence=1.0
+7. **AI filter obligatorio para swing setups** — quick setups lo bypasean por diseño (data-driven).
 8. Risk Service verifica TODOS los guardrails y calcula el position size
 9. Execution Service coloca la orden limit en OKX, con SL (stop-market) y 3 TPs (limit). **En sandbox**: limit al ask/bid actual + 0.05% tolerancia (evita slippage de market orders).
 10. PositionMonitor gestiona el ciclo de vida: entry fill → TP1 (SL→breakeven) → TP2 (SL→TP1) → TP3/SL

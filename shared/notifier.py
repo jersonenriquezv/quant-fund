@@ -158,32 +158,81 @@ class TelegramNotifier:
         )
         await self.send(msg)
 
-    async def notify_ob_summary(self, pair: str, obs: list, htf_bias: str) -> None:
-        """Summary of active Order Blocks when 4H candle closes."""
-        if not obs:
+    async def notify_ob_summary(
+        self, pair: str, obs: list, htf_bias: str, current_price: float = 0.0,
+    ) -> None:
+        """Summary of active Order Blocks when 4H candle closes.
+
+        Shows only OBs aligned with HTF bias. Sorts by distance to price.
+        Marks OBs that are near enough to potentially trigger a trade.
+        """
+        bias_icon = "\U0001f7e2" if htf_bias == "bullish" else (
+            "\U0001f534" if htf_bias == "bearish" else "\u26aa"
+        )
+        bias_dir = "bullish" if htf_bias == "bullish" else (
+            "bearish" if htf_bias == "bearish" else None
+        )
+        trade_dir = "LONG" if htf_bias == "bullish" else (
+            "SHORT" if htf_bias == "bearish" else "?"
+        )
+        short_pair = pair.replace("/USDT", "")
+
+        # Filter to bias-aligned OBs only (these are the ones that could trade)
+        aligned = [ob for ob in obs if ob.direction == bias_dir] if bias_dir else []
+        counter = len([ob for ob in obs if ob.direction != bias_dir]) if bias_dir else 0
+
+        if not aligned:
             msg = (
-                f"\U0001f4e6 <b>4H OB SUMMARY — {pair}</b>\n"
-                f"HTF Bias: {htf_bias.upper()}\n"
-                f"No active Order Blocks"
+                f"\U0001f4e6 <b>{short_pair} OBs</b> — "
+                f"{bias_icon} {htf_bias.upper()} (looking {trade_dir})\n"
+                f"Price: ${current_price:,.2f}\n"
+                f"No {trade_dir.lower()} OBs active"
             )
+            if counter:
+                msg += f" ({counter} counter-trend ignored)"
             await self.send(msg)
             return
 
+        # Sort by distance to current price (closest first)
+        if current_price > 0:
+            aligned.sort(key=lambda ob: abs(current_price - ob.entry_price))
+
         lines = []
-        for ob in obs:
-            arrow = "\U0001f7e2" if ob.direction == "bullish" else "\U0001f534"
+        from config.settings import settings
+        for ob in aligned[:5]:  # Max 5 to keep message readable
+            # Distance from current price
+            dist_pct = 0.0
+            near_tag = ""
+            if current_price > 0:
+                dist_pct = (ob.entry_price - current_price) / current_price * 100
+                if abs(dist_pct) <= settings.OB_PROXIMITY_PCT * 100:
+                    near_tag = " \u2b50"  # Star = could trigger
+
+            # Volume quality
+            vol_tag = ""
+            if ob.volume_ratio >= 2.0:
+                vol_tag = " \U0001f4aa"  # Strong
+            elif ob.volume_ratio < settings.OB_MIN_VOLUME_RATIO:
+                vol_tag = " \u26a0\ufe0f"  # Weak (below trading threshold)
+
             lines.append(
-                f"  {arrow} {ob.direction.upper()} {ob.timeframe} "
-                f"| {ob.low:.2f}-{ob.high:.2f} "
-                f"| Entry: {ob.entry_price:.2f} "
-                f"| Vol: {ob.volume_ratio:.1f}x"
+                f"  ${ob.entry_price:,.2f} ({dist_pct:+.2f}%)"
+                f" | {ob.timeframe} | vol {ob.volume_ratio:.1f}x"
+                f"{vol_tag}{near_tag}"
             )
+
         ob_text = "\n".join(lines)
+        extra = ""
+        if len(aligned) > 5:
+            extra = f"\n  ... +{len(aligned) - 5} more"
+        if counter:
+            extra += f"\n  ({counter} counter-trend ignored)"
+
         msg = (
-            f"\U0001f4e6 <b>4H OB SUMMARY — {pair}</b>\n"
-            f"HTF Bias: {htf_bias.upper()}\n"
-            f"Active OBs ({len(obs)}):\n"
-            f"{ob_text}"
+            f"\U0001f4e6 <b>{short_pair} OBs</b> — "
+            f"{bias_icon} {htf_bias.upper()} (looking {trade_dir})\n"
+            f"Price: ${current_price:,.2f}\n"
+            f"{ob_text}{extra}"
         )
         await self.send(msg)
 
