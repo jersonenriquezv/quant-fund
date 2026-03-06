@@ -20,7 +20,6 @@ class AIService:
     def __init__(self, data_service=None) -> None:
         self._data = data_service
         self._prompt_builder = PromptBuilder()
-        self._system_prompt = self._prompt_builder.build_system_prompt()
         self._enabled = bool(settings.ANTHROPIC_API_KEY)
 
         if not self._enabled:
@@ -63,8 +62,11 @@ class AIService:
         # Log prompt for audit trail
         logger.debug(f"Claude prompt for {setup.pair} {setup.direction}:\n{user_prompt}")
 
+        # Build system prompt per call (threshold changes with profile)
+        system_prompt = self._prompt_builder.build_system_prompt()
+
         # Call Claude
-        result = await self._claude.evaluate(self._system_prompt, user_prompt)
+        result = await self._claude.evaluate(system_prompt, user_prompt)
 
         # Handle API failure
         if result is None:

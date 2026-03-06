@@ -15,7 +15,7 @@ def builder():
     return PromptBuilder()
 
 
-def _make_setup(direction="long", pair="BTC/USDT") -> TradeSetup:
+def _make_setup(direction="long", pair="BTC/USDT", confluences=None) -> TradeSetup:
     return TradeSetup(
         timestamp=int(time.time() * 1000),
         pair=pair,
@@ -26,7 +26,7 @@ def _make_setup(direction="long", pair="BTC/USDT") -> TradeSetup:
         tp1_price=51000.0,
         tp2_price=52000.0,
         tp3_price=53000.0,
-        confluences=["choch", "ob", "sweep"],
+        confluences=confluences if confluences is not None else ["choch", "ob", "sweep"],
         htf_bias="bullish",
         ob_timeframe="15m",
     )
@@ -75,13 +75,24 @@ class TestSystemPrompt:
 
     def test_contains_decision_guidelines(self, builder):
         prompt = builder.build_system_prompt()
-        assert "0.60" in prompt
+        assert "0.6" in prompt
         assert "No quota" in prompt
 
     def test_contains_critical_rules(self, builder):
         prompt = builder.build_system_prompt()
         assert "CRITICAL RULES" in prompt
         assert "Capital preservation" in prompt
+
+    def test_threshold_follows_settings(self, builder):
+        """System prompt threshold must reflect current AI_MIN_CONFIDENCE."""
+        original = settings.AI_MIN_CONFIDENCE
+        try:
+            settings.AI_MIN_CONFIDENCE = 0.50
+            prompt = builder.build_system_prompt()
+            assert "0.5" in prompt
+            assert "0.6" not in prompt
+        finally:
+            settings.AI_MIN_CONFIDENCE = original
 
 
 # ============================================================
@@ -242,3 +253,75 @@ class TestProfileAwarePrompts:
 
         assert "HTF Bias: bullish" in prompt
         assert "informational" not in prompt
+
+
+# ============================================================
+# Dynamic confluence formatting
+# ============================================================
+
+class TestConfluenceFormatting:
+
+    def test_ob_volume_supporting(self, builder):
+        setup = _make_setup(confluences=["ob_volume_2.1x"])
+        snapshot = _make_snapshot()
+        prompt = builder.build_evaluation_prompt(setup, snapshot, {})
+        assert "[SUPPORTING]" in prompt
+        assert "OB volume 2.1x" in prompt
+
+    def test_ob_volume_context(self, builder):
+        setup = _make_setup(confluences=["ob_volume_1.2x"])
+        snapshot = _make_snapshot()
+        prompt = builder.build_evaluation_prompt(setup, snapshot, {})
+        assert "[CONTEXT]" in prompt
+        assert "< 1.5x moderate" in prompt
+
+    def test_sweep_volume_supporting(self, builder):
+        setup = _make_setup(confluences=["sweep_volume_2.5x"])
+        snapshot = _make_snapshot()
+        prompt = builder.build_evaluation_prompt(setup, snapshot, {})
+        assert "[SUPPORTING]" in prompt
+        assert ">= 2x institutional" in prompt
+
+    def test_liquidations_usd(self, builder):
+        setup = _make_setup(confluences=["liquidations_usd_50000"])
+        snapshot = _make_snapshot()
+        prompt = builder.build_evaluation_prompt(setup, snapshot, {})
+        assert "$50,000" in prompt
+
+    def test_malformed_ob_volume_no_crash(self, builder):
+        setup = _make_setup(confluences=["ob_volume_", "ob_volume_abc"])
+        snapshot = _make_snapshot()
+        prompt = builder.build_evaluation_prompt(setup, snapshot, {})
+        assert "[CONTEXT]" in prompt
+
+    def test_malformed_sweep_volume_no_crash(self, builder):
+        setup = _make_setup(confluences=["sweep_volume_bad"])
+        snapshot = _make_snapshot()
+        prompt = builder.build_evaluation_prompt(setup, snapshot, {})
+        assert "[CONTEXT]" in prompt
+
+    def test_malformed_liquidations_no_crash(self, builder):
+        setup = _make_setup(confluences=["liquidations_usd_"])
+        snapshot = _make_snapshot()
+        prompt = builder.build_evaluation_prompt(setup, snapshot, {})
+        assert "[CONTEXT]" in prompt
+
+    def test_order_block_and_fvg(self, builder):
+        setup = _make_setup(confluences=["order_block_15m", "fvg_5m"])
+        snapshot = _make_snapshot()
+        prompt = builder.build_evaluation_prompt(setup, snapshot, {})
+        assert "Fresh order block on 15m" in prompt
+        assert "Fair value gap on 5m" in prompt
+
+    def test_labeled_confluences(self, builder):
+        setup = _make_setup(confluences=["choch_bullish", "pd_zone_discount"])
+        snapshot = _make_snapshot()
+        prompt = builder.build_evaluation_prompt(setup, snapshot, {})
+        assert "[SUPPORTING]" in prompt
+        assert "CHoCH" in prompt
+
+    def test_unknown_confluence_falls_to_context(self, builder):
+        setup = _make_setup(confluences=["some_unknown_thing"])
+        snapshot = _make_snapshot()
+        prompt = builder.build_evaluation_prompt(setup, snapshot, {})
+        assert "[CONTEXT] some_unknown_thing" in prompt

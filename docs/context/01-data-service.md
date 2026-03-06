@@ -106,11 +106,6 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - **Limitation:** Cannot detect individual liquidations — only aggregate cascades. No directional info (defaults to "long").
 - Auto-prunes events older than 1 hour
 
-### `data_service/binance_liq.py` — UNUSED (geo-blocked)
-- Original Binance Futures WebSocket for individual liquidation events
-- Geo-blocked from Canada — kept in codebase but not launched as a task
-- If Binance becomes accessible, can be re-enabled by adding it back to DataService
-
 ### `data_service/etherscan_client.py` — ETH Whale Wallet Monitor
 - Polls configured wallets every `ETHERSCAN_CHECK_INTERVAL` seconds (default 300)
 - Detects ALL large transfers from monitored wallets (not just exchange transfers)
@@ -163,8 +158,8 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Single process, handles SIGINT/SIGTERM for graceful shutdown
 - Creates DataService with pipeline callback
 - Pipeline completo: Data → Strategy → Pre-filter → AI → Risk → Execution (5 capas wired)
-- Pre-filter determinístico antes de Claude: funding extreme + CVD divergencia
-- Hybrid scalping: HTF-aligned scalps pasan por Claude, LTF-only scalps lo bypassean
+- Pre-filter determinístico antes de Claude: HTF bias conflict + funding extreme + CVD divergencia
+- AI filter obligatorio en todas las profiles (sin bypass)
 - 4H OB summary: cuando cierra la vela 4H, envía resumen de OBs activos via Telegram
 
 ## Configuration (`config/settings.py`)

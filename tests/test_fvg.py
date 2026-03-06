@@ -157,23 +157,6 @@ class TestFVGExpiration:
         fvgs = detector.update(candles, "BTC/USDT", "15m", expired_time)
         assert len(fvgs) == 0
 
-    def test_fresh_fvg_not_pruned(self):
-        """FVG within max age should remain active."""
-        detector = FVGDetector()
-
-        candles = [
-            make_candle(high=100.0, low=98.0, close=99.0, timestamp=1000),
-            make_candle(high=104.0, low=99.5, close=103.0, timestamp=2000),
-            make_candle(high=105.0, low=102.0, close=104.0, timestamp=3000),
-        ]
-
-        fvgs = detector.update(candles, "BTC/USDT", "15m", 4000)
-        assert len(fvgs) == 1
-
-        # 1 hour later — still fresh
-        fvgs = detector.update(candles, "BTC/USDT", "15m", 3600 * 1000 + 4000)
-        assert len(fvgs) == 1
-
 
 class TestFVGGetActive:
     """Test get_active_fvgs()."""

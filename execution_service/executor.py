@@ -147,38 +147,6 @@ class OrderExecutor:
             logger.warning(f"Limit order rate limited: {pair} {side} {e}")
             return None
 
-    async def place_market_order(
-        self, pair: str, side: str, amount: float
-    ) -> Optional[dict]:
-        """Place a market entry order. Used in sandbox mode where limit prices
-        from real market data don't match sandbox prices."""
-        symbol = self._ccxt_symbol(pair)
-        try:
-            order = await self._run_sync(
-                self._exchange.create_order,
-                symbol, "market", side, amount
-            )
-            logger.info(
-                f"Market order placed: {pair} {side} amount={amount:.6f} "
-                f"order_id={order.get('id')}"
-            )
-            return order
-        except ccxt.InsufficientFunds as e:
-            logger.error(f"Market order insufficient funds: {pair} {side} {e}")
-            return None
-        except ccxt.InvalidOrder as e:
-            logger.error(f"Market order invalid: {pair} {side} {e}")
-            return None
-        except ccxt.NetworkError as e:
-            logger.error(f"Market order network error: {pair} {side} {e}")
-            return None
-        except ccxt.ExchangeError as e:
-            logger.error(f"Market order exchange error: {pair} {side} {e}")
-            return None
-        except ccxt.RateLimitExceeded as e:
-            logger.warning(f"Market order rate limited: {pair} {side} {e}")
-            return None
-
     async def place_stop_market(
         self, pair: str, side: str, amount: float, trigger_price: float
     ) -> Optional[dict]:
@@ -189,9 +157,10 @@ class OrderExecutor:
         """
         symbol = self._ccxt_symbol(pair)
         try:
+            params = {"reduceOnly": True}
             order = await self._run_sync(
                 self._exchange.create_stop_market_order,
-                symbol, side, amount, trigger_price
+                symbol, side, amount, trigger_price, params
             )
             logger.info(
                 f"Stop-market placed: {pair} {side} amount={amount:.6f} "

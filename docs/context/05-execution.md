@@ -1,6 +1,6 @@
 # Execution Service (Layer 5)
-> Última actualización: 2026-03-05
-> Estado: **implementado** — 32 tests passing. Audited — 5 CRITICAL + 6 IMPORTANT + 3 MINOR fixes applied. Algo order fetch rewritten to use OKX native API.
+> Última actualización: 2026-03-06
+> Estado: **implementado** — 29 tests passing. Audited — SL reduceOnly fix, ticker null guard, breakeven PnL fix, dead code removed.
 
 El brazo ejecutor del bot. Recibe trades aprobados por Risk Service y los ejecuta en OKX via ccxt.
 
@@ -49,7 +49,7 @@ emergency_pending ──[3 fails]──> emergency_failed  (requiere intervenci�
 | Orden | Tipo | Por qué |
 |-------|------|---------|
 | Entry | Limit | Control de slippage. Cancela si no se llena en 15 min |
-| Stop Loss | Stop-market (algo order) | Ejecución garantizada en crashes. ccxt `stopLossPrice` param → OKX `slTriggerPx` internamente |
+| Stop Loss | Stop-market (algo order, reduceOnly) | Ejecución garantizada en crashes. `reduceOnly=True` previene apertura de posición inversa en race conditions |
 | TP1/TP2/TP3 | Limit (reduceOnly) | Precios exactos, sin slippage en take profits |
 
 ## Distribución de TPs
@@ -63,7 +63,7 @@ emergency_pending ──[3 fails]──> emergency_failed  (requiere intervenci�
 1. **Validación de precios en execute().** Long: `sl < entry < tp1 < tp2 < tp3`. Short: `sl > entry > tp1 > tp2 > tp3`. Rechaza trades con precios inválidos antes de tocar el exchange.
 2. **Entry fill + SL falla → EMERGENCY market close con retry.** Nunca hay posición abierta sin SL. Máximo 3 reintentos (fase `emergency_pending`). Tras 3 fallos → `emergency_failed`, se mantiene en tracking para intervención manual. Envía alerta Telegram.
 3. **TP placement falla → EMERGENCY close.** Si cualquier TP falla al colocarse, cancela todos los TPs y SL colocados, y cierra por market. Un TP faltante impide mover SL a breakeven (TP1 nunca llena → SL nunca se ajusta).
-4. **Ajuste de SL: nuevo ANTES de cancelar viejo.** Cero ventana sin protección. Race window mitigada por `reduceOnly` — si ambos SL se ejecutan, el segundo cierra size=0. TODO: migrar a OKX amend-order API para updates atómicos.
+4. **Ajuste de SL: nuevo ANTES de cancelar viejo.** Cero ventana sin protección. Race window mitigada por `reduceOnly` en `place_stop_market()` — si ambos SL se ejecutan, el segundo cierra size=0 (no abre posición inversa). TODO: migrar a OKX amend-order API para updates atómicos.
 5. **Notificación a Risk: en PLACE, no en fill.** Si hay 2 entries pendientes, Risk los cuenta como 2 posiciones abiertas.
 6. **Cancelled entries no cuentan como trades.** Si el entry timeout cancela una orden que nunca se llenó, no se notifica a Risk ni se envía Telegram de trade cerrado.
 7. **Shutdown: cancela entries pendientes, NO cierra posiciones activas.** Los SL/TP viven en el exchange y sobreviven al bot.
@@ -163,6 +163,10 @@ OKX trata stop-market orders como "algo orders" con routing separado:
 - No hay trailing stop para TP3 (usa limit fijo por ahora — ver roadmap v2)
 - Sin persistencia Redis del estado del monitor (v2)
 - `AIDecision.adjustments` no se aplica a SL/TP (v2)
+
+## Ghost position fix
+
+`PositionMonitor.start()` ahora ejecuta `_update_positions_cache()` al arrancar, antes del poll loop. Como `_positions` está vacío al inicio, esto escribe `[]` a Redis (`qf:bot:positions`), eliminando posiciones stale del run anterior. Sin esto, un restart dejaba el cache Redis intacto (TTL 24h) y el dashboard mostraba posiciones fantasma que ya no existían en el exchange.
 
 ## Roadmap v2 — Trailing Stop para TP3
 

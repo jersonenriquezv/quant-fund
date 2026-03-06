@@ -35,7 +35,7 @@ AIDecision { confidence, approved, reasoning, adjustments, warnings }
 - Claude dice approved=true pero confidence < 0.60 → rechazado
 
 ### El Prompt
-**System prompt** (se cachea, no cambia):
+**System prompt** (se reconstruye por evaluación con threshold actual):
 - Rol: senior crypto trading analyst en fondo cuantitativo
 - Instrucción: responder SOLO con JSON válido
 - HTF alignment ya garantizado por pre-filter — Claude no debe rechazar por HTF
@@ -57,7 +57,7 @@ AIDecision { confidence, approved, reasoning, adjustments, warnings }
 
 ### `ai_service/prompt_builder.py` — Construcción de prompts
 - Clase: `PromptBuilder`
-- `build_system_prompt()` → system prompt cacheado
+- `build_system_prompt()` → system prompt con threshold dinámico de `settings.AI_MIN_CONFIDENCE`
 - `build_evaluation_prompt(setup, snapshot, candles_context)` → user prompt con datos concretos
 - `_format_confluences(confluences, direction)` → convierte labels internos a descripción humana con tags [SUPPORTING]/[CONTEXT]
 - Computa R:R por TP level y blended R:R en el setup section
@@ -105,7 +105,7 @@ AIDecision { confidence, approved, reasoning, adjustments, warnings }
 ## Tests
 
 41 tests en 3 archivos:
-- `test_prompt_builder.py` — system prompt, evaluation prompt, datos faltantes, funding extremo, non-exchange whale labels, profile-aware prompts
+- `test_prompt_builder.py` — system prompt, evaluation prompt, datos faltantes, funding extremo, non-exchange whale labels, profile-aware prompts, dynamic threshold, confluence formatting (dynamic patterns, malformed strings)
 - `test_claude_client.py` — JSON válido/inválido, code fences, API errors, timeout, rate limit, approved string type validation
 - `test_ai_service.py` — approval/rejection, confidence clamping, double check, API failure, disabled mode, profile-specific confidence thresholds, data service integration
 

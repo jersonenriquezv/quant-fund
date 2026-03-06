@@ -62,6 +62,9 @@ class PositionMonitor:
         if self._running:
             return
         self._running = True
+        # Clear stale positions cache from previous run — in-memory is
+        # authoritative, Redis is just a dashboard mirror.
+        self._update_positions_cache()
         self._task = asyncio.create_task(self._poll_loop(), name="position_monitor")
         logger.info("Position monitor started")
 
@@ -574,7 +577,7 @@ class PositionMonitor:
         try:
             # Calculate USD PnL
             pnl_usd = None
-            if pos.actual_entry_price and pos.filled_size and pos.pnl_pct:
+            if pos.actual_entry_price and pos.filled_size:
                 pnl_usd = pos.actual_entry_price * pos.filled_size * pos.pnl_pct
 
             self._data_store.postgres.update_trade(

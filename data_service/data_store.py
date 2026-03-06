@@ -362,10 +362,19 @@ class PostgresStore:
                 )
             """)
 
-            # Index for fast candle lookups
+            # Drop redundant index — UNIQUE(pair, timeframe, timestamp) already covers lookups
+            cur.execute("DROP INDEX IF EXISTS idx_candles_pair_tf_ts")
+
+            # Dashboard queries: ORDER BY created_at DESC LIMIT N
             cur.execute("""
-                CREATE INDEX IF NOT EXISTS idx_candles_pair_tf_ts
-                ON candles(pair, timeframe, timestamp DESC)
+                CREATE INDEX IF NOT EXISTS idx_ai_decisions_created
+                ON ai_decisions(created_at DESC)
+            """)
+
+            # Dashboard queries: WHERE status = $1 ORDER BY opened_at DESC
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_trades_status_opened
+                ON trades(status, opened_at DESC NULLS LAST)
             """)
 
         logger.info("PostgreSQL tables verified/created")

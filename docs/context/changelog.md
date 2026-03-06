@@ -1,5 +1,39 @@
 # Changelog — One-Man Quant Fund
 
+## [2026-03-06] — Dead code cleanup: binance_liq removed, DB indexes, scalping refs cleaned
+**Qué cambió:**
+- `data_service/binance_liq.py` — Eliminado (geo-blocked desde Canada, reemplazado por OI proxy).
+- `data_service/oi_liquidation_proxy.py` — Docstring limpiada de referencias a Binance.
+- `data_service/data_store.py` — Dropped redundant `idx_candles_pair_tf_ts` (UNIQUE constraint covers it). Added `idx_ai_decisions_created` y `idx_trades_status_opened` for dashboard queries.
+- `tests/test_data_service.py` — 6 tests de Binance eliminados.
+- `tests/test_fvg.py`, `test_guardrails.py`, `test_position_sizer.py` — Pruned redundant edge case tests.
+- `docs/context/06-dashboard.md` — Eliminada referencia a scalping profile.
+- `docs/context/01-data-service.md` — Eliminada sección de binance_liq.py y referencia a hybrid scalping.
+
+## [2026-03-06] — Fix ghost position: clear Redis positions cache on monitor startup
+**Qué cambió:**
+- `execution_service/monitor.py` — `start()` ahora ejecuta `_update_positions_cache()` al arrancar, escribiendo `[]` a Redis antes del poll loop. Elimina posiciones fantasma que persistían en `qf:bot:positions` (TTL 24h) tras un restart del bot.
+
+**Por qué:** Tras restart, `_positions` in-memory se reseteaba pero Redis conservaba la posición del run anterior. Dashboard mostraba posición activa que no existía en OKX.
+
+## [2026-03-06] — AI Service audit: dynamic threshold + confluence crash fix
+**Qué cambió:**
+- `ai_service/prompt_builder.py` — System prompt ahora usa `settings.AI_MIN_CONFIDENCE` dinámicamente (antes hardcodeaba `0.60`, haciendo que aggressive profile's threshold de 0.50 fuera dead code — Claude se auto-censuraba a 0.60). Template con `str.format()`. `_format_confluences()` ahora envuelve `float()` en try/except para patterns dinámicos (ob_volume_, sweep_volume_, liquidations_usd_) — antes crasheaba en strings malformados.
+- `ai_service/service.py` — System prompt ya no se cachea en `__init__()`, se reconstruye por evaluación para reflejar cambios de profile en runtime.
+- `tests/test_prompt_builder.py` — 10 tests nuevos: dynamic threshold, confluence formatting (ob_volume supporting/context, sweep_volume, liquidations_usd, malformed strings, order_block, fvg, labeled confluences, unknown fallback).
+- `docs/context/03-ai-filter.md` — Actualizado.
+
+**Por qué:** @reviewer encontró que aggressive profile bajaba AI_MIN_CONFIDENCE a 0.50 pero el system prompt decía "0.60" a Claude, neutralizando el beneficio. También encontró crash risk en confluence formatting sin tests.
+
+## [2026-03-06] — Execution Service audit fixes
+**Qué cambió:**
+- `execution_service/executor.py` — `place_stop_market()` ahora pasa `reduceOnly: True`. Previene apertura de posición inversa si dos SLs se ejecutan durante el race window de `_adjust_sl()`. Eliminado `place_market_order()` (dead code — sandbox ahora usa limit orders).
+- `execution_service/service.py` — Null guard para `ticker["ask"]`/`ticker["bid"]` antes de calcular precio sandbox. Previene TypeError si orderbook vacío.
+- `execution_service/monitor.py` — Fix en `_persist_trade_close()`: breakeven trades (pnl_pct=0.0) ahora persisten `pnl_usd=0.0` en lugar de NULL (0.0 es falsy en Python).
+- `docs/context/05-execution.md` — Actualizado con fixes.
+
+**Por qué:** Auditoría de @debugger encontró 1 CRITICAL (SL sin reduceOnly = posible posición inversa en flash crash), 2 WARNING (ticker null, breakeven PnL), 1 INFO (dead code).
+
 ## [2026-03-06] — Claude Code tooling cleanup
 **Qué cambió:**
 - `.claude/commands/doc-update.md` — Ahora scoped a `git diff` (antes leía todos los servicios ciegamente)

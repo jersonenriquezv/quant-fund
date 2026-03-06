@@ -120,11 +120,16 @@ class ExecutionService:
             if ticker is None:
                 logger.error(f"Cannot fetch ticker for sandbox entry: {setup.pair}")
                 return False
+            ask = ticker.get("ask")
+            bid = ticker.get("bid")
+            if ask is None or bid is None:
+                logger.error(f"Ticker missing ask/bid for sandbox entry: {setup.pair}")
+                return False
             tolerance = settings.SANDBOX_LIMIT_TOLERANCE_PCT
             if side == "buy":
-                entry_price = ticker["ask"] * (1 + tolerance)
+                entry_price = ask * (1 + tolerance)
             else:
-                entry_price = ticker["bid"] * (1 - tolerance)
+                entry_price = bid * (1 - tolerance)
             logger.info(
                 f"Sandbox entry: using current price {entry_price:.2f} "
                 f"(ask={ticker.get('ask')}, bid={ticker.get('bid')}, "

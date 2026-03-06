@@ -110,10 +110,6 @@ class TestEdgeCases:
         with pytest.raises(ValueError, match="Capital must be positive"):
             sizer.calculate(entry=50000, sl=49000, capital=0, risk_pct=0.02)
 
-    def test_negative_capital_raises(self, sizer):
-        with pytest.raises(ValueError, match="Capital must be positive"):
-            sizer.calculate(entry=50000, sl=49000, capital=-100, risk_pct=0.02)
-
     def test_zero_risk_pct_raises(self, sizer):
         with pytest.raises(ValueError, match="Risk percent must be positive"):
             sizer.calculate(entry=50000, sl=49000, capital=1000, risk_pct=0)

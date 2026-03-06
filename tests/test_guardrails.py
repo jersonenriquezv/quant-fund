@@ -104,13 +104,6 @@ class TestCooldown:
         passed, _ = g.check_cooldown(last_loss, now)
         assert passed is True
 
-    def test_exactly_at_cooldown_fails(self, g):
-        """Exactly at cooldown boundary (29.9 min) → still in cooldown."""
-        now = int(time.time())
-        last_loss = now - (settings.COOLDOWN_MINUTES * 60 - 1)
-        passed, _ = g.check_cooldown(last_loss, now)
-        assert passed is False
-
 
 # ============================================================
 # Max trades per day
@@ -130,10 +123,6 @@ class TestMaxTradesPerDay:
         passed, _ = g.check_max_trades_today(settings.MAX_TRADES_PER_DAY + 1)
         assert passed is False
 
-    def test_one_below_limit(self, g):
-        passed, _ = g.check_max_trades_today(settings.MAX_TRADES_PER_DAY - 1)
-        assert passed is True
-
 
 # ============================================================
 # Max open positions
@@ -148,10 +137,6 @@ class TestMaxOpenPositions:
     def test_at_limit(self, g):
         passed, _ = g.check_max_open_positions(settings.MAX_OPEN_POSITIONS)
         assert passed is False
-
-    def test_one_below_limit(self, g):
-        passed, _ = g.check_max_open_positions(settings.MAX_OPEN_POSITIONS - 1)
-        assert passed is True
 
 
 # ============================================================

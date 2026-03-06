@@ -1,20 +1,12 @@
 """
 OI-based liquidation proxy — detects liquidation cascades via OI drops.
 
-Since Binance WebSocket is geo-blocked from Canada, we use OKX Open Interest
-data (already polled every 5 minutes) to infer liquidation cascades.
-
-Logic: If OI drops >2% within a 5-minute window, a significant number of
+Uses OKX Open Interest data (polled every 5 minutes) to infer liquidation
+cascades. If OI drops >2% within a 5-minute window, a significant number of
 positions were forcefully closed — likely a liquidation cascade.
 
-This module provides the same public API as BinanceLiquidationFeed:
-- get_recent_liquidations(pair, minutes)
-- get_aggregated_stats(pair, minutes)
-- is_connected
-
-Not a 1:1 replacement — individual liquidation events are not available.
-Instead, each detected cascade generates a single LiquidationEvent with
-the estimated total USD liquidated (based on OI delta).
+Each detected cascade generates a single LiquidationEvent with the estimated
+total USD liquidated (based on OI delta).
 """
 
 import time
@@ -45,7 +37,7 @@ class OILiquidationProxy:
         self._events: list[LiquidationEvent] = []
 
     # ================================================================
-    # Public interface (matches BinanceLiquidationFeed)
+    # Public interface
     # ================================================================
 
     def get_recent_liquidations(self, pair: str | None = None,

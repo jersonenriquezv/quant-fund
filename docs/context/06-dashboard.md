@@ -129,7 +129,7 @@ El dashboard incluye un dropdown para cambiar el perfil de estrategia del bot en
 - **POST /api/profile** — escribe nuevo perfil a Redis (`qf:bot:strategy_profile`)
 - El bot lee el perfil desde Redis al inicio de cada pipeline cycle (`main.py: _sync_profile_from_redis()`)
 - **CORS** actualizado a `GET + POST` (antes solo GET)
-- Color indicators: verde (default), amarillo (aggressive), rojo (scalping)
+- Color indicators: verde (default), amarillo (aggressive)
 - Warning badge pulsa cuando no está en default
 
 ## Limitaciones v1

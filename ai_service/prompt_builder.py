@@ -8,26 +8,26 @@ The prompt quality determines decision quality — this is the intellectual core
 from config.settings import settings
 from shared.models import TradeSetup, MarketSnapshot
 
-_SYSTEM_PROMPT = """You are a senior crypto trading analyst at a quantitative fund. Your job is to evaluate trade setups detected by an automated SMC (Smart Money Concepts) system and decide whether the current market context supports the trade.
+_SYSTEM_PROMPT_TEMPLATE = """You are a senior crypto trading analyst at a quantitative fund. Your job is to evaluate trade setups detected by an automated SMC (Smart Money Concepts) system and decide whether the current market context supports the trade.
 
 You are a FILTER — you do NOT generate trades. The system has already detected a valid pattern with HTF alignment confirmed. Your job is to evaluate whether market conditions (funding, volume, flow) support executing it NOW.
 
 You must respond ONLY with valid JSON in this exact format:
-{
+{{
     "confidence": <float 0.0-1.0>,
     "approved": <bool>,
     "reasoning": "<2-4 sentences. State the decisive factor first, then supporting evidence.>",
-    "adjustments": {
+    "adjustments": {{
         "sl_price": <float or null>,
         "tp2_price": <float or null>,
         "tp3_price": <float or null>
-    },
+    }},
     "warnings": ["<warning 1>", "<warning 2>"]
-}
+}}
 
 Decision guidelines:
-- confidence >= 0.60 AND approved=true: Trade proceeds to risk check
-- confidence < 0.60 OR approved=false: Trade is discarded
+- confidence >= {min_confidence} AND approved=true: Trade proceeds to risk check
+- confidence < {min_confidence} OR approved=false: Trade is discarded
 - Approve only when the evidence is clearly supportive. No quota — reject all 10 if all 10 are bad.
 
 Factors to evaluate:
@@ -51,8 +51,10 @@ class PromptBuilder:
     """Builds system and evaluation prompts for Claude."""
 
     def build_system_prompt(self) -> str:
-        """Return the system prompt. Cached — does not change between evaluations."""
-        return _SYSTEM_PROMPT
+        """Return the system prompt with current AI_MIN_CONFIDENCE threshold."""
+        return _SYSTEM_PROMPT_TEMPLATE.format(
+            min_confidence=settings.AI_MIN_CONFIDENCE,
+        )
 
     def build_evaluation_prompt(
         self,
@@ -163,15 +165,26 @@ class PromptBuilder:
                 tag, desc = "SUPPORTING", f"Fair value gap on {tf}"
             elif c.startswith("ob_volume_"):
                 ratio = c.replace("ob_volume_", "")
-                tag = "SUPPORTING" if float(ratio.rstrip("x")) >= 1.5 else "CONTEXT"
-                desc = f"OB volume {ratio} average ({'>= 1.5x strong' if tag == 'SUPPORTING' else '< 1.5x moderate'})"
+                try:
+                    val = float(ratio.rstrip("x"))
+                    tag = "SUPPORTING" if val >= 1.5 else "CONTEXT"
+                    desc = f"OB volume {ratio} average ({'>= 1.5x strong' if tag == 'SUPPORTING' else '< 1.5x moderate'})"
+                except ValueError:
+                    tag, desc = "CONTEXT", c
             elif c.startswith("sweep_volume_"):
                 ratio = c.replace("sweep_volume_", "")
-                tag = "SUPPORTING" if float(ratio.rstrip("x")) >= 2.0 else "CONTEXT"
-                desc = f"Sweep volume {ratio} average ({'>= 2x institutional' if tag == 'SUPPORTING' else '< 2x moderate'})"
+                try:
+                    val = float(ratio.rstrip("x"))
+                    tag = "SUPPORTING" if val >= 2.0 else "CONTEXT"
+                    desc = f"Sweep volume {ratio} average ({'>= 2x institutional' if tag == 'SUPPORTING' else '< 2x moderate'})"
+                except ValueError:
+                    tag, desc = "CONTEXT", c
             elif c.startswith("liquidations_usd_"):
                 usd = c.replace("liquidations_usd_", "")
-                tag, desc = "SUPPORTING", f"${float(usd):,.0f} in estimated liquidations"
+                try:
+                    tag, desc = "SUPPORTING", f"${float(usd):,.0f} in estimated liquidations"
+                except ValueError:
+                    tag, desc = "CONTEXT", c
             elif c in _LABELS:
                 tag, desc = _LABELS[c]
             else:
