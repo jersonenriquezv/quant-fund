@@ -99,10 +99,24 @@ class ExecutionService:
 
         # Check if already managing a position for this pair
         if setup.pair in self._monitor.positions:
-            logger.warning(
-                f"Already managing a position for {setup.pair} — skipping new entry"
-            )
-            return False
+            existing = self._monitor.positions[setup.pair]
+            if existing.phase == "pending_entry":
+                # Replace stale pending order with this new setup
+                logger.info(
+                    f"Replacing pending entry: {setup.pair} "
+                    f"old={existing.direction}@{existing.entry_price:.2f} → "
+                    f"new={setup.direction}@{setup.entry_price:.2f}"
+                )
+                old = await self._monitor.cancel_and_remove_pending(setup.pair)
+                if old and self._risk is not None:
+                    self._risk.on_trade_cancelled(setup.pair, old.direction)
+            else:
+                # Active/filled position — don't replace
+                logger.warning(
+                    f"Already managing an active position for {setup.pair} "
+                    f"(phase={existing.phase}) — skipping new entry"
+                )
+                return False
 
         # Configure pair (margin mode + leverage)
         leverage = int(approval.leverage)

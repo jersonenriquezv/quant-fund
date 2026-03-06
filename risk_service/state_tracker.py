@@ -86,6 +86,17 @@ class RiskStateTracker:
         if pnl_pct < 0:
             self._last_loss_time = timestamp
 
+    def record_trade_cancelled(self, pair: str, direction: str) -> None:
+        """Remove a cancelled pending entry from open positions tracking.
+
+        Unlike record_trade_closed, this does NOT add to trades_today or
+        affect P&L — the order never filled, so it's not a real trade.
+        """
+        for i, pos in enumerate(self._open_positions):
+            if pos["pair"] == pair and pos["direction"] == direction:
+                self._open_positions.pop(i)
+                break
+
     # ================================================================
     # Capital
     # ================================================================

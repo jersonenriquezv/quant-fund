@@ -1,5 +1,7 @@
 """Health check endpoint."""
 
+import os
+
 from fastapi import APIRouter
 
 from dashboard.api import database as db
@@ -22,4 +24,5 @@ async def health():
         pass
 
     status = "ok" if (pg_ok and redis_ok) else "degraded"
-    return HealthResponse(status=status, postgres=pg_ok, redis=redis_ok)
+    sandbox = os.getenv("OKX_SANDBOX", "true").lower() == "true"
+    return HealthResponse(status=status, postgres=pg_ok, redis=redis_ok, sandbox=sandbox)

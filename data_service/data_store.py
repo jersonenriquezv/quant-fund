@@ -222,6 +222,17 @@ class RedisStore:
         raw = self._client.get(key)
         return int(raw) if raw else None
 
+    def pop_cancel_request(self, pair: str) -> bool:
+        """Check and consume a cancel request for a pair. Returns True if found."""
+        if not self._client:
+            return False
+        key = f"qf:cancel_request:{pair}"
+        val = self._client.get(key)
+        if val is not None:
+            self._client.delete(key)
+            return True
+        return False
+
 
 class PostgresStore:
     """PostgreSQL for historical candle storage and trade logs.

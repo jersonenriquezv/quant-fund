@@ -200,6 +200,36 @@ class TestDateReset:
         assert tracker.get_daily_dd_pct() == 0.0
 
 
+class TestTradeCancelled:
+    """record_trade_cancelled removes from open positions without PnL impact."""
+
+    def test_cancel_removes_from_open_positions(self, tracker):
+        now = int(time.time())
+        tracker.record_trade_opened("ETH/USDT", "short", 2108, now)
+        assert tracker.get_open_positions_count() == 1
+
+        tracker.record_trade_cancelled("ETH/USDT", "short")
+        assert tracker.get_open_positions_count() == 0
+
+    def test_cancel_does_not_count_as_trade(self, tracker):
+        now = int(time.time())
+        tracker.record_trade_opened("ETH/USDT", "short", 2108, now)
+        tracker.record_trade_cancelled("ETH/USDT", "short")
+        assert tracker.get_trades_today_count() == 0
+
+    def test_cancel_does_not_affect_pnl(self, tracker):
+        now = int(time.time())
+        tracker.record_trade_opened("ETH/USDT", "short", 2108, now)
+        tracker.record_trade_cancelled("ETH/USDT", "short")
+        assert tracker.get_daily_dd_pct() == 0.0
+        assert tracker.get_weekly_dd_pct() == 0.0
+
+    def test_cancel_nonexistent_is_safe(self, tracker):
+        """Cancelling a pair that's not open should not crash."""
+        tracker.record_trade_cancelled("BTC/USDT", "long")
+        assert tracker.get_open_positions_count() == 0
+
+
 class TestDirectionMatching:
     """I-R1: Position close matches by (pair, direction)."""
 

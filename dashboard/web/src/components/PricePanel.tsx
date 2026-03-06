@@ -31,7 +31,6 @@ export function PricePanel({ pair, ws }: { pair: string; ws: WSMessage | null })
   const { data: market } = usePolling<MarketData>(`/market/${encodeURIComponent(pair)}`, 5000);
   const { data: biasData } = usePolling<HTFBiasResponse>("/strategy/htf-bias", 10000);
 
-  // Prefer WebSocket price if available
   const wsPrice = ws?.prices?.[pair]?.price;
   const price = wsPrice ?? market?.price;
 
@@ -40,8 +39,10 @@ export function PricePanel({ pair, ws }: { pair: string; ws: WSMessage | null })
 
   const bias = biasData?.bias?.[pair] ?? "undefined";
 
+  const gradientClass = isPositive ? "price-panel-positive" : "price-panel-negative";
+
   return (
-    <div>
+    <div className={gradientClass} style={{ borderRadius: 8 }}>
       <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
         {pair}
         <span className={`badge ${biasClass(bias)}`} style={{ fontSize: 9, letterSpacing: "0.08em" }}>

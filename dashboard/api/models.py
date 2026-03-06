@@ -7,6 +7,7 @@ class HealthResponse(BaseModel):
     status: str
     postgres: bool
     redis: bool
+    sandbox: bool = True
 
 
 class MarketData(BaseModel):

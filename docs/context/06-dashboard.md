@@ -12,7 +12,7 @@ Si el dashboard crashea, el bot sigue operando normalmente.
 
 | Endpoint | Fuente | Devuelve |
 |----------|--------|----------|
-| `GET /api/health` | Redis ping + PG ping | Estado del sistema |
+| `GET /api/health` | Redis ping + PG ping + env | Estado del sistema + `sandbox` boolean |
 | `GET /api/market/{pair}` | Redis (candle, funding, OI) | Precio live, funding, OI |
 | `GET /api/trades?status=&limit=50` | PostgreSQL trades | Lista de trades paginada |
 | `GET /api/trades/{id}` | PG trades + ai_decisions | Detalle de trade con AI reasoning |
@@ -26,27 +26,32 @@ Si el dashboard crashea, el bot sigue operando normalmente.
 | `POST /api/profile` | Redis write | Cambiar perfil de estrategia |
 | `GET /api/strategy/order-blocks` | Redis (`qf:bot:order_blocks`) | OBs activos (ambos pares, LTF) |
 | `GET /api/strategy/htf-bias` | Redis (`qf:bot:htf_bias`) | HTF bias por par |
+| `POST /api/trades/{pair}/cancel` | Redis write (`qf:cancel_request:{pair}`) | Solicita cancelación de posición (TTL 60s) |
 
 ## Frontend — Layout
 
 ```
-HEADER: Bot status + Mode (DEMO) + Profile Selector (dropdown) + UTC clock
-├── BTC/USDT panel (+ HTF bias badge) | ETH/USDT panel (+ HTF bias badge) | Risk gauges (DD arcos)
-├── Open Positions (cards)        | Equity curve (SVG sparkline)
-├── Trade Log (tabla, últimos 20) | AI Decision Log (barras de confianza)
-├── Active Order Blocks (full width, tabla con Time/Pair/TF/Direction/Range/Entry/Distance%/VolRatio)
-├── Whale Movements Log (full width, últimas 24h, 4 badge types: deposit/withdrawal/transfer out/transfer in)
+HEADER: Status dot + "QF" + LIVE/DEMO pill + Profile Selector + UTC clock (time only)
+├── BTC/USDT panel (gradient bg, HTF bias badge) | ETH/USDT panel (gradient bg) | Risk gauges (arcos con glow)
+├── Open Positions (rich cards: TP2/TP3/leverage/AI confidence/time open/cancel) | Equity curve
+├── Trade Log (tabla, hover rows) | AI Decision Log (mini-cards con confidence ring)
+├── Active Order Blocks (full width)
+├── Whale Movements Log (full width)
 └── System Health: Redis + PG + API status dots
 ```
 
-## Estilo — "VAULT"
+## Estilo — Apple-inspired (black/white + glassmorphism)
 
-- Fondo oscuro (#0a0e17), borders 1px, sin sombras
+- Fondo negro puro (`#000000` / `#0a0a0a`), cards con `backdrop-filter: blur(20px)` y fondo semitransparente (`rgba(255,255,255,0.04)`)
+- Borders sutiles: `rgba(255,255,255,0.08)`, border-radius 12px en cards
+- Gap entre cards: 8px (antes 1px), padding exterior 8px
 - Verde para longs/positivo (#10b981), rojo para shorts/negativo (#ef4444)
 - Azul accent (#3b82f6), amarillo warnings (#f59e0b)
 - Font monospace (JetBrains Mono / system fallback)
 - Números right-aligned, tabular-nums
-- Demo mode: banner ámbar
+- LIVE/DEMO: pill badge con borde coloreado (verde=live, ámbar=demo)
+- Badges: border-radius 100px (pill shape)
+- Hover effects: cards y table rows cambian a `rgba(255,255,255,0.06)`
 
 ## Trade Persistence (Prerrequisito)
 
@@ -128,13 +133,46 @@ El dashboard incluye un dropdown para cambiar el perfil de estrategia del bot en
 - **GET /api/profile** — devuelve perfil activo + lista de perfiles disponibles con label, description, color
 - **POST /api/profile** — escribe nuevo perfil a Redis (`qf:bot:strategy_profile`)
 - El bot lee el perfil desde Redis al inicio de cada pipeline cycle (`main.py: _sync_profile_from_redis()`)
-- **CORS** actualizado a `GET + POST` (antes solo GET)
+- **CORS** actualizado a `GET + POST + DELETE`
 - Color indicators: verde (default), amarillo (aggressive)
 - Warning badge pulsa cuando no está en default
+
+## Cancel desde Dashboard
+
+Mecanismo seguro y desacoplado:
+1. Dashboard API escribe `qf:cancel_request:{pair}` en Redis con TTL 60s
+2. El PositionMonitor del bot verifica cancel requests en cada poll cycle (antes de procesar cada posición)
+3. Si encuentra uno, consume la key y ejecuta:
+   - Pending entry → cancela orden de entrada
+   - Active position → cancela SL/TPs + market close
+4. Dashboard no habla directamente con OKX
+
+**Redis key:** `qf:cancel_request:{pair}` (TTL 60s, consumida al leer)
+**Backend:** `POST /api/trades/{pair}/cancel` → `queries.set_cancel_request()`
+**Bot:** `monitor._check_cancel_request()` → `redis.pop_cancel_request()`
+
+## PositionCard — Redesign
+
+Cada posición muestra:
+- Row 1: Pair + direction badge + setup type + phase + time open (e.g. "2h 14m")
+- Row 2: P&L % (grande) + P&L USD estimado
+- Row 3: 6-col grid — Entry, SL (rojo), TP1, TP2, TP3 (verde), Leverage
+- Row 4: AI Confidence bar + botón Cancel (rojo, con diálogo de confirmación inline)
+
+Mobile: 6-col grid → 3-col. Cancel button full width. Footer stacks.
+
+## AILog — Redesign
+
+- Mini-cards (no flat list items)
+- Confidence ring SVG (círculo con porcentaje)
+- Reasoning expandible (click para ver texto completo)
+- Setup type badge visible
+- Warnings como pills coloreados
+- Empty state: "No AI evaluations yet — decisions appear when the bot detects a setup"
 
 ## Limitaciones v1
 
 - Sin charting library (TradingView, etc.) — sparklines SVG
-- Sin ejecución de trades desde el dashboard — mayormente read-only (excepto profile switch)
+- Sin modificación de SL/TP desde el dashboard — solo cancel completo
 - Sin autenticación — localhost detrás del router
 - Sin backtesting UI o alertas en el dashboard (notificaciones push via Telegram — `shared/notifier.py`)

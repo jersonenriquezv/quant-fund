@@ -17,11 +17,12 @@ ExecutionService (facade)
 
 1. `execute(setup, approval, ai_confidence)` recibe trade aprobado
 2. **Valida precio ordering** — Long: `sl < entry < tp1 < tp2 < tp3`. Short: inverso. Rechaza si inválido.
-3. Configura el par (margin mode isolado + leverage)
-4. Coloca limit entry order al precio calculado (50% OB/FVG)
-5. Notifica Risk Service inmediatamente (en PLACE, no en fill — para conteo correcto)
-6. Registra la posición en el monitor
-7. El monitor (polling cada 5s) gestiona el ciclo de vida
+3. **Chequea posición existente** — Si hay pending_entry (orden no llenada), la cancela y la reemplaza con el nuevo setup. Si hay posición activa (llenada), rechaza.
+4. Configura el par (margin mode isolado + leverage)
+5. Coloca limit entry order al precio calculado (50% OB/FVG)
+6. Notifica Risk Service inmediatamente (en PLACE, no en fill — para conteo correcto)
+7. Registra la posición en el monitor
+8. El monitor (polling cada 5s) gestiona el ciclo de vida
 
 ## Máquina de estados
 
@@ -67,6 +68,7 @@ emergency_pending ──[3 fails]──> emergency_failed  (requiere intervenci�
 5. **Notificación a Risk: en PLACE, no en fill.** Si hay 2 entries pendientes, Risk los cuenta como 2 posiciones abiertas.
 6. **Cancelled entries no cuentan como trades.** Si el entry timeout cancela una orden que nunca se llenó, no se notifica a Risk ni se envía Telegram de trade cerrado.
 7. **Shutdown: cancela entries pendientes, NO cierra posiciones activas.** Los SL/TP viven en el exchange y sobreviven al bot.
+10. **Dashboard cancel.** El monitor verifica `qf:cancel_request:{pair}` en Redis en cada poll cycle (antes de procesar cada posición). Si encuentra uno, consume la key y ejecuta: pending entry → cancela orden, active → cancela SL/TPs + market close. Método: `_check_cancel_request()` + `_handle_cancel()`.
 8. **Telegram notifications:** Entry fill → `notify_trade_opened`, position close → `notify_trade_closed`, SL/TP fail → `notify_emergency`. Fire-and-forget via `_safe_notify()` con error logging callback (no `ensure_future`).
 9. **DB persistence guards.** `_persist_trade_open/close` verifica que tanto `_data_store` como `.postgres` no sean None antes de escribir.
 

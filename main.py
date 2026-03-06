@@ -130,9 +130,8 @@ async def on_candle_confirmed(candle: Candle) -> None:
         f"confluences={setup.confluences}"
     )
 
-    # Telegram: setup detected
-    if _notifier is not None:
-        await _notifier.notify_setup_detected(setup)
+    # Note: setup_detected notification removed — too noisy.
+    # User only wants AI decisions and trade lifecycle events.
 
     # Layer 3: AI Service — Claude filter
     # Quick setups (C/D/E) bypass Claude — the data IS the signal
@@ -164,9 +163,7 @@ async def on_candle_confirmed(candle: Candle) -> None:
                 "direction": setup.direction,
                 "reason": approval.reason,
             })
-            # Telegram: risk rejected
-            if _notifier is not None:
-                await _notifier.notify_risk_rejected(setup, approval.reason)
+            # Note: risk_rejected notification removed — too noisy.
             return
         logger.info(
             f"Risk approved: size={approval.position_size:.6f} "
@@ -228,8 +225,7 @@ async def _evaluate_with_claude(setup, candle) -> "AIDecision | None":
     if reject_reason:
         logger.info(f"AI PRE-FILTERED: {reject_reason}")
         _persist_ai_pre_filter(setup, reject_reason)
-        if _notifier is not None:
-            await _notifier.notify_ai_pre_filtered(setup, reject_reason)
+        # Note: ai_pre_filtered notification removed — too noisy.
         return None
 
     # Claude evaluation

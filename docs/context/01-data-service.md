@@ -142,7 +142,7 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Key pattern: `qf:{category}:{pair}:{detail}` (e.g., `qf:candle:BTC/USDT:5m`)
 - Stores latest: candle, funding rate, OI, bot state (drawdown, cooldowns)
 - TTLs prevent stale data: candles 24h, funding 9h, OI 10min
-- `set_latest_candle()`, `get_latest_candle()`, etc.
+- `set_latest_candle()`, `get_latest_candle()`, `pop_cancel_request()`, etc.
 
 **PostgreSQL (historical):**
 - 4 tables matching CLAUDE.md schema: `candles`, `trades`, `ai_decisions`, `risk_events`

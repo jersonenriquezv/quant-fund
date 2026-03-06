@@ -3,24 +3,37 @@
 import { usePolling } from "@/lib/hooks";
 import type { RiskState } from "@/lib/api";
 
-function ArcGauge({ label, value, max, color }: { label: string; value: number; max: number; color: string }) {
+function ArcGauge({ label, value, max, threshold }: { label: string; value: number; max: number; threshold: number }) {
   const pct = Math.min(value / max, 1);
   const radius = 36;
-  const circumference = Math.PI * radius; // half circle
+  const circumference = Math.PI * radius;
   const offset = circumference * (1 - pct);
+
+  // Color: white below threshold, warning near, red at limit
+  const ratio = value / max;
+  let color: string;
+  let glow: string;
+  if (ratio >= 0.9) {
+    color = "var(--short)";
+    glow = "drop-shadow(0 0 4px rgba(239,68,68,0.4))";
+  } else if (ratio >= threshold / max) {
+    color = "var(--warning)";
+    glow = "drop-shadow(0 0 3px rgba(245,158,11,0.3))";
+  } else {
+    color = "var(--text-primary)";
+    glow = "drop-shadow(0 0 2px rgba(255,255,255,0.15))";
+  }
 
   return (
     <div style={{ textAlign: "center" }}>
-      <svg width="90" height="55" viewBox="0 0 90 55">
-        {/* Background arc */}
+      <svg width="90" height="55" viewBox="0 0 90 55" style={{ filter: glow }}>
         <path
           d="M 9 50 A 36 36 0 0 1 81 50"
           fill="none"
-          stroke="var(--bg-secondary)"
+          stroke="rgba(255,255,255,0.06)"
           strokeWidth="5"
           strokeLinecap="round"
         />
-        {/* Filled arc */}
         <path
           d="M 9 50 A 36 36 0 0 1 81 50"
           fill="none"
@@ -52,8 +65,8 @@ export function RiskGauge() {
     <div>
       <div className="card-title">Risk State</div>
       <div style={{ display: "flex", justifyContent: "space-around", marginBottom: 12 }}>
-        <ArcGauge label="Daily DD" value={Math.abs(dailyDD)} max={0.03} color={Math.abs(dailyDD) > 0.02 ? "var(--short)" : "var(--warning)"} />
-        <ArcGauge label="Weekly DD" value={Math.abs(weeklyDD)} max={0.05} color={Math.abs(weeklyDD) > 0.04 ? "var(--short)" : "var(--warning)"} />
+        <ArcGauge label="Daily DD" value={Math.abs(dailyDD)} max={0.03} threshold={0.02} />
+        <ArcGauge label="Weekly DD" value={Math.abs(weeklyDD)} max={0.05} threshold={0.04} />
       </div>
       <div style={{ textAlign: "center", fontSize: 13 }}>
         <span style={{ color: "var(--text-muted)" }}>Positions: </span>

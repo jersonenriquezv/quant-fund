@@ -60,7 +60,9 @@ class Settings:
     # PARES DE TRADING
     # ========================
     # Pares activos. El bot solo opera estos.
-    TRADING_PAIRS: List[str] = field(default_factory=lambda: ["BTC/USDT", "ETH/USDT"])
+    # BTC/USDT disabled — $20 margin × 7x = $140, OKX min is 0.01 BTC (~$690).
+    # Re-add when FIXED_TRADE_MARGIN >= $100 or capital increases.
+    TRADING_PAIRS: List[str] = field(default_factory=lambda: ["ETH/USDT"])
 
     # ========================
     # TIMEFRAMES
@@ -80,7 +82,7 @@ class Settings:
     RISK_PER_TRADE: float = float(os.getenv("RISK_PER_TRADE", "0.02"))  # 2%
 
     # Máximo apalancamiento permitido
-    MAX_LEVERAGE: int = int(os.getenv("MAX_LEVERAGE", "5"))
+    MAX_LEVERAGE: int = int(os.getenv("MAX_LEVERAGE", "7"))
 
     # Drawdown diario máximo antes de apagar el bot
     MAX_DAILY_DRAWDOWN: float = float(os.getenv("MAX_DAILY_DRAWDOWN", "0.03"))  # 3%
@@ -89,7 +91,7 @@ class Settings:
     MAX_WEEKLY_DRAWDOWN: float = float(os.getenv("MAX_WEEKLY_DRAWDOWN", "0.05"))  # 5%
 
     # Máximo de posiciones abiertas simultáneamente
-    MAX_OPEN_POSITIONS: int = int(os.getenv("MAX_OPEN_POSITIONS", "3"))
+    MAX_OPEN_POSITIONS: int = int(os.getenv("MAX_OPEN_POSITIONS", "5"))
 
     # Máximo de trades por día
     MAX_TRADES_PER_DAY: int = int(os.getenv("MAX_TRADES_PER_DAY", "5"))
@@ -387,6 +389,12 @@ class Settings:
     FIXED_TRADE_MARGIN: float = float(os.getenv("FIXED_TRADE_MARGIN", "100"))
     # Sandbox: limit order tolerance from mark price (0.05% = fills like a market but with realistic slippage)
     SANDBOX_LIMIT_TOLERANCE_PCT: float = 0.0005
+    # Exchange minimum order sizes per pair (base currency).
+    # Orders below these sizes will be rejected before reaching the exchange.
+    # BTC-USDT-SWAP: 1 contract = 0.01 BTC minimum.
+    MIN_ORDER_SIZES: dict = field(default_factory=lambda: {
+        "BTC/USDT": 0.01,
+    })
 
     # ========================
     # RECONNECTION

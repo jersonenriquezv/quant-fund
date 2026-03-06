@@ -1,5 +1,36 @@
 # Changelog — One-Man Quant Fund
 
+## [2026-03-07] — Dashboard redesign: Apple-inspired UI, cancel from dashboard, richer position cards, AI log mini-cards
+**Qué cambió:**
+- `globals.css` — True black/white palette, glassmorphism (backdrop-filter blur), 8px gaps, 12px border-radius, pill badges, hover effects, new CSS classes for positions/AI/cancel
+- `PositionCard.tsx` — Shows TP2/TP3, leverage, AI confidence bar, setup type, time open, P&L USD estimate, cancel button with inline confirm dialog
+- `AILog.tsx` — Mini-card layout with SVG confidence ring, expandable reasoning, setup type badge, warning pills, helpful empty state
+- `Header.tsx` — Shorter "QF" title, LIVE/DEMO pill badge (reads sandbox from health endpoint), clock shows time only
+- `PricePanel.tsx` — Subtle gradient background based on price change direction
+- `RiskGauge.tsx` — White/warning/red color progression with subtle glow
+- `routes/trades.py` — New `POST /trades/{pair}/cancel` writes cancel request to Redis (TTL 60s)
+- `queries.py` — `set_cancel_request()`, `get_cancel_request()` Redis helpers
+- `routes/health.py` — Returns `sandbox` boolean from env
+- `models.py` — Added `sandbox` to HealthResponse
+- `main.py` — CORS allows DELETE method
+- `monitor.py` — Checks Redis for cancel requests each poll cycle; cancels pending entries or market-closes active positions
+- `data_store.py` — `pop_cancel_request()` on RedisStore (check + consume atomically)
+
+## [2026-03-06] — SL retry + Telegram noise reduction
+**Qué cambió:**
+- `execution_service/monitor.py` — SL placement now retries up to 3 times with 0.3s/0.6s delays before triggering emergency close. Fixes OKX error 51205 ("Reduce Only is not available") caused by position state not propagating to OKX's algo order service immediately after entry fill (~300ms race window).
+- `main.py` — Removed noisy Telegram notifications: `notify_setup_detected` (fired on every detected setup), `notify_ai_pre_filtered` (pre-filter rejections), `notify_risk_rejected` (risk rejections). Remaining notifications: AI decisions (approved/rejected by Claude), trade opened/closed, emergency alerts, OB summary (4H), hourly status.
+- `config/settings.py` — `MAX_LEVERAGE` 5→7, `TRADING_PAIRS` removed BTC/USDT (insufficient capital for minimum order size 0.01 BTC).
+
+## [2026-03-06] — Pending entry replacement + phantom fix + MIN_ORDER_SIZES
+**Qué cambió:**
+- `execution_service/service.py` — Pending entries (unfilled limit orders) are now automatically cancelled and replaced when a new setup arrives for the same pair. Active (filled) positions still block new entries. Previously, a stale limit order would block ALL new setups for that pair for hours.
+- `execution_service/monitor.py` — New `cancel_and_remove_pending()` method for clean pending order replacement. Fixed phantom position bug: `_close_position("cancelled")` now calls `on_trade_cancelled()` to clean up Risk state (previously skipped entirely, leaving phantom open positions in the risk tracker).
+- `risk_service/service.py` + `risk_service/state_tracker.py` — New `on_trade_cancelled()` / `record_trade_cancelled()` methods: removes cancelled pending entries from open positions without counting as a trade or affecting PnL.
+- `config/settings.py` — `MAX_OPEN_POSITIONS` default 3→5. New `MIN_ORDER_SIZES` dict (BTC/USDT: 0.01 BTC) to reject trades below exchange minimum before wasting Claude API calls.
+- `risk_service/service.py` — Added minimum order size check after position sizing. BTC trades rejected early with clear message when position size < 0.01 BTC.
+- Tests: Updated `test_execution.py` (pending replacement test, active position block test, timeout cancellation now verifies `on_trade_cancelled`). New `TestTradeCancelled` class in `test_state_tracker.py` (4 tests).
+
 ## [2026-03-06] — Zone-based orders + bidirectional trading + entry timeout increase
 **Qué cambió:**
 - `strategy_service/setups.py` — Removed `_is_price_near_ob()` gate from Setup A/B. Bot now places limit orders at OB entry and waits for fill (zone-based). `_find_best_ob()` selects by volume ratio + recency. Added `_is_ob_within_range()` (5% max distance). Setup B OB+FVG selection uses same quality-based ranking.

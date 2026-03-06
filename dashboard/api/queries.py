@@ -97,6 +97,19 @@ async def get_trade_stats() -> dict:
     return d
 
 
+async def set_cancel_request(pair: str) -> None:
+    """Write a cancel request to Redis with 60s TTL."""
+    key = f"qf:cancel_request:{pair}"
+    await db.redis_client.set(key, "1", ex=60)
+
+
+async def get_cancel_request(pair: str) -> bool:
+    """Check if a cancel request exists for this pair."""
+    key = f"qf:cancel_request:{pair}"
+    val = await db.redis_client.get(key)
+    return val is not None
+
+
 async def pg_ping() -> bool:
     try:
         async with db.pg_pool.acquire() as conn:

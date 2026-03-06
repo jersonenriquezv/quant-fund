@@ -103,6 +103,24 @@ class RiskService:
                 reason=f"Position sizing error: {e}",
             )
 
+        # --- Exchange minimum order size check ---
+        min_size = settings.MIN_ORDER_SIZES.get(setup.pair, 0)
+        if min_size > 0 and position_size < min_size:
+            reason = (
+                f"Position size {position_size:.6f} below exchange minimum "
+                f"{min_size} for {setup.pair} "
+                f"(need ${min_size * setup.entry_price:.0f} notional, "
+                f"have ${position_size * setup.entry_price:.0f})"
+            )
+            logger.warning(f"Trade REJECTED: {reason}")
+            return RiskApproval(
+                approved=False,
+                position_size=0.0,
+                leverage=0.0,
+                risk_pct=0.0,
+                reason=reason,
+            )
+
         logger.info(
             f"Trade APPROVED: {setup.pair} {setup.direction} | "
             f"size={position_size:.6f} leverage={leverage:.2f}x risk={risk_pct*100:.1f}%"
@@ -131,6 +149,14 @@ class RiskService:
     ) -> None:
         """Notify Risk Service that a trade was closed."""
         self._state.record_trade_closed(pair, direction, pnl_pct, timestamp)
+
+    def on_trade_cancelled(self, pair: str, direction: str) -> None:
+        """Notify Risk Service that a pending entry was cancelled (never filled).
+
+        Removes from open positions count without counting as a trade
+        or affecting P&L tracking.
+        """
+        self._state.record_trade_cancelled(pair, direction)
 
     def update_capital(self, amount: float) -> None:
         """Update tracked capital (e.g. from exchange balance query)."""

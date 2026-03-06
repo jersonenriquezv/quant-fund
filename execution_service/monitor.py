@@ -94,6 +94,29 @@ class PositionMonitor:
         self._update_positions_cache()
         logger.info(f"Position registered: {pos.pair} {pos.direction} phase={pos.phase}")
 
+    async def cancel_and_remove_pending(self, pair: str) -> Optional[ManagedPosition]:
+        """Cancel a pending entry order and remove from tracking.
+
+        Used when replacing a stale pending order with a better entry.
+        Returns the old position if cancelled, None otherwise.
+        """
+        pos = self._positions.get(pair)
+        if pos is None or pos.phase != "pending_entry":
+            return None
+
+        if pos.entry_order_id:
+            await self._executor.cancel_order(pos.entry_order_id, pair)
+
+        old_pos = pos
+        self._positions.pop(pair, None)
+        self._update_positions_cache()
+
+        logger.info(
+            f"Pending entry replaced: {pair} {pos.direction} "
+            f"entry={pos.entry_price:.2f} (cancelled for new setup)"
+        )
+        return old_pos
+
     # ================================================================
     # Main poll loop
     # ================================================================
@@ -114,12 +137,38 @@ class PositionMonitor:
             if pos is None or pos.phase == "closed":
                 continue
 
+            # Check for dashboard cancel request
+            if self._check_cancel_request(pos):
+                continue
+
             if pos.phase == "pending_entry":
                 await self._check_pending_entry(pos)
             elif pos.phase in ("active", "tp1_hit", "tp2_hit"):
                 await self._check_active_position(pos)
             elif pos.phase == "emergency_pending":
                 await self._retry_emergency_close(pos)
+
+    def _check_cancel_request(self, pos: ManagedPosition) -> bool:
+        """Check Redis for a dashboard cancel request. Returns True if handled."""
+        if self._data_store is None:
+            return False
+        try:
+            if self._data_store.redis.pop_cancel_request(pos.pair):
+                logger.info(f"Cancel request from dashboard: {pos.pair} {pos.direction}")
+                asyncio.create_task(self._handle_cancel(pos))
+                return True
+        except Exception as e:
+            logger.error(f"Failed to check cancel request: {pos.pair} {e}")
+        return False
+
+    async def _handle_cancel(self, pos: ManagedPosition) -> None:
+        """Execute a cancel request from the dashboard."""
+        if pos.phase == "pending_entry":
+            if pos.entry_order_id:
+                await self._executor.cancel_order(pos.entry_order_id, pos.pair)
+            self._close_position(pos, "cancelled")
+        else:
+            await self._close_all_orders_and_market_close(pos)
 
     # ================================================================
     # State: pending_entry
@@ -181,9 +230,22 @@ class PositionMonitor:
             self._remap_sandbox_prices(pos)
 
         # Place stop-loss FIRST (most critical)
-        sl_order = await self._executor.place_stop_market(
-            pos.pair, close_side, pos.filled_size, pos.sl_price
-        )
+        # Retry up to 3 times with delays — OKX's algo order service may not
+        # recognize the position immediately after entry fill (error 51205).
+        sl_order = None
+        for attempt in range(3):
+            sl_order = await self._executor.place_stop_market(
+                pos.pair, close_side, pos.filled_size, pos.sl_price
+            )
+            if sl_order is not None:
+                break
+            if attempt < 2:
+                delay = 0.3 * (attempt + 1)  # 0.3s, 0.6s
+                logger.warning(
+                    f"SL placement attempt {attempt + 1}/3 failed, "
+                    f"retrying in {delay}s: {pos.pair}"
+                )
+                await asyncio.sleep(delay)
 
         if sl_order is None:
             logger.error(f"SL placement FAILED after entry fill — EMERGENCY CLOSE: {pos.pair}")
@@ -536,11 +598,15 @@ class PositionMonitor:
         # Update Redis positions cache
         self._update_positions_cache()
 
-        # Notify Risk Service (skip cancelled entries — not a real trade)
-        if self._risk is not None and reason != "cancelled":
-            self._risk.on_trade_closed(
-                pos.pair, pos.direction, pos.pnl_pct, pos.closed_at
-            )
+        # Notify Risk Service
+        if self._risk is not None:
+            if reason == "cancelled":
+                # Pending entry cancelled — remove from open count without PnL impact
+                self._risk.on_trade_cancelled(pos.pair, pos.direction)
+            else:
+                self._risk.on_trade_closed(
+                    pos.pair, pos.direction, pos.pnl_pct, pos.closed_at
+                )
 
         # Remove from tracking
         self._positions.pop(pos.pair, None)

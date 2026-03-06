@@ -21,6 +21,7 @@ export interface HealthData {
   status: string;
   postgres: boolean;
   redis: boolean;
+  sandbox: boolean;
 }
 
 export interface MarketData {

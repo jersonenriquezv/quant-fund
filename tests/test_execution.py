@@ -194,14 +194,55 @@ class TestExecutionServiceExecute:
         assert call_args[0][1] == "sell"  # side
         assert call_args[0][3] == pytest.approx(50000.0 * 0.9995, rel=1e-6)  # bid - tolerance
 
-    def test_skips_if_pair_already_managed(self):
+    def test_skips_if_pair_has_active_position(self):
+        """Active (filled) positions block new entries for the same pair."""
         monitor = MagicMock(spec=PositionMonitor)
-        monitor.positions = {"BTC/USDT": MagicMock()}
+        active_pos = MagicMock()
+        active_pos.phase = "active"
+        monitor.positions = {"BTC/USDT": active_pos}
 
         service = _make_service(monitor=monitor)
 
         result = asyncio.run(service.execute(make_setup(), make_approval(), 0.85))
         assert result is False
+
+    def test_replaces_pending_entry_with_new_setup(self):
+        """Pending (unfilled) entries are cancelled and replaced by new setups."""
+        risk = MagicMock()
+        executor = MagicMock(spec=OrderExecutor)
+        monitor = MagicMock(spec=PositionMonitor)
+
+        # Existing pending position
+        old_pos = MagicMock()
+        old_pos.phase = "pending_entry"
+        old_pos.direction = "short"
+        old_pos.entry_price = 2108.26
+        monitor.positions = {"ETH/USDT": old_pos}
+
+        # cancel_and_remove_pending returns the old position, then positions is empty
+        monitor.cancel_and_remove_pending = AsyncMock(return_value=old_pos)
+        # After cancel, positions dict is empty for the new entry check
+        def side_effect_cancel(pair):
+            monitor.positions = {}
+            return old_pos
+        monitor.cancel_and_remove_pending = AsyncMock(side_effect=side_effect_cancel)
+
+        executor.configure_pair = AsyncMock(return_value=True)
+        executor.fetch_ticker = AsyncMock(return_value={"ask": 2050.0, "bid": 2049.0})
+        executor.place_limit_order = AsyncMock(return_value=make_order("ord-new"))
+
+        service = _make_service(executor, monitor, risk)
+
+        setup = make_setup(
+            pair="ETH/USDT", direction="short", entry=2077.0, sl=2084.0,
+            tp1=2070.0, tp2=2063.0, tp3=2056.0
+        )
+        result = asyncio.run(service.execute(setup, make_approval(size=0.05), 0.75))
+
+        assert result is True
+        monitor.cancel_and_remove_pending.assert_called_once_with("ETH/USDT")
+        risk.on_trade_cancelled.assert_called_once_with("ETH/USDT", "short")
+        executor.place_limit_order.assert_called_once()
 
     def test_returns_false_on_configure_failure(self):
         executor = MagicMock(spec=OrderExecutor)
@@ -283,8 +324,10 @@ class TestEntryTimeout:
         executor.cancel_order.assert_called_once_with("ord-entry", "BTC/USDT")
         assert pos.phase == "closed"
         assert pos.close_reason == "cancelled"
-        # Cancelled entries are not real trades — Risk Service should NOT be notified
+        # Cancelled entries are not real trades — on_trade_closed NOT called
         risk.on_trade_closed.assert_not_called()
+        # But on_trade_cancelled IS called to remove phantom from risk state
+        risk.on_trade_cancelled.assert_called_once_with("BTC/USDT", "long")
 
     def test_quick_setup_uses_shorter_timeout(self):
         """Quick setups (C/D/E) use ENTRY_TIMEOUT_QUICK_SECONDS."""

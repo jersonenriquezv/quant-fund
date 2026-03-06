@@ -10,7 +10,7 @@ export function Header({ children }: { children?: React.ReactNode }) {
 
   useEffect(() => {
     const tick = () => {
-      setClock(new Date().toISOString().replace("T", " ").slice(0, 19) + " UTC");
+      setClock(new Date().toISOString().replace("T", " ").slice(11, 19) + " UTC");
     };
     tick();
     const id = setInterval(tick, 1000);
@@ -18,24 +18,25 @@ export function Header({ children }: { children?: React.ReactNode }) {
   }, []);
 
   const isOk = health?.status === "ok";
+  const isLive = health ? !health.sandbox : false;
 
   return (
     <div className="header card header-inner" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 20px" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <span className={`status-dot ${isOk ? "ok" : "down"}`} />
-        <span style={{ fontWeight: 700, fontSize: 15, letterSpacing: "0.05em" }}>
-          QUANT FUND
+        <span style={{ fontWeight: 700, fontSize: 14, letterSpacing: "0.05em" }}>
+          QF
+        </span>
+        <span className={`mode-badge ${isLive ? "mode-badge-live" : "mode-badge-demo"}`}>
+          {isLive ? "LIVE" : "DEMO"}
         </span>
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        <div className="demo-banner" style={{ padding: "3px 16px", borderRadius: 3, fontSize: 11 }}>
-          DEMO MODE
-        </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         {children}
       </div>
 
-      <div style={{ color: "var(--text-muted)", fontSize: 13, fontVariantNumeric: "tabular-nums" }}>
+      <div style={{ color: "var(--text-muted)", fontSize: 11, fontVariantNumeric: "tabular-nums" }}>
         {clock}
       </div>
     </div>
