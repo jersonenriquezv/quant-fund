@@ -1,6 +1,6 @@
 # AI Service
-> Última actualización: 2026-03-05
-> Estado: implementado (completo, integrado en main.py). Pre-filter determinístico + hybrid scalping mode.
+> Última actualización: 2026-03-06
+> Estado: implementado (completo, integrado en main.py). Pre-filter determinístico (HTF bias + funding + CVD). AI obligatorio en todas las profiles. Setup dedup cache.
 
 ## Qué hace (30 segundos)
 El AI Service es el consultor senior del sistema. Recibe cada trade setup del Strategy Service y lo pasa por Claude (Sonnet) para que evalúe si el contexto de mercado apoya ejecutarlo. Claude analiza funding rate, open interest, CVD, liquidaciones, whale movements y precio reciente. Si confidence >= 0.60 y approved=true, el trade pasa al Risk Service. Si no, se descarta.
@@ -38,13 +38,16 @@ AIDecision { confidence, approved, reasoning, adjustments, warnings }
 **System prompt** (se cachea, no cambia):
 - Rol: senior crypto trading analyst en fondo cuantitativo
 - Instrucción: responder SOLO con JSON válido
-- 7 factores a evaluar: funding, OI, CVD, liquidaciones, whales, HTF confluence, calidad del setup
-- Reglas críticas: no aprobar solo por patrón válido, funding extremo = escepticismo, CVD divergente = warning
+- HTF alignment ya garantizado por pre-filter — Claude no debe rechazar por HTF
+- 7 factores a evaluar: funding, CVD (más peso), liquidaciones, whales, OI (snapshot-only), calidad del setup con confluences etiquetadas, R:R
+- Reglas críticas: no aprobar solo por patrón, funding extremo = escepticismo, CVD multi-timeframe divergente = warning
+- Sin cuota de aprobación — aprobar solo cuando evidencia claramente apoya
 
 **User prompt** (por cada evaluación):
-- Setup completo: pair, direction, entry, SL, TPs, confluences
+- Setup completo: pair, direction, entry, SL, TPs, R:R computado (TP1/TP2/TP3/blended)
+- Confluences etiquetadas: cada una marcada como [SUPPORTING] o [CONTEXT] con descripción humana
 - Funding rate con interpretación (normal/extreme)
-- Open interest
+- Open interest (snapshot sin tendencia — solo contexto de tamaño de mercado)
 - CVD con buy dominance %
 - Liquidaciones recientes (long vs short)
 - Whale activity (exchange transfers = bearish/bullish signal, non-exchange transfers = neutral/informational)
@@ -56,9 +59,11 @@ AIDecision { confidence, approved, reasoning, adjustments, warnings }
 - Clase: `PromptBuilder`
 - `build_system_prompt()` → system prompt cacheado
 - `build_evaluation_prompt(setup, snapshot, candles_context)` → user prompt con datos concretos
+- `_format_confluences(confluences, direction)` → convierte labels internos a descripción humana con tags [SUPPORTING]/[CONTEXT]
+- Computa R:R por TP level y blended R:R en el setup section
 - Interpreta funding rate: normal/extreme basado en `FUNDING_EXTREME_THRESHOLD` (0.03%)
+- OI marcado como snapshot-only (sin tendencia)
 - Maneja datos faltantes gracefully ("Not available")
-- Agrega interpretaciones para que Claude no tenga que calcular (e.g., buy dominance %)
 
 ### `ai_service/claude_client.py` — Wrapper del API
 - Clase: `ClaudeClient`
@@ -100,9 +105,9 @@ AIDecision { confidence, approved, reasoning, adjustments, warnings }
 ## Tests
 
 41 tests en 3 archivos:
-- `test_prompt_builder.py` (18) — system prompt, evaluation prompt, datos faltantes, funding extremo, non-exchange whale labels, profile-aware prompts (scalping section, HTF bias annotation)
-- `test_claude_client.py` (9) — JSON válido/inválido, code fences, API errors, timeout, rate limit, approved string type validation
-- `test_ai_service.py` (14) — approval/rejection, confidence clamping, double check, API failure, disabled mode, profile-specific confidence thresholds, data service integration
+- `test_prompt_builder.py` — system prompt, evaluation prompt, datos faltantes, funding extremo, non-exchange whale labels, profile-aware prompts
+- `test_claude_client.py` — JSON válido/inválido, code fences, API errors, timeout, rate limit, approved string type validation
+- `test_ai_service.py` — approval/rejection, confidence clamping, double check, API failure, disabled mode, profile-specific confidence thresholds, data service integration
 
 ## Persistence
 
@@ -116,7 +121,12 @@ The dashboard AILog component shows pair, direction badge, and approved/rejected
 
 ## Pre-Filter (todas las profiles)
 
-Antes de llamar a Claude API, `main.py:_pre_filter_for_claude()` ejecuta 2 checks determinísticos que rechazan setups obvios sin gastar tokens. Los checks son conservadores — si los datos no están disponibles, el check se salta (no genera falsos rechazos).
+Antes de llamar a Claude API, `main.py:_pre_filter_for_claude()` ejecuta 3 checks determinísticos que rechazan setups obvios sin gastar tokens. Los checks son conservadores — si los datos no están disponibles, el check se salta (no genera falsos rechazos).
+
+### Check 0: HTF bias conflict
+- Long + HTF bias "bearish" → rechaza
+- Short + HTF bias "bullish" → rechaza
+- **Atrapa ~90% de los rechazos de Claude** — gratis y determinístico
 
 ### Check 1: Funding extreme contra dirección
 - Long + `funding_rate > FUNDING_EXTREME_THRESHOLD` (0.03%) → rechaza
@@ -134,46 +144,30 @@ Antes de llamar a Claude API, `main.py:_pre_filter_for_claude()` ejecuta 2 check
 - Telegram: "AI PRE-FILTERED" con razón
 - Dashboard AILog: aparece como decisión rechazada (approved=False)
 
-**Por qué estos checks:** Ambos checks replican reglas críticas del system prompt de Claude. Funding extreme y CVD divergence son condiciones que Claude siempre rechaza — el pre-filter evita la llamada API.
+## Setup Dedup Cache
 
-## Profile-Aware Evaluation
+`main.py` mantiene un cache de deduplicación para evitar re-enviar el mismo setup a Claude cada 5 minutos (cuando cierra la misma candle LTF):
 
-The AI filter adapts its behavior based on the active strategy profile (`settings.STRATEGY_PROFILE`). This is injected in the **user prompt** (not the system prompt, which is cached at `AIService.__init__`).
+- Key: `(pair, direction, setup_type, entry_price_rounded)`
+- TTL: 15 minutos (`_SETUP_DEDUP_TTL_SECONDS = 900`)
+- Si el setup ya fue evaluado dentro del TTL → skip (log debug, return None)
+- El cache se actualiza DESPUÉS de la evaluación exitosa de Claude
 
-### Scalping Profile — Modo Híbrido
-El scalping profile usa un enfoque híbrido: no todo scalp bypasea Claude.
-
-**HTF-aligned scalps** (dirección alineada con HTF bias):
-- Long + bias "bullish", o Short + bias "bearish"
-- Son setups de mayor probabilidad que se benefician del análisis macro de Claude
-- Pasan por pre-filter → Claude → Risk Service (mismo flujo que default/aggressive)
-
-**Pure LTF scalps** (dirección NO alineada con HTF bias, o bias "undefined"):
-- Operan solo por momentum del LTF, sin confirmación macro
-- Bypasean Claude enteramente → directo a Risk Service
-- Log: `"AI SKIPPED: scalping LTF-only ({direction}/{bias})"`
-- PostgreSQL: `approved=True, confidence=0.0, reasoning="Scalping profile — AI filter bypassed"`
-- Telegram: "AI SKIPPED (scalping)"
+## Pipeline AI (todas las profiles)
 
 ```
-Setup detected (scalping profile)
+Setup detected (default o aggressive)
   |
-  +-- NOT HTF-aligned --> AI SKIPPED --> Risk Service
+  +-- Dedup cache hit? --> skip (ya evaluado)
   |
-  +-- HTF-aligned --> pre-filter --> Claude --> Risk Service
-```
-
-### Default / Aggressive Profiles
-Todos los setups pasan por pre-filter → Claude. No cambia la lógica.
-
-```
-Setup detected (default/aggressive)
+  +-- pre-filter (HTF bias, funding, CVD) --> rechaza sin Claude
   |
-  +-- pre-filter --> Claude --> Risk Service
+  +-- Claude evalúa --> AIDecision
+  |
+  +-- approved + confidence >= threshold? --> Risk Service
 ```
 
-### Why user prompt, not system prompt?
-The system prompt is cached at `AIService.__init__` and does not update when the profile is switched via the dashboard. The user prompt is rebuilt on every evaluation, so it always reflects the current profile.
+**AI filter es OBLIGATORIO en todas las profiles.** No hay bypass. No hay auto-approve.
 
 ## FAQ
 

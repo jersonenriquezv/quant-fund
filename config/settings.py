@@ -149,18 +149,12 @@ class Settings:
 
     # --- Strategy behavior (profile-controlled) ---
     # If True, LTF structure (CHoCH/BOS) must align with HTF bias direction.
-    # Scalping sets False to allow LTF-only trades regardless of HTF.
     REQUIRE_HTF_LTF_ALIGNMENT: bool = True
     # If True, trades in the equilibrium zone (around 50% of range) are blocked.
-    # Scalping sets False to allow trading near equilibrium.
     ALLOW_EQUILIBRIUM_TRADES: bool = False
     # If True, 4H trend must be defined for HTF bias. If False, 1H alone is enough.
     HTF_BIAS_REQUIRE_4H: bool = True
-    # If True, position sizing uses capital * MAX_LEVERAGE / entry_price
-    # instead of risk-based sizing. Risk per trade varies with SL distance.
-    FORCE_MAX_LEVERAGE: bool = False
-    # If True, Premium/Discount zone alignment is enforced (long=discount, short=premium).
-    # If False, trades are allowed in any zone regardless of direction.
+    # PD alignment is non-negotiable — core SMC principle (long=discount, short=premium).
     REQUIRE_PD_ALIGNMENT: bool = True
 
     # ========================
@@ -352,6 +346,8 @@ class Settings:
     MARGIN_MODE: str = "isolated"
     # Max seconds a trade can stay open (12 hours)
     MAX_TRADE_DURATION_SECONDS: int = int(os.getenv("MAX_TRADE_DURATION_SECONDS", "43200"))
+    # Sandbox: limit order tolerance from mark price (0.05% = fills like a market but with realistic slippage)
+    SANDBOX_LIMIT_TOLERANCE_PCT: float = 0.0005
 
     # ========================
     # RECONNECTION
@@ -382,48 +378,23 @@ STRATEGY_PROFILES: dict[str, dict] = {
         # No overrides — uses Settings() defaults
     },
     "aggressive": {
-        "REQUIRE_HTF_LTF_ALIGNMENT": False,
-        "REQUIRE_PD_ALIGNMENT": False,
-        "ALLOW_EQUILIBRIUM_TRADES": True,
-        "HTF_BIAS_REQUIRE_4H": False,
-        "FORCE_MAX_LEVERAGE": True,
-        "MAX_DAILY_DRAWDOWN": 0.20,   # 20% ($20 on $100)
-        "MAX_WEEKLY_DRAWDOWN": 0.40,  # 40% ($40 on $100)
-        "COOLDOWN_MINUTES": 10,
-        "MAX_TRADES_PER_DAY": 20,
-        "AI_MIN_CONFIDENCE": 0.50,
-        "OB_PROXIMITY_PCT": 0.008,
-        "PD_EQUILIBRIUM_BAND": 0.005,
-        "SETUP_A_MAX_SWEEP_CHOCH_GAP": 40,
-        "OB_MIN_VOLUME_RATIO": 1.0,
-        "SWEEP_MIN_VOLUME_RATIO": 1.2,
-        "MIN_RISK_REWARD": 1.0,
-        "OB_MAX_AGE_HOURS": 72,
-        "FVG_MAX_AGE_HOURS": 72,
-    },
-    "scalping": {
-        # Unlock hardcoded checks
-        "REQUIRE_HTF_LTF_ALIGNMENT": False,
-        "ALLOW_EQUILIBRIUM_TRADES": True,
-        "HTF_BIAS_REQUIRE_4H": False,
-        # Wider entry zones
-        "OB_PROXIMITY_PCT": 0.006,
-        "PD_EQUILIBRIUM_BAND": 0.005,
-        "SETUP_A_MAX_SWEEP_CHOCH_GAP": 40,
-        # Lower volume thresholds
-        "OB_MIN_VOLUME_RATIO": 1.0,
-        "SWEEP_MIN_VOLUME_RATIO": 1.2,
-        # Faster pattern turnover
-        "OB_MAX_AGE_HOURS": 24,
-        "FVG_MAX_AGE_HOURS": 24,
-        # Accept tighter R:R
-        "MIN_RISK_REWARD": 1.0,
-        # Lower AI confidence threshold (prompt fix raises valid scalp confidence)
-        "AI_MIN_CONFIDENCE": 0.50,
-        # More trades allowed per day
-        "MAX_TRADES_PER_DAY": 20,
-        # Shorter cooldown
-        "COOLDOWN_MINUTES": 10,
+        # More opportunities, same core SMC rules.
+        # PD alignment and HTF alignment stay ON — disabling them
+        # violates SMC fundamentals (longs in premium = suicide trades).
+        # AI filter ALWAYS runs — no auto-approve bypass.
+        "HTF_BIAS_REQUIRE_4H": False,        # 1H alone is sufficient
+        "AI_MIN_CONFIDENCE": 0.50,            # Lower threshold (default 0.60)
+        "MAX_DAILY_DRAWDOWN": 0.05,           # 5% (default 3%)
+        "MAX_WEEKLY_DRAWDOWN": 0.10,          # 10% (default 5%)
+        "COOLDOWN_MINUTES": 15,               # 15 min (default 30)
+        "MAX_TRADES_PER_DAY": 10,             # 10 (default 5)
+        "OB_PROXIMITY_PCT": 0.008,            # 0.8% (default 0.3%)
+        "OB_MIN_VOLUME_RATIO": 1.2,           # 1.2x (default 1.5x)
+        "OB_MAX_AGE_HOURS": 72,               # 72h (default 48)
+        "FVG_MAX_AGE_HOURS": 72,              # 72h (default 48)
+        "MIN_RISK_REWARD": 1.2,               # 1:1.2 (default 1:1.5)
+        "SWEEP_MIN_VOLUME_RATIO": 1.5,        # 1.5x (default 2.0x)
+        "PD_EQUILIBRIUM_BAND": 0.01,          # 1% (default 2%)
     },
 }
 

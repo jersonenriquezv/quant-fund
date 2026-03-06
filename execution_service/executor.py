@@ -97,6 +97,22 @@ class OrderExecutor:
             return False
 
     # ================================================================
+    # Price fetching
+    # ================================================================
+
+    async def fetch_ticker(self, pair: str) -> Optional[dict]:
+        """Fetch current ticker (bid/ask/last) for a pair."""
+        symbol = self._ccxt_symbol(pair)
+        try:
+            ticker = await self._run_sync(
+                self._exchange.fetch_ticker, symbol
+            )
+            return ticker
+        except (ccxt.NetworkError, ccxt.ExchangeError) as e:
+            logger.error(f"Fetch ticker error: {pair} {e}")
+            return None
+
+    # ================================================================
     # Order placement
     # ================================================================
 

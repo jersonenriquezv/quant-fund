@@ -1,6 +1,6 @@
 # Arquitectura del Sistema
-> Última actualización: 2026-03-05
-> Estado: **5/5 capas implementadas** — pipeline completo Data → Strategy → AI → Risk → Execution. Auditoría completa realizada: 12 CRITICALs corregidos. Perfil aggressive configurado con FORCE_MAX_LEVERAGE y PD alignment desactivado.
+> Última actualización: 2026-03-06
+> Estado: **5/5 capas implementadas** — pipeline completo Data → Strategy → AI → Risk → Execution. 2 perfiles (default/aggressive). AI filter obligatorio en todas las profiles. Sandbox usa limit orders con tolerancia.
 
 ## Qué hace (para entenderlo rápido)
 El sistema es un bot de trading que funciona como una línea de ensamblaje. Los datos entran por un lado, pasan por 5 filtros en orden, y si todos dicen "sí", se ejecuta el trade. Si cualquier filtro dice "no", el trade se descarta.
@@ -66,16 +66,16 @@ Sin esta arquitectura, tendríamos un solo programa gigante donde todo está mez
 2. Cuando hay una vela nueva (cada 5m/15m), manda los datos al Strategy Service
 3. Strategy Service analiza los datos buscando patrones SMC
 4. Si encuentra un setup completo (Setup A o B con confluencia), lo manda al AI Service
-5. AI Service primero pasa el setup por un **pre-filter determinístico** (funding extreme, CVD divergencia) — si falla, se rechaza sin llamar a Claude
-6. Si pasa el pre-filter, Claude (Sonnet) evalúa: "¿el contexto apoya este trade?" — confianza ≥ 0.60 para aprobar
-7. **Scalping híbrido:** scalps alineados con HTF pasan por Claude; scalps LTF-only lo bypassean
+5. AI Service primero pasa el setup por un **pre-filter determinístico** (HTF bias conflict, funding extreme, CVD divergencia) — si falla, se rechaza sin llamar a Claude
+6. Si pasa el pre-filter, Claude (Sonnet) evalúa: "¿el contexto apoya este trade?" — confianza ≥ 0.60 para aprobar (0.50 en aggressive)
+7. **AI filter es OBLIGATORIO** — todo trade en toda profile pasa por Claude. Sin excepciones.
 8. Risk Service verifica TODOS los guardrails y calcula el position size
-9. Execution Service coloca la orden limit en OKX, con SL (stop-market) y 3 TPs (limit)
+9. Execution Service coloca la orden limit en OKX, con SL (stop-market) y 3 TPs (limit). **En sandbox**: limit al ask/bid actual + 0.05% tolerancia (evita slippage de market orders).
 10. PositionMonitor gestiona el ciclo de vida: entry fill → TP1 (SL→breakeven) → TP2 (SL→TP1) → TP3/SL
 
 **Regla clave:** Si CUALQUIER servicio dice NO, el trade se descarta. No hay "pero" ni "tal vez".
 
-**Notificaciones Telegram:** En cada paso del pipeline (setup detectado, AI pre-filtered, AI decision, AI skipped, risk rejection, trade abierto/cerrado, emergencias, whale movements con nombre de wallet, resumen de OBs cada 4H), el bot envía push notification al celular via Telegram Bot API. Fire-and-forget — si Telegram falla, el bot sigue operando.
+**Notificaciones Telegram:** En cada paso del pipeline (setup detectado, AI pre-filtered, AI decision, risk rejection, trade abierto/cerrado, emergencias, whale movements con nombre de wallet, resumen de OBs cada 4H), el bot envía push notification al celular via Telegram Bot API. Fire-and-forget — si Telegram falla, el bot sigue operando.
 
 ## Detalles técnicos
 
@@ -169,10 +169,10 @@ Actualmente TP3 usa una limit order fija al siguiente nivel de liquidez. CLAUDE.
 - Ver `docs/to-fix.md` para backlog completo (~30 IMPORTANT + 29 MINOR issues)
 
 ## Cambios recientes
+- 2026-03-06: **Profile cleanup + slippage fix** — Scalping eliminado. Aggressive rediseñado: PD/HTF alignment ON, AI obligatorio, DD 5%/10%, R:R 1.2. `FORCE_MAX_LEVERAGE` eliminado. Sandbox usa limit orders con tolerancia 0.05% (era market orders con 13.8% slippage). Setup dedup cache evita re-evaluar mismo setup en Claude.
 - 2026-03-05: **Whale notifications + 4H OB summary** — Notificaciones whale ahora muestran nombre de wallet (campo `wallet_label`). Nuevo `notify_ob_summary()` envía resumen de OBs activos cada 4H.
-- 2026-03-05: **Aggressive profile overhaul** — `FORCE_MAX_LEVERAGE` (sizing fijo con capital completo), `REQUIRE_PD_ALIGNMENT=False`, DD limits al 20%/40%, AI confidence 0.50, 20 trades/día. Perfil configurado en docker-compose.yml.
 - 2026-03-05: **Algo order fetch rewrite** — `_fetch_algo_order` usa OKX native API (`privateGetTradeOrdersAlgoPending`/`History`) en vez de ccxt `fetch_open_orders` que causaba 6,871 errores repetidos.
-- 2026-03-05: **Hybrid scalping + pre-filter** — Scalping profile ahora es híbrido: HTF-aligned scalps pasan por Claude, LTF-only scalps bypasean. Pre-filter determinístico (funding extreme, CVD divergencia) rechaza setups obvios antes de llamar a Claude (todas las profiles). Nuevo `notify_ai_pre_filtered()` en Telegram.
+- 2026-03-05: **Pre-filter** — Pre-filter determinístico (HTF bias conflict, funding extreme, CVD divergencia) rechaza setups obvios antes de llamar a Claude.
 - 2026-03-04: **Strategy profiles** — 3 perfiles (default/aggressive/scalping) switcheables desde dashboard o env var. Backtester en `scripts/backtest.py` para replay histórico.
 - 2026-03-04: **Whale tracking completo** — Todas las transferencias grandes se trackean (no solo exchange). 4 acciones: deposit (bearish), withdrawal (bullish), transfer_out (neutral), transfer_in (neutral). ETH + BTC.
 - 2026-03-04: **Auditoría completa** — 12 CRITICAL corregidos (PG reconnection, pipeline locks, OKX algo orders, emergency close retry, sweep temporal guard, OB break_timestamp, etc.). 28 IMPORTANT + 29 MINOR documentados en `docs/to-fix.md`.

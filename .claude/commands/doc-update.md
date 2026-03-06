@@ -1,1 +1,1 @@
-Lee el código actual de cada servicio y actualiza los archivos en docs/context/ para que reflejen lo que realmente está implementado. Agrega entrada al changelog.md.
+Run `git diff --name-only HEAD` (or staged if there are staged changes) to find which services changed. For ONLY those services, read the modified source files and update the matching `docs/context/` file to reflect the current implementation. Add a one-line entry to `docs/context/changelog.md`. Do NOT read or update services that didn't change.

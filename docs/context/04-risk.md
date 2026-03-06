@@ -1,6 +1,6 @@
 # Risk Service
-> Última actualización: 2026-03-05
-> Estado: implementado (completo, integrado en main.py). 1 IMPORTANT + 5 MINOR fixes applied. FORCE_MAX_LEVERAGE mode added.
+> Última actualización: 2026-03-06
+> Estado: implementado (completo, integrado en main.py). FORCE_MAX_LEVERAGE eliminado — risk-based sizing siempre.
 
 ## Qué hace (30 segundos)
 El Risk Service es el guardián del capital. Antes de que cualquier trade se ejecute, pasa por 6 checks obligatorios (guardrails) y un cálculo de tamaño de posición. Si cualquier check falla, el trade NO se ejecuta. Sin excepciones.
@@ -47,8 +47,7 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 
 ### `risk_service/position_sizer.py` — Calculadora de posición
 - Clase: `PositionSizer`
-- **Modo risk-based (default):** `position_size = (capital × risk_pct) / abs(entry - sl)`. Leverage: `(position_size × entry) / capital`. Si leverage > MAX_LEVERAGE (5x), recorta la posición.
-- **Modo FORCE_MAX_LEVERAGE (aggressive):** `position_size = capital * MAX_LEVERAGE / entry_price`. Ignora risk-based sizing, usa capital completo con max leverage. Activado con `FORCE_MAX_LEVERAGE=True` en settings.
+- **Risk-based sizing (siempre):** `position_size = (capital × risk_pct) / abs(entry - sl)`. Leverage: `(position_size × entry) / capital`. Si leverage > MAX_LEVERAGE (5x), recorta la posición.
 - Validaciones: entry == sl → error, capital ≤ 0 → error, risk ≤ 0 → error
 
 ### `risk_service/guardrails.py` — 6 checks puros
@@ -98,12 +97,11 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 | `MAX_TRADES_PER_DAY` | `5` | Trades por día máximo |
 | `COOLDOWN_MINUTES` | `30` | Minutos de espera post-pérdida |
 | `MIN_RISK_REWARD` | `1.5` | R:R mínimo (TP2 vs SL) |
-| `FORCE_MAX_LEVERAGE` | `false` | Modo sizing fijo (capital × leverage / price) |
 
 ## Tests
 
 75 tests en 4 archivos:
-- `test_position_sizer.py` (16) — fórmula, leverage cap, edge cases, FORCE_MAX_LEVERAGE (BTC, ETH, ignores SL distance)
+- `test_position_sizer.py` — fórmula, leverage cap, edge cases
 - `test_guardrails.py` (23) — cada regla pass/fail/boundary/edge
 - `test_state_tracker.py` (23) — lifecycle, DD, cooldown, date reset, year boundary, direction matching
 - `test_risk_service.py` (13) — check() integración: approvals, rejections, lifecycle, entry==SL
@@ -135,8 +133,7 @@ No crashea. El trade se registra igual (P&L, cooldown, trades_today), pero no re
 
 ## Cambios recientes
 
-- **2026-03-05** — `FORCE_MAX_LEVERAGE` mode: position_size = capital × MAX_LEVERAGE / entry_price. Para aggressive profile con $100 capital → posiciones de $500 notional a 5x.
-- **2026-03-05** — Aggressive profile DD limits subidos: 20% diario ($20), 40% semanal ($40) — para experimentación en sandbox con $100.
+- **2026-03-06** — `FORCE_MAX_LEVERAGE` eliminado. Risk-based sizing siempre. Aggressive profile: DD 5%/10% (era 20%/40%), R:R 1.2 (era 1.0).
 - **2026-03-04** — I-R1: `record_trade_closed` ahora recibe `direction`, matchea por `(pair, direction)`. Todos los callers actualizados.
 - **2026-03-04** — M-R1: `_check_date_reset` usa `date()` en vez de `tm_yday` (fix año boundary Dec 31 → Jan 1).
 - **2026-03-04** — M-R3: `_persist_failures` counter en RiskService — logea warning tras 5 fallos consecutivos de PostgreSQL.

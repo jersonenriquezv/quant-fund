@@ -28,6 +28,11 @@ from shared.notifier import TelegramNotifier
 
 logger = setup_logger("main")
 
+# Setup deduplication cache — prevents sending the same setup to Claude every 5m candle.
+# Key: (pair, direction, setup_type, entry_price), Value: unix timestamp of last eval.
+_setup_dedup_cache: dict[tuple, float] = {}
+_SETUP_DEDUP_TTL_SECONDS = 900  # 15 min — re-evaluate if OB changed or price moved
+
 # Module-level references set by main() so the callback can access them
 _data_service: DataService | None = None
 _strategy_service: StrategyService | None = None
@@ -129,63 +134,12 @@ async def on_candle_confirmed(candle: Candle) -> None:
     if _notifier is not None:
         await _notifier.notify_setup_detected(setup)
 
-    # Layer 3: AI Service — Claude filter (hybrid scalping + pre-filter)
+    # Layer 3: AI Service — Claude filter (every trade, every profile)
     decision = None
-    if settings.STRATEGY_PROFILE == "scalping":
-        # Hybrid scalping: HTF-aligned scalps go to Claude, pure LTF scalps bypass
-        htf_bias = _strategy_service.get_htf_bias(setup.pair)
-        htf_aligned = (
-            (setup.direction == "long" and htf_bias == "bullish")
-            or (setup.direction == "short" and htf_bias == "bearish")
-        )
-        if htf_aligned:
-            # HTF-aligned scalp — worth Claude's analysis
-            logger.info(f"Scalping HTF-aligned ({setup.direction}/{htf_bias}) — sending to Claude")
-            decision = await _evaluate_with_claude(setup, candle)
-            if decision is None:
-                return  # pre-filter rejected or Claude rejected
-            if not decision.approved:
-                return
-        else:
-            # Pure LTF scalp — bypass Claude entirely
-            logger.info(f"AI SKIPPED: scalping LTF-only ({setup.direction}/{htf_bias}) — bypassing Claude")
-            _persist_ai_skip(setup)
-            if _notifier is not None:
-                await _notifier.notify_ai_skipped(setup)
-    elif settings.STRATEGY_PROFILE == "aggressive":
-        # Aggressive: auto-approve strong setups, only send borderline to Claude
-        htf_bias = _strategy_service.get_htf_bias(setup.pair) if _strategy_service else "undefined"
-        htf_aligned = (
-            (setup.direction == "long" and htf_bias == "bullish")
-            or (setup.direction == "short" and htf_bias == "bearish")
-        )
-        n_confluences = len(setup.confluences)
-
-        if htf_aligned and n_confluences >= 3:
-            # Strong setup — skip Claude, auto-approve
-            logger.info(
-                f"AI SKIPPED: aggressive auto-approve "
-                f"({n_confluences} confluences, HTF-aligned {setup.direction}/{htf_bias})"
-            )
-            _persist_ai_skip(setup)
-            if _notifier is not None:
-                await _notifier.notify_ai_skipped(setup)
-        else:
-            # Borderline — send to Claude
-            logger.info(
-                f"Aggressive sending to Claude "
-                f"({n_confluences} confluences, htf_aligned={htf_aligned})"
-            )
-            decision = await _evaluate_with_claude(setup, candle)
-            if decision is None:
-                return
-            if not decision.approved:
-                return
-    elif _ai_service is not None and _data_service is not None:
-        # Default — always go through pre-filter + Claude
+    if _ai_service is not None and _data_service is not None:
         decision = await _evaluate_with_claude(setup, candle)
         if decision is None:
-            return  # pre-filter rejected or Claude rejected
+            return  # pre-filter rejected or Claude failed
         if not decision.approved:
             return
 
@@ -244,6 +198,19 @@ async def _evaluate_with_claude(setup, candle) -> "AIDecision | None":
     if _ai_service is None or _data_service is None:
         return None
 
+    # Dedup: don't re-send the same setup to Claude within TTL
+    dedup_key = (setup.pair, setup.direction, setup.setup_type,
+                 round(setup.entry_price, 2))
+    now = time.time()
+    last_eval = _setup_dedup_cache.get(dedup_key)
+    if last_eval and (now - last_eval) < _SETUP_DEDUP_TTL_SECONDS:
+        logger.debug(
+            f"Setup dedup: {setup.pair} {setup.direction} {setup.setup_type} "
+            f"entry={setup.entry_price:.2f} — already evaluated "
+            f"{int(now - last_eval)}s ago, skipping Claude"
+        )
+        return None
+
     snapshot = _data_service.get_market_snapshot(candle.pair)
 
     # Pre-filter: reject obvious losers before calling Claude
@@ -257,6 +224,7 @@ async def _evaluate_with_claude(setup, candle) -> "AIDecision | None":
 
     # Claude evaluation
     decision = await _ai_service.evaluate(setup, snapshot)
+    _setup_dedup_cache[dedup_key] = time.time()
     _persist_ai_decision(None, decision, setup)
     if _notifier is not None:
         await _notifier.notify_ai_decision(setup, decision)
@@ -278,6 +246,15 @@ def _pre_filter_for_claude(setup, snapshot) -> str | None:
     Returns rejection reason string if setup should be rejected, None if it should
     proceed to Claude. Conservative: skips checks when data is unavailable.
     """
+    # Check 0: HTF bias conflicts with trade direction
+    # This catches 90%+ of Claude rejections — free and deterministic.
+    if _strategy_service is not None:
+        htf_bias = _strategy_service.get_htf_bias(setup.pair)
+        if setup.direction == "long" and htf_bias == "bearish":
+            return f"Direction (long) conflicts with HTF bias (bearish)"
+        if setup.direction == "short" and htf_bias == "bullish":
+            return f"Direction (short) conflicts with HTF bias (bullish)"
+
     threshold = settings.FUNDING_EXTREME_THRESHOLD
 
     # Check 1: Funding rate extreme against trade direction
@@ -322,25 +299,6 @@ def _persist_ai_pre_filter(setup, reason: str) -> None:
     except Exception as e:
         logger.error(f"Failed to persist AI pre-filter: {e}")
 
-
-def _persist_ai_skip(setup) -> None:
-    """Write synthetic AI decision for scalping bypass (audit trail)."""
-    if _data_service is None:
-        return
-    try:
-        _data_service.postgres.insert_ai_decision(
-            trade_id=None,
-            confidence=0.0,
-            reasoning="Scalping profile — AI filter bypassed",
-            adjustments=None,
-            warnings=[],
-            pair=setup.pair,
-            direction=setup.direction,
-            setup_type=setup.setup_type,
-            approved=True,
-        )
-    except Exception as e:
-        logger.error(f"Failed to persist AI skip: {e}")
 
 
 def _persist_risk_event(event_type: str, details: dict) -> None:

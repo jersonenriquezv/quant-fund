@@ -19,13 +19,8 @@ AVAILABLE_PROFILES = {
     },
     "aggressive": {
         "label": "Aggressive",
-        "description": "Wider zones, lower thresholds (~3-5 setups/day)",
+        "description": "Wider zones, lower thresholds, 1H HTF sufficient (~3-5 setups/day)",
         "color": "#eab308",  # yellow
-    },
-    "scalping": {
-        "label": "Scalping",
-        "description": "LTF-only trades, equilibrium allowed (~10-20+ setups/day)",
-        "color": "#ef4444",  # red
     },
 }
 

@@ -76,7 +76,7 @@ class TestSystemPrompt:
     def test_contains_decision_guidelines(self, builder):
         prompt = builder.build_system_prompt()
         assert "0.60" in prompt
-        assert "30-60%" in prompt
+        assert "No quota" in prompt
 
     def test_contains_critical_rules(self, builder):
         prompt = builder.build_system_prompt()
@@ -221,26 +221,8 @@ class TestEvaluationPrompt:
 
 class TestProfileAwarePrompts:
 
-    def test_scalping_profile_section_included(self, builder):
-        """Scalping profile injects relaxation section before setup data."""
-        original = settings.STRATEGY_PROFILE
-        try:
-            settings.STRATEGY_PROFILE = "scalping"
-            setup = _make_setup(direction="short")
-            snapshot = _make_snapshot()
-            prompt = builder.build_evaluation_prompt(setup, snapshot, {})
-
-            assert "INFORMATIONAL ONLY" in prompt
-            assert "Active Profile: Scalping" in prompt
-            # Profile section should appear before Trade Setup
-            profile_pos = prompt.index("Active Profile: Scalping")
-            setup_pos = prompt.index("## Trade Setup")
-            assert profile_pos < setup_pos
-        finally:
-            settings.STRATEGY_PROFILE = original
-
-    def test_default_profile_no_scalping_section(self, builder):
-        """Default profile does NOT include scalping relaxation."""
+    def test_no_profile_section_in_default(self, builder):
+        """Default profile does NOT include any profile-specific section."""
         original = settings.STRATEGY_PROFILE
         try:
             settings.STRATEGY_PROFILE = "default"
@@ -248,20 +230,15 @@ class TestProfileAwarePrompts:
             snapshot = _make_snapshot()
             prompt = builder.build_evaluation_prompt(setup, snapshot, {})
 
-            assert "INFORMATIONAL ONLY" not in prompt
-            assert "Active Profile: Scalping" not in prompt
+            assert "Active Profile" not in prompt
         finally:
             settings.STRATEGY_PROFILE = original
 
-    def test_scalping_htf_bias_annotated(self, builder):
-        """Scalping profile annotates HTF Bias line as informational."""
-        original = settings.STRATEGY_PROFILE
-        try:
-            settings.STRATEGY_PROFILE = "scalping"
-            setup = _make_setup(direction="short")
-            snapshot = _make_snapshot()
-            prompt = builder.build_evaluation_prompt(setup, snapshot, {})
+    def test_htf_bias_not_annotated_as_informational(self, builder):
+        """HTF Bias line should NOT have informational annotation."""
+        setup = _make_setup(direction="short")
+        snapshot = _make_snapshot()
+        prompt = builder.build_evaluation_prompt(setup, snapshot, {})
 
-            assert "HTF Bias: bullish (informational" in prompt
-        finally:
-            settings.STRATEGY_PROFILE = original
+        assert "HTF Bias: bullish" in prompt
+        assert "informational" not in prompt

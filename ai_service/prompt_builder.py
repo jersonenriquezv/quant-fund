@@ -10,13 +10,13 @@ from shared.models import TradeSetup, MarketSnapshot
 
 _SYSTEM_PROMPT = """You are a senior crypto trading analyst at a quantitative fund. Your job is to evaluate trade setups detected by an automated SMC (Smart Money Concepts) system and decide whether the current market context supports the trade.
 
-You are a FILTER — you do NOT generate trades. The system has already detected a valid pattern. Your job is to evaluate whether macro context, sentiment, and market conditions support executing it NOW.
+You are a FILTER — you do NOT generate trades. The system has already detected a valid pattern with HTF alignment confirmed. Your job is to evaluate whether market conditions (funding, volume, flow) support executing it NOW.
 
 You must respond ONLY with valid JSON in this exact format:
 {
     "confidence": <float 0.0-1.0>,
     "approved": <bool>,
-    "reasoning": "<1-3 sentences explaining your decision>",
+    "reasoning": "<2-4 sentences. State the decisive factor first, then supporting evidence.>",
     "adjustments": {
         "sl_price": <float or null>,
         "tp2_price": <float or null>,
@@ -28,23 +28,22 @@ You must respond ONLY with valid JSON in this exact format:
 Decision guidelines:
 - confidence >= 0.60 AND approved=true: Trade proceeds to risk check
 - confidence < 0.60 OR approved=false: Trade is discarded
-- You should approve 30-60% of setups. If you approve everything, you add no value.
-- Be skeptical. In crypto, most setups fail. Your job is to filter the bad ones.
+- Approve only when the evidence is clearly supportive. No quota — reject all 10 if all 10 are bad.
 
 Factors to evaluate:
-1. FUNDING RATE: Extreme positive = overcrowded longs (caution for longs). Extreme negative = overcrowded shorts (opportunity for longs).
-2. OPEN INTEREST: OI rising + price rising = genuine trend. OI rising + price falling = distribution. OI falling = no new capital entering.
-3. CVD (Cumulative Volume Delta): CVD aligned with trade direction = confirmation. CVD diverging = warning sign.
-4. LIQUIDATIONS: Recent cascade in the direction of the trade = exhaustion risk. Cascade against the trade direction = fuel for the move.
-5. WHALE MOVEMENTS: Large deposits to exchanges = potential selling pressure. Withdrawals = accumulation signal. Non-exchange transfers (transfer_out/transfer_in) = neutral/informational — note the movement but do not treat it as bullish or bearish.
-6. HTF CONFLUENCE: Does the higher timeframe structure support this trade direction?
-7. SETUP QUALITY: How strong are the confluences? Is the order block fresh? Volume confirmation?
+1. FUNDING RATE: Extreme positive = overcrowded longs (caution for longs). Extreme negative = overcrowded shorts (opportunity for longs). Normal range = neutral factor.
+2. CVD (Cumulative Volume Delta): CVD aligned with trade direction = confirmation. CVD diverging = warning sign. This is the strongest real-time signal — weigh it heavily.
+3. LIQUIDATIONS: Recent cascade in the direction of the trade = exhaustion risk. Cascade against the trade direction = fuel for the move.
+4. WHALE MOVEMENTS: Exchange deposits = potential selling pressure. Withdrawals = accumulation signal. Non-exchange transfers (transfer_out/transfer_in) = neutral/informational.
+5. OPEN INTEREST: Provided as a snapshot (no trend). Use as context for market size only — do NOT try to infer OI direction from a single data point.
+6. SETUP QUALITY: Evaluate the confluences listed. Each confluence is labeled as SUPPORTING (confirms the trade) or CONTEXT (informational). More supporting confluences = higher confidence.
+7. RISK/REWARD: The blended R:R is provided. Below 1.5 = tighter, needs strong conviction. Above 2.0 = favorable risk profile.
 
 CRITICAL RULES:
-- NEVER approve a trade just because the pattern is valid. Context matters more than pattern.
+- HTF alignment is ALREADY guaranteed by the system — do NOT reject based on HTF direction.
 - If funding rate is extreme (>0.03% or <-0.03%), increase skepticism for trades in the crowded direction.
 - If major liquidation cascade just happened in the trade direction, the move may be exhausted — reduce confidence.
-- If CVD diverges from price, the move lacks conviction — reduce confidence.
+- If CVD diverges from trade direction across multiple timeframes (5m, 15m, 1h), the move lacks conviction — reduce confidence.
 - When in doubt, reject. Capital preservation > opportunity capture."""
 
 
@@ -68,14 +67,7 @@ class PromptBuilder:
             snapshot: Current market data (funding, OI, CVD, liquidations, whales).
             candles_context: Dict with recent price changes per timeframe.
         """
-        sections = []
-
-        # Profile section goes first so Claude reads it before seeing setup data
-        profile_section = self._build_profile_section()
-        if profile_section:
-            sections.append(profile_section)
-
-        sections.extend([
+        sections = [
             self._build_setup_section(setup),
             self._build_funding_section(snapshot),
             self._build_oi_section(snapshot),
@@ -83,35 +75,36 @@ class PromptBuilder:
             self._build_liquidation_section(snapshot),
             self._build_whale_section(snapshot),
             self._build_price_context_section(candles_context),
-        ])
+        ]
 
         return "\n\n".join(sections) + "\n\nEvaluate this setup and respond with JSON only."
 
-    def _build_profile_section(self) -> str | None:
-        """Build profile context section. Only emitted for scalping."""
-        if settings.STRATEGY_PROFILE != "scalping":
-            return None
-
-        return (
-            "## Active Profile: Scalping\n"
-            "This trade was detected under the SCALPING profile. Key evaluation rules:\n"
-            "- HTF bias is INFORMATIONAL ONLY — do NOT reduce confidence solely because "
-            "trade direction opposes HTF bias.\n"
-            "- Focus on: LTF CVD alignment (5m/15m), OB freshness, volume confirmation, "
-            "and confluence count.\n"
-            "- These are short-duration LTF trades. HTF structural conflict is expected "
-            "and acceptable."
-        )
-
     def _build_setup_section(self, setup: TradeSetup) -> str:
         setup_names = {
-            "setup_a": "Setup A (Sweep + CHoCH + OB)",
+            "setup_a": "Setup A (Liquidity Sweep + CHoCH + OB)",
             "setup_b": "Setup B (BOS + FVG + OB)",
         }
-        is_scalping = settings.STRATEGY_PROFILE == "scalping"
-        htf_line = f"- HTF Bias: {setup.htf_bias}"
-        if is_scalping:
-            htf_line += " (informational — scalping profile does not require alignment)"
+
+        # Compute R:R
+        risk = abs(setup.entry_price - setup.sl_price)
+        if risk > 0:
+            rr1 = abs(setup.tp1_price - setup.entry_price) / risk
+            rr2 = abs(setup.tp2_price - setup.entry_price) / risk
+            rr3 = abs(setup.tp3_price - setup.entry_price) / risk
+            blended_rr = (
+                settings.TP1_CLOSE_PCT * rr1
+                + settings.TP2_CLOSE_PCT * rr2
+                + settings.TP3_CLOSE_PCT * rr3
+            )
+            rr_line = (
+                f"- Risk: {risk:.2f} | TP1 R:R {rr1:.1f} | TP2 R:R {rr2:.1f} "
+                f"| TP3 R:R {rr3:.1f} | Blended R:R {blended_rr:.2f}"
+            )
+        else:
+            rr_line = "- Risk: 0 (invalid)"
+
+        # Human-readable confluences
+        confluence_lines = self._format_confluences(setup.confluences, setup.direction)
 
         return (
             f"## Trade Setup\n"
@@ -120,13 +113,72 @@ class PromptBuilder:
             f"- Type: {setup_names.get(setup.setup_type, setup.setup_type)}\n"
             f"- Entry: {setup.entry_price}\n"
             f"- Stop Loss: {setup.sl_price}\n"
-            f"- TP1: {setup.tp1_price} (50% close at 1:1)\n"
-            f"- TP2: {setup.tp2_price} (30% close at 1:2)\n"
+            f"- TP1: {setup.tp1_price} (50% close)\n"
+            f"- TP2: {setup.tp2_price} (30% close)\n"
             f"- TP3: {setup.tp3_price} (20% trailing)\n"
-            f"{htf_line}\n"
-            f"- Confluences: {', '.join(setup.confluences)}\n"
-            f"- OB Timeframe: {setup.ob_timeframe}"
+            f"{rr_line}\n"
+            f"- HTF Bias: {setup.htf_bias} (confirmed aligned with direction)\n"
+            f"- OB Timeframe: {setup.ob_timeframe}\n"
+            f"- Confluences:\n{confluence_lines}"
         )
+
+    def _format_confluences(
+        self, confluences: list, direction: str
+    ) -> str:
+        """Format raw confluence strings into labeled, human-readable lines.
+
+        Each confluence is tagged as SUPPORTING (confirms the trade thesis)
+        or CONTEXT (informational, does not directly confirm direction).
+        """
+        _LABELS = {
+            "liquidity_sweep_bullish": ("SUPPORTING", "Bullish liquidity sweep — stops below lows were hunted"),
+            "liquidity_sweep_bearish": ("SUPPORTING", "Bearish liquidity sweep — stops above highs were hunted"),
+            "choch_bullish": ("SUPPORTING", "Bullish CHoCH — LTF trend reversal confirmed up"),
+            "choch_bearish": ("SUPPORTING", "Bearish CHoCH — LTF trend reversal confirmed down"),
+            "bos_bullish": ("SUPPORTING", "Bullish BOS — LTF structure continuation up"),
+            "bos_bearish": ("SUPPORTING", "Bearish BOS — LTF structure continuation down"),
+            "pd_zone_discount": ("SUPPORTING" if direction == "long" else "CONTEXT",
+                                 "Price in discount zone (below 50% of range)"),
+            "pd_zone_premium": ("SUPPORTING" if direction == "short" else "CONTEXT",
+                                "Price in premium zone (above 50% of range)"),
+            "cvd_aligned_bullish": ("SUPPORTING" if direction == "long" else "CONTEXT",
+                                    "CVD 15m positive — buyers dominating"),
+            "cvd_aligned_bearish": ("SUPPORTING" if direction == "short" else "CONTEXT",
+                                    "CVD 15m negative — sellers dominating"),
+            "liquidation_cascade": ("SUPPORTING", "Liquidation cascade detected — institutional flow"),
+            "funding_negative_long_opportunity": ("SUPPORTING" if direction == "long" else "CONTEXT",
+                                                  "Funding rate negative — shorts overcrowded"),
+            "funding_extreme_positive": ("SUPPORTING" if direction == "short" else "CONTEXT",
+                                         "Funding rate extreme positive — longs overcrowded"),
+            "oi_data_available": ("CONTEXT", "Open interest data present"),
+        }
+        lines = []
+        for c in confluences:
+            # Handle dynamic patterns like order_block_5m, fvg_15m, ob_volume_2.1x
+            if c.startswith("order_block_"):
+                tf = c.replace("order_block_", "")
+                tag, desc = "SUPPORTING", f"Fresh order block on {tf}"
+            elif c.startswith("fvg_"):
+                tf = c.replace("fvg_", "")
+                tag, desc = "SUPPORTING", f"Fair value gap on {tf}"
+            elif c.startswith("ob_volume_"):
+                ratio = c.replace("ob_volume_", "")
+                tag = "SUPPORTING" if float(ratio.rstrip("x")) >= 1.5 else "CONTEXT"
+                desc = f"OB volume {ratio} average ({'>= 1.5x strong' if tag == 'SUPPORTING' else '< 1.5x moderate'})"
+            elif c.startswith("sweep_volume_"):
+                ratio = c.replace("sweep_volume_", "")
+                tag = "SUPPORTING" if float(ratio.rstrip("x")) >= 2.0 else "CONTEXT"
+                desc = f"Sweep volume {ratio} average ({'>= 2x institutional' if tag == 'SUPPORTING' else '< 2x moderate'})"
+            elif c.startswith("liquidations_usd_"):
+                usd = c.replace("liquidations_usd_", "")
+                tag, desc = "SUPPORTING", f"${float(usd):,.0f} in estimated liquidations"
+            elif c in _LABELS:
+                tag, desc = _LABELS[c]
+            else:
+                tag, desc = "CONTEXT", c
+
+            lines.append(f"  [{tag}] {desc}")
+        return "\n".join(lines)
 
     def _build_funding_section(self, snapshot: MarketSnapshot) -> str:
         if snapshot.funding is None:
@@ -160,10 +212,9 @@ class PromptBuilder:
             return "## Open Interest\nNot available"
 
         return (
-            f"## Open Interest\n"
+            f"## Open Interest (snapshot — no trend data)\n"
             f"- OI (USD): ${snapshot.oi.oi_usd:,.0f}\n"
-            f"- OI (contracts): {snapshot.oi.oi_contracts:,.0f}\n"
-            f"- OI (base): {snapshot.oi.oi_base:.4f}"
+            f"- OI (contracts): {snapshot.oi.oi_contracts:,.0f}"
         )
 
     def _build_cvd_section(self, snapshot: MarketSnapshot) -> str:

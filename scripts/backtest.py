@@ -9,8 +9,8 @@ strategy produces setups (and why it doesn't).
 Usage:
     python scripts/backtest.py
     python scripts/backtest.py --profile aggressive
-    python scripts/backtest.py --profile scalping --verbose
-    python scripts/backtest.py --pair BTC/USDT --profile scalping
+    python scripts/backtest.py --profile aggressive --verbose
+    python scripts/backtest.py --pair BTC/USDT --profile aggressive
     python scripts/backtest.py --warmup 100
 """
 

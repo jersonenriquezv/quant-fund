@@ -1,0 +1,1 @@
+Review the current uncommitted changes (run `git diff` and `git diff --cached`). Act as @reviewer: check trading correctness, model field names (read shared/models.py first), risk guardrails, and code quality per the reviewer checklist. Output verdict: APPROVE / NEEDS CHANGES / REJECT with numbered issues.

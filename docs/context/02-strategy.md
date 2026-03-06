@@ -41,11 +41,11 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
 
 ### `strategy_service/setups.py` — Setup A/B + Confluencia
 - **Setup A** (primario): Sweep + CHoCH + OB en discount/premium
-  - **Patrón de CONTINUACIÓN** (default): CHoCH debe alinearse con HTF bias. Configurable via `REQUIRE_HTF_LTF_ALIGNMENT` — scalping profile lo desactiva para permitir trades LTF-only.
+  - **Patrón de CONTINUACIÓN**: CHoCH debe alinearse con HTF bias. `REQUIRE_HTF_LTF_ALIGNMENT` siempre activo.
   - **Orden temporal obligatorio**: sweep ANTES del CHoCH
   - **Proximidad temporal**: sweep dentro de `SETUP_A_MAX_SWEEP_CHOCH_GAP` candles del CHoCH
 - **Setup B** (secundario): BOS + FVG adyacente a OB
-  - Dirección BOS debe alinear con HTF bias (configurable via `REQUIRE_HTF_LTF_ALIGNMENT`)
+  - Dirección BOS debe alinear con HTF bias
 - Mínimo 2 confluencias obligatorio (no configurable — hardcoded)
 - Cálculo de TP1 (1:1), TP2 (1:2), TP3 (trailing/liquidity)
 - **R:R blended** — validación ponderada: 50%×TP1 + 30%×TP2 + 20%×TP3 ≥ `MIN_RISK_REWARD`
@@ -64,22 +64,27 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
 - `PD_EQUILIBRIUM_BAND: float = 0.02` — banda ±2% alrededor del 50% para zona equilibrium
 - `OB_PROXIMITY_PCT: float = 0.003` — 0.3% del precio como margen de proximidad al OB
 - `SETUP_A_MAX_SWEEP_CHOCH_GAP: int = 20` — máximo candles entre sweep y CHoCH
-- `REQUIRE_HTF_LTF_ALIGNMENT: bool = True` — si LTF debe alinearse con HTF (scalping: False, aggressive: False)
-- `REQUIRE_PD_ALIGNMENT: bool = True` — si premium/discount zone debe alinear con dirección (aggressive: False). Bloqueador #1 de setups (40% de rechazos con default)
-- `ALLOW_EQUILIBRIUM_TRADES: bool = False` — permitir trades en zona equilibrium (scalping: True)
-- `HTF_BIAS_REQUIRE_4H: bool = True` — si 4H debe definir trend o 1H solo basta (scalping: False, aggressive: False)
+- `REQUIRE_HTF_LTF_ALIGNMENT: bool = True` — LTF debe alinearse con HTF (nunca se desactiva)
+- `REQUIRE_PD_ALIGNMENT: bool = True` — premium/discount zone debe alinear con dirección (nunca se desactiva — core SMC)
+- `ALLOW_EQUILIBRIUM_TRADES: bool = False` — permitir trades en zona equilibrium
+- `HTF_BIAS_REQUIRE_4H: bool = True` — si 4H debe definir trend o 1H solo basta (aggressive: False)
 
 ## Sistema de perfiles (`STRATEGY_PROFILE`)
 
-El bot soporta 3 perfiles de estrategia, switcheables desde dashboard o env var:
+El bot soporta 2 perfiles de estrategia, switcheables desde dashboard o env var:
 
 | Perfil | Setups/día | Descripción |
 |--------|-----------|-------------|
-| `default` | ~1-2 | Conservador — todos los filtros activos |
-| `aggressive` | ~5-10 | PD alignment off, FORCE_MAX_LEVERAGE, OB proximity 0.8%, R:R min 1.0, AI confidence 0.50, 20 trades/día |
-| `scalping` | ~10-20+ | Permite trades contra HTF, en equilibrium, R:R mínimo 1.0 |
+| `default` | ~1-2 | Conservador — todos los filtros activos, 4H requerido, R:R 1.5 |
+| `aggressive` | ~3-5 | 1H suficiente para HTF, OB proximity 0.8%, R:R min 1.2, AI confidence 0.50, 10 trades/día, DD 5%/10% |
 
-Los perfiles se definen en `STRATEGY_PROFILES` (config/settings.py) y se aplican via `apply_profile()`. Risk guardrails (DD, max positions) **nunca cambian** entre perfiles.
+**Reglas que NUNCA cambian entre perfiles:**
+- PD alignment (long=discount, short=premium) — core SMC
+- HTF/LTF alignment — sin esto, trades contra tendencia
+- AI filter obligatorio — todo trade pasa por Claude
+- Max positions (3), max leverage (5x)
+
+Los perfiles se definen en `STRATEGY_PROFILES` (config/settings.py) y se aplican via `apply_profile()`.
 
 El perfil activo se almacena en Redis (`qf:bot:strategy_profile`) y se sincroniza al inicio de cada pipeline cycle en `main.py`.
 

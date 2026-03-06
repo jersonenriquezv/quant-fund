@@ -107,19 +107,12 @@ class AIService:
         return decision
 
     def _get_candles_context(self, pair: str) -> dict:
-        """Get recent candle data for price change context.
-
-        For scalping profile, includes LTF (5m/15m) in addition to 1h/4h
-        so Claude can evaluate short-duration momentum.
-        """
+        """Get recent candle data for price change context (1h/4h)."""
         context = {}
         if self._data is None:
             return context
 
         timeframes = ["1h", "4h"]
-        if settings.STRATEGY_PROFILE == "scalping":
-            timeframes = ["5m", "15m", "1h", "4h"]
-
         for tf in timeframes:
             candles = self._data.get_candles(pair, tf, 10)
             if candles and len(candles) >= 2:

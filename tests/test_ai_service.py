@@ -232,18 +232,18 @@ class TestConfidenceClamping:
 
 class TestProfileConfidence:
 
-    def test_scalping_min_confidence_050_approved(self):
-        """Scalping profile approves at confidence 0.50."""
+    def test_aggressive_min_confidence_050_approved(self):
+        """Aggressive profile approves at confidence 0.50."""
         service = _make_ai_service_with_mock({
             "confidence": 0.50,
             "approved": True,
-            "reasoning": "LTF momentum supports short despite HTF bullish",
+            "reasoning": "Setup has strong confluence",
             "adjustments": {},
             "warnings": [],
         })
         original = settings.AI_MIN_CONFIDENCE
         try:
-            settings.AI_MIN_CONFIDENCE = 0.50  # scalping threshold
+            settings.AI_MIN_CONFIDENCE = 0.50  # aggressive threshold
             decision = asyncio.run(
                 service.evaluate(_make_setup(direction="short"), _make_snapshot())
             )

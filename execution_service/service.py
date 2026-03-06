@@ -111,11 +111,27 @@ class ExecutionService:
             logger.error(f"Failed to configure pair: {setup.pair}")
             return False
 
-        # Place entry order (market in sandbox, limit in live)
+        # Place entry order (always limit — sandbox uses current price with tolerance)
         side = "buy" if setup.direction == "long" else "sell"
         if settings.OKX_SANDBOX:
-            order = await self._executor.place_market_order(
-                setup.pair, side, approval.position_size
+            # Sandbox: OB entry price may be stale, so use current market price
+            # with 0.05% tolerance to get immediate fill without crazy slippage
+            ticker = await self._executor.fetch_ticker(setup.pair)
+            if ticker is None:
+                logger.error(f"Cannot fetch ticker for sandbox entry: {setup.pair}")
+                return False
+            tolerance = settings.SANDBOX_LIMIT_TOLERANCE_PCT
+            if side == "buy":
+                entry_price = ticker["ask"] * (1 + tolerance)
+            else:
+                entry_price = ticker["bid"] * (1 - tolerance)
+            logger.info(
+                f"Sandbox entry: using current price {entry_price:.2f} "
+                f"(ask={ticker.get('ask')}, bid={ticker.get('bid')}, "
+                f"original OB entry={setup.entry_price:.2f})"
+            )
+            order = await self._executor.place_limit_order(
+                setup.pair, side, approval.position_size, entry_price
             )
         else:
             order = await self._executor.place_limit_order(

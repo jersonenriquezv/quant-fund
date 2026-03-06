@@ -1,5 +1,43 @@
 # Changelog — One-Man Quant Fund
 
+## [2026-03-06] — Claude Code tooling cleanup
+**Qué cambió:**
+- `.claude/commands/doc-update.md` — Ahora scoped a `git diff` (antes leía todos los servicios ciegamente)
+- `.claude/commands/test.md` — Conciso: solo pass/fail + assertions
+- `.claude/commands/status.md` — Separado de `/test` (ya no corre pytest)
+- `.claude/commands/review.md` — Nuevo comando: corre checklist de @reviewer sobre cambios uncommitted
+- `.claude/settings.local.json` — Limpiado de 85 líneas de comandos one-off a 21 patrones reusables. Credenciales eliminadas.
+- `.claude/agents/` — 5 agentes obsoletos eliminados (architect, data-engineer, documenter, risk-guard, smc-engine). Solo quedan 4: coder, planner, reviewer, debugger.
+
+**Por qué:** Optimización de tokens — comandos vagos forzaban a Claude a explorar todo el proyecto. Settings tenía credenciales en texto plano (GitHub PAT, Etherscan key). Agentes duplicados no se usaban.
+
+## [2026-03-06] — Prompt refinement: R:R, labeled confluences, HTF-aware system prompt
+**Qué cambió:**
+- `ai_service/prompt_builder.py` — System prompt reescrito: HTF alignment ya no es factor de evaluación (pre-filter lo garantiza), OI marcado como snapshot-only, "30-60%" eliminado (sin cuota), reasoning ahora "2-4 sentences, decisive factor first". Setup section ahora incluye R:R computado (por TP y blended). Confluences ahora son human-readable con tags [SUPPORTING]/[CONTEXT]. Nuevo método `_format_confluences()`.
+- `tests/test_prompt_builder.py` — Test actualizado para reflejar eliminación de "30-60%".
+- `docs/context/03-ai-filter.md` — Actualizado con cambios al prompt.
+
+**Por qué:** Claude rechazaba 100% de setups citando "HTF conflict" — pero el pre-filter ya elimina esos antes de llegar a Claude. El prompt tenía info que Claude no podía usar (OI trend sin datos de tendencia). Confluences eran labels internos que Claude no podía interpretar. Sin R:R explícito, Claude tenía que hacer aritmética mental.
+
+## [2026-03-06] — Profile cleanup, AI bypass removed, sandbox slippage fix
+**Qué cambió:**
+- `config/settings.py` — Scalping profile eliminado. Aggressive rediseñado: PD alignment ON, HTF alignment ON (1H suficiente), AI siempre obligatorio, DD 5%/10% (era 20%/40%), R:R 1.2 (era 1.0), 10 trades/día (era 20). `FORCE_MAX_LEVERAGE` eliminado. Nuevo setting `SANDBOX_LIMIT_TOLERANCE_PCT = 0.0005`.
+- `main.py` — Todo AI bypass eliminado (`_persist_ai_skip`, scalping/aggressive auto-approve). Pipeline simplificado: setup → dedup → pre-filter (HTF bias + funding + CVD) → Claude → risk → execute. Setup dedup cache (15min TTL) evita re-evaluar mismo setup.
+- `execution_service/executor.py` — Nuevo `fetch_ticker()` para obtener ask/bid actual.
+- `execution_service/service.py` — Sandbox usa limit orders a ask/bid + 0.05% tolerancia (era market orders con 13.8% slippage).
+- `risk_service/position_sizer.py` — `FORCE_MAX_LEVERAGE` branch eliminado. Risk-based sizing siempre.
+- `ai_service/service.py` — Eliminada lógica de LTF candles para scalping.
+- `ai_service/prompt_builder.py` — Eliminada sección de perfil scalping y anotación HTF informational.
+- `shared/notifier.py` — `notify_ai_skipped()` eliminado.
+- `dashboard/api/routes/profile.py` — Scalping removido de perfiles disponibles.
+- `.claude/agents/` — 6 agentes domain-based reemplazados por 4 role-based: @coder, @debugger, @planner, @reviewer. Reducción de ~19K a ~3.2K tokens (83%).
+
+**Por qué:** Los profiles aggressive y scalping desactivaban protecciones core de SMC (PD alignment, HTF alignment) y bypaseaban Claude, resultando en trades de baja calidad. Market orders en sandbox causaban slippage inaceptable. Los agentes tenían responsabilidades por dominio con mucha info duplicada de CLAUDE.md.
+**Impacto:** config/, main.py, execution_service/, risk_service/, ai_service/, shared/, dashboard/, .claude/agents/, tests/
+**Tests:** 299 passed, 0 failed.
+
+---
+
 ## [2026-03-05] — Whale notification enrichment + 4H OB summary
 **Qué cambió:**
 - `shared/models.py` — `WhaleMovement` dataclass: nuevo campo `wallet_label: str = ""` para nombre legible de la wallet (e.g., "Vitalik Buterin", "Galaxy Digital").

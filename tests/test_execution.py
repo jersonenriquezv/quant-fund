@@ -18,6 +18,8 @@ import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from config.settings import settings
 from shared.models import TradeSetup, RiskApproval
 from execution_service.models import ManagedPosition
@@ -144,7 +146,8 @@ class TestExecutionServiceExecute:
         monitor.positions = {}
 
         executor.configure_pair = AsyncMock(return_value=True)
-        executor.place_market_order = AsyncMock(return_value=make_order("ord-1"))
+        executor.fetch_ticker = AsyncMock(return_value={"ask": 50000.0, "bid": 49990.0})
+        executor.place_limit_order = AsyncMock(return_value=make_order("ord-1"))
 
         service = _make_service(executor, monitor, risk)
 
@@ -152,9 +155,13 @@ class TestExecutionServiceExecute:
 
         assert result is True
         executor.configure_pair.assert_called_once_with("BTC/USDT", 3)
-        executor.place_market_order.assert_called_once_with(
-            "BTC/USDT", "buy", 0.002
-        )
+        # Sandbox: limit order at ask * 1.0005 (buy with 0.05% tolerance)
+        executor.place_limit_order.assert_called_once()
+        call_args = executor.place_limit_order.call_args
+        assert call_args[0][0] == "BTC/USDT"  # pair
+        assert call_args[0][1] == "buy"        # side
+        assert call_args[0][2] == 0.002         # size
+        assert call_args[0][3] == pytest.approx(50000.0 * 1.0005, rel=1e-6)  # price
         monitor.register.assert_called_once()
         risk.on_trade_opened.assert_called_once()
 
@@ -165,7 +172,8 @@ class TestExecutionServiceExecute:
         monitor.positions = {}
 
         executor.configure_pair = AsyncMock(return_value=True)
-        executor.place_market_order = AsyncMock(return_value=make_order("ord-2"))
+        executor.fetch_ticker = AsyncMock(return_value={"ask": 50010.0, "bid": 50000.0})
+        executor.place_limit_order = AsyncMock(return_value=make_order("ord-2"))
 
         service = _make_service(executor, monitor, risk)
 
@@ -178,9 +186,9 @@ class TestExecutionServiceExecute:
         )
 
         assert result is True
-        executor.place_market_order.assert_called_once_with(
-            "BTC/USDT", "sell", 0.002
-        )
+        call_args = executor.place_limit_order.call_args
+        assert call_args[0][1] == "sell"  # side
+        assert call_args[0][3] == pytest.approx(50000.0 * 0.9995, rel=1e-6)  # bid - tolerance
 
     def test_skips_if_pair_already_managed(self):
         monitor = MagicMock(spec=PositionMonitor)
@@ -207,7 +215,8 @@ class TestExecutionServiceExecute:
         monitor = MagicMock(spec=PositionMonitor)
         monitor.positions = {}
         executor.configure_pair = AsyncMock(return_value=True)
-        executor.place_market_order = AsyncMock(return_value=None)
+        executor.fetch_ticker = AsyncMock(return_value={"ask": 50000.0, "bid": 49990.0})
+        executor.place_limit_order = AsyncMock(return_value=None)
 
         service = _make_service(executor, monitor)
 
