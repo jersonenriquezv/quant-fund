@@ -169,6 +169,7 @@ Actualmente TP3 usa una limit order fija al siguiente nivel de liquidez. CLAUDE.
 - Ver `docs/to-fix.md` para backlog completo (~30 IMPORTANT + 29 MINOR issues)
 
 ## Cambios recientes
+- 2026-03-06: **Dynamic capital + fixed margin sizing** — `main.py` ahora busca USDT balance del exchange al arrancar (fallback a `INITIAL_CAPITAL`). `FIXED_TRADE_MARGIN` reemplaza `SANDBOX_MARGIN_PER_TRADE` — cuando > 0, position sizing usa margen fijo en ambos modos (sandbox y live). `fetch_usdt_balance()` añadido a ExchangeClient y DataService.
 - 2026-03-06: **Profile cleanup + slippage fix** — Scalping eliminado. Aggressive rediseñado: PD/HTF alignment ON, AI obligatorio, DD 5%/10%, R:R 1.2. `FORCE_MAX_LEVERAGE` eliminado. Sandbox usa limit orders con tolerancia 0.05% (era market orders con 13.8% slippage). Setup dedup cache evita re-evaluar mismo setup en Claude.
 - 2026-03-05: **Whale notifications + 4H OB summary** — Notificaciones whale ahora muestran nombre de wallet (campo `wallet_label`). Nuevo `notify_ob_summary()` envía resumen de OBs activos cada 4H.
 - 2026-03-05: **Algo order fetch rewrite** — `_fetch_algo_order` usa OKX native API (`privateGetTradeOrdersAlgoPending`/`History`) en vez de ccxt `fetch_open_orders` que causaba 6,871 errores repetidos.

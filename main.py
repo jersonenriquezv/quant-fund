@@ -441,8 +441,15 @@ async def main() -> None:
     # Create AIService — Layer 3
     _ai_service = AIService(_data_service)
 
-    # Create RiskService — Layer 4 ($100 demo capital)
-    _risk_service = RiskService(capital=100.0, data_service=_data_service)
+    # Create RiskService — Layer 4 (capital from exchange balance or INITIAL_CAPITAL fallback)
+    balance = _data_service.fetch_usdt_balance()
+    if balance is not None and balance > 0:
+        capital = balance
+        logger.info(f"Capital from exchange: ${capital:.2f}")
+    else:
+        capital = settings.INITIAL_CAPITAL
+        logger.warning(f"Could not fetch balance — using INITIAL_CAPITAL: ${capital:.2f}")
+    _risk_service = RiskService(capital=capital, data_service=_data_service)
 
     # Create ExecutionService — Layer 5
     _execution_service = ExecutionService(_risk_service, _data_service, notifier=_notifier)

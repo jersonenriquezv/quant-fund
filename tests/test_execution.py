@@ -139,6 +139,10 @@ class TestExecutionServiceDisabled:
 class TestExecutionServiceExecute:
     """Happy path: entry placed, position registered."""
 
+    @pytest.fixture(autouse=True)
+    def _sandbox_mode(self, monkeypatch):
+        monkeypatch.setattr(settings, "OKX_SANDBOX", True)
+
     def test_happy_path_entry_placed(self):
         risk = MagicMock()
         executor = MagicMock(spec=OrderExecutor)

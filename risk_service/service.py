@@ -76,8 +76,15 @@ class RiskService:
                 )
 
         # --- Position sizing ---
-        capital = self._state.get_capital()
-        risk_pct = settings.RISK_PER_TRADE
+        if settings.FIXED_TRADE_MARGIN > 0:
+            # Fixed sizing: use $FIXED_TRADE_MARGIN as margin, leverage cap limits notional.
+            # e.g. $100 margin × 5x = $500 notional per trade.
+            capital = settings.FIXED_TRADE_MARGIN
+            risk_pct = 1.0
+        else:
+            # Risk-based sizing: position_size = (capital × risk%) / |entry - SL|
+            capital = self._state.get_capital()
+            risk_pct = settings.RISK_PER_TRADE
 
         try:
             position_size, leverage = self._sizer.calculate(

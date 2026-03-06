@@ -73,6 +73,9 @@ class Settings:
     # ========================
     # RISK MANAGEMENT — Guardrails inquebrantables
     # ========================
+    # Starting capital (fallback if exchange balance fetch fails)
+    INITIAL_CAPITAL: float = float(os.getenv("INITIAL_CAPITAL", "100"))
+
     # Máximo % del capital que puedes perder en un solo trade
     RISK_PER_TRADE: float = float(os.getenv("RISK_PER_TRADE", "0.02"))  # 2%
 
@@ -373,6 +376,9 @@ class Settings:
     MARGIN_MODE: str = "isolated"
     # Max seconds a trade can stay open (12 hours)
     MAX_TRADE_DURATION_SECONDS: int = int(os.getenv("MAX_TRADE_DURATION_SECONDS", "43200"))
+    # Fixed margin per trade in USDT. When > 0, overrides risk-based sizing.
+    # Set to 0 to use standard risk-based sizing (RISK_PER_TRADE % of capital).
+    FIXED_TRADE_MARGIN: float = float(os.getenv("FIXED_TRADE_MARGIN", "100"))
     # Sandbox: limit order tolerance from mark price (0.05% = fills like a market but with realistic slippage)
     SANDBOX_LIMIT_TOLERANCE_PCT: float = 0.0005
 

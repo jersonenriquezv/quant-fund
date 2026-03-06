@@ -1,5 +1,14 @@
 # Changelog — One-Man Quant Fund
 
+## [2026-03-06] — Dynamic capital from exchange + FIXED_TRADE_MARGIN sizing
+**Qué cambió:**
+- `config/settings.py` — Added `INITIAL_CAPITAL` env var (fallback if balance fetch fails). Renamed `SANDBOX_MARGIN_PER_TRADE` → `FIXED_TRADE_MARGIN` (works in both sandbox and live when > 0, set 0 for risk-based sizing).
+- `data_service/exchange_client.py` — New `fetch_usdt_balance()` method: fetches USDT available balance via `fetch_balance()`, returns `None` on failure.
+- `data_service/service.py` — Exposes `fetch_usdt_balance()` delegating to ExchangeClient.
+- `main.py` — At startup, fetches USDT balance from exchange to set Risk Service capital. Falls back to `INITIAL_CAPITAL` if fetch fails or returns 0.
+- `risk_service/service.py` — Position sizing now has 2 modes: fixed margin (`FIXED_TRADE_MARGIN > 0`, uses margin as capital with risk_pct=1.0) or risk-based (`FIXED_TRADE_MARGIN = 0`, classic formula). Mode applies regardless of sandbox/live.
+- `tests/test_execution.py`, `tests/test_risk_service.py` — Patched to handle new `FIXED_TRADE_MARGIN` setting.
+
 ## [2026-03-06] — Whale monitoring overhaul: USD enrichment, smart notifications, richer Claude prompt
 **Qué cambió:**
 - `shared/models.py` — WhaleMovement gains `amount_usd` and `market_price` fields (default 0.0 for backwards compat)

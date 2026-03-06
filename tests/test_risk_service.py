@@ -33,7 +33,9 @@ def _make_setup(
 
 
 @pytest.fixture
-def risk():
+def risk(monkeypatch):
+    monkeypatch.setattr(settings, "OKX_SANDBOX", False)
+    monkeypatch.setattr(settings, "FIXED_TRADE_MARGIN", 0.0)
     return RiskService(capital=1000.0)
 
 

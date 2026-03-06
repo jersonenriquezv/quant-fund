@@ -112,6 +112,10 @@ class DataService:
         combined.sort(key=lambda m: m.timestamp, reverse=True)
         return combined
 
+    def fetch_usdt_balance(self) -> float | None:
+        """Fetch USDT balance from exchange. Returns None on failure."""
+        return self._exchange.fetch_usdt_balance()
+
     @property
     def postgres(self) -> PostgresStore:
         """Direct access to PostgreSQL store for trade persistence."""

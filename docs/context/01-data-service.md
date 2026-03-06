@@ -62,7 +62,11 @@ All frozen (immutable) except MarketSnapshot which has optional fields.
 - File: `logs/{service}_{date}.log` — daily rotation, 30-day retention, gzip compressed
 
 ### `data_service/exchange_client.py` — OKX REST via ccxt
-Three methods:
+Four methods:
+- `fetch_usdt_balance()` → `float | None`
+  - Fetches USDT available balance from exchange via `fetch_balance()`
+  - Returns `None` on any failure (logged as warning)
+  - Used by `main.py` at startup to set initial capital for Risk Service
 - `backfill_candles(pair, timeframe, count=500)` → `list[Candle]`
   - OKX returns max 100 candles per request — ccxt paginates automatically
   - All returned candles are confirmed (historical)
@@ -149,7 +153,7 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 
 ### `data_service/service.py` — DataService Facade
 - Wires all 8 sub-modules into a single interface
-- Public methods: `get_latest_candle()`, `get_candles()`, `get_market_snapshot()`, `get_cvd()`, etc.
+- Public methods: `get_latest_candle()`, `get_candles()`, `get_market_snapshot()`, `get_cvd()`, `fetch_usdt_balance()`, etc.
 - Manages startup (backfill → WebSockets → polling loops) and graceful shutdown
 - On confirmed candle: stores to Redis + PostgreSQL, triggers pipeline callback
 - Health check loop every 30 seconds
@@ -161,6 +165,7 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 ### `main.py` — Entry Point
 - Single process, handles SIGINT/SIGTERM for graceful shutdown
 - Creates DataService with pipeline callback
+- **Capital at startup:** Fetches USDT balance from exchange via `data_service.fetch_usdt_balance()`. Falls back to `INITIAL_CAPITAL` setting if fetch fails or returns 0.
 - Pipeline completo: Data → Strategy → Pre-filter → AI → Risk → Execution (5 capas wired)
 - Pre-filter determinístico antes de Claude: HTF bias conflict + funding extreme + CVD divergencia
 - AI filter obligatorio en todas las profiles (sin bypass)
@@ -170,6 +175,7 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 
 | Setting | Default | Used by |
 |---|---|---|
+| `INITIAL_CAPITAL` | `100` (env) | Fallback capital if exchange balance fetch fails |
 | `OKX_SANDBOX` | `true` | exchange_client — demo vs live |
 | `OKX_API_KEY` | `""` | exchange_client — auth |
 | `OKX_SECRET` | `""` | exchange_client — auth |

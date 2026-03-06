@@ -72,6 +72,17 @@ class ExchangeClient:
         else:
             self._market_exchange = self._exchange
 
+    def fetch_usdt_balance(self) -> float | None:
+        """Fetch USDT available balance from exchange. Returns None on failure."""
+        try:
+            balance = self._exchange.fetch_balance()
+            usdt = balance.get("USDT", {})
+            free = usdt.get("free", 0.0)
+            return float(free) if free else 0.0
+        except Exception as e:
+            logger.warning(f"Failed to fetch USDT balance: {e}")
+            return None
+
     def _ccxt_symbol(self, pair: str) -> str:
         """Convert our pair format to ccxt symbol for OKX.
 

@@ -39,7 +39,7 @@ El Risk Service trackea estado in-memory (no depende de PostgreSQL ni Redis para
 - Posiciones abiertas actuales
 - P&L diario y semanal (drawdown)
 - Timestamp de la última pérdida (para cooldown)
-- Capital actual ($100 demo)
+- Capital actual (fetched from exchange at startup, fallback to `INITIAL_CAPITAL`)
 
 Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes UTC.
 
@@ -75,7 +75,9 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 - Compone: PositionSizer + Guardrails + RiskStateTracker
 - **Método principal:** `check(setup: TradeSetup) -> RiskApproval`
   1. Corre los 6 guardrails en orden (fail fast)
-  2. Calcula position size y leverage
+  2. **Position sizing con 2 modos:**
+     - **Fixed margin mode** (`FIXED_TRADE_MARGIN > 0`): Usa `$FIXED_TRADE_MARGIN` como capital con `risk_pct=1.0` (100%). Esto significa que la fórmula `(capital × risk%) / |entry - SL|` usa el margen fijo completo. El leverage cap de `MAX_LEVERAGE` limita el notional (e.g., $100 margin × 5x = $500 max notional). Funciona igual en sandbox y live.
+     - **Risk-based mode** (`FIXED_TRADE_MARGIN = 0`): Fórmula clásica `(capital × risk%) / |entry - SL|` usando el capital real trackeado por `RiskStateTracker`.
   3. Retorna RiskApproval (approved/rejected con razón)
 - **Para Execution Service (implementado):**
   - `on_trade_opened(pair, direction, entry_price, timestamp)` — llamado al colocar entry order
@@ -89,7 +91,8 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 
 | Setting | Default | Descripción |
 |---|---|---|
-| `RISK_PER_TRADE` | `0.02` (2%) | % del capital arriesgado por trade |
+| `FIXED_TRADE_MARGIN` | `100` (env) | Margen fijo por trade (USDT). Cuando > 0, override risk-based sizing. 0 = usar fórmula clásica |
+| `RISK_PER_TRADE` | `0.02` (2%) | % del capital arriesgado por trade (solo en risk-based mode) |
 | `MAX_LEVERAGE` | `5` | Apalancamiento máximo permitido |
 | `MAX_DAILY_DRAWDOWN` | `0.03` (3%) | DD diario máximo antes de pausar |
 | `MAX_WEEKLY_DRAWDOWN` | `0.05` (5%) | DD semanal máximo antes de pausar |
@@ -134,6 +137,7 @@ No crashea. El trade se registra igual (P&L, cooldown, trades_today), pero no re
 
 ## Cambios recientes
 
+- **2026-03-06** — `FIXED_TRADE_MARGIN` setting: cuando > 0, position sizing usa margen fijo en vez de risk-based. Reemplaza `SANDBOX_MARGIN_PER_TRADE`. Capital inicial del Risk Service ahora viene del exchange balance (fallback a `INITIAL_CAPITAL`).
 - **2026-03-06** — `check_rr_ratio()` ahora usa `MIN_RISK_REWARD_QUICK` (1.0) para quick setups (C/D/E) via `QUICK_SETUP_TYPES` check.
 - **2026-03-06** — `FORCE_MAX_LEVERAGE` eliminado. Risk-based sizing siempre. Aggressive profile: DD 5%/10% (era 20%/40%), R:R 1.2 (era 1.0).
 - **2026-03-04** — I-R1: `record_trade_closed` ahora recibe `direction`, matchea por `(pair, direction)`. Todos los callers actualizados.
