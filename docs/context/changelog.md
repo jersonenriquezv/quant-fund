@@ -1,5 +1,9 @@
 # Changelog — One-Man Quant Fund
 
+## [2026-03-08] — Live test passed: Entry + SL + TP all place correctly on OKX
+**Qué cambió:**
+- `test_execution_live.py` — Reescrito: auto-fill entry (ask+0.1%), place SL + TP, verify, cleanup. No more `input()` prompts. Added `--cleanup` flag. Confirmed on live: entry fills, SL (stop-market) places OK, TP (limit reduceOnly) places OK. SL `fetch_order` returns None immediately (known OKX algo lag — monitor fallback handles this).
+
 ## [2026-03-08] — Fase 1: Simplified exit management, single TP, breakeven via price polling
 **Qué cambió:**
 - `monitor.py` — Reescrito. Máquina de estados simplificada: `pending_entry → active → closed`. Eliminados TP1/TP2/TP3, reemplazados por single TP a tp2_price (2:1 R:R) por 100% de la posición. Breakeven: poll ticker cada 5s, cuando price cruza tp1_price (1:1 R:R), SL se mueve a entry. Si TP falla, posición queda con SL only (no emergency close). Eliminados phases tp1_hit/tp2_hit, _accumulate_realized_pnl, _remaining_size.
