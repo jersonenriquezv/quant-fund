@@ -135,21 +135,19 @@ class ExecutionService:
         # Validate SL/TP price ordering (skip in sandbox — prices are remapped)
         if not settings.OKX_SANDBOX:
             if setup.direction == "long":
-                if not (setup.sl_price < setup.entry_price < setup.tp1_price
-                        < setup.tp2_price < setup.tp3_price):
+                if not (setup.sl_price < setup.entry_price < setup.tp2_price):
                     logger.error(
                         f"Invalid price ordering for LONG: "
                         f"sl={setup.sl_price} entry={setup.entry_price} "
-                        f"tp1={setup.tp1_price} tp2={setup.tp2_price} tp3={setup.tp3_price}"
+                        f"tp={setup.tp2_price}"
                     )
                     return False
             else:
-                if not (setup.sl_price > setup.entry_price > setup.tp1_price
-                        > setup.tp2_price > setup.tp3_price):
+                if not (setup.sl_price > setup.entry_price > setup.tp2_price):
                     logger.error(
                         f"Invalid price ordering for SHORT: "
                         f"sl={setup.sl_price} entry={setup.entry_price} "
-                        f"tp1={setup.tp1_price} tp2={setup.tp2_price} tp3={setup.tp3_price}"
+                        f"tp={setup.tp2_price}"
                     )
                     return False
 

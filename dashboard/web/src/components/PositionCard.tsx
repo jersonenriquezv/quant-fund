@@ -122,16 +122,8 @@ function SinglePosition({ pos }: { pos: PositionData }) {
           <div className="num" style={{ color: "var(--short)" }}>{fmt(pos.sl_price)}</div>
         </div>
         <div>
-          <div style={{ color: "var(--text-muted)", fontSize: 10 }}>TP1</div>
-          <div className="num" style={{ color: "var(--long)" }}>{fmt(pos.tp1_price)}</div>
-        </div>
-        <div>
-          <div style={{ color: "var(--text-muted)", fontSize: 10 }}>TP2</div>
-          <div className="num" style={{ color: "var(--long)" }}>{fmt(pos.tp2_price)}</div>
-        </div>
-        <div>
-          <div style={{ color: "var(--text-muted)", fontSize: 10 }}>TP3</div>
-          <div className="num" style={{ color: "var(--long)" }}>{fmt(pos.tp3_price)}</div>
+          <div style={{ color: "var(--text-muted)", fontSize: 10 }}>TP</div>
+          <div className="num" style={{ color: "var(--long)" }}>{fmt(pos.tp_price ?? pos.tp2_price)}</div>
         </div>
         <div>
           <div style={{ color: "var(--text-muted)", fontSize: 10 }}>LEV</div>

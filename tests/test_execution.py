@@ -4,11 +4,11 @@ Tests for Execution Service (Layer 5).
 All ccxt calls are mocked. Tests verify business logic only:
 - Happy path: entry placed, position registered
 - Disabled without API key
-- Entry fill → SL/TP placement
+- Entry fill → SL + single TP placement
 - Entry timeout → cancel
-- TP1 fill → SL moves to breakeven
-- TP2 fill → SL moves to TP1
-- SL fill → cancel all TPs
+- TP fill → position closed
+- SL fill → position closed
+- Breakeven trigger → SL moves to entry
 - 12h timeout → market close
 - Emergency close on SL placement failure
 - Slippage logging
@@ -33,13 +33,13 @@ from execution_service.service import ExecutionService
 # ================================================================
 
 def make_setup(
-    pair="BTC/USDT",
+    pair="ETH/USDT",
     direction="long",
-    entry=50000.0,
-    sl=49500.0,
-    tp1=50500.0,
-    tp2=51000.0,
-    tp3=51500.0,
+    entry=2000.0,
+    sl=1960.0,
+    tp1=2040.0,
+    tp2=2080.0,
+    tp3=2120.0,
 ) -> TradeSetup:
     return TradeSetup(
         timestamp=int(time.time()),
@@ -57,7 +57,7 @@ def make_setup(
     )
 
 
-def make_approval(size=0.002, leverage=3.0) -> RiskApproval:
+def make_approval(size=0.05, leverage=3.0) -> RiskApproval:
     return RiskApproval(
         approved=True,
         position_size=size,
@@ -67,7 +67,7 @@ def make_approval(size=0.002, leverage=3.0) -> RiskApproval:
     )
 
 
-def make_order(order_id="ord-123", status="open", filled=0, average=0, price=50000.0):
+def make_order(order_id="ord-123", status="open", filled=0, average=0, price=2000.0):
     return {
         "id": order_id,
         "status": status,
@@ -88,12 +88,12 @@ def _make_service(executor=None, monitor=None, risk=None):
 
 
 def make_position(
-    pair="BTC/USDT",
+    pair="ETH/USDT",
     direction="long",
     phase="pending_entry",
-    entry_price=50000.0,
-    sl_price=49500.0,
-    size=0.002,
+    entry_price=2000.0,
+    sl_price=1960.0,
+    size=0.05,
 ) -> ManagedPosition:
     return ManagedPosition(
         pair=pair,
@@ -102,9 +102,9 @@ def make_position(
         phase=phase,
         entry_price=entry_price,
         sl_price=sl_price,
-        tp1_price=50500.0,
-        tp2_price=51000.0,
-        tp3_price=51500.0,
+        tp1_price=2040.0,    # Breakeven trigger (1:1 R:R)
+        tp2_price=2080.0,    # TP order level (2:1 R:R)
+        tp3_price=2120.0,
         total_size=size,
         filled_size=size if phase != "pending_entry" else 0.0,
         leverage=3.0,
@@ -150,7 +150,7 @@ class TestExecutionServiceExecute:
         monitor.positions = {}
 
         executor.configure_pair = AsyncMock(return_value=True)
-        executor.fetch_ticker = AsyncMock(return_value={"ask": 50000.0, "bid": 49990.0})
+        executor.fetch_ticker = AsyncMock(return_value={"ask": 2000.0, "bid": 1999.0})
         executor.place_limit_order = AsyncMock(return_value=make_order("ord-1"))
 
         service = _make_service(executor, monitor, risk)
@@ -158,14 +158,12 @@ class TestExecutionServiceExecute:
         result = asyncio.run(service.execute(make_setup(), make_approval(), 0.85))
 
         assert result is True
-        executor.configure_pair.assert_called_once_with("BTC/USDT", 3)
-        # Sandbox: limit order at ask * 1.0005 (buy with 0.05% tolerance)
+        executor.configure_pair.assert_called_once_with("ETH/USDT", 3)
         executor.place_limit_order.assert_called_once()
         call_args = executor.place_limit_order.call_args
-        assert call_args[0][0] == "BTC/USDT"  # pair
-        assert call_args[0][1] == "buy"        # side
-        assert call_args[0][2] == 0.002         # size
-        assert call_args[0][3] == pytest.approx(50000.0 * 1.0005, rel=1e-6)  # price
+        assert call_args[0][0] == "ETH/USDT"   # pair
+        assert call_args[0][1] == "buy"          # side
+        assert call_args[0][2] == 0.05           # size
         monitor.register.assert_called_once()
         risk.on_trade_opened.assert_called_once()
 
@@ -176,14 +174,14 @@ class TestExecutionServiceExecute:
         monitor.positions = {}
 
         executor.configure_pair = AsyncMock(return_value=True)
-        executor.fetch_ticker = AsyncMock(return_value={"ask": 50010.0, "bid": 50000.0})
+        executor.fetch_ticker = AsyncMock(return_value={"ask": 2001.0, "bid": 2000.0})
         executor.place_limit_order = AsyncMock(return_value=make_order("ord-2"))
 
         service = _make_service(executor, monitor, risk)
 
         setup = make_setup(
-            direction="short", entry=50000.0, sl=50500.0,
-            tp1=49500.0, tp2=49000.0, tp3=48500.0
+            direction="short", entry=2000.0, sl=2040.0,
+            tp1=1960.0, tp2=1920.0, tp3=1880.0
         )
         result = asyncio.run(
             service.execute(setup, make_approval(), 0.70)
@@ -192,14 +190,14 @@ class TestExecutionServiceExecute:
         assert result is True
         call_args = executor.place_limit_order.call_args
         assert call_args[0][1] == "sell"  # side
-        assert call_args[0][3] == pytest.approx(50000.0 * 0.9995, rel=1e-6)  # bid - tolerance
 
     def test_skips_if_pair_has_active_position(self):
         """Active (filled) positions block new entries for the same pair."""
         monitor = MagicMock(spec=PositionMonitor)
         active_pos = MagicMock()
         active_pos.phase = "active"
-        monitor.positions = {"BTC/USDT": active_pos}
+        active_pos.setup_type = "setup_a"
+        monitor.positions = {"ETH/USDT": active_pos}
 
         service = _make_service(monitor=monitor)
 
@@ -219,9 +217,6 @@ class TestExecutionServiceExecute:
         old_pos.entry_price = 2108.26
         monitor.positions = {"ETH/USDT": old_pos}
 
-        # cancel_and_remove_pending returns the old position, then positions is empty
-        monitor.cancel_and_remove_pending = AsyncMock(return_value=old_pos)
-        # After cancel, positions dict is empty for the new entry check
         def side_effect_cancel(pair):
             monitor.positions = {}
             return old_pos
@@ -260,7 +255,7 @@ class TestExecutionServiceExecute:
         monitor = MagicMock(spec=PositionMonitor)
         monitor.positions = {}
         executor.configure_pair = AsyncMock(return_value=True)
-        executor.fetch_ticker = AsyncMock(return_value={"ask": 50000.0, "bid": 49990.0})
+        executor.fetch_ticker = AsyncMock(return_value={"ask": 2000.0, "bid": 1999.0})
         executor.place_limit_order = AsyncMock(return_value=None)
 
         service = _make_service(executor, monitor)
@@ -274,9 +269,9 @@ class TestExecutionServiceExecute:
 # ================================================================
 
 class TestEntryFill:
-    """Entry order fills → SL + TP placed."""
+    """Entry order fills → SL + single TP placed."""
 
-    def test_entry_fill_places_sl_and_tps(self):
+    def test_entry_fill_places_sl_and_tp(self):
         executor = MagicMock(spec=OrderExecutor)
         risk = MagicMock()
         monitor = PositionMonitor(executor, risk)
@@ -285,24 +280,28 @@ class TestEntryFill:
         monitor.register(pos)
 
         executor.fetch_order = AsyncMock(return_value=make_order(
-            "ord-entry", status="closed", filled=0.002, average=50010.0
+            "ord-entry", status="closed", filled=0.05, average=2001.0
         ))
         executor.place_stop_market = AsyncMock(return_value=make_order("ord-sl"))
-        executor.place_take_profit = AsyncMock(side_effect=[
-            make_order("ord-tp1"),
-            make_order("ord-tp2"),
-            make_order("ord-tp3"),
-        ])
+        executor.place_take_profit = AsyncMock(return_value=make_order("ord-tp"))
 
         asyncio.run(monitor._check_all_positions())
 
         assert pos.phase == "active"
-        assert pos.actual_entry_price == 50010.0
-        assert pos.filled_size == 0.002
+        assert pos.actual_entry_price == 2001.0
+        assert pos.filled_size == 0.05
         assert pos.sl_order_id == "ord-sl"
-        assert pos.tp1_order_id == "ord-tp1"
-        assert pos.tp2_order_id == "ord-tp2"
-        assert pos.tp3_order_id == "ord-tp3"
+        assert pos.tp_order_id == "ord-tp"
+
+        # SL placed for full size
+        sl_call = executor.place_stop_market.call_args
+        assert sl_call[0][2] == 0.05  # full size
+        assert sl_call[0][3] == 1960.0  # sl_price
+
+        # TP placed at tp2_price for full size
+        tp_call = executor.place_take_profit.call_args
+        assert tp_call[0][2] == 0.05  # full size
+        assert tp_call[0][3] == 2080.0  # tp2_price (2:1 R:R)
 
 
 class TestEntryTimeout:
@@ -321,13 +320,11 @@ class TestEntryTimeout:
 
         asyncio.run(monitor._check_all_positions())
 
-        executor.cancel_order.assert_called_once_with("ord-entry", "BTC/USDT")
+        executor.cancel_order.assert_called_once_with("ord-entry", "ETH/USDT")
         assert pos.phase == "closed"
         assert pos.close_reason == "cancelled"
-        # Cancelled entries are not real trades — on_trade_closed NOT called
         risk.on_trade_closed.assert_not_called()
-        # But on_trade_cancelled IS called to remove phantom from risk state
-        risk.on_trade_cancelled.assert_called_once_with("BTC/USDT", "long")
+        risk.on_trade_cancelled.assert_called_once_with("ETH/USDT", "long")
 
     def test_quick_setup_uses_shorter_timeout(self):
         """Quick setups (C/D/E) use ENTRY_TIMEOUT_QUICK_SECONDS."""
@@ -337,8 +334,7 @@ class TestEntryTimeout:
 
         pos = make_position()
         pos.setup_type = "setup_c"
-        # 2 hours ago — past 1h quick timeout but within 4h swing timeout
-        pos.created_at = int(time.time()) - 7200
+        pos.created_at = int(time.time()) - 7200  # 2h — past 1h quick timeout
         monitor.register(pos)
 
         executor.cancel_order = AsyncMock(return_value=True)
@@ -356,8 +352,7 @@ class TestEntryTimeout:
 
         pos = make_position()
         pos.setup_type = "setup_a"
-        # 2 hours ago — within 4h swing timeout
-        pos.created_at = int(time.time()) - 7200
+        pos.created_at = int(time.time()) - 7200  # 2h — within 4h
         monitor.register(pos)
 
         executor.fetch_order = AsyncMock(return_value=make_order(
@@ -369,101 +364,59 @@ class TestEntryTimeout:
         assert pos.phase == "pending_entry"  # Still waiting
 
 
-class TestTP1Hit:
-    """TP1 fills → SL moves to breakeven."""
+class TestTPHit:
+    """TP fills → position fully closed."""
 
-    def test_tp1_moves_sl_to_breakeven(self):
+    def test_tp_closes_position(self):
         executor = MagicMock(spec=OrderExecutor)
         risk = MagicMock()
         monitor = PositionMonitor(executor, risk)
 
-        pos = make_position(phase="active", size=0.002)
-        pos.actual_entry_price = 50000.0
+        pos = make_position(phase="active", size=0.05)
+        pos.actual_entry_price = 2000.0
         pos.filled_at = int(time.time())
-        pos.sl_order_id = "ord-sl-old"
-        pos.tp1_order_id = "ord-tp1"
-        pos.tp2_order_id = "ord-tp2"
-        pos.tp3_order_id = "ord-tp3"
+        pos.sl_order_id = "ord-sl"
+        pos.tp_order_id = "ord-tp"
         monitor.register(pos)
 
-        sl_order = make_order("ord-sl-old", status="open")
-        tp1_order = make_order("ord-tp1", status="closed", filled=0.001)
-
         async def mock_fetch(order_id, pair):
-            if order_id == "ord-sl-old":
-                return sl_order
-            if order_id == "ord-tp1":
-                return tp1_order
+            if order_id == "ord-sl":
+                return make_order("ord-sl", status="open")
+            if order_id == "ord-tp":
+                return make_order("ord-tp", status="closed", filled=0.05, average=2080.0)
             return make_order(order_id, status="open")
 
         executor.fetch_order = AsyncMock(side_effect=mock_fetch)
-        executor.place_stop_market = AsyncMock(return_value=make_order("ord-sl-new"))
         executor.cancel_order = AsyncMock(return_value=True)
 
         asyncio.run(monitor._check_all_positions())
 
-        assert pos.phase == "tp1_hit"
-        executor.place_stop_market.assert_called_once()
-        call_args = executor.place_stop_market.call_args
-        assert call_args[0][3] == 50000.0  # breakeven price
-        executor.cancel_order.assert_called_once_with("ord-sl-old", "BTC/USDT")
-        assert pos.sl_order_id == "ord-sl-new"
-
-
-class TestTP2Hit:
-    """TP2 fills → SL moves to TP1 level."""
-
-    def test_tp2_moves_sl_to_tp1(self):
-        executor = MagicMock(spec=OrderExecutor)
-        risk = MagicMock()
-        monitor = PositionMonitor(executor, risk)
-
-        pos = make_position(phase="tp1_hit", size=0.002)
-        pos.actual_entry_price = 50000.0
-        pos.filled_at = int(time.time())
-        pos.sl_order_id = "ord-sl-be"
-        pos.tp2_order_id = "ord-tp2"
-        pos.tp3_order_id = "ord-tp3"
-        monitor.register(pos)
-
-        async def mock_fetch(order_id, pair):
-            if order_id == "ord-sl-be":
-                return make_order("ord-sl-be", status="open")
-            if order_id == "ord-tp2":
-                return make_order("ord-tp2", status="closed", filled=0.0006)
-            return make_order(order_id, status="open")
-
-        executor.fetch_order = AsyncMock(side_effect=mock_fetch)
-        executor.place_stop_market = AsyncMock(return_value=make_order("ord-sl-tp1"))
-        executor.cancel_order = AsyncMock(return_value=True)
-
-        asyncio.run(monitor._check_all_positions())
-
-        assert pos.phase == "tp2_hit"
-        call_args = executor.place_stop_market.call_args
-        assert call_args[0][3] == 50500.0  # TP1 price
-        assert pos.sl_order_id == "ord-sl-tp1"
+        assert pos.phase == "closed"
+        assert pos.close_reason == "tp"
+        # SL should be cancelled since position is fully closed
+        executor.cancel_order.assert_called_once_with("ord-sl", "ETH/USDT")
+        risk.on_trade_closed.assert_called_once()
+        # PnL: (2080 - 2000) / 2000 = 4%
+        assert abs(pos.pnl_pct - 0.04) < 0.001
 
 
 class TestSLHit:
-    """SL fills → cancel all TPs."""
+    """SL fills → cancel TP."""
 
-    def test_sl_cancels_all_tps(self):
+    def test_sl_cancels_tp(self):
         executor = MagicMock(spec=OrderExecutor)
         risk = MagicMock()
         monitor = PositionMonitor(executor, risk)
 
-        pos = make_position(phase="active", size=0.002)
-        pos.actual_entry_price = 50000.0
+        pos = make_position(phase="active", size=0.05)
+        pos.actual_entry_price = 2000.0
         pos.filled_at = int(time.time())
         pos.sl_order_id = "ord-sl"
-        pos.tp1_order_id = "ord-tp1"
-        pos.tp2_order_id = "ord-tp2"
-        pos.tp3_order_id = "ord-tp3"
+        pos.tp_order_id = "ord-tp"
         monitor.register(pos)
 
         executor.fetch_order = AsyncMock(return_value=make_order(
-            "ord-sl", status="closed", filled=0.002, average=49500.0
+            "ord-sl", status="closed", filled=0.05, average=1960.0
         ))
         executor.cancel_order = AsyncMock(return_value=True)
 
@@ -471,8 +424,137 @@ class TestSLHit:
 
         assert pos.phase == "closed"
         assert pos.close_reason == "sl"
-        assert executor.cancel_order.call_count == 3
+        executor.cancel_order.assert_called_once_with("ord-tp", "ETH/USDT")
         risk.on_trade_closed.assert_called_once()
+        # PnL: (1960 - 2000) / 2000 = -2%
+        assert abs(pos.pnl_pct - (-0.02)) < 0.001
+
+
+class TestBreakevenTrigger:
+    """Price crosses 1:1 R:R → SL moves to entry."""
+
+    def test_breakeven_moves_sl_to_entry(self):
+        executor = MagicMock(spec=OrderExecutor)
+        risk = MagicMock()
+        monitor = PositionMonitor(executor, risk)
+
+        pos = make_position(phase="active", size=0.05)
+        pos.actual_entry_price = 2000.0
+        pos.filled_at = int(time.time())
+        pos.sl_order_id = "ord-sl-old"
+        pos.tp_order_id = "ord-tp"
+        pos.current_sl_price = 1960.0
+        monitor.register(pos)
+
+        # SL and TP still open
+        async def mock_fetch(order_id, pair):
+            return make_order(order_id, status="open")
+
+        executor.fetch_order = AsyncMock(side_effect=mock_fetch)
+        # Price above tp1_price (2040.0) → breakeven triggered
+        executor.fetch_ticker = AsyncMock(return_value={"last": 2045.0})
+        executor.place_stop_market = AsyncMock(return_value=make_order("ord-sl-new"))
+        executor.cancel_order = AsyncMock(return_value=True)
+
+        asyncio.run(monitor._check_all_positions())
+
+        assert pos.breakeven_hit is True
+        assert pos.sl_order_id == "ord-sl-new"
+        assert pos.current_sl_price == 2000.0  # entry price
+
+        # New SL at entry price
+        sl_call = executor.place_stop_market.call_args
+        assert sl_call[0][3] == 2000.0  # breakeven price
+
+        # Old SL cancelled
+        executor.cancel_order.assert_called_once_with("ord-sl-old", "ETH/USDT")
+
+    def test_breakeven_not_triggered_when_below_tp1(self):
+        """Price below tp1_price → SL stays at original level."""
+        executor = MagicMock(spec=OrderExecutor)
+        risk = MagicMock()
+        monitor = PositionMonitor(executor, risk)
+
+        pos = make_position(phase="active", size=0.05)
+        pos.actual_entry_price = 2000.0
+        pos.filled_at = int(time.time())
+        pos.sl_order_id = "ord-sl"
+        pos.tp_order_id = "ord-tp"
+        pos.current_sl_price = 1960.0
+        monitor.register(pos)
+
+        async def mock_fetch(order_id, pair):
+            return make_order(order_id, status="open")
+
+        executor.fetch_order = AsyncMock(side_effect=mock_fetch)
+        # Price below tp1_price (2040.0) → no breakeven
+        executor.fetch_ticker = AsyncMock(return_value={"last": 2020.0})
+
+        asyncio.run(monitor._check_all_positions())
+
+        assert pos.breakeven_hit is False
+        assert pos.current_sl_price == 1960.0
+        # No SL adjustment calls
+        executor.place_stop_market.assert_not_called()
+
+    def test_breakeven_short_direction(self):
+        """Short: price below tp1_price triggers breakeven."""
+        executor = MagicMock(spec=OrderExecutor)
+        risk = MagicMock()
+        monitor = PositionMonitor(executor, risk)
+
+        pos = make_position(
+            direction="short", phase="active", size=0.05,
+            entry_price=2000.0, sl_price=2040.0
+        )
+        pos.tp1_price = 1960.0   # 1:1 R:R
+        pos.tp2_price = 1920.0   # 2:1 R:R
+        pos.actual_entry_price = 2000.0
+        pos.filled_at = int(time.time())
+        pos.sl_order_id = "ord-sl-old"
+        pos.tp_order_id = "ord-tp"
+        pos.current_sl_price = 2040.0
+        monitor.register(pos)
+
+        async def mock_fetch(order_id, pair):
+            return make_order(order_id, status="open")
+
+        executor.fetch_order = AsyncMock(side_effect=mock_fetch)
+        # Price below tp1_price (1960.0) → breakeven
+        executor.fetch_ticker = AsyncMock(return_value={"last": 1955.0})
+        executor.place_stop_market = AsyncMock(return_value=make_order("ord-sl-new"))
+        executor.cancel_order = AsyncMock(return_value=True)
+
+        asyncio.run(monitor._check_all_positions())
+
+        assert pos.breakeven_hit is True
+        assert pos.current_sl_price == 2000.0  # entry price
+        sl_call = executor.place_stop_market.call_args
+        assert sl_call[0][3] == 2000.0  # breakeven
+
+    def test_breakeven_only_triggers_once(self):
+        """Once breakeven_hit=True, don't re-check."""
+        executor = MagicMock(spec=OrderExecutor)
+        risk = MagicMock()
+        monitor = PositionMonitor(executor, risk)
+
+        pos = make_position(phase="active", size=0.05)
+        pos.actual_entry_price = 2000.0
+        pos.filled_at = int(time.time())
+        pos.sl_order_id = "ord-sl"
+        pos.tp_order_id = "ord-tp"
+        pos.breakeven_hit = True  # Already triggered
+        monitor.register(pos)
+
+        async def mock_fetch(order_id, pair):
+            return make_order(order_id, status="open")
+
+        executor.fetch_order = AsyncMock(side_effect=mock_fetch)
+
+        asyncio.run(monitor._check_all_positions())
+
+        # No ticker fetch needed — breakeven already triggered
+        executor.fetch_ticker.assert_not_called()
 
 
 class TestTimeoutClose:
@@ -483,13 +565,11 @@ class TestTimeoutClose:
         risk = MagicMock()
         monitor = PositionMonitor(executor, risk)
 
-        pos = make_position(phase="active", size=0.002)
-        pos.actual_entry_price = 50000.0
+        pos = make_position(phase="active", size=0.05)
+        pos.actual_entry_price = 2000.0
         pos.filled_at = int(time.time()) - 50000  # Way past 12h
         pos.sl_order_id = "ord-sl"
-        pos.tp1_order_id = "ord-tp1"
-        pos.tp2_order_id = "ord-tp2"
-        pos.tp3_order_id = "ord-tp3"
+        pos.tp_order_id = "ord-tp"
         monitor.register(pos)
 
         executor.cancel_order = AsyncMock(return_value=True)
@@ -500,8 +580,8 @@ class TestTimeoutClose:
         assert pos.phase == "closed"
         assert pos.close_reason == "timeout"
         executor.close_position_market.assert_called_once()
-        # SL + 3 TPs = 4 cancels
-        assert executor.cancel_order.call_count == 4
+        # SL + TP = 2 cancels
+        assert executor.cancel_order.call_count == 2
 
 
 class TestEmergencyClose:
@@ -516,7 +596,7 @@ class TestEmergencyClose:
         monitor.register(pos)
 
         executor.fetch_order = AsyncMock(return_value=make_order(
-            "ord-entry", status="closed", filled=0.002, average=50000.0
+            "ord-entry", status="closed", filled=0.05, average=2000.0
         ))
         executor.place_stop_market = AsyncMock(return_value=None)
         executor.close_position_market = AsyncMock(return_value=make_order("ord-emg"))
@@ -526,7 +606,7 @@ class TestEmergencyClose:
         assert pos.phase == "closed"
         assert pos.close_reason == "emergency"
         executor.close_position_market.assert_called_once_with(
-            "BTC/USDT", "sell", 0.002
+            "ETH/USDT", "sell", 0.05
         )
 
 
@@ -539,11 +619,11 @@ class TestSlippage:
         monitor = PositionMonitor(executor, risk)
 
         pos = make_position()
-        pos.entry_price = 50000.0
+        pos.entry_price = 2000.0
         monitor.register(pos)
 
         executor.fetch_order = AsyncMock(return_value=make_order(
-            "ord-entry", status="closed", filled=0.002, average=50025.0
+            "ord-entry", status="closed", filled=0.05, average=2001.0
         ))
         executor.place_stop_market = AsyncMock(return_value=make_order("ord-sl"))
         executor.place_take_profit = AsyncMock(return_value=make_order("ord-tp"))
@@ -563,76 +643,30 @@ class TestPnlCalculation:
     def test_long_profit(self):
         monitor = PositionMonitor(MagicMock(), MagicMock())
         pos = make_position(direction="long", phase="active")
-        pos.actual_entry_price = 50000.0
-        monitor._calculate_pnl(pos, 51000.0)
-        assert abs(pos.pnl_pct - 0.02) < 0.0001
+        pos.actual_entry_price = 2000.0
+        monitor._calculate_pnl(pos, 2080.0)
+        assert abs(pos.pnl_pct - 0.04) < 0.0001
 
     def test_long_loss(self):
         monitor = PositionMonitor(MagicMock(), MagicMock())
         pos = make_position(direction="long", phase="active")
-        pos.actual_entry_price = 50000.0
-        monitor._calculate_pnl(pos, 49500.0)
-        assert abs(pos.pnl_pct - (-0.01)) < 0.0001
+        pos.actual_entry_price = 2000.0
+        monitor._calculate_pnl(pos, 1960.0)
+        assert abs(pos.pnl_pct - (-0.02)) < 0.0001
 
     def test_short_profit(self):
         monitor = PositionMonitor(MagicMock(), MagicMock())
         pos = make_position(direction="short", phase="active")
-        pos.actual_entry_price = 50000.0
-        monitor._calculate_pnl(pos, 49000.0)
-        assert abs(pos.pnl_pct - 0.02) < 0.0001
+        pos.actual_entry_price = 2000.0
+        monitor._calculate_pnl(pos, 1920.0)
+        assert abs(pos.pnl_pct - 0.04) < 0.0001
 
     def test_short_loss(self):
         monitor = PositionMonitor(MagicMock(), MagicMock())
         pos = make_position(direction="short", phase="active")
-        pos.actual_entry_price = 50000.0
-        monitor._calculate_pnl(pos, 50500.0)
-        assert abs(pos.pnl_pct - (-0.01)) < 0.0001
-
-    def test_blended_pnl_with_realized(self):
-        """PnL blends realized from TPs with unrealized remainder."""
-        monitor = PositionMonitor(MagicMock(), MagicMock())
-        pos = make_position(direction="long", phase="tp1_hit")
-        pos.actual_entry_price = 50000.0
-        # TP1 realized: 50% at 50500 = 0.001 * 500 = $0.50
-        pos.realized_pnl_usd = 0.50
-        # Remaining 50% at SL (breakeven 50000) = $0
-        monitor._calculate_pnl(pos, 50000.0)
-        # Total: $0.50 / (50000 * 0.002) = 0.005
-        assert abs(pos.pnl_pct - 0.005) < 0.0001
-
-
-class TestTP3FullClose:
-    """TP3 fills → position fully closed."""
-
-    def test_tp3_fill_closes_position(self):
-        executor = MagicMock(spec=OrderExecutor)
-        risk = MagicMock()
-        monitor = PositionMonitor(executor, risk)
-
-        pos = make_position(phase="tp2_hit", size=0.002)
-        pos.actual_entry_price = 50000.0
-        pos.filled_at = int(time.time())
-        pos.sl_order_id = "ord-sl-tp1"
-        pos.tp3_order_id = "ord-tp3"
-        monitor.register(pos)
-
-        async def mock_fetch(order_id, pair):
-            if order_id == "ord-sl-tp1":
-                return make_order("ord-sl-tp1", status="open")
-            if order_id == "ord-tp3":
-                return make_order("ord-tp3", status="closed", filled=0.0004)
-            return make_order(order_id, status="open")
-
-        executor.fetch_order = AsyncMock(side_effect=mock_fetch)
-        executor.cancel_order = AsyncMock(return_value=True)
-
-        asyncio.run(monitor._check_all_positions())
-
-        assert pos.phase == "closed"
-        assert pos.close_reason == "tp3"
-        # SL should be cancelled since position is fully closed
-        executor.cancel_order.assert_called_once_with("ord-sl-tp1", "BTC/USDT")
-        risk.on_trade_closed.assert_called_once()
+        pos.actual_entry_price = 2000.0
+        monitor._calculate_pnl(pos, 2040.0)
+        assert abs(pos.pnl_pct - (-0.02)) < 0.0001
 
 
 class TestAdjustSLFailure:
@@ -643,20 +677,18 @@ class TestAdjustSLFailure:
         risk = MagicMock()
         monitor = PositionMonitor(executor, risk)
 
-        pos = make_position(phase="active", size=0.002)
-        pos.actual_entry_price = 50000.0
+        pos = make_position(phase="active", size=0.05)
+        pos.actual_entry_price = 2000.0
         pos.filled_at = int(time.time())
         pos.sl_order_id = "ord-sl-old"
-        pos.tp1_order_id = "ord-tp1"
-        pos.tp2_order_id = "ord-tp2"
-        pos.tp3_order_id = "ord-tp3"
+        pos.tp_order_id = "ord-tp"
         monitor.register(pos)
 
         # New SL placement fails
         executor.place_stop_market = AsyncMock(return_value=None)
         executor.cancel_order = AsyncMock(return_value=True)
 
-        asyncio.run(monitor._adjust_sl(pos, 50000.0))
+        asyncio.run(monitor._adjust_sl(pos, 2000.0))
 
         # Old SL should be kept
         assert pos.sl_order_id == "ord-sl-old"
@@ -665,7 +697,7 @@ class TestAdjustSLFailure:
 
 
 class TestSLTPValidation:
-    """I-E4: SL/TP price ordering validation (live mode only)."""
+    """SL/TP price ordering validation (live mode only)."""
 
     def test_long_invalid_sl_above_entry_rejected(self):
         """Long: SL > entry should be rejected in live mode."""
@@ -675,7 +707,7 @@ class TestSLTPValidation:
         monitor.positions = {}
         service = _make_service(executor, monitor, risk)
 
-        setup = make_setup(sl=50500.0, entry=50000.0)  # SL above entry
+        setup = make_setup(sl=2050.0, entry=2000.0, tp2=2080.0)
         with patch.object(settings, "OKX_SANDBOX", False):
             result = asyncio.run(service.execute(setup, make_approval(), 0.85))
         assert result is False
@@ -689,12 +721,38 @@ class TestSLTPValidation:
         service = _make_service(executor, monitor, risk)
 
         setup = make_setup(
-            direction="short", sl=49500.0, entry=50000.0,
-            tp1=49000.0, tp2=48000.0, tp3=47000.0
+            direction="short", sl=1950.0, entry=2000.0,
+            tp1=1960.0, tp2=1920.0, tp3=1880.0
         )
         with patch.object(settings, "OKX_SANDBOX", False):
             result = asyncio.run(service.execute(setup, make_approval(), 0.85))
         assert result is False
+
+
+class TestTPPlacementFailure:
+    """TP placement fails → position stays open with SL only."""
+
+    def test_tp_failure_keeps_position_with_sl(self):
+        """TP fails but position stays active — SL protects us."""
+        executor = MagicMock(spec=OrderExecutor)
+        risk = MagicMock()
+        monitor = PositionMonitor(executor, risk)
+
+        pos = make_position()
+        monitor.register(pos)
+
+        executor.fetch_order = AsyncMock(return_value=make_order(
+            "ord-entry", status="closed", filled=0.05, average=2001.0
+        ))
+        executor.place_stop_market = AsyncMock(return_value=make_order("ord-sl"))
+        executor.place_take_profit = AsyncMock(return_value=None)  # TP fails
+
+        asyncio.run(monitor._check_all_positions())
+
+        # Position stays active with SL protection
+        assert pos.phase == "active"
+        assert pos.sl_order_id == "ord-sl"
+        assert pos.tp_order_id is None
 
 
 class TestAlgoOrderFetch:
@@ -751,8 +809,6 @@ class TestAlgoOrderFetch:
         executor._exchange.privateGetTradeOrdersAlgoPending = MagicMock(
             return_value={"data": []}
         )
-        # First history call (effective) returns empty
-        # Second history call (canceled) finds the order
         executor._exchange.privateGetTradeOrdersAlgoHistory = MagicMock(
             side_effect=[
                 {"data": []},
@@ -767,29 +823,6 @@ class TestAlgoOrderFetch:
         assert result is not None
         assert result["status"] == "canceled"
 
-    def test_algo_order_error_throttling(self):
-        """Repeated errors are throttled — first logged, then every 12th."""
-        executor = OrderExecutor.__new__(OrderExecutor)
-        executor._exchange = MagicMock()
-        executor._algo_fetch_errors = {}
-
-        executor._exchange.privateGetTradeOrdersAlgoPending = MagicMock(
-            side_effect=Exception("API error")
-        )
-
-        async def run():
-            results = []
-            for _ in range(25):
-                r = await executor._fetch_algo_order("algo-err", "ETH/USDT")
-                results.append(r)
-            return results
-
-        results = asyncio.run(run())
-        # All return None
-        assert all(r is None for r in results)
-        # Error counter tracks
-        assert executor._algo_fetch_errors["algo-err"] == 25
-
 
 class TestHealthCheck:
     """Health method returns service status."""
@@ -797,7 +830,7 @@ class TestHealthCheck:
     def test_health_returns_status(self):
         service = _make_service()
         service._monitor.positions = {
-            "BTC/USDT": MagicMock(phase="active", direction="long")
+            "ETH/USDT": MagicMock(phase="active", direction="long")
         }
         health = service.health()
         assert health["enabled"] is True

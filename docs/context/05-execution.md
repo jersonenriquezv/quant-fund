@@ -1,6 +1,6 @@
 # Execution Service (Layer 5)
-> Última actualización: 2026-03-07
-> Estado: **implementado** — 32 tests passing. Position adoption, manual position coexistence.
+> Última actualización: 2026-03-08
+> Estado: **Fase 1 — simplificado**. SL + single TP. Breakeven via price polling.
 
 El brazo ejecutor del bot. Recibe trades aprobados por Risk Service y los ejecuta en OKX via ccxt.
 
@@ -16,227 +16,118 @@ ExecutionService (facade)
 ## Flujo de una operación
 
 1. `execute(setup, approval, ai_confidence)` recibe trade aprobado
-2. **Valida precio ordering** — Long: `sl < entry < tp1 < tp2 < tp3`. Short: inverso. Rechaza si inválido.
-3. **Chequea posición existente** — Si hay pending_entry (orden no llenada), la cancela y la reemplaza con el nuevo setup. Si hay posición adoptada (manual), permite nueva entry del bot (ambas coexisten en OKX net mode). Si hay posición activa del bot (llenada), rechaza.
-4. Configura el par (margin mode isolado + leverage)
+2. **Valida precio ordering** — Long: `sl < entry < tp2`. Short: inverso.
+3. **Chequea posición existente** — Si hay pending_entry → reemplaza. Si hay adoptada → permite coexistencia. Si hay activa del bot → rechaza.
+4. Configura el par (margin mode isolated + leverage)
 5. Coloca limit entry order al precio calculado (50% OB/FVG)
-6. Notifica Risk Service inmediatamente (en PLACE, no en fill — para conteo correcto)
+6. Notifica Risk Service inmediatamente (en PLACE, no en fill)
 7. Registra la posición en el monitor
-8. El monitor (polling cada 5s) gestiona el ciclo de vida
 
-## Máquina de estados
+## Máquina de estados (Fase 1 — simplificada)
 
 ```
-pending_entry ──[fill]──────> active         (coloca SL + TP1/TP2/TP3)
-pending_entry ──[4h/1h]─────> closed         (cancela entry — 4h swing, 1h quick; NO cuenta como trade en Risk)
+pending_entry ──[fill]──────> active         (coloca SL + single TP a 2:1 R:R)
+pending_entry ──[4h/1h]─────> closed         (cancela entry)
 
-active ──[TP1 fills]──> tp1_hit              (SL → breakeven)
-active ──[SL fills]───> closed               (cancela todos los TPs)
-active ──[12h/4h]─────> closed               (market close — 12h swing, 4h quick setups)
-active ──[SL fail]────> emergency_pending    (SL placement fails → emergency retry)
+active ──[TP fills]──> closed                (profit)
+active ──[SL fills]──> closed                (loss o breakeven)
+active ──[price >= 1:1 R:R]──> SL moves to breakeven
+active ──[12h/4h]────> closed                (market close)
+active ──[SL fail]───> emergency_pending     (retry x3)
 
-tp1_hit ──[TP2 fills]──> tp2_hit             (SL → nivel TP1)
-tp1_hit ──[SL fills]───> closed
-
-tp2_hit ──[TP3 fills]──> closed              (posición completamente cerrada)
-tp2_hit ──[SL fills]───> closed
-
-emergency_pending ──[retry ok]──> closed     (market close exitoso)
-emergency_pending ──[3 fails]──> emergency_failed  (requiere intervención manual)
+emergency_pending ──[retry ok]──> closed
+emergency_pending ──[3 fails]──> emergency_failed  (intervención manual)
 ```
+
+## Exit Management (simplificado)
+
+- **SL**: stop-market al `sl_price` por 100% de la posición
+- **TP**: limit reduceOnly al `tp2_price` (2:1 R:R) por 100%
+- **Breakeven**: el monitor poll ticker cada 5s. Cuando price cruza `tp1_price` (1:1 R:R), mueve SL a `entry_price`
+- **TP falla**: posición queda abierta con SL only (no emergency close — SL protege)
 
 ## Tipos de órdenes
 
 | Orden | Tipo | Por qué |
 |-------|------|---------|
 | Entry | Limit | Control de slippage. Cancela si no se llena en 4h (swing) / 1h (quick) |
-| Stop Loss | Stop-market (algo order) | Ejecución garantizada en crashes. Sin `reduceOnly` — OKX no soporta reduceOnly en algo orders (error 51205). En modo one-way (net), un sell contra un long ya reduce inherentemente. |
-| TP1/TP2/TP3 | Limit (reduceOnly) | Precios exactos, sin slippage en take profits |
+| Stop Loss | Stop-market (algo order) | Ejecución garantizada. Sin `reduceOnly` (OKX error 51205 en net mode) |
+| TP | Limit (reduceOnly) | Precio exacto, sin slippage |
 
-## Distribución de TPs
+## Reglas de seguridad
 
-- **TP1**: 50% de la posición a 1:1 R:R → SL se mueve a breakeven
-- **TP2**: 30% a 1:2 R:R → SL se mueve a nivel TP1
-- **TP3**: 20% restante → trailing o siguiente nivel de liquidez
+1. **Validación de precios** — Long: `sl < entry < tp2`. Short: `sl > entry > tp2`.
+2. **SL placement retries** — 3 intentos con delays 0.3s/0.6s. Si falla → emergency market close.
+3. **TP falla → SL protege** — Antes se hacía emergency close si TP fallaba. Ahora el SL queda activo y es suficiente.
+4. **Ajuste SL: nuevo ANTES de cancelar viejo** — Cero ventana sin protección.
+5. **Notificación a Risk: en PLACE, no en fill.**
+6. **Cancelled entries no cuentan como trades.**
+7. **Shutdown: cancela entries pendientes, NO cierra posiciones activas.**
 
-## Reglas de seguridad críticas
+## Breakeven Logic
 
-1. **Validación de precios en execute().** Long: `sl < entry < tp1 < tp2 < tp3`. Short: `sl > entry > tp1 > tp2 > tp3`. Rechaza trades con precios inválidos antes de tocar el exchange.
-2. **Entry fill + SL placement retries.** After entry fill, SL placement retries up to 3 times with 0.3s/0.6s delays before triggering emergency close. Handles OKX error 51205 ("Reduce Only is not available") caused by position state not propagating to OKX's algo order service (~300ms race window). If all 3 attempts fail → EMERGENCY market close. Máximo 3 reintentos adicionales en fase `emergency_pending`. Tras 3 fallos → `emergency_failed`, se mantiene en tracking para intervención manual. Envía alerta Telegram.
-3. **TP placement falla → EMERGENCY close.** Si cualquier TP falla al colocarse, cancela todos los TPs y SL colocados, y cierra por market. Un TP faltante impide mover SL a breakeven (TP1 nunca llena → SL nunca se ajusta).
-4. **Ajuste de SL: nuevo ANTES de cancelar viejo.** Cero ventana sin protección. Race window: si ambos SL se ejecutan simultáneamente, el segundo podría abrir posición inversa (sin reduceOnly en algo orders). Window < 1s, riesgo aceptable a escala actual. TODO: migrar a OKX amend-order API para updates atómicos.
-5. **Notificación a Risk: en PLACE, no en fill.** Si hay 2 entries pendientes, Risk los cuenta como 2 posiciones abiertas.
-6. **Cancelled entries no cuentan como trades.** Si el entry timeout cancela una orden que nunca se llenó, no se notifica a Risk ni se envía Telegram de trade cerrado.
-7. **Shutdown: cancela entries pendientes, NO cierra posiciones activas.** Los SL/TP viven en el exchange y sobreviven al bot.
-10. **Dashboard cancel.** El monitor verifica `qf:cancel_request:{pair}` en Redis en cada poll cycle (antes de procesar cada posición). Si encuentra uno, consume la key y ejecuta: pending entry → cancela orden, active → cancela SL/TPs + market close. Método: `_check_cancel_request()` + `_handle_cancel()`.
-8. **Telegram notifications:** Entry fill → `notify_trade_opened`, position close → `notify_trade_closed`, SL/TP fail → `notify_emergency`. Fire-and-forget via `_safe_notify()` con error logging callback (no `ensure_future`).
-9. **DB persistence guards.** `_persist_trade_open/close` verifica que tanto `_data_store` como `.postgres` no sean None antes de escribir.
+1. En cada poll cycle (5s), si `breakeven_hit == False`:
+2. Fetch ticker via `fetch_ticker(pair)`
+3. Long: si `current_price >= tp1_price` → trigger
+4. Short: si `current_price <= tp1_price` → trigger
+5. On trigger: `_adjust_sl(pos, actual_entry_price)`, set `breakeven_hit = True`
+6. Solo se dispara una vez (idempotente)
 
-## Slippage tracking
+## SL vanished fallback
 
-Cada fill logea precio esperado vs real con % de diferencia:
-```
-Slippage: BTC/USDT expected=50000.00 actual=50025.00 diff=0.0500%
-```
+Cuando el SL algo order no se encuentra por 12 polls consecutivos (~60s):
+- **Position gone** → SL triggered, close in monitor
+- **Position exists** → re-place SL at `current_sl_price`
+- **Network error** → skip, retry next cycle
+- **Re-place fails** → `emergency_pending`
+
+Also handles SL cancelled externally: re-places SL immediately.
+
+## OKX Algo Order Handling
+
+- `place_stop_market()` usa ccxt unified API (ccxt mapea a `slTriggerPx` de OKX)
+- `fetch_order()` intenta fetch normal; si `OrderNotFound` → fallback a `_fetch_algo_order()`
+- `_fetch_algo_order()` usa OKX native API: pending → effective → canceled
+- Error throttling: solo logea primer error y cada 12vo
+
+## Position adoption
+
+Al startup, `sync_exchange_positions()` consulta OKX por posiciones abiertas. Las no trackeadas se adoptan como `ManagedPosition(setup_type="manual")`:
+- Monitor las vigila via `fetch_position()` polling
+- Si la posición desaparece → `manual_close`
+- Permite nueva entry del bot en el mismo par (OKX net mode stacking)
 
 ## Archivos
 
 | Archivo | Descripción |
 |---------|-------------|
-| `execution_service/__init__.py` | Exporta ExecutionService |
-| `execution_service/service.py` | Facade — execute(), start(), stop(), health() |
-| `execution_service/executor.py` | Wrapper ccxt — place/cancel/fetch orders (con fallback a algo orders). Init: set one-way position mode + isolated margin |
-| `execution_service/monitor.py` | Background loop — máquina de estados + notificaciones Telegram |
-| `execution_service/models.py` | ManagedPosition (estado mutable interno, incluye `emergency_retries`, `realized_pnl_usd`, `sl_fetch_failures`, `current_sl_price`) |
+| `service.py` | Facade — execute(), start(), stop(), health() |
+| `executor.py` | Wrapper ccxt — place/cancel/fetch orders |
+| `monitor.py` | Background loop — máquina de estados simplificada |
+| `models.py` | ManagedPosition (SL/TP IDs, breakeven tracking) |
 
 ## Settings
 
 | Setting | Default | Descripción |
 |---------|---------|-------------|
-| `ENTRY_TIMEOUT_SECONDS` | 14400 (4h) | Tiempo máximo de espera para fill (swing setups A/B) |
-| `ENTRY_TIMEOUT_QUICK_SECONDS` | 3600 (1h) | Tiempo máximo de espera para fill (quick setups C/D/E) |
+| `ENTRY_TIMEOUT_SECONDS` | 14400 (4h) | Tiempo máximo de espera para fill (swing) |
+| `ENTRY_TIMEOUT_QUICK_SECONDS` | 3600 (1h) | Tiempo máximo de espera para fill (quick) |
 | `ORDER_POLL_INTERVAL` | 5.0s | Intervalo de polling del monitor |
-| `MARGIN_MODE` | "isolated" | Modo de margen (más seguro) |
-| `MAX_TRADE_DURATION_SECONDS` | 43200 (12h) | Duración máxima de un trade (swing A/B) |
-| `MAX_TRADE_DURATION_QUICK` | 14400 (4h) | Duración máxima de quick setups (C/D/E) |
+| `MARGIN_MODE` | "isolated" | Modo de margen |
+| `MAX_TRADE_DURATION_SECONDS` | 43200 (12h) | Duración máxima trade swing |
+| `MAX_TRADE_DURATION_QUICK` | 14400 (4h) | Duración máxima quick |
 
-## PnL Calculation — Blended
+## Live Test Script
 
-El PnL se calcula de forma blended: acumula PnL realizado de cada TP fill + PnL no realizado del tamaño restante al precio de salida.
-
-```
-total_pnl_usd = realized_from_TPs + unrealized_remainder
-pnl_pct = total_pnl_usd / (entry_price × filled_size)
-```
-
-Cada vez que un TP llena, `_accumulate_realized_pnl()` calcula y suma el PnL de esa tranche a `pos.realized_pnl_usd`. Al cerrar (SL, timeout, TP3), `_calculate_pnl()` combina ambos para el PnL final reportado a Risk Service.
-
-## Tests (32)
-
-- Facade: disabled sin API key, happy path, short/sell side, pair ya gestionado, fallos
-- **SL/TP validation**: long inválido (SL arriba de entry), short inválido (SL abajo de entry)
-- Entry fill: coloca SL + 3 TPs
-- Entry timeout: cancela después de 4h (swing) / 1h (quick), per-setup-type
-- TP1 hit: SL → breakeven
-- TP2 hit: SL → nivel TP1
-- **TP3 hit**: posición cerrada, SL cancelado
-- SL hit: cancela todos los TPs
-- 12h timeout: market close + cancela todo
-- Emergency close: SL falla → market close
-- **SL adjustment failure**: mantiene SL viejo si nuevo falla
-- Slippage: logging verificado
-- PnL: cálculo correcto long/short profit/loss, **blended PnL con realized**
-- **Algo order fetch** (4 tests): pending found, filled found, cancelled found, error throttling
-
-## OKX Account Configuration at Init
-
-`OrderExecutor.__init__()` configura la cuenta OKX al arrancar:
-
-1. **Position mode → one-way (net):** `set_position_mode(hedged=False)`. Evita el error `Parameter posSide error` que OKX devuelve en hedge mode. El bot no necesita long+short simultáneo en el mismo par.
-2. **Margin mode → isolated** (per-pair): `set_margin_mode("isolated", symbol, {"lever": leverage})`. Se ejecuta en `configure_pair()` antes de cada trade. El parámetro `lever` es requerido por OKX — sin él, la API devuelve `lever should be between 1 and 125`.
-
-Position mode "already set" se silencia (idempotente). Margin mode "already set" se silencia también, pero si `set_margin_mode` falla con OTRO error (e.g. posición abierta impide cambio), `configure_pair()` retorna `False` y la orden no se coloca.
-
-## OKX Algo Order Handling
-
-OKX trata stop-market orders como "algo orders" con routing separado:
-- **`place_stop_market()`** usa `params["stopLossPrice"]` (ccxt unified API). ccxt internamente mapea esto a `slTriggerPx` de OKX y usa el endpoint de algo orders. Nota: el parámetro anterior `triggerPrice` + `ordType: "conditional"` no funcionaba — OKX devolvía error 50015 ("Either parameter tpTriggerPx or slTriggerPx is required").
-- **`fetch_order()`** intenta primero fetch normal; si recibe `OrderNotFound`, hace fallback a `_fetch_algo_order()`.
-- **`_fetch_algo_order()`** usa OKX native API methods (no ccxt wrappers):
-  1. `privateGetTradeOrdersAlgoPending` — busca en pending (status: open)
-  2. `privateGetTradeOrdersAlgoHistory` con `state: "effective"` — busca triggered/filled (status: closed)
-  3. `privateGetTradeOrdersAlgoHistory` con `state: "canceled"` — busca cancelados
-  - **Error throttling:** `_algo_fetch_errors` dict logea solo el primer error y cada 12vo por order_id, previniendo spam de logs.
-  - **Por qué rewrite:** ccxt v4.5.40 `fetch_open_orders` con `{"ordType": "conditional"}` se redirigía a `fetchCanceledAndClosedOrders()` — método no implementado para OKX — causando ~6,871 errores repetidos por sesión.
-- Usa `asyncio.get_running_loop()` (no el deprecated `get_event_loop()`).
-
-## Decisiones de diseño
-
-| Decisión | Elección | Por qué |
-|----------|----------|---------|
-| Monitoreo | Polling 5s | 5-15 trades/semana no justifica WebSocket |
-| Margin | Isolated | Cada posición tiene su propio margen |
-| Estado | In-memory (MVP) | SL/TP viven en exchange, sobreviven crash. Redis en v2 |
-| Position mode | One-way (net) | No long+short simultáneo en mismo par |
-| Modelos internos | execution_service/models.py | No son inter-capa, no van en shared/ |
-
-## SL vanished fallback
-
-When the SL algo order can't be found on OKX for 12 consecutive polls (~60 seconds), the monitor falls back to checking the exchange position directly:
-- **Position gone** → SL was triggered, close in monitor (cancel remaining TPs)
-- **Position exists** → SL order disappeared, re-place the SL at `current_sl_price`
-- **Network error** → skip, retry next cycle
-- **Re-place fails** → transition to `emergency_pending` for market close
-
-Also handles SL cancelled externally (user action): detects `status == "canceled"` and re-places SL immediately.
-
-`ManagedPosition.current_sl_price` tracks the active SL trigger level (updated on every `_adjust_sl()`). `sl_fetch_failures` counts consecutive None returns from `fetch_order()`.
+`tests/test_execution_live.py` — script manual para probar órdenes en OKX live:
+1. Configura ETH/USDT (isolated, 3x)
+2. Coloca limit buy $20 debajo del precio actual
+3. Coloca SL stop-market $40 debajo del entry
+4. Coloca TP limit $40 arriba del entry
+5. Espera confirmación, luego cancela todo
 
 ## Limitaciones conocidas
 
 - Estado de posiciones se pierde en restart (SL/TP siguen en exchange)
-- ~~No hay detección de posiciones huérfanas al reiniciar~~ → RESUELTO: `sync_exchange_positions()` adopta posiciones al startup
-- ~~SL algo order "not found" loops forever blocking the pair~~ → RESUELTO: fallback a `fetch_position()` tras 60s
-- No hay trailing stop para TP3 (usa limit fijo por ahora — ver roadmap v2)
 - Sin persistencia Redis del estado del monitor (v2)
 - `AIDecision.adjustments` no se aplica a SL/TP (v2)
-
-## Position adoption (sync_exchange_positions)
-
-Al startup, `ExecutionService.sync_exchange_positions()` consulta OKX por posiciones abiertas en cada par. Posiciones no trackeadas se adoptan como `ManagedPosition(setup_type="manual", phase="active")`:
-- Risk Service es notificado (cuenta como posición abierta)
-- Monitor las vigila via `fetch_position()` polling (sin SL/TP management)
-- Si la posición desaparece del exchange → `manual_close`
-- Si `fetch_position` retorna None (error de red) → skip, no cierra
-- Cuando el bot detecta un nuevo setup en un par con posición adoptada, permite la nueva entry (ambas coexisten en OKX net mode)
-
-## Ghost position fix
-
-`PositionMonitor.start()` ejecuta `_update_positions_cache()` al arrancar. `sync_exchange_positions()` corre ANTES de `start()` para que las posiciones adoptadas aparezcan en el cache.
-
-## Roadmap v2 — Trailing Stop para TP3
-
-### Contexto
-CLAUDE.md especifica para TP3: *"trailing stop or next liquidity level for remaining 20%"*. La implementación actual usa una **limit order fija** al `tp3_price` calculado por el Strategy Service (siguiente nivel de liquidez). Esto funciona pero deja dinero en la mesa cuando el precio sigue moviéndose a favor.
-
-### Plan de implementación
-
-**1. Nuevo setting:**
-```python
-# config/settings.py
-TRAILING_STOP_CALLBACK_PCT: float = 0.005  # 0.5% callback ratio
-TRAILING_STOP_ENABLED: bool = False         # Off por default hasta validar en sandbox
-```
-
-**2. API de OKX para trailing stop:**
-OKX soporta trailing stops via `trigger-order` con parámetros:
-- `ordType: "move_order_stop"`
-- `callbackRatio`: porcentaje de retroceso que activa el stop (e.g., "0.005" = 0.5%)
-- `callbackSpread`: alternativa en precio absoluto
-- `triggerPxType`: "last" (precio de último trade)
-
-**3. Cambio en el monitor (PositionMonitor):**
-Cuando `phase` transiciona a `tp2_hit`:
-1. Cancelar el TP3 limit order existente
-2. Colocar trailing stop con `callbackRatio` configurado
-3. Guardar el nuevo order ID en `pos.tp3_order_id`
-4. El monitor sigue igual — cuando el trailing stop se ejecuta, `status == "closed"` y se cierra la posición
-
-**4. Nuevo método en OrderExecutor:**
-```python
-async def place_trailing_stop(
-    self, pair: str, side: str, amount: float, callback_pct: float
-) -> Optional[dict]:
-    """Place trailing stop order. Used for TP3 after TP2 fills."""
-```
-
-**5. Consideraciones:**
-- **Testing:** Los trailing stops se comportan diferente a limits en mercados volátiles. Requiere 2+ semanas de observación en sandbox antes de activar en live.
-- **Fallback:** Si `TRAILING_STOP_ENABLED=False` o si la colocación falla, mantener el TP3 limit original (no perder la protección).
-- **Slippage:** Los trailing stops se ejecutan como market orders cuando se activan — el slippage será mayor que con limits. Logear y monitorear.
-- **OKX quirks:** Verificar si OKX permite trailing stops en sandbox mode (algunos features solo están en live).
-
-### Otras mejoras v2
-- Persistencia de estado del monitor en Redis (sobrevivir restarts)
-- Detección de posiciones huérfanas al reiniciar (query `fetch_positions()` y reconciliar)
-- Aplicar `AIDecision.adjustments` a SL/TP antes de ejecutar

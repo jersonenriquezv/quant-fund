@@ -1,26 +1,24 @@
 """
 Position monitor — background async loop that manages position lifecycle.
 
-Polls order status every ORDER_POLL_INTERVAL seconds and transitions
-positions through the state machine:
+Simplified state machine (Fase 1):
 
-    pending_entry ──[fill]──────> active         (place SL + TP1/TP2/TP3)
-    pending_entry ──[15min]─────> closed         (cancel entry)
+    pending_entry ──[fill]──────> active         (place SL + single TP)
+    pending_entry ──[timeout]───> closed         (cancel entry)
 
-    active ──[TP1 fills]──> tp1_hit              (SL → breakeven)
-    active ──[SL fills]───> closed               (cancel all TPs)
-    active ──[12h]────────> closed               (market close all)
+    active ──[TP fills]──> closed                (full profit)
+    active ──[SL fills]──> closed                (loss or breakeven)
+    active ──[timeout]───> closed                (market close)
+    active ──[price >= 1:1 R:R]──> SL moves to breakeven
 
-    tp1_hit ──[TP2 fills]──> tp2_hit             (SL → TP1 level)
-    tp1_hit ──[SL fills]───> closed              (cancel remaining TPs)
-
-    tp2_hit ──[TP3 fills]──> closed              (fully done)
-    tp2_hit ──[SL fills]───> closed              (cancel TP3)
+Exit management:
+- SL: stop-market at sl_price for 100% of position
+- TP: limit at tp2_price (2:1 R:R) for 100% of position
+- Breakeven: when price crosses tp1_price (1:1), SL moves to entry price
 
 Critical safety:
 - Entry fill + SL placement fails → EMERGENCY market close
 - SL adjustment: place NEW SL first, then cancel OLD SL (zero gap)
-- Slippage logging on every fill
 """
 
 import asyncio
@@ -143,7 +141,7 @@ class PositionMonitor:
 
             if pos.phase == "pending_entry":
                 await self._check_pending_entry(pos)
-            elif pos.phase in ("active", "tp1_hit", "tp2_hit"):
+            elif pos.phase == "active":
                 await self._check_active_position(pos)
             elif pos.phase == "emergency_pending":
                 await self._retry_emergency_close(pos)
@@ -221,7 +219,7 @@ class PositionMonitor:
                 self._close_position(pos, "cancelled")
 
     async def _on_entry_filled(self, pos: ManagedPosition) -> None:
-        """Entry filled — place SL + TPs. If SL fails → emergency close."""
+        """Entry filled — place SL + single TP. If SL fails → emergency close."""
         close_side = "sell" if pos.direction == "long" else "buy"
 
         # In sandbox mode, remap SL/TP relative to actual fill price
@@ -268,60 +266,26 @@ class PositionMonitor:
         pos.sl_order_id = sl_order.get("id")
         pos.current_sl_price = pos.sl_price
 
-        # Place TPs (scaled by TP close percentages)
-        tp1_size = round(pos.filled_size * settings.TP1_CLOSE_PCT, 8)
-        tp2_size = round(pos.filled_size * settings.TP2_CLOSE_PCT, 8)
-        tp3_size = round(pos.filled_size * settings.TP3_CLOSE_PCT, 8)
-
-        tp1 = await self._executor.place_take_profit(
-            pos.pair, close_side, tp1_size, pos.tp1_price
-        )
-        tp2 = await self._executor.place_take_profit(
-            pos.pair, close_side, tp2_size, pos.tp2_price
-        )
-        tp3 = await self._executor.place_take_profit(
-            pos.pair, close_side, tp3_size, pos.tp3_price
+        # Place single TP at tp2_price (2:1 R:R) for 100% of position
+        tp = await self._executor.place_take_profit(
+            pos.pair, close_side, pos.filled_size, pos.tp2_price
         )
 
-        pos.tp1_order_id = tp1.get("id") if tp1 else None
-        pos.tp2_order_id = tp2.get("id") if tp2 else None
-        pos.tp3_order_id = tp3.get("id") if tp3 else None
-
-        if not tp1 or not tp2 or not tp3:
-            logger.error(f"TP order placement failed: {pos.pair} "
-                         f"tp1={'ok' if tp1 else 'FAIL'} "
-                         f"tp2={'ok' if tp2 else 'FAIL'} "
-                         f"tp3={'ok' if tp3 else 'FAIL'} "
-                         f"— EMERGENCY CLOSE (missing TP = no SL adjustment)")
-
-            # Cancel all successfully placed TPs and SL
-            for order_id in (pos.tp1_order_id, pos.tp2_order_id, pos.tp3_order_id):
-                if order_id:
-                    await self._executor.cancel_order(order_id, pos.pair)
-            if pos.sl_order_id:
-                await self._executor.cancel_order(pos.sl_order_id, pos.pair)
-
-            # Emergency market close
-            if self._notifier is not None:
-                self._safe_notify(self._notifier.notify_emergency(
-                    pos, "TP placement failed — emergency market close"
-                ))
-            close_side = "sell" if pos.direction == "long" else "buy"
-            result = await self._executor.close_position_market(
-                pos.pair, close_side, pos.filled_size
+        if tp is None:
+            logger.error(
+                f"TP placement failed: {pos.pair} — "
+                f"position stays open with SL only (no TP on exchange)"
             )
-            if result is None:
-                logger.critical(f"EMERGENCY CLOSE FAILED after TP failure: {pos.pair}")
-                pos.phase = "emergency_pending"
-                pos.emergency_retries = 1
-                return
-            self._close_position(pos, "emergency")
-            return
+            # Don't emergency close — SL protects us.
+            # Position will close via SL, timeout, or manual cancel.
+
+        pos.tp_order_id = tp.get("id") if tp else None
 
         pos.phase = "active"
         self._update_positions_cache()
         logger.info(f"Position ACTIVE: {pos.pair} {pos.direction} "
-                     f"entry={pos.actual_entry_price} size={pos.filled_size:.6f}")
+                     f"entry={pos.actual_entry_price} size={pos.filled_size:.6f} "
+                     f"sl={pos.sl_price:.2f} tp={pos.tp2_price:.2f}")
 
         # Telegram: trade opened
         if self._notifier is not None:
@@ -331,11 +295,11 @@ class PositionMonitor:
         self._persist_trade_open(pos)
 
     # ================================================================
-    # State: active / tp1_hit / tp2_hit
+    # State: active
     # ================================================================
 
     async def _check_active_position(self, pos: ManagedPosition) -> None:
-        """Check SL and TP order statuses, advance state machine."""
+        """Check SL, TP, breakeven trigger, and timeout."""
         now = int(time.time())
 
         # Max duration timeout (4h for quick setups, 12h for swing)
@@ -351,7 +315,7 @@ class PositionMonitor:
 
         # Adopted positions (manual/external) — no SL order ID.
         # Poll exchange directly to detect when position is closed.
-        if not pos.sl_order_id and not pos.tp1_order_id:
+        if not pos.sl_order_id and not pos.tp_order_id:
             exchange_pos = await self._executor.fetch_position(pos.pair)
             if exchange_pos is None:
                 # Network error — don't close, just skip this cycle
@@ -367,7 +331,7 @@ class PositionMonitor:
             sl_status = await self._executor.fetch_order(pos.sl_order_id, pos.pair)
             if sl_status and sl_status.get("status") == "closed":
                 logger.info(f"SL hit: {pos.pair} {pos.direction}")
-                await self._cancel_remaining_tps(pos)
+                await self._cancel_tp(pos)
                 sl_exit = pos.current_sl_price or pos.sl_price
                 self._calculate_pnl(pos, float(sl_status.get("average", 0) or sl_exit))
                 self._close_position(pos, "sl")
@@ -376,10 +340,9 @@ class PositionMonitor:
                 # SL was cancelled (user action or OKX) — re-place it
                 logger.warning(f"SL order cancelled externally: {pos.pair} — re-placing")
                 close_side = "sell" if pos.direction == "long" else "buy"
-                remaining = self._remaining_size(pos)
                 sl_price = pos.current_sl_price or pos.sl_price
                 new_sl = await self._executor.place_stop_market(
-                    pos.pair, close_side, remaining, sl_price
+                    pos.pair, close_side, pos.filled_size, sl_price
                 )
                 if new_sl is not None:
                     pos.sl_order_id = new_sl.get("id")
@@ -396,36 +359,53 @@ class PositionMonitor:
             else:
                 pos.sl_fetch_failures = 0
 
-        # Check TPs based on phase
-        if pos.phase == "active" and pos.tp1_order_id:
-            tp1_status = await self._executor.fetch_order(pos.tp1_order_id, pos.pair)
-            if tp1_status and tp1_status.get("status") == "closed":
-                logger.info(f"TP1 hit: {pos.pair} — moving SL to breakeven")
-                self._accumulate_realized_pnl(pos, pos.tp1_price, settings.TP1_CLOSE_PCT)
-                await self._adjust_sl(pos, pos.actual_entry_price)
-                pos.phase = "tp1_hit"
-                return
-
-        if pos.phase == "tp1_hit" and pos.tp2_order_id:
-            tp2_status = await self._executor.fetch_order(pos.tp2_order_id, pos.pair)
-            if tp2_status and tp2_status.get("status") == "closed":
-                logger.info(f"TP2 hit: {pos.pair} — moving SL to TP1 level")
-                self._accumulate_realized_pnl(pos, pos.tp2_price, settings.TP2_CLOSE_PCT)
-                await self._adjust_sl(pos, pos.tp1_price)
-                pos.phase = "tp2_hit"
-                return
-
-        if pos.phase == "tp2_hit" and pos.tp3_order_id:
-            tp3_status = await self._executor.fetch_order(pos.tp3_order_id, pos.pair)
-            if tp3_status and tp3_status.get("status") == "closed":
-                logger.info(f"TP3 hit: {pos.pair} — position fully closed")
+        # Check TP
+        if pos.tp_order_id:
+            tp_status = await self._executor.fetch_order(pos.tp_order_id, pos.pair)
+            if tp_status and tp_status.get("status") == "closed":
+                logger.info(f"TP hit: {pos.pair} {pos.direction} at 2:1 R:R")
                 # Cancel SL since position is fully closed
                 if pos.sl_order_id:
                     await self._executor.cancel_order(pos.sl_order_id, pos.pair)
-                self._accumulate_realized_pnl(pos, pos.tp3_price, settings.TP3_CLOSE_PCT)
-                self._calculate_pnl(pos, pos.tp3_price)
-                self._close_position(pos, "tp3")
+                tp_exit = float(tp_status.get("average", 0) or pos.tp2_price)
+                self._calculate_pnl(pos, tp_exit)
+                self._close_position(pos, "tp")
                 return
+
+        # Breakeven check — poll current price
+        if not pos.breakeven_hit and pos.actual_entry_price:
+            await self._check_breakeven(pos)
+
+    # ================================================================
+    # Breakeven trigger — move SL to entry when price crosses 1:1 R:R
+    # ================================================================
+
+    async def _check_breakeven(self, pos: ManagedPosition) -> None:
+        """Check if price has crossed the 1:1 R:R level (tp1_price).
+        If so, move SL to breakeven (entry price).
+        """
+        ticker = await self._executor.fetch_ticker(pos.pair)
+        if ticker is None:
+            return
+
+        current_price = float(ticker.get("last", 0) or 0)
+        if current_price <= 0:
+            return
+
+        triggered = False
+        if pos.direction == "long" and current_price >= pos.tp1_price:
+            triggered = True
+        elif pos.direction == "short" and current_price <= pos.tp1_price:
+            triggered = True
+
+        if triggered:
+            logger.info(
+                f"Breakeven triggered: {pos.pair} {pos.direction} "
+                f"price={current_price:.2f} >= tp1={pos.tp1_price:.2f} "
+                f"→ moving SL to entry={pos.actual_entry_price:.2f}"
+            )
+            await self._adjust_sl(pos, pos.actual_entry_price)
+            pos.breakeven_hit = True
 
     # ================================================================
     # State: emergency_pending (retry failed emergency close)
@@ -483,7 +463,7 @@ class PositionMonitor:
                 f"SL order vanished, exchange position closed: {pos.pair} "
                 f"(SL likely triggered at ~{sl_price:.2f})"
             )
-            await self._cancel_remaining_tps(pos)
+            await self._cancel_tp(pos)
             self._calculate_pnl(pos, sl_price)
             self._close_position(pos, "sl")
         else:
@@ -493,10 +473,9 @@ class PositionMonitor:
                 f"({contracts} contracts) — re-placing SL"
             )
             close_side = "sell" if pos.direction == "long" else "buy"
-            remaining = self._remaining_size(pos)
             sl_price = pos.current_sl_price or pos.sl_price
             new_sl = await self._executor.place_stop_market(
-                pos.pair, close_side, remaining, sl_price
+                pos.pair, close_side, pos.filled_size, sl_price
             )
             if new_sl is not None:
                 pos.sl_order_id = new_sl.get("id")
@@ -518,21 +497,14 @@ class PositionMonitor:
     async def _adjust_sl(self, pos: ManagedPosition, new_price: float) -> None:
         """Move SL to new level. Place new BEFORE cancelling old.
 
-        Race window: Between placing the new SL and cancelling the old one,
-        both SL orders exist simultaneously. If price hits both, we could get
-        a double close. Mitigation: both SLs use reduceOnly, so the second
-        would close zero size (no net position to reduce). A fully atomic
-        SL amendment via OKX amend-order API would eliminate this race entirely.
-        TODO: migrate to OKX amend-order API for atomic SL updates.
+        Zero gap: both SLs exist briefly. In net mode, second SL closing
+        zero remaining contracts is a no-op.
         """
         close_side = "sell" if pos.direction == "long" else "buy"
 
-        # Remaining size after partial closes
-        remaining = self._remaining_size(pos)
-
         # Place new SL first
         new_sl = await self._executor.place_stop_market(
-            pos.pair, close_side, remaining, new_price
+            pos.pair, close_side, pos.filled_size, new_price
         )
 
         if new_sl is None:
@@ -552,19 +524,6 @@ class PositionMonitor:
     # ================================================================
     # Helpers
     # ================================================================
-
-    def _accumulate_realized_pnl(
-        self, pos: ManagedPosition, fill_price: float, tranche_pct: float
-    ) -> None:
-        """Accumulate realized PnL for a filled TP tranche."""
-        if not pos.actual_entry_price:
-            return
-        tranche_size = pos.filled_size * tranche_pct
-        if pos.direction == "long":
-            pnl = (fill_price - pos.actual_entry_price) * tranche_size
-        else:
-            pnl = (pos.actual_entry_price - fill_price) * tranche_size
-        pos.realized_pnl_usd += pnl
 
     @staticmethod
     def _remap_sandbox_prices(pos: ManagedPosition) -> None:
@@ -590,38 +549,25 @@ class PositionMonitor:
         logger.info(
             f"Sandbox price remap: {pos.pair} ratio={ratio:.4f} "
             f"sl={old_sl:.2f}->{pos.sl_price:.2f} "
-            f"tp1={pos.tp1_price:.2f} tp2={pos.tp2_price:.2f} tp3={pos.tp3_price:.2f}"
+            f"be_trigger={pos.tp1_price:.2f} tp={pos.tp2_price:.2f}"
         )
 
-    def _remaining_size(self, pos: ManagedPosition) -> float:
-        """Calculate remaining position size based on phase."""
-        if pos.phase == "active":
-            return pos.filled_size
-        elif pos.phase == "tp1_hit":
-            return round(pos.filled_size * (1 - settings.TP1_CLOSE_PCT), 8)
-        elif pos.phase == "tp2_hit":
-            return round(pos.filled_size * settings.TP3_CLOSE_PCT, 8)
-        return 0.0
-
-    async def _cancel_remaining_tps(self, pos: ManagedPosition) -> None:
-        """Cancel all TP orders that haven't filled yet."""
-        for tp_attr in ("tp1_order_id", "tp2_order_id", "tp3_order_id"):
-            order_id = getattr(pos, tp_attr)
-            if order_id:
-                await self._executor.cancel_order(order_id, pos.pair)
+    async def _cancel_tp(self, pos: ManagedPosition) -> None:
+        """Cancel the TP order if it exists."""
+        if pos.tp_order_id:
+            await self._executor.cancel_order(pos.tp_order_id, pos.pair)
 
     async def _close_all_orders_and_market_close(self, pos: ManagedPosition) -> None:
         """Cancel all orders and market close the position (timeout)."""
-        # Cancel SL and TPs
+        # Cancel SL and TP
         if pos.sl_order_id:
             await self._executor.cancel_order(pos.sl_order_id, pos.pair)
-        await self._cancel_remaining_tps(pos)
+        await self._cancel_tp(pos)
 
         # Market close remaining
         close_side = "sell" if pos.direction == "long" else "buy"
-        remaining = self._remaining_size(pos)
-        if remaining > 0:
-            await self._executor.close_position_market(pos.pair, close_side, remaining)
+        if pos.filled_size > 0:
+            await self._executor.close_position_market(pos.pair, close_side, pos.filled_size)
 
         self._close_position(pos, "timeout")
 
@@ -650,27 +596,18 @@ class PositionMonitor:
             )
 
     def _calculate_pnl(self, pos: ManagedPosition, exit_price: float) -> None:
-        """Calculate blended PnL across realized TP tranches + unrealized remainder.
-
-        Combines accumulated realized PnL from TP fills with unrealized PnL
-        on the remaining position size at exit_price.
-        """
+        """Calculate PnL for the full position at exit_price."""
         if not pos.actual_entry_price or pos.actual_entry_price == 0:
             return
 
-        remaining = self._remaining_size(pos)
-
-        # Unrealized PnL on remaining size at exit_price
         if pos.direction == "long":
-            unrealized_usd = (exit_price - pos.actual_entry_price) * remaining
+            pnl_usd = (exit_price - pos.actual_entry_price) * pos.filled_size
         else:
-            unrealized_usd = (pos.actual_entry_price - exit_price) * remaining
+            pnl_usd = (pos.actual_entry_price - exit_price) * pos.filled_size
 
-        # Blended PnL: (realized from TPs + unrealized remainder) / notional
-        total_pnl_usd = pos.realized_pnl_usd + unrealized_usd
         notional = pos.actual_entry_price * pos.filled_size
         if notional > 0:
-            pos.pnl_pct = total_pnl_usd / notional
+            pos.pnl_pct = pnl_usd / notional
         else:
             pos.pnl_pct = 0.0
 
@@ -776,14 +713,13 @@ class PositionMonitor:
                     "phase": pos.phase,
                     "entry_price": pos.entry_price,
                     "actual_entry_price": pos.actual_entry_price,
-                    "sl_price": pos.sl_price,
-                    "tp1_price": pos.tp1_price,
-                    "tp2_price": pos.tp2_price,
-                    "tp3_price": pos.tp3_price,
+                    "sl_price": pos.current_sl_price or pos.sl_price,
+                    "tp_price": pos.tp2_price,
                     "filled_size": pos.filled_size,
                     "leverage": pos.leverage,
                     "ai_confidence": pos.ai_confidence,
                     "pnl_pct": pos.pnl_pct,
+                    "breakeven_hit": pos.breakeven_hit,
                     "created_at": pos.created_at,
                     "filled_at": pos.filled_at,
                 })

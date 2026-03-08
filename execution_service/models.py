@@ -13,12 +13,15 @@ from typing import Optional
 class ManagedPosition:
     """Tracks the full lifecycle of an executed trade.
 
-    State machine:
-        pending_entry → active → tp1_hit → tp2_hit → closed
+    Simplified state machine (Fase 1):
+        pending_entry → active → closed
         pending_entry → closed  (entry timeout or cancel)
-        active → closed         (SL hit, timeout, emergency)
-        tp1_hit → closed        (SL hit)
-        tp2_hit → closed        (SL/TP3 hit)
+        active → closed         (SL hit, TP hit, timeout, emergency)
+
+    Exit management:
+        - SL (stop-market) at sl_price for 100% of position
+        - Single TP (limit) at tp2_price (2:1 R:R) for 100% of position
+        - When price crosses tp1_price (1:1 R:R), SL moves to breakeven
     """
 
     # Identity
@@ -27,14 +30,14 @@ class ManagedPosition:
     setup_type: str             # "setup_a" or "setup_b"
 
     # Phase
-    phase: str = "pending_entry"  # pending_entry, active, tp1_hit, tp2_hit, closed
+    phase: str = "pending_entry"  # pending_entry, active, closed
 
     # Target prices (from TradeSetup)
     entry_price: float = 0.0
     sl_price: float = 0.0
-    tp1_price: float = 0.0
-    tp2_price: float = 0.0
-    tp3_price: float = 0.0
+    tp1_price: float = 0.0       # Breakeven trigger level (1:1 R:R)
+    tp2_price: float = 0.0       # TP order level (2:1 R:R)
+    tp3_price: float = 0.0       # Unused in Fase 1
 
     # Position sizing (from RiskApproval)
     total_size: float = 0.0     # Full position size in base currency
@@ -43,9 +46,7 @@ class ManagedPosition:
     # Order IDs on exchange
     entry_order_id: Optional[str] = None
     sl_order_id: Optional[str] = None
-    tp1_order_id: Optional[str] = None
-    tp2_order_id: Optional[str] = None
-    tp3_order_id: Optional[str] = None
+    tp_order_id: Optional[str] = None   # Single TP at tp2_price
 
     # Actual fills
     actual_entry_price: Optional[float] = None
@@ -60,9 +61,11 @@ class ManagedPosition:
     closed_at: Optional[int] = None
 
     # Exit info
-    close_reason: Optional[str] = None  # "tp1", "tp2", "tp3", "sl", "timeout", "emergency", "cancelled"
+    close_reason: Optional[str] = None  # "tp", "sl", "timeout", "emergency", "cancelled"
     pnl_pct: float = 0.0
-    realized_pnl_usd: float = 0.0      # Accumulated PnL from filled TP tranches
+
+    # Breakeven tracking
+    breakeven_hit: bool = False  # True after SL moved to breakeven
 
     # Emergency close retry tracking
     emergency_retries: int = 0

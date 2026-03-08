@@ -1,5 +1,15 @@
 # Changelog — One-Man Quant Fund
 
+## [2026-03-08] — Fase 1: Simplified exit management, single TP, breakeven via price polling
+**Qué cambió:**
+- `monitor.py` — Reescrito. Máquina de estados simplificada: `pending_entry → active → closed`. Eliminados TP1/TP2/TP3, reemplazados por single TP a tp2_price (2:1 R:R) por 100% de la posición. Breakeven: poll ticker cada 5s, cuando price cruza tp1_price (1:1 R:R), SL se mueve a entry. Si TP falla, posición queda con SL only (no emergency close). Eliminados phases tp1_hit/tp2_hit, _accumulate_realized_pnl, _remaining_size.
+- `models.py` — Simplificado. Eliminados tp1/tp2/tp3_order_id, replaced by tp_order_id. Eliminado realized_pnl_usd. Agregado breakeven_hit: bool. State machine docstring actualizado.
+- `service.py` — Price validation simplificada: solo verifica sl < entry < tp2 (long) o sl > entry > tp2 (short).
+- `notifier.py` — Trade opened message muestra TP (tp2_price) en vez de TP1.
+- `test_execution.py` — Reescrito para nueva máquina de estados: TestTPHit, TestBreakevenTrigger (long, short, only triggers once, not triggered below), TestTPPlacementFailure. Eliminados TestTP1Hit, TestTP2Hit, TestTP3FullClose.
+- `test_execution_live.py` — Nuevo script de test manual para probar órdenes en OKX live (limit + SL + TP, luego cancela).
+- Dashboard: PositionCard muestra single TP, api.ts updated con tp_price field.
+
 ## [2026-03-07] — Fix stuck SL monitor: algo order "not found" fallback
 **Qué cambió:**
 - `monitor.py` — After 12 consecutive `None` returns from `fetch_order()` for SL (~60s), falls back to `fetch_position()` on exchange. If position closed → close in monitor. If position exists → re-place SL. Also handles SL cancelled externally (`status == "canceled"` → re-place). Tracks `current_sl_price` through SL adjustments for accurate fallback pricing.

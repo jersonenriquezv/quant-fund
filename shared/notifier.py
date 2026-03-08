@@ -106,7 +106,7 @@ class TelegramNotifier:
             f"{pos.pair} {pos.direction.upper()}\n"
             f"Entry: ${pos.actual_entry_price:,.2f}{slippage}\n"
             f"Size: {pos.filled_size:.6f} | Leverage: {int(pos.leverage)}x\n"
-            f"SL: ${pos.sl_price:,.2f} | TP1: ${pos.tp1_price:,.2f}"
+            f"SL: ${pos.sl_price:,.2f} | TP: ${pos.tp2_price:,.2f}"
         )
         await self.send(msg)
 

@@ -108,13 +108,15 @@ export interface PositionData {
   entry_price: number;
   actual_entry_price: number | null;
   sl_price: number;
-  tp1_price: number;
-  tp2_price: number;
-  tp3_price: number;
+  tp_price: number;
+  tp1_price?: number;
+  tp2_price?: number;
+  tp3_price?: number;
   filled_size: number;
   leverage: number;
   ai_confidence: number;
   pnl_pct: number;
+  breakeven_hit: boolean;
   created_at: number;
   filled_at: number | null;
 }
