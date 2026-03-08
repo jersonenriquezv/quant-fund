@@ -67,5 +67,10 @@ class ManagedPosition:
     # Emergency close retry tracking
     emergency_retries: int = 0
 
+    # SL order fetch failure tracking (for "algo order not found" fallback)
+    sl_fetch_failures: int = 0
+    # Track the current SL trigger price (updated on SL adjustments)
+    current_sl_price: float = 0.0
+
     # Database tracking
     db_trade_id: Optional[int] = None

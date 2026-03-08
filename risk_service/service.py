@@ -41,6 +41,7 @@ class RiskService:
 
         # --- Guardrail checks (fail fast) ---
         checks = [
+            self._guardrails.check_min_risk_distance(setup),
             self._guardrails.check_rr_ratio(setup),
             self._guardrails.check_cooldown(
                 self._state.get_last_loss_time(), now

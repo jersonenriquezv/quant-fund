@@ -266,6 +266,7 @@ class PositionMonitor:
             return
 
         pos.sl_order_id = sl_order.get("id")
+        pos.current_sl_price = pos.sl_price
 
         # Place TPs (scaled by TP close percentages)
         tp1_size = round(pos.filled_size * settings.TP1_CLOSE_PCT, 8)
@@ -348,15 +349,52 @@ class PositionMonitor:
             await self._close_all_orders_and_market_close(pos)
             return
 
+        # Adopted positions (manual/external) — no SL order ID.
+        # Poll exchange directly to detect when position is closed.
+        if not pos.sl_order_id and not pos.tp1_order_id:
+            exchange_pos = await self._executor.fetch_position(pos.pair)
+            if exchange_pos is None:
+                # Network error — don't close, just skip this cycle
+                return
+            if float(exchange_pos.get("contracts", 0)) <= 0:
+                logger.info(f"Adopted position closed on exchange: {pos.pair} {pos.direction}")
+                self._close_position(pos, "manual_close")
+                return
+            return  # Still open, nothing to manage
+
         # Check SL
         if pos.sl_order_id:
             sl_status = await self._executor.fetch_order(pos.sl_order_id, pos.pair)
             if sl_status and sl_status.get("status") == "closed":
                 logger.info(f"SL hit: {pos.pair} {pos.direction}")
                 await self._cancel_remaining_tps(pos)
-                self._calculate_pnl(pos, float(sl_status.get("average", 0) or pos.sl_price))
+                sl_exit = pos.current_sl_price or pos.sl_price
+                self._calculate_pnl(pos, float(sl_status.get("average", 0) or sl_exit))
                 self._close_position(pos, "sl")
                 return
+            if sl_status and sl_status.get("status") == "canceled":
+                # SL was cancelled (user action or OKX) — re-place it
+                logger.warning(f"SL order cancelled externally: {pos.pair} — re-placing")
+                close_side = "sell" if pos.direction == "long" else "buy"
+                remaining = self._remaining_size(pos)
+                sl_price = pos.current_sl_price or pos.sl_price
+                new_sl = await self._executor.place_stop_market(
+                    pos.pair, close_side, remaining, sl_price
+                )
+                if new_sl is not None:
+                    pos.sl_order_id = new_sl.get("id")
+                    pos.sl_fetch_failures = 0
+                else:
+                    logger.error(f"Failed to re-place SL after cancel: {pos.pair}")
+                return
+            if sl_status is None:
+                # SL order fetch failed — track consecutive failures
+                pos.sl_fetch_failures += 1
+                if pos.sl_fetch_failures >= 12:  # ~60s at 5s poll interval
+                    await self._handle_sl_vanished(pos)
+                    return
+            else:
+                pos.sl_fetch_failures = 0
 
         # Check TPs based on phase
         if pos.phase == "active" and pos.tp1_order_id:
@@ -417,6 +455,63 @@ class PositionMonitor:
             )
 
     # ================================================================
+    # SL vanished fallback — check exchange position when SL order
+    # disappears from OKX's queryable states
+    # ================================================================
+
+    async def _handle_sl_vanished(self, pos: ManagedPosition) -> None:
+        """Fallback when SL algo order can't be found for 60+ seconds.
+
+        Checks the exchange position directly:
+        - Position gone → SL was triggered, close in monitor
+        - Position exists → SL disappeared, re-place it
+        """
+        exchange_pos = await self._executor.fetch_position(pos.pair)
+
+        if exchange_pos is None:
+            # Network error — don't act, try again next cycle
+            logger.warning(
+                f"SL vanished check: network error fetching position: {pos.pair}"
+            )
+            return
+
+        contracts = float(exchange_pos.get("contracts", 0))
+        if contracts <= 0:
+            # Position closed on exchange — SL was triggered
+            sl_price = pos.current_sl_price or pos.sl_price
+            logger.info(
+                f"SL order vanished, exchange position closed: {pos.pair} "
+                f"(SL likely triggered at ~{sl_price:.2f})"
+            )
+            await self._cancel_remaining_tps(pos)
+            self._calculate_pnl(pos, sl_price)
+            self._close_position(pos, "sl")
+        else:
+            # Position still open but SL order disappeared — re-place SL
+            logger.warning(
+                f"SL order vanished but position still open: {pos.pair} "
+                f"({contracts} contracts) — re-placing SL"
+            )
+            close_side = "sell" if pos.direction == "long" else "buy"
+            remaining = self._remaining_size(pos)
+            sl_price = pos.current_sl_price or pos.sl_price
+            new_sl = await self._executor.place_stop_market(
+                pos.pair, close_side, remaining, sl_price
+            )
+            if new_sl is not None:
+                pos.sl_order_id = new_sl.get("id")
+                pos.sl_fetch_failures = 0
+                logger.info(f"SL re-placed: {pos.pair} trigger={sl_price:.2f}")
+            else:
+                logger.error(
+                    f"CRITICAL: Cannot re-place SL: {pos.pair} — "
+                    f"emergency close next cycle"
+                )
+                # Force emergency close on next cycle
+                pos.phase = "emergency_pending"
+                pos.emergency_retries = 0
+
+    # ================================================================
     # SL adjustment — new SL first, then cancel old (zero gap)
     # ================================================================
 
@@ -450,6 +545,8 @@ class PositionMonitor:
             await self._executor.cancel_order(old_sl_id, pos.pair)
 
         pos.sl_order_id = new_sl.get("id")
+        pos.current_sl_price = new_price
+        pos.sl_fetch_failures = 0
         logger.info(f"SL adjusted: {pos.pair} new_price={new_price:.2f}")
 
     # ================================================================

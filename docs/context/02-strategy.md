@@ -1,6 +1,6 @@
 # Strategy Service
-> Última actualización: 2026-03-06
-> Estado: implementado (completo, integrado en main.py). Audited — 3 CRITICAL fixes applied. Quick Setups C/D/E added.
+> Última actualización: 2026-03-07
+> Estado: implementado (completo, integrado en main.py). Audited — 3 CRITICAL fixes applied. Quick Setups C/D/E added. Setups F/G added.
 
 ## Qué hace (30 segundos)
 El Strategy Service es el detective del sistema. Analiza los datos del Data Service buscando patrones de Smart Money Concepts (SMC): rupturas de estructura (BOS/CHoCH), order blocks, fair value gaps, sweeps de liquidez, y zonas premium/discount. Cuando encuentra un setup con suficiente confluencia, genera un `TradeSetup` para evaluación.
@@ -17,13 +17,14 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
 - Requiere cierre de vela completo (no solo wick)
 - **Solo un break por candle** — si una vela rompe múltiples niveles, solo se registra el más significativo (mayor distancia). Elimina ruido en flash crashes.
 
-### `strategy_service/order_blocks.py` — Order Blocks
+### `strategy_service/order_blocks.py` — Order Blocks + Breaker Blocks
 - Bullish OB: última vela roja antes de impulso alcista + BOS
 - Bearish OB: última vela verde antes de impulso bajista + BOS
 - Entry: 50% del body de la vela
 - Validación: volumen >1.5x promedio, máximo 48h de edad
 - Deduplicación por break asociado
 - **`break_timestamp`:** Cada OB almacena el timestamp de la vela que rompió estructura. La mitigación solo evalúa velas posteriores al `break_timestamp`, evitando que la propia vela de ruptura (o anteriores) invalide el OB prematuramente.
+- **Breaker Blocks:** Cuando un OB es mitigado (precio cierra a través de él), se crea un breaker block con dirección invertida. Bullish OB mitigado → bearish breaker (resistencia). Bearish OB mitigado → bullish breaker (soporte). Almacenados en `_breaker_blocks` dict, accesibles via `get_breaker_blocks(pair, timeframe)`. Expiran después de `OB_MAX_AGE_HOURS`.
 
 ### `strategy_service/fvg.py` — Fair Value Gaps
 - Gap de 3 velas donde wick de vela 1 no toca wick de vela 3
@@ -39,7 +40,7 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
 - **Persistencia de swept status** — niveles que ya fueron sweepados mantienen su estado entre llamadas para evitar sweeps duplicados
 - **Temporal guard:** Solo evalúa candles cuyo timestamp es > `max(level.timestamps)`. Previene que velas históricas (usadas para formar el nivel) lo "sweepeen" falsamente.
 
-### `strategy_service/setups.py` — Setup A/B + Confluencia
+### `strategy_service/setups.py` — Swing Setups A/B/F/G + Confluencia
 - **Setup A** (primario): Sweep + CHoCH + OB en discount/premium
   - **Bidireccional**: LTF CHoCH/BOS determina dirección del trade. HTF bias es contexto para Claude, no un gate.
   - `REQUIRE_HTF_LTF_ALIGNMENT` default `False` — permite counter-trend setups con estructura LTF clara.
@@ -47,6 +48,16 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
   - **Proximidad temporal**: sweep dentro de `SETUP_A_MAX_SWEEP_CHOCH_GAP` candles del CHoCH
 - **Setup B** (secundario): BOS + FVG adyacente a OB
   - Dirección BOS determina dirección del trade (bidireccional como Setup A)
+  - FVG-OB adjacency threshold: `FVG_OB_MAX_GAP_PCT` (0.5% — was 0.1%)
+- **Setup F** — Pure OB Retest: BOS + OB, sin FVG requerido
+  - Igual que Setup B pero sin necesitar FVG adyacente al OB
+  - Dispara cuando hay BOS + OB alineados pero no hay FVG nearby
+  - Evaluado después de B — si B matchea primero, F no se evalúa
+- **Setup G** — Breaker Block Retest: OB mitigado con dirección invertida
+  - Bullish OB mitigado → bearish breaker → short entry en retest
+  - Bearish OB mitigado → bullish breaker → long entry en retest
+  - Requiere HTF bias alineado con dirección del breaker + PD zone + min 2 confluencias
+  - Usa `get_breaker_blocks()` de OrderBlockDetector
 - **Zone-based orders** — no requiere proximidad al OB. El bot coloca limit orders al 50% del OB y espera fill.
   - `_find_best_ob()` selecciona por calidad: mayor `volume_ratio`, tiebreak por timestamp más reciente
   - `_is_ob_within_range()` filtra OBs más allá de `OB_MAX_DISTANCE_PCT` (5%) del precio actual
@@ -65,7 +76,7 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 - **Setup D — LTF Structure Scalp:** CHoCH o BOS en 5m + OB fresco cerca del precio. No requiere sweep ni FVG. HTF bias + PD zone alineados. Entry: 50% del OB. TPs: 1:1, 1.5:1, 2:1.
 - **Setup E — Cascade Reversal:** Caída de OI >2% (cascade proxy) + CVD revertiendo. Long después de cascade de longs, short después de cascade de shorts. Usa OB cercano como anchor o precio actual. TPs: 1:1, 1.5:1, 2:1.
 
-**Diferencias clave vs A/B:**
+**Diferencias clave quick vs swing:**
 - Skip Claude AI filter (los datos SON la señal)
 - Setup C skipea funding pre-filter (extreme funding ES el signal)
 - R:R mínimo: 1.0 (vs 1.5 para swing)
@@ -74,7 +85,7 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 
 ### `strategy_service/service.py` — Facade
 - `StrategyService(data_service)` — obtiene candles del DataService
-- `evaluate(pair, candle)` — evalúa LTF candles: A → B → C → D → E, retorna `TradeSetup | None`
+- `evaluate(pair, candle)` — evalúa LTF candles: A → B → F → G → C → D → E, retorna `TradeSetup | None`
 - Coordina todos los módulos internos
 - Quick setup cooldown tracking per (pair, setup_type)
 
@@ -86,9 +97,10 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 - `OB_PROXIMITY_PCT: float = 0.003` — 0.3% del precio como margen de proximidad al OB (solo para notificaciones)
 - `OB_MAX_DISTANCE_PCT: float = 0.05` — 5% máximo de distancia del precio al OB para zone-based orders
 - `SETUP_A_MAX_SWEEP_CHOCH_GAP: int = 20` — máximo candles entre sweep y CHoCH
+- `FVG_OB_MAX_GAP_PCT: float = 0.005` — 0.5% gap máximo entre FVG y OB para Setup B adjacency
 - `REQUIRE_HTF_LTF_ALIGNMENT: bool = False` — si True, LTF debe alinearse con HTF; default False para bidireccional
 - `REQUIRE_PD_ALIGNMENT: bool = True` — premium/discount zone debe alinear con dirección (nunca se desactiva — core SMC)
-- `ALLOW_EQUILIBRIUM_TRADES: bool = False` — permitir trades en zona equilibrium
+- `ALLOW_EQUILIBRIUM_TRADES: bool = False` — permitir trades en zona equilibrium (aggressive: True)
 - `HTF_BIAS_REQUIRE_4H: bool = True` — si 4H debe definir trend o 1H solo basta (aggressive: False)
 - `MIN_RISK_REWARD_QUICK: float = 1.0` — R:R mínimo para quick setups (C/D/E)
 - `MAX_TRADE_DURATION_QUICK: int = 14400` — timeout 4h para quick setups
@@ -112,9 +124,9 @@ El bot soporta 2 perfiles de estrategia, switcheables desde dashboard o env var:
 
 **Reglas que NUNCA cambian entre perfiles:**
 - PD alignment (long=discount, short=premium) — core SMC
-- AI filter obligatorio para swing setups (A/B) — todo trade pasa por Claude
+- AI filter obligatorio para swing setups (A/B/F/G) — todo trade pasa por Claude
 - Quick setups (C/D/E) skip AI por diseño — los datos son la señal
-- Max positions (3), max leverage (5x)
+- Max positions (5), max leverage (7x)
 
 Los perfiles se definen en `STRATEGY_PROFILES` (config/settings.py) y se aplican via `apply_profile()`.
 

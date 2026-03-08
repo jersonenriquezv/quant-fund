@@ -133,6 +133,21 @@ async def on_candle_confirmed(candle: Candle) -> None:
     # Note: setup_detected notification removed — too noisy.
     # User only wants AI decisions and trade lifecycle events.
 
+    # Pre-check: can this pair meet exchange minimum order size?
+    # Saves Claude API tokens on trades that would fail at execution anyway.
+    min_size = settings.MIN_ORDER_SIZES.get(setup.pair, 0)
+    if min_size > 0 and settings.FIXED_TRADE_MARGIN > 0:
+        max_notional = settings.FIXED_TRADE_MARGIN * settings.MAX_LEVERAGE
+        max_position = max_notional / setup.entry_price
+        if max_position < min_size:
+            logger.info(
+                f"Setup skipped: {setup.pair} min order {min_size} > "
+                f"max position {max_position:.6f} "
+                f"(need ${min_size * setup.entry_price:.0f} notional, "
+                f"have ${max_notional:.0f})"
+            )
+            return
+
     # Layer 3: AI Service — Claude filter
     # Quick setups (C/D/E) bypass Claude — the data IS the signal
     decision = None

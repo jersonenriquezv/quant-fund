@@ -7,7 +7,7 @@ Main entry: evaluate(pair, trigger_candle) -> TradeSetup | None
 Data flow:
     trigger_candle → fetch all candles from DataService →
     HTF analysis (4H/1H) → LTF analysis (15m/5m) →
-    Setup A → Setup B → TradeSetup | None
+    Setup A → Setup B → Setup F → Setup G → Quick (C/D/E) → TradeSetup | None
 """
 
 import time
@@ -199,6 +199,46 @@ class StrategyService:
             if setup is not None:
                 logger.info(
                     f"Setup B found: pair={pair} direction={setup.direction} "
+                    f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
+                    f"tp1={setup.tp1_price:.2f} confluences={setup.confluences}"
+                )
+                return setup
+
+            # Setup F — Pure OB Retest (BOS + OB, no FVG required)
+            setup = self._setups.evaluate_setup_f(
+                structure_state=ltf_state,
+                active_obs=active_obs,
+                pd_zone=pd_zone,
+                market_snapshot=market_snapshot,
+                candles=candles,
+                pair=pair,
+                htf_bias=htf_bias,
+                liquidity_levels=liq_levels,
+            )
+
+            if setup is not None:
+                logger.info(
+                    f"Setup F found: pair={pair} direction={setup.direction} "
+                    f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
+                    f"tp1={setup.tp1_price:.2f} confluences={setup.confluences}"
+                )
+                return setup
+
+            # Setup G — Breaker Block Retest
+            breaker_blocks = self._order_blocks.get_breaker_blocks(pair, ltf)
+            setup = self._setups.evaluate_setup_g(
+                breaker_blocks=breaker_blocks,
+                pd_zone=pd_zone,
+                market_snapshot=market_snapshot,
+                candles=candles,
+                pair=pair,
+                htf_bias=htf_bias,
+                liquidity_levels=liq_levels,
+            )
+
+            if setup is not None:
+                logger.info(
+                    f"Setup G found: pair={pair} direction={setup.direction} "
                     f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
                     f"tp1={setup.tp1_price:.2f} confluences={setup.confluences}"
                 )

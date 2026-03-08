@@ -1,12 +1,14 @@
 """
-Setup Evaluation — Setup A (Primary) and Setup B (Secondary).
+Setup Evaluation — Swing Setups A, B, F, G.
 
 Setup A: Liquidity Sweep + CHoCH + Order Block (primary, most profitable)
 Setup B: BOS + FVG + Order Block (secondary, trend continuation)
+Setup F: BOS + Order Block (no FVG required — pure OB retest)
+Setup G: Breaker Block retest (mitigated OB with flipped direction)
 
-Both require minimum 2 confirmations (non-negotiable).
-Both require correct Premium/Discount alignment.
-Setup A is evaluated first. If both trigger, A wins.
+All require minimum 2 confirmations (non-negotiable).
+All require correct Premium/Discount alignment.
+Evaluation order: A → B → F → G (first match wins).
 """
 
 import time
@@ -345,6 +347,223 @@ class SetupEvaluator:
             ob_timeframe=best_ob.timeframe,
         )
 
+    def evaluate_setup_f(
+        self,
+        structure_state: MarketStructureState,
+        active_obs: list[OrderBlock],
+        pd_zone: Optional[PremiumDiscountZone],
+        market_snapshot: Optional[MarketSnapshot],
+        candles: list[Candle],
+        pair: str,
+        htf_bias: str,
+        liquidity_levels: list[LiquidityLevel],
+    ) -> Optional[TradeSetup]:
+        """Evaluate Setup F — Pure OB Retest (BOS + OB, no FVG required).
+
+        Like Setup B but without FVG adjacency requirement. Fires when there's
+        a BOS confirming direction + a fresh OB to enter on, but no FVG nearby.
+
+        Conditions:
+        1. HTF bias defined
+        2. BOS on LTF confirming direction
+        3. Fresh OB aligned with direction
+        4. PD zone aligned
+        5. OB within range of current price
+        6. Minimum 2 confluences
+        7. Blended R:R >= MIN_RISK_REWARD
+        """
+        if htf_bias not in ("bullish", "bearish"):
+            return None
+
+        bos_breaks = [
+            b for b in structure_state.structure_breaks
+            if b.break_type == "bos"
+        ]
+        if not bos_breaks:
+            return None
+
+        latest_bos = bos_breaks[-1]
+        direction = latest_bos.direction
+
+        if settings.REQUIRE_HTF_LTF_ALIGNMENT and direction != htf_bias:
+            return None
+
+        if not self._check_pd_alignment(pd_zone, direction):
+            return None
+
+        aligned_obs = [
+            ob for ob in active_obs
+            if ob.direction == direction
+        ]
+        if not aligned_obs:
+            return None
+
+        current_price = candles[-1].close if candles else 0
+        best_ob = self._find_best_ob(aligned_obs, current_price, direction)
+        if best_ob is None:
+            return None
+
+        # Volume + CVD confirmation
+        vol_confluences = []
+        if best_ob.volume_ratio >= settings.OB_MIN_VOLUME_RATIO:
+            vol_confluences.append(f"ob_volume_{best_ob.volume_ratio:.1f}x")
+
+        if market_snapshot and market_snapshot.cvd:
+            cvd = market_snapshot.cvd
+            if direction == "bullish" and cvd.cvd_15m > 0:
+                vol_confluences.append("cvd_aligned_bullish")
+            elif direction == "bearish" and cvd.cvd_15m < 0:
+                vol_confluences.append("cvd_aligned_bearish")
+
+        if market_snapshot and market_snapshot.funding:
+            rate = market_snapshot.funding.rate
+            if direction == "bullish" and rate < -0.0001:
+                vol_confluences.append("funding_negative_long_opportunity")
+            elif direction == "bearish" and rate > 0.0003:
+                vol_confluences.append("funding_extreme_positive")
+
+        confluences = []
+        confluences.append(f"bos_{latest_bos.direction}")
+        confluences.append(f"order_block_{best_ob.timeframe}")
+        if pd_zone:
+            confluences.append(f"pd_zone_{pd_zone.zone}")
+        confluences.extend(vol_confluences)
+
+        if not self._check_confluence_minimum(confluences):
+            return None
+
+        sl_price = self._calculate_sl(best_ob, direction)
+        entry_price = best_ob.entry_price
+        tp1, tp2, tp3 = self._calculate_tp_levels(
+            entry_price, sl_price, direction, liquidity_levels
+        )
+
+        risk = abs(entry_price - sl_price)
+        if risk <= 0:
+            return None
+        blended_rr = self._compute_blended_rr(entry_price, sl_price, tp1, tp2, tp3)
+        if blended_rr < settings.MIN_RISK_REWARD:
+            return None
+
+        return TradeSetup(
+            timestamp=int(time.time() * 1000),
+            pair=pair,
+            direction="long" if direction == "bullish" else "short",
+            setup_type="setup_f",
+            entry_price=entry_price,
+            sl_price=sl_price,
+            tp1_price=tp1,
+            tp2_price=tp2,
+            tp3_price=tp3,
+            confluences=confluences,
+            htf_bias=htf_bias,
+            ob_timeframe=best_ob.timeframe,
+        )
+
+    def evaluate_setup_g(
+        self,
+        breaker_blocks: list[OrderBlock],
+        pd_zone: Optional[PremiumDiscountZone],
+        market_snapshot: Optional[MarketSnapshot],
+        candles: list[Candle],
+        pair: str,
+        htf_bias: str,
+        liquidity_levels: list[LiquidityLevel],
+    ) -> Optional[TradeSetup]:
+        """Evaluate Setup G — Breaker Block Retest.
+
+        A mitigated OB becomes inverse support/resistance:
+        - Mitigated bullish OB → bearish breaker (resistance) → short entry
+        - Mitigated bearish OB → bullish breaker (support) → long entry
+
+        Entry when price retests the breaker block zone.
+
+        Conditions:
+        1. HTF bias defined and aligned with breaker direction
+        2. Breaker block within range of current price
+        3. PD zone aligned
+        4. Minimum 2 confluences
+        5. Blended R:R >= MIN_RISK_REWARD
+        """
+        if htf_bias not in ("bullish", "bearish"):
+            return None
+
+        if not breaker_blocks:
+            return None
+
+        aligned_breakers = [
+            bb for bb in breaker_blocks
+            if bb.direction == htf_bias
+        ]
+        if not aligned_breakers:
+            return None
+
+        if not self._check_pd_alignment(pd_zone, htf_bias):
+            return None
+
+        current_price = candles[-1].close if candles else 0
+        best_bb = self._find_best_ob(aligned_breakers, current_price, htf_bias)
+        if best_bb is None:
+            return None
+
+        direction = htf_bias
+
+        # Volume + CVD confirmation
+        vol_confluences = []
+        if best_bb.volume_ratio >= settings.OB_MIN_VOLUME_RATIO:
+            vol_confluences.append(f"bb_volume_{best_bb.volume_ratio:.1f}x")
+
+        if market_snapshot and market_snapshot.cvd:
+            cvd = market_snapshot.cvd
+            if direction == "bullish" and cvd.cvd_15m > 0:
+                vol_confluences.append("cvd_aligned_bullish")
+            elif direction == "bearish" and cvd.cvd_15m < 0:
+                vol_confluences.append("cvd_aligned_bearish")
+
+        if market_snapshot and market_snapshot.funding:
+            rate = market_snapshot.funding.rate
+            if direction == "bullish" and rate < -0.0001:
+                vol_confluences.append("funding_negative_long_opportunity")
+            elif direction == "bearish" and rate > 0.0003:
+                vol_confluences.append("funding_extreme_positive")
+
+        confluences = []
+        confluences.append(f"breaker_block_{best_bb.timeframe}")
+        if pd_zone:
+            confluences.append(f"pd_zone_{pd_zone.zone}")
+        confluences.extend(vol_confluences)
+
+        if not self._check_confluence_minimum(confluences):
+            return None
+
+        sl_price = self._calculate_sl(best_bb, direction)
+        entry_price = best_bb.entry_price
+        tp1, tp2, tp3 = self._calculate_tp_levels(
+            entry_price, sl_price, direction, liquidity_levels
+        )
+
+        risk = abs(entry_price - sl_price)
+        if risk <= 0:
+            return None
+        blended_rr = self._compute_blended_rr(entry_price, sl_price, tp1, tp2, tp3)
+        if blended_rr < settings.MIN_RISK_REWARD:
+            return None
+
+        return TradeSetup(
+            timestamp=int(time.time() * 1000),
+            pair=pair,
+            direction="long" if direction == "bullish" else "short",
+            setup_type="setup_g",
+            entry_price=entry_price,
+            sl_price=sl_price,
+            tp1_price=tp1,
+            tp2_price=tp2,
+            tp3_price=tp3,
+            confluences=confluences,
+            htf_bias=htf_bias,
+            ob_timeframe=best_bb.timeframe,
+        )
+
     def _calculate_tp_levels(
         self,
         entry: float,
@@ -490,17 +709,17 @@ class SetupEvaluator:
                                ob: OrderBlock) -> bool:
         """Check if FVG is inside or adjacent to OB.
 
-        Adjacent = overlapping zones or within 0.1% of each other.
+        Adjacent = overlapping zones or within FVG_OB_MAX_GAP_PCT of each other.
         """
         # Check for overlap
         overlap = max(0, min(fvg.high, ob.high) - max(fvg.low, ob.low))
         if overlap > 0:
             return True
 
-        # Check adjacency (gap between zones <= 0.1% of price)
+        # Check adjacency (gap between zones <= 0.5% of price)
         gap = min(abs(fvg.low - ob.high), abs(ob.low - fvg.high))
         mid_price = (ob.high + ob.low) / 2
-        if mid_price > 0 and (gap / mid_price) <= 0.001:
+        if mid_price > 0 and (gap / mid_price) <= settings.FVG_OB_MAX_GAP_PCT:
             return True
 
         return False

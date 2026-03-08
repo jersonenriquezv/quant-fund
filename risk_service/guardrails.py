@@ -12,6 +12,23 @@ from shared.models import TradeSetup
 class Guardrails:
     """Non-negotiable risk checks. If any fails, the trade does NOT execute."""
 
+    def check_min_risk_distance(self, setup: TradeSetup) -> tuple[bool, str]:
+        """Check that SL distance is at least MIN_RISK_DISTANCE_PCT of entry.
+
+        Tiny risk distances produce noise trades where commissions eat
+        the profit (e.g. $2.91 SL on $1975 = 0.15% → TP1 profit ≈ $0.07).
+        """
+        if setup.entry_price == 0:
+            return False, "Entry price is zero"
+        risk_pct = abs(setup.entry_price - setup.sl_price) / setup.entry_price
+        min_pct = settings.MIN_RISK_DISTANCE_PCT
+        if risk_pct < min_pct:
+            return False, (
+                f"Risk distance {risk_pct*100:.2f}% below minimum "
+                f"{min_pct*100:.1f}% (SL too close to entry)"
+            )
+        return True, f"Risk distance {risk_pct*100:.2f}% OK"
+
     def check_rr_ratio(self, setup: TradeSetup) -> tuple[bool, str]:
         """Check that TP2 reward/risk >= minimum R:R.
 

@@ -187,7 +187,7 @@ class TestLifecycle:
     def test_leverage_capped_in_check(self, risk):
         """Tight SL produces capped leverage through check()."""
         setup = _make_setup(
-            entry=50000, sl=49950, tp2=52000
+            entry=50000, sl=49750, tp2=52000
         )
         result = risk.check(setup)
         assert result.approved is True

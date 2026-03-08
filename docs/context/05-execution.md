@@ -1,6 +1,6 @@
 # Execution Service (Layer 5)
-> Última actualización: 2026-03-06
-> Estado: **implementado** — 29 tests passing. Audited — SL reduceOnly fix, ticker null guard, breakeven PnL fix, dead code removed.
+> Última actualización: 2026-03-07
+> Estado: **implementado** — 32 tests passing. Position adoption, manual position coexistence.
 
 El brazo ejecutor del bot. Recibe trades aprobados por Risk Service y los ejecuta en OKX via ccxt.
 
@@ -17,7 +17,7 @@ ExecutionService (facade)
 
 1. `execute(setup, approval, ai_confidence)` recibe trade aprobado
 2. **Valida precio ordering** — Long: `sl < entry < tp1 < tp2 < tp3`. Short: inverso. Rechaza si inválido.
-3. **Chequea posición existente** — Si hay pending_entry (orden no llenada), la cancela y la reemplaza con el nuevo setup. Si hay posición activa (llenada), rechaza.
+3. **Chequea posición existente** — Si hay pending_entry (orden no llenada), la cancela y la reemplaza con el nuevo setup. Si hay posición adoptada (manual), permite nueva entry del bot (ambas coexisten en OKX net mode). Si hay posición activa del bot (llenada), rechaza.
 4. Configura el par (margin mode isolado + leverage)
 5. Coloca limit entry order al precio calculado (50% OB/FVG)
 6. Notifica Risk Service inmediatamente (en PLACE, no en fill — para conteo correcto)
@@ -50,7 +50,7 @@ emergency_pending ──[3 fails]──> emergency_failed  (requiere intervenci�
 | Orden | Tipo | Por qué |
 |-------|------|---------|
 | Entry | Limit | Control de slippage. Cancela si no se llena en 4h (swing) / 1h (quick) |
-| Stop Loss | Stop-market (algo order, reduceOnly) | Ejecución garantizada en crashes. `reduceOnly=True` previene apertura de posición inversa en race conditions |
+| Stop Loss | Stop-market (algo order) | Ejecución garantizada en crashes. Sin `reduceOnly` — OKX no soporta reduceOnly en algo orders (error 51205). En modo one-way (net), un sell contra un long ya reduce inherentemente. |
 | TP1/TP2/TP3 | Limit (reduceOnly) | Precios exactos, sin slippage en take profits |
 
 ## Distribución de TPs
@@ -64,7 +64,7 @@ emergency_pending ──[3 fails]──> emergency_failed  (requiere intervenci�
 1. **Validación de precios en execute().** Long: `sl < entry < tp1 < tp2 < tp3`. Short: `sl > entry > tp1 > tp2 > tp3`. Rechaza trades con precios inválidos antes de tocar el exchange.
 2. **Entry fill + SL placement retries.** After entry fill, SL placement retries up to 3 times with 0.3s/0.6s delays before triggering emergency close. Handles OKX error 51205 ("Reduce Only is not available") caused by position state not propagating to OKX's algo order service (~300ms race window). If all 3 attempts fail → EMERGENCY market close. Máximo 3 reintentos adicionales en fase `emergency_pending`. Tras 3 fallos → `emergency_failed`, se mantiene en tracking para intervención manual. Envía alerta Telegram.
 3. **TP placement falla → EMERGENCY close.** Si cualquier TP falla al colocarse, cancela todos los TPs y SL colocados, y cierra por market. Un TP faltante impide mover SL a breakeven (TP1 nunca llena → SL nunca se ajusta).
-4. **Ajuste de SL: nuevo ANTES de cancelar viejo.** Cero ventana sin protección. Race window mitigada por `reduceOnly` en `place_stop_market()` — si ambos SL se ejecutan, el segundo cierra size=0 (no abre posición inversa). TODO: migrar a OKX amend-order API para updates atómicos.
+4. **Ajuste de SL: nuevo ANTES de cancelar viejo.** Cero ventana sin protección. Race window: si ambos SL se ejecutan simultáneamente, el segundo podría abrir posición inversa (sin reduceOnly en algo orders). Window < 1s, riesgo aceptable a escala actual. TODO: migrar a OKX amend-order API para updates atómicos.
 5. **Notificación a Risk: en PLACE, no en fill.** Si hay 2 entries pendientes, Risk los cuenta como 2 posiciones abiertas.
 6. **Cancelled entries no cuentan como trades.** Si el entry timeout cancela una orden que nunca se llenó, no se notifica a Risk ni se envía Telegram de trade cerrado.
 7. **Shutdown: cancela entries pendientes, NO cierra posiciones activas.** Los SL/TP viven en el exchange y sobreviven al bot.
@@ -87,7 +87,7 @@ Slippage: BTC/USDT expected=50000.00 actual=50025.00 diff=0.0500%
 | `execution_service/service.py` | Facade — execute(), start(), stop(), health() |
 | `execution_service/executor.py` | Wrapper ccxt — place/cancel/fetch orders (con fallback a algo orders). Init: set one-way position mode + isolated margin |
 | `execution_service/monitor.py` | Background loop — máquina de estados + notificaciones Telegram |
-| `execution_service/models.py` | ManagedPosition (estado mutable interno, incluye `emergency_retries`, `realized_pnl_usd`) |
+| `execution_service/models.py` | ManagedPosition (estado mutable interno, incluye `emergency_retries`, `realized_pnl_usd`, `sl_fetch_failures`, `current_sl_price`) |
 
 ## Settings
 
@@ -135,7 +135,7 @@ Cada vez que un TP llena, `_accumulate_realized_pnl()` calcula y suma el PnL de 
 1. **Position mode → one-way (net):** `set_position_mode(hedged=False)`. Evita el error `Parameter posSide error` que OKX devuelve en hedge mode. El bot no necesita long+short simultáneo en el mismo par.
 2. **Margin mode → isolated** (per-pair): `set_margin_mode("isolated", symbol, {"lever": leverage})`. Se ejecuta en `configure_pair()` antes de cada trade. El parámetro `lever` es requerido por OKX — sin él, la API devuelve `lever should be between 1 and 125`.
 
-Ambas configuraciones manejan el caso "already set" silenciosamente (no es un error real).
+Position mode "already set" se silencia (idempotente). Margin mode "already set" se silencia también, pero si `set_margin_mode` falla con OTRO error (e.g. posición abierta impide cambio), `configure_pair()` retorna `False` y la orden no se coloca.
 
 ## OKX Algo Order Handling
 
@@ -160,17 +160,39 @@ OKX trata stop-market orders como "algo orders" con routing separado:
 | Position mode | One-way (net) | No long+short simultáneo en mismo par |
 | Modelos internos | execution_service/models.py | No son inter-capa, no van en shared/ |
 
+## SL vanished fallback
+
+When the SL algo order can't be found on OKX for 12 consecutive polls (~60 seconds), the monitor falls back to checking the exchange position directly:
+- **Position gone** → SL was triggered, close in monitor (cancel remaining TPs)
+- **Position exists** → SL order disappeared, re-place the SL at `current_sl_price`
+- **Network error** → skip, retry next cycle
+- **Re-place fails** → transition to `emergency_pending` for market close
+
+Also handles SL cancelled externally (user action): detects `status == "canceled"` and re-places SL immediately.
+
+`ManagedPosition.current_sl_price` tracks the active SL trigger level (updated on every `_adjust_sl()`). `sl_fetch_failures` counts consecutive None returns from `fetch_order()`.
+
 ## Limitaciones conocidas
 
 - Estado de posiciones se pierde en restart (SL/TP siguen en exchange)
-- No hay detección de posiciones huérfanas al reiniciar (v2)
+- ~~No hay detección de posiciones huérfanas al reiniciar~~ → RESUELTO: `sync_exchange_positions()` adopta posiciones al startup
+- ~~SL algo order "not found" loops forever blocking the pair~~ → RESUELTO: fallback a `fetch_position()` tras 60s
 - No hay trailing stop para TP3 (usa limit fijo por ahora — ver roadmap v2)
 - Sin persistencia Redis del estado del monitor (v2)
 - `AIDecision.adjustments` no se aplica a SL/TP (v2)
 
+## Position adoption (sync_exchange_positions)
+
+Al startup, `ExecutionService.sync_exchange_positions()` consulta OKX por posiciones abiertas en cada par. Posiciones no trackeadas se adoptan como `ManagedPosition(setup_type="manual", phase="active")`:
+- Risk Service es notificado (cuenta como posición abierta)
+- Monitor las vigila via `fetch_position()` polling (sin SL/TP management)
+- Si la posición desaparece del exchange → `manual_close`
+- Si `fetch_position` retorna None (error de red) → skip, no cierra
+- Cuando el bot detecta un nuevo setup en un par con posición adoptada, permite la nueva entry (ambas coexisten en OKX net mode)
+
 ## Ghost position fix
 
-`PositionMonitor.start()` ahora ejecuta `_update_positions_cache()` al arrancar, antes del poll loop. Como `_positions` está vacío al inicio, esto escribe `[]` a Redis (`qf:bot:positions`), eliminando posiciones stale del run anterior. Sin esto, un restart dejaba el cache Redis intacto (TTL 24h) y el dashboard mostraba posiciones fantasma que ya no existían en el exchange.
+`PositionMonitor.start()` ejecuta `_update_positions_cache()` al arrancar. `sync_exchange_positions()` corre ANTES de `start()` para que las posiciones adoptadas aparezcan en el cache.
 
 ## Roadmap v2 — Trailing Stop para TP3
 

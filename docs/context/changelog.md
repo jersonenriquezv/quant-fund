@@ -1,5 +1,38 @@
 # Changelog — One-Man Quant Fund
 
+## [2026-03-07] — Fix stuck SL monitor: algo order "not found" fallback
+**Qué cambió:**
+- `monitor.py` — After 12 consecutive `None` returns from `fetch_order()` for SL (~60s), falls back to `fetch_position()` on exchange. If position closed → close in monitor. If position exists → re-place SL. Also handles SL cancelled externally (`status == "canceled"` → re-place). Tracks `current_sl_price` through SL adjustments for accurate fallback pricing.
+- `models.py` — Added `sl_fetch_failures: int` and `current_sl_price: float` to ManagedPosition.
+
+## [2026-03-07] — Position adoption, manual coexistence, network error safety
+**Qué cambió:**
+- `service.py` (execution) — New `sync_exchange_positions()`: on startup, fetches open positions from OKX and adopts them as `ManagedPosition(setup_type="manual")`. Runs BEFORE monitor `start()` so positions appear in Redis cache. Adopted positions allow new bot entries alongside (OKX net mode stacking). `MIN_ORDER_SIZES` restored for BTC (0.01 BTC minimum on SWAP — user confirmed spot accepts less but perpetuals don't).
+- `monitor.py` — Adopted position check: `fetch_position()` returning None (network error) no longer closes the position — skips cycle instead. Only closes when exchange confirms contracts=0.
+
+## [2026-03-07] — MIN_RISK_DISTANCE_PCT 0.3% → 0.1%, BTC re-enabled
+**Qué cambió:**
+- `settings.py` — `MIN_RISK_DISTANCE_PCT` lowered from 0.003 (0.3%) to 0.001 (0.1%). Was blocking legitimate OB setups where SL distance was 0.27% (AI approved 4x at 0.75 confidence, Risk rejected every time). 0.1% = $2 min SL on ETH@$2000.
+- `settings.py` — BTC/USDT re-added to `TRADING_PAIRS`. `MIN_ORDER_SIZES` cleared (was `{"BTC/USDT": 0.01}` but OKX accepts much smaller — user confirmed 0.0009 BTC manually). Exchange rejects if too small.
+
+## [2026-03-07] — Setup F (Pure OB Retest), Setup G (Breaker Block), FVG adjacency relaxed, equilibrium trades
+**Qué cambió:**
+- `setups.py` — New Setup F: BOS + OB without FVG requirement (pure OB retest). Evaluated after Setup B. Same confluence/R:R rules as swing setups.
+- `setups.py` — New Setup G: Breaker Block retest. Mitigated OBs flip direction and become inverse zones. Bullish OB mitigated → bearish breaker (short entry), and vice versa.
+- `order_blocks.py` — Breaker block tracking: `_breaker_blocks` dict stores mitigated OBs with flipped direction. New `get_breaker_blocks()` method. `_check_mitigation()` now returns new breaker blocks. `_create_breaker()` helper.
+- `service.py` (strategy) — Evaluation order: A → B → F → G → C → D → E.
+- `setups.py` — FVG-OB adjacency relaxed from 0.1% to 0.5% via `FVG_OB_MAX_GAP_PCT` setting.
+- `settings.py` — New `FVG_OB_MAX_GAP_PCT = 0.005`, `ALLOW_EQUILIBRIUM_TRADES: True` in aggressive profile.
+
+## [2026-03-07] — Fix SL placement (error 51205), margin mode hardening, min risk distance filter, BTC pre-check
+**Qué cambió:**
+- `executor.py` — Removed `reduceOnly` from `place_stop_market()` params. OKX algo orders don't support reduceOnly in one-way mode (error 51205 "Reduce Only is not available"). This was causing 100% emergency close rate on every filled trade.
+- `executor.py` — `configure_pair()` now returns `False` if `set_margin_mode` fails with a non-"already set" error (was silently continuing, leading to orders placed in wrong margin mode).
+- `guardrails.py` — New `check_min_risk_distance()`: rejects setups where SL distance < 0.3% of entry price. Prevents noise trades with ~$0.07 profit targets.
+- `service.py` (risk) — Added `check_min_risk_distance` as first guardrail check.
+- `settings.py` — New `MIN_RISK_DISTANCE_PCT = 0.003` (0.3%).
+- `main.py` — Pre-check BTC min order size before sending to Claude (saves API tokens on trades that would fail at execution).
+
 ## [2026-03-07] — Dashboard redesign: Apple-inspired UI, cancel from dashboard, richer position cards, AI log mini-cards
 **Qué cambió:**
 - `globals.css` — True black/white palette, glassmorphism (backdrop-filter blur), 8px gaps, 12px border-radius, pill badges, hover effects, new CSS classes for positions/AI/cancel

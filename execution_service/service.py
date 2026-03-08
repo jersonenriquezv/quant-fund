@@ -49,8 +49,64 @@ class ExecutionService:
         """Start the position monitor background loop."""
         if not self._enabled or self._monitor is None:
             return
+        # Sync exchange positions BEFORE starting poll loop
+        # so adopted positions are registered before monitoring begins.
+        await self.sync_exchange_positions()
         self._monitor.start()
         logger.info("Execution Service started")
+
+    async def sync_exchange_positions(self) -> None:
+        """Fetch open positions from OKX and adopt any not already tracked.
+
+        Called at startup to detect manually opened positions or positions
+        that survived a bot restart. Adopted positions are monitored but
+        SL/TP are NOT managed (they stay as-is on the exchange).
+        """
+        if not self._enabled or self._executor is None or self._monitor is None:
+            return
+
+        for pair in settings.TRADING_PAIRS:
+            if pair in self._monitor.positions:
+                continue  # Already tracking this pair
+
+            pos_data = await self._executor.fetch_position(pair)
+            if pos_data is None:
+                continue
+
+            contracts = float(pos_data.get("contracts", 0))
+            if contracts <= 0:
+                continue
+
+            side = pos_data.get("side", "")
+            direction = "long" if side == "long" else "short"
+            entry_price = float(pos_data.get("entryPrice", 0) or 0)
+            leverage = float(pos_data.get("leverage", 1) or 1)
+
+            adopted = ManagedPosition(
+                pair=pair,
+                direction=direction,
+                setup_type="manual",
+                phase="active",
+                entry_price=entry_price,
+                actual_entry_price=entry_price,
+                filled_size=contracts,
+                leverage=leverage,
+                created_at=int(time.time()),
+                filled_at=int(time.time()),
+            )
+
+            self._monitor.register(adopted)
+
+            # Notify Risk Service about the existing position
+            if self._risk is not None:
+                self._risk.on_trade_opened(
+                    pair, direction, entry_price, int(time.time())
+                )
+
+            logger.info(
+                f"Adopted exchange position: {pair} {direction} "
+                f"size={contracts} entry={entry_price:.2f} leverage={leverage:.0f}x"
+            )
 
     async def stop(self) -> None:
         """Stop the monitor. Cancel unfilled entries, leave filled positions
@@ -110,8 +166,17 @@ class ExecutionService:
                 old = await self._monitor.cancel_and_remove_pending(setup.pair)
                 if old and self._risk is not None:
                     self._risk.on_trade_cancelled(setup.pair, old.direction)
+            elif existing.setup_type == "manual":
+                # Adopted position — allow bot to open its own entry alongside it.
+                # On OKX net mode, same-direction entries stack.
+                # Stop tracking the manual position (user manages their own SL/TP).
+                logger.info(
+                    f"Adopted position exists for {setup.pair} — "
+                    f"allowing new bot entry alongside it"
+                )
+                self._monitor.positions.pop(setup.pair, None)
             else:
-                # Active/filled position — don't replace
+                # Active bot-managed position — don't open a second one
                 logger.warning(
                     f"Already managing an active position for {setup.pair} "
                     f"(phase={existing.phase}) — skipping new entry"

@@ -40,7 +40,7 @@ with patch("shared.logger.setup_logger", side_effect=_noop_logger):
 # Fixtures
 # ============================================================
 
-def _make_candle(pair="BTC/USDT", close=50000.0, timeframe="5m") -> Candle:
+def _make_candle(pair="ETH/USDT", close=2000.0, timeframe="5m") -> Candle:
     return Candle(
         timestamp=int(time.time() * 1000),
         open=close - 50, high=close + 50, low=close - 100,
@@ -49,16 +49,16 @@ def _make_candle(pair="BTC/USDT", close=50000.0, timeframe="5m") -> Candle:
     )
 
 
-def _make_setup(pair="BTC/USDT", direction="long") -> TradeSetup:
-    entry = 50000.0
-    sl = 49000.0 if direction == "long" else 51000.0
+def _make_setup(pair="ETH/USDT", direction="long") -> TradeSetup:
+    entry = 2000.0
+    sl = 1960.0 if direction == "long" else 2040.0
     return TradeSetup(
         timestamp=int(time.time() * 1000),
         pair=pair, direction=direction, setup_type="setup_a",
         entry_price=entry, sl_price=sl,
-        tp1_price=51000.0 if direction == "long" else 49000.0,
-        tp2_price=52000.0 if direction == "long" else 48000.0,
-        tp3_price=53000.0 if direction == "long" else 47000.0,
+        tp1_price=2040.0 if direction == "long" else 1960.0,
+        tp2_price=2080.0 if direction == "long" else 1920.0,
+        tp3_price=2120.0 if direction == "long" else 1880.0,
         confluences=["choch", "ob", "sweep"],
         htf_bias="bullish" if direction == "long" else "bearish",
         ob_timeframe="15m",
@@ -66,7 +66,7 @@ def _make_setup(pair="BTC/USDT", direction="long") -> TradeSetup:
 
 
 def _make_snapshot(
-    pair="BTC/USDT",
+    pair="ETH/USDT",
     funding_rate=0.0001,
     buy_volume=500.0,
     sell_volume=400.0,
@@ -302,7 +302,7 @@ class TestPreFilter:
         """Missing funding/CVD → pre-filter passes (conservative)."""
         setup = _make_setup(direction="long")
         snapshot = MarketSnapshot(
-            pair="BTC/USDT", timestamp=int(time.time() * 1000),
+            pair="ETH/USDT", timestamp=int(time.time() * 1000),
         )
         main._strategy_service = None
 

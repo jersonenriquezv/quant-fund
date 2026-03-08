@@ -49,6 +49,8 @@ class OrderBlockDetector:
     def __init__(self):
         # Key: "pair:timeframe", Value: list of active OBs
         self._active_obs: dict[str, list[OrderBlock]] = {}
+        # Key: "pair:timeframe", Value: list of breaker blocks (mitigated OBs with flipped direction)
+        self._breaker_blocks: dict[str, list[OrderBlock]] = {}
 
     def update(self, candles: list[Candle],
                structure_breaks: list[StructureBreak],
@@ -84,15 +86,31 @@ class OrderBlockDetector:
                 self._active_obs[key].append(ob)
                 existing_timestamps.add(ob.timestamp)
 
-        # Update mitigation status
-        self._check_mitigation(self._active_obs[key], candles)
+        # Update mitigation status and capture new breaker blocks
+        if key not in self._breaker_blocks:
+            self._breaker_blocks[key] = []
 
-        # Prune mitigated and expired
+        new_breakers = self._check_mitigation(self._active_obs[key], candles)
+
+        # Deduplicate breaker blocks by timestamp
+        existing_bb_ts = {bb.timestamp for bb in self._breaker_blocks[key]}
+        for bb in new_breakers:
+            if bb.timestamp not in existing_bb_ts:
+                self._breaker_blocks[key].append(bb)
+                existing_bb_ts.add(bb.timestamp)
+
+        # Prune mitigated and expired OBs
         max_age_ms = settings.OB_MAX_AGE_HOURS * 3600 * 1000
         self._active_obs[key] = [
             ob for ob in self._active_obs[key]
             if not ob.mitigated
             and not self._is_expired(ob, current_time_ms, max_age_ms)
+        ]
+
+        # Prune expired breaker blocks
+        self._breaker_blocks[key] = [
+            bb for bb in self._breaker_blocks[key]
+            if not self._is_expired(bb, current_time_ms, max_age_ms)
         ]
 
         return list(self._active_obs[key])
@@ -101,6 +119,11 @@ class OrderBlockDetector:
                        timeframe: str) -> list[OrderBlock]:
         """Get currently active OBs for a pair+timeframe."""
         return list(self._active_obs.get(f"{pair}:{timeframe}", []))
+
+    def get_breaker_blocks(self, pair: str,
+                           timeframe: str) -> list[OrderBlock]:
+        """Get breaker blocks (mitigated OBs with flipped direction) for a pair+timeframe."""
+        return list(self._breaker_blocks.get(f"{pair}:{timeframe}", []))
 
     def _find_ob_candle(
         self,
@@ -192,12 +215,15 @@ class OrderBlockDetector:
         return sum(c.volume for c in relevant) / len(relevant)
 
     def _check_mitigation(self, obs: list[OrderBlock],
-                          candles: list[Candle]) -> None:
+                          candles: list[Candle]) -> list[OrderBlock]:
         """Check if price has closed through the full OB zone.
 
         Bullish OB mitigated: candle closes below OB low.
         Bearish OB mitigated: candle closes above OB high.
+
+        Returns list of new breaker blocks (mitigated OBs with flipped direction).
         """
+        breakers: list[OrderBlock] = []
         for ob in obs:
             if ob.mitigated:
                 continue
@@ -210,10 +236,33 @@ class OrderBlockDetector:
 
                 if ob.direction == "bullish" and candle.close < ob.low:
                     ob.mitigated = True
+                    breakers.append(self._create_breaker(ob, candle, "bearish"))
                     break
                 elif ob.direction == "bearish" and candle.close > ob.high:
                     ob.mitigated = True
+                    breakers.append(self._create_breaker(ob, candle, "bullish"))
                     break
+        return breakers
+
+    def _create_breaker(self, ob: OrderBlock, mitigation_candle: Candle,
+                        new_direction: str) -> OrderBlock:
+        """Create a breaker block from a mitigated OB with flipped direction."""
+        return OrderBlock(
+            timestamp=ob.timestamp,
+            pair=ob.pair,
+            timeframe=ob.timeframe,
+            direction=new_direction,
+            high=ob.high,
+            low=ob.low,
+            body_high=ob.body_high,
+            body_low=ob.body_low,
+            entry_price=ob.entry_price,
+            volume=ob.volume,
+            volume_ratio=ob.volume_ratio,
+            mitigated=False,
+            associated_break=ob.associated_break,
+            break_timestamp=mitigation_candle.timestamp,
+        )
 
     def _is_expired(self, ob: OrderBlock, current_time_ms: int,
                     max_age_ms: int) -> bool:

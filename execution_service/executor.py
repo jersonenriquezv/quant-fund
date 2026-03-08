@@ -75,10 +75,18 @@ class OrderExecutor:
                 self._exchange.set_margin_mode,
                 settings.MARGIN_MODE, symbol, {"lever": leverage}
             )
+            logger.info(f"Margin mode set to {settings.MARGIN_MODE}: {pair}")
         except (ccxt.ExchangeError, ccxt.NetworkError) as e:
-            # "already set" is not a real error
-            if "already" not in str(e).lower():
-                logger.warning(f"Set margin mode failed: {pair} {e}")
+            err_msg = str(e).lower()
+            if "already" in err_msg:
+                logger.debug(f"Margin mode already set: {pair} ({e})")
+            else:
+                # Real failure (e.g. open position prevents mode change)
+                logger.error(
+                    f"Cannot set margin mode to {settings.MARGIN_MODE}: "
+                    f"{pair} — {e}"
+                )
+                return False
 
         try:
             await self._run_sync(
@@ -157,10 +165,13 @@ class OrderExecutor:
         """
         symbol = self._ccxt_symbol(pair)
         try:
-            params = {"reduceOnly": True}
+            # NOTE: Do NOT pass reduceOnly here. OKX algo orders (conditional/
+            # stop-market) do not support reduceOnly in one-way (net) mode
+            # and return error 51205 "Reduce Only is not available."
+            # In net mode, a sell against a long inherently reduces the position.
             order = await self._run_sync(
                 self._exchange.create_stop_market_order,
-                symbol, side, amount, trigger_price, params
+                symbol, side, amount, trigger_price
             )
             logger.info(
                 f"Stop-market placed: {pair} {side} amount={amount:.6f} "

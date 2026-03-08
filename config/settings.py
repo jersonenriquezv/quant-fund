@@ -60,9 +60,7 @@ class Settings:
     # PARES DE TRADING
     # ========================
     # Pares activos. El bot solo opera estos.
-    # BTC/USDT disabled — $20 margin × 7x = $140, OKX min is 0.01 BTC (~$690).
-    # Re-add when FIXED_TRADE_MARGIN >= $100 or capital increases.
-    TRADING_PAIRS: List[str] = field(default_factory=lambda: ["ETH/USDT"])
+    TRADING_PAIRS: List[str] = field(default_factory=lambda: ["ETH/USDT", "BTC/USDT"])
 
     # ========================
     # TIMEFRAMES
@@ -101,6 +99,11 @@ class Settings:
 
     # Mínimo Risk/Reward ratio para aceptar un trade
     MIN_RISK_REWARD: float = 1.5
+
+    # Minimum SL distance as fraction of entry price.
+    # Rejects noise trades where commissions eat the profit.
+    # 0.001 = 0.1% → for ETH@$2000, SL must be at least $2 away.
+    MIN_RISK_DISTANCE_PCT: float = 0.001
 
     # Tiempo máximo (horas) que un trade puede estar abierto sin moverse
     MAX_TRADE_DURATION_HOURS: int = 12
@@ -151,6 +154,11 @@ class Settings:
     # Max distance (% of price) from current price to consider an OB for zone-based orders.
     # OBs beyond this distance are ignored to avoid absurdly distant limit orders.
     OB_MAX_DISTANCE_PCT: float = 0.05  # 5%
+
+    # --- Setup B: FVG-OB adjacency ---
+    # Max gap between FVG and OB as fraction of price to count as "adjacent".
+    # 0.005 = 0.5% → for ETH@$2000, FVG and OB can be up to $10 apart.
+    FVG_OB_MAX_GAP_PCT: float = 0.005
 
     # --- Setup A temporal ---
     # Max candles between sweep and CHoCH for Setup A validity
@@ -391,7 +399,7 @@ class Settings:
     SANDBOX_LIMIT_TOLERANCE_PCT: float = 0.0005
     # Exchange minimum order sizes per pair (base currency).
     # Orders below these sizes will be rejected before reaching the exchange.
-    # BTC-USDT-SWAP: 1 contract = 0.01 BTC minimum.
+    # BTC-USDT-SWAP: 0.01 BTC minimum (perpetual, not spot).
     MIN_ORDER_SIZES: dict = field(default_factory=lambda: {
         "BTC/USDT": 0.01,
     })
@@ -446,6 +454,8 @@ STRATEGY_PROFILES: dict[str, dict] = {
         "MIN_RISK_REWARD": 1.2,               # 1:1.2 (default 1:1.5)
         "SWEEP_MIN_VOLUME_RATIO": 1.5,        # 1.5x (default 2.0x)
         "PD_EQUILIBRIUM_BAND": 0.01,          # 1% (default 2%)
+        # Allow trades in the equilibrium zone (48-52% of range)
+        "ALLOW_EQUILIBRIUM_TRADES": True,
         # Zone-based orders — wider range in aggressive mode
         "OB_MAX_DISTANCE_PCT": 0.08,          # 8% (default 5%)
         "ENTRY_TIMEOUT_SECONDS": 21600,       # 6 hours (default 4h)
