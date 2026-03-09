@@ -6,6 +6,7 @@ Returns parsed dict on success, None on any failure (fail-safe).
 """
 
 import json
+import re
 
 from anthropic import AsyncAnthropic, APIError, APITimeoutError, RateLimitError
 
@@ -52,15 +53,21 @@ class ClaudeClient:
                 f"total={usage.input_tokens + usage.output_tokens}"
             )
 
+            if not response.content:
+                logger.error("Claude returned empty response.content")
+                return None
             raw_text = response.content[0].text
 
-            # Strip markdown code fences if Claude wraps the JSON
+            # Extract JSON from response — handles preamble text + code fences
             cleaned = raw_text.strip()
-            if cleaned.startswith("```"):
-                # Remove opening ```json or ``` and closing ```
-                lines = cleaned.split("\n")
-                lines = [l for l in lines if not l.strip().startswith("```")]
-                cleaned = "\n".join(lines)
+            fence_match = re.search(r"```(?:json)?\s*\n(.*?)\n\s*```", cleaned, re.DOTALL)
+            if fence_match:
+                cleaned = fence_match.group(1).strip()
+            elif not cleaned.startswith("{"):
+                # No fence, no leading brace — try to find first JSON object
+                brace_idx = cleaned.find("{")
+                if brace_idx >= 0:
+                    cleaned = cleaned[brace_idx:]
 
             parsed = json.loads(cleaned)
 

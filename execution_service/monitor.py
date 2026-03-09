@@ -202,6 +202,21 @@ class PositionMonitor:
         if status == "closed" and filled > 0:
             # Fully filled
             actual_price = float(order.get("average", 0) or order.get("price", 0))
+            # Debug: log raw order fields to diagnose phantom fills
+            # (limit buy at X filled at Y where Y >> X)
+            expected = pos.entry_price
+            if expected and actual_price and abs(actual_price - expected) / expected > 0.005:
+                logger.warning(
+                    f"Fill price mismatch: {pos.pair} expected={expected:.2f} "
+                    f"actual={actual_price:.2f} diff={abs(actual_price - expected) / expected * 100:.2f}% "
+                    f"order_id={pos.entry_order_id} "
+                    f"raw={{status={order.get('status')}, average={order.get('average')}, "
+                    f"price={order.get('price')}, filled={order.get('filled')}, "
+                    f"type={order.get('type')}, side={order.get('side')}, "
+                    f"info_avgPx={order.get('info', {}).get('avgPx')}, "
+                    f"info_px={order.get('info', {}).get('px')}, "
+                    f"info_state={order.get('info', {}).get('state')}}}"
+                )
             self._log_slippage(pos, actual_price)
             pos.actual_entry_price = actual_price
             pos.filled_size = filled

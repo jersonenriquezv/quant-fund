@@ -246,6 +246,17 @@ class Settings:
     # ========================
     # ETHERSCAN — Whale monitoring
     # ========================
+    # Market makers — high-frequency OTC desks whose normal operations are noise.
+    # Only notify on "high" significance (≥1000 ETH / ≥100 BTC). Data still
+    # collected for AI context and dashboard.
+    MARKET_MAKER_WALLETS: set = field(default_factory=lambda: {
+        "0xad6eaa735d9df3d7696fd03984379dae02ed8862",  # Cumberland (DRW)
+        "0x15abb66ba754f05cbc0165a64a11cded1543de48",  # Galaxy Digital
+        "0x33566c9d8be6cf0b23795e0d380e112be9d75836",  # Galaxy Digital OTC
+        "0x0000006daea1723962647b7e189d311d757fb793",  # Wintermute
+        "0xb99a2c4c1c4f1fc27150681b740396f6ce1cbcf5",  # Abraxas Capital
+        "0x7bbfaa2f8b2d2a613b4439be3428dfbf0f405390",  # Paxos
+    })
     # Minimum ETH transfer to track
     WHALE_MIN_ETH: float = 100.0
     # High significance threshold
@@ -351,17 +362,12 @@ class Settings:
         "bc1q8yj0herd4r4yxszw3nkfvt53433thk0f5qst4g": "Unknown Whale (78K BTC)",
         "bc1qa5wkgaew2dkv56kfvj49j0av5nml45x9ek9hz6": "US Gov (Silk Road)",
         "bc1qazcm763858nkj2dj986etajv6wquslv8uxwczt": "Bitfinex Hack Recovery",
-        "1LQoWist8KkaUXSPKZHNvEyFrWnPUiUhTJ": "Unknown Whale (79K BTC)",
+        # Removed: 1LQoWist8K (79K whale), 32ixEdpwzG (El Salvador),
+        # 1HeKStJGY (Mt. Gox), 1AsHPP7Wc (Mt. Gox 2), 3MfN5to5K (Block.one)
+        # — mempool.space returns HTTP 400 "Invalid Bitcoin address" for these
         "37XuVSEpWW4trkfmvWzegTHQt7BdktSKUs": "Unknown Whale (94K BTC)",
         "1FeexV6bAHb8ybZjqQMjJrcCrHGW9sb6uF": "Unknown Whale (80K BTC)",
         "bc1qx9t2l3pyny2spqpqlye8svce70nppwtaxwdrp4": "Unknown Whale (44K BTC)",
-        # --- El Salvador treasury ---
-        "32ixEdpwzGTGFCo5tPAGRDqBqXcY2ACoyg": "El Salvador Treasury",
-        # --- Mt. Gox trustee ---
-        "1HeKStJGYTXLpJCGrAQnbyicoGBJFRepGA": "Mt. Gox Trustee",
-        "1AsHPP7WcGRsBYmAuXUojh2DSfmHmPp3F8": "Mt. Gox Trustee 2",
-        # --- Block.one (EOS) ---
-        "3MfN5to5K5be2RupWE8rjJPQ6X9FqRC9BM": "Block.one (EOS)",
         # --- UK Government (seized BTC, ~61K BTC) ---
         "bc1q4vxn43l44h30nkluqfxd9eckf45vr2awz38lwa": "UK Government",
         "bc1q7ydrtdn8z62xhslqyqtyt38mm4e2c4h3mxjkug": "UK Government 2",
@@ -393,6 +399,18 @@ class Settings:
         # Gate.io
         "1C2DYGhcnNBYmKKSzByYE4FCoFkNkMuh2H": "Gate.io",
     })
+
+    # ========================
+    # NEWS SENTIMENT
+    # ========================
+    NEWS_SENTIMENT_ENABLED: bool = True
+    NEWS_FEAR_GREED_URL: str = "https://api.alternative.me/fng/"
+    NEWS_HEADLINES_URL: str = "https://cryptocurrency.cv/api/news"
+    NEWS_POLL_INTERVAL: int = 300                       # 5 minutes
+    NEWS_FEAR_GREED_CACHE_TTL: int = 1800               # 30 minutes
+    NEWS_HEADLINES_CACHE_TTL: int = 300                  # 5 minutes
+    NEWS_EXTREME_FEAR_THRESHOLD: int = 15               # F&G < 15 → reject longs
+    NEWS_EXTREME_GREED_THRESHOLD: int = 85              # F&G > 85 → reject shorts
 
     # ========================
     # EXECUTION SERVICE

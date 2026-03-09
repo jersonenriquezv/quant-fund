@@ -2,6 +2,7 @@
 
 import { Header } from "@/components/Header";
 import { ProfileSelector } from "@/components/ProfileSelector";
+import { FearGreedPill } from "@/components/FearGreedPill";
 import { PricePanel } from "@/components/PricePanel";
 import { RiskGauge } from "@/components/RiskGauge";
 import { PositionCard } from "@/components/PositionCard";
@@ -19,6 +20,7 @@ export default function Dashboard() {
   return (
     <div className="dashboard">
       <Header>
+        <FearGreedPill />
         <ProfileSelector />
       </Header>
 

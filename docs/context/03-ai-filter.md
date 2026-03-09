@@ -1,6 +1,6 @@
 # AI Service
-> Última actualización: 2026-03-06
-> Estado: implementado (completo, integrado en main.py). Pre-filter determinístico (funding + CVD). HTF bias es contexto para Claude, no hard gate. AI obligatorio en todas las profiles. Setup dedup cache.
+> Última actualización: 2026-03-09
+> Estado: implementado (completo, integrado en main.py). Pre-filter determinístico (funding + F&G + CVD). HTF bias es contexto para Claude, no hard gate. AI obligatorio en todas las profiles. Setup dedup cache. News sentiment (F&G + headlines) como nuevo factor para Claude.
 
 ## Qué hace (30 segundos)
 El AI Service es el consultor senior del sistema. Recibe cada trade setup del Strategy Service y lo pasa por Claude (Sonnet) para que evalúe si el contexto de mercado apoya ejecutarlo. Claude analiza funding rate, open interest, CVD, liquidaciones, whale movements y precio reciente. Si confidence >= 0.60 y approved=true, el trade pasa al Risk Service. Si no, se descarta.
@@ -40,7 +40,7 @@ AIDecision { confidence, approved, reasoning, adjustments, warnings }
 - Instrucción: responder SOLO con JSON válido
 - HTF bias es CONTEXTO, no garantía. Claude evalúa counter-trend setups con criterio propio
 - Si HTF alineado → high-conviction trend trade. Si HTF opuesto → counter-trend, puede ser válido si LTF structure + CVD + funding apoyan
-- 7 factores a evaluar: funding, CVD (más peso), liquidaciones, whales, OI (snapshot-only), calidad del setup con confluences etiquetadas, R:R
+- 8 factores a evaluar: funding, CVD (más peso), liquidaciones, whales, OI (snapshot-only), calidad del setup con confluences etiquetadas, R:R, news sentiment (F&G + headlines)
 - Reglas críticas: no aprobar solo por patrón, funding extremo = escepticismo, CVD multi-timeframe divergente = warning, no auto-rechazar counter-trend
 - Sin cuota de aprobación — aprobar solo cuando evidencia claramente apoya
 
@@ -52,6 +52,7 @@ AIDecision { confidence, approved, reasoning, adjustments, warnings }
 - CVD con buy dominance %
 - Liquidaciones recientes (long vs short)
 - Whale activity with USD values, net exchange flow summary (deposits vs withdrawals with bullish/bearish interpretation), individual movements grouped by type (exchange first, then transfers), wallet labels prominent
+- News sentiment: Fear & Greed Index (score/100 + label) + recent headlines (title, source, category). Only included if `snapshot.news_sentiment` exists.
 - Price context (cambio 1h, 4h)
 
 ## Archivos implementados
@@ -122,7 +123,7 @@ The dashboard AILog component shows pair, direction badge, and approved/rejected
 
 ## Pre-Filter (todas las profiles)
 
-Antes de llamar a Claude API, `main.py:_pre_filter_for_claude()` ejecuta 2 checks determinísticos que rechazan setups obvios sin gastar tokens. Los checks son conservadores — si los datos no están disponibles, el check se salta (no genera falsos rechazos).
+Antes de llamar a Claude API, `main.py:_pre_filter_for_claude()` ejecuta 3 checks determinísticos que rechazan setups obvios sin gastar tokens. Los checks son conservadores — si los datos no están disponibles, el check se salta (no genera falsos rechazos).
 
 **Nota:** El check de HTF bias conflict fue removido — HTF bias ahora es contexto para Claude, no un hard gate. Esto permite counter-trend setups con estructura LTF clara.
 
@@ -131,7 +132,12 @@ Antes de llamar a Claude API, `main.py:_pre_filter_for_claude()` ejecuta 2 check
 - Short + `funding_rate < -FUNDING_EXTREME_THRESHOLD` → rechaza
 - Si `snapshot.funding` es None → skip
 
-### Check 2: CVD divergencia fuerte contra dirección
+### Check 2: Fear & Greed extreme contra dirección
+- Long + `F&G < NEWS_EXTREME_FEAR_THRESHOLD` (15) → rechaza ("Extreme Fear — rejecting long")
+- Short + `F&G > NEWS_EXTREME_GREED_THRESHOLD` (85) → rechaza ("Extreme Greed — rejecting short")
+- Si `snapshot.news_sentiment` es None → skip
+
+### Check 3: CVD divergencia fuerte contra dirección
 - Long + `buy_dominance < 40%` → rechaza
 - Short + `buy_dominance > 60%` → rechaza
 - Si `snapshot.cvd` es None o volumen total = 0 → skip
@@ -158,7 +164,7 @@ Setup detected (default o aggressive)
   |
   +-- Dedup cache hit? --> skip (ya evaluado)
   |
-  +-- pre-filter (funding, CVD) --> rechaza sin Claude
+  +-- pre-filter (funding, F&G, CVD) --> rechaza sin Claude
   |
   +-- Claude evalúa --> AIDecision
   |

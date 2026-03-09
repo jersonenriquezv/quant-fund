@@ -196,6 +196,26 @@ class ExecutionService:
         sl_price = setup.sl_price
         tp_price = setup.tp2_price
 
+        # Validate SL is still valid vs current market price.
+        # If price moved past the SL, it would trigger immediately → OKX rejects.
+        if not settings.OKX_SANDBOX:
+            ticker = await self._executor.fetch_ticker(setup.pair)
+            if ticker:
+                last = ticker.get("last", 0)
+                if last and last > 0:
+                    if setup.direction == "short" and sl_price < last:
+                        logger.warning(
+                            f"Short SL {sl_price:.2f} below market {last:.2f} — "
+                            f"would trigger immediately, skipping: {setup.pair}"
+                        )
+                        return False
+                    if setup.direction == "long" and sl_price > last:
+                        logger.warning(
+                            f"Long SL {sl_price:.2f} above market {last:.2f} — "
+                            f"would trigger immediately, skipping: {setup.pair}"
+                        )
+                        return False
+
         if settings.OKX_SANDBOX:
             # Sandbox: OB entry price may be stale, so use current market price
             # with 0.05% tolerance to get immediate fill without crazy slippage

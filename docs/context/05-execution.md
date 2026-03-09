@@ -62,12 +62,13 @@ emergency_pending ──[3 fails]──> emergency_failed  (intervención manual
 ## Reglas de seguridad
 
 1. **Validación de precios** — Long: `sl < entry < tp2`. Short: `sl > entry > tp2`.
-2. **SL placement retries** — 3 intentos con delays 0.3s/0.6s. Si falla → emergency market close.
-3. **TP falla → SL protege** — Antes se hacía emergency close si TP fallaba. Ahora el SL queda activo y es suficiente.
-4. **Ajuste SL: nuevo ANTES de cancelar viejo** — Cero ventana sin protección.
-5. **Notificación a Risk: en PLACE, no en fill.**
-6. **Cancelled entries no cuentan como trades.**
-7. **Shutdown: cancela entries pendientes, NO cierra posiciones activas.**
+2. **SL vs market validation** — Antes de colocar la orden, verifica que el SL no esté ya "adentro" del mercado. Short con SL < market → skip (el SL se activaría inmediatamente, OKX rechaza con 51053). Long con SL > market → skip. Fetch ticker para obtener `last` price. Solo en live mode (no sandbox).
+3. **SL placement retries** — 3 intentos con delays 0.3s/0.6s. Si falla → emergency market close.
+4. **TP falla → SL protege** — Antes se hacía emergency close si TP fallaba. Ahora el SL queda activo y es suficiente.
+5. **Ajuste SL: nuevo ANTES de cancelar viejo** — Cero ventana sin protección.
+6. **Notificación a Risk: en PLACE, no en fill.**
+7. **Cancelled entries no cuentan como trades.**
+8. **Shutdown: cancela entries pendientes, NO cierra posiciones activas.**
 
 ## Breakeven Logic
 
@@ -132,6 +133,15 @@ Al startup, `sync_exchange_positions()` consulta OKX por posiciones abiertas. La
 3. Espera fill, luego verifica SL/TP en exchange (algo orders + open orders)
 4. Fallback a placement manual si attached no se encuentran
 5. Cleanup: cancela SL/TP, cierra posición
+
+## Phantom fill debug logging
+
+Cuando un fill price difiere >0.5% del precio límite esperado, el monitor logea un WARNING con los campos raw de OKX:
+```
+Fill price mismatch: ETH/USDT expected=1937.22 actual=1990.24 diff=2.74%
+  raw={status, average, price, filled, type, side, info_avgPx, info_px, info_state}
+```
+`info_avgPx` e `info_px` son los campos nativos de OKX antes de la transformación ccxt. Esto ayuda a diagnosticar si OKX reporta mal el precio o ccxt lo transforma incorrectamente.
 
 ## Limitaciones conocidas
 

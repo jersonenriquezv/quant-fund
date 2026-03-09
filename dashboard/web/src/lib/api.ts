@@ -154,6 +154,11 @@ export interface WSMessage {
   positions: PositionData[];
 }
 
+export interface SentimentData {
+  score: number | null;
+  label: string | null;
+}
+
 export interface ProfileInfo {
   label: string;
   description: string;

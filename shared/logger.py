@@ -29,19 +29,36 @@ _LOG_FORMAT = (
 )
 
 
+def _is_testing() -> bool:
+    """Detect if running under pytest."""
+    return "pytest" in sys.modules or "_pytest" in sys.modules
+
+
 def setup_logger(service_name: str) -> "logger":
     """Configure loguru for a specific service.
 
     Call once at service init. Returns the configured logger.
     Multiple calls with different service names add additional file sinks.
+    File sinks are skipped when running under pytest to prevent test output
+    (Mock objects, fixture data) from polluting production log files.
 
     Args:
         service_name: e.g. "data_service", "strategy_service"
     """
-    _LOG_DIR.mkdir(exist_ok=True)
-
     # Remove default handler (has emoji/colors that pollute Docker logs)
     logger.remove()
+
+    if _is_testing():
+        # Tests: stderr only, WARNING+ to keep test output clean
+        logger.add(
+            sys.stderr,
+            format=_LOG_FORMAT,
+            level="WARNING",
+            colorize=False,
+        )
+        return logger
+
+    _LOG_DIR.mkdir(exist_ok=True)
 
     # stdout — all levels, no colors for clean Docker output
     logger.add(

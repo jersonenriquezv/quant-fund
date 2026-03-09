@@ -38,6 +38,7 @@ Factors to evaluate:
 5. OPEN INTEREST: Provided as a snapshot (no trend). Use as context for market size only — do NOT try to infer OI direction from a single data point.
 6. SETUP QUALITY: Evaluate the confluences listed. Each confluence is labeled as SUPPORTING (confirms the trade) or CONTEXT (informational). More supporting confluences = higher confidence.
 7. RISK/REWARD: The blended R:R is provided. Below 1.5 = tighter, needs strong conviction. Above 2.0 = favorable risk profile.
+8. NEWS SENTIMENT: Fear & Greed Index (0-100) and recent headlines. Extreme Fear (<15) signals panic — longs face headwind. Extreme Greed (>85) signals euphoria — shorts face headwind. Headlines provide qualitative context (hacks, regulatory events, macro shocks). Sentiment is a lagging indicator — use as supporting evidence, not primary signal.
 
 CRITICAL RULES:
 - HTF BIAS is provided as CONTEXT, not a guarantee. The trade direction is driven by LTF structure (CHoCH/BOS).
@@ -79,6 +80,7 @@ class PromptBuilder:
             self._build_cvd_section(snapshot),
             self._build_liquidation_section(snapshot),
             self._build_whale_section(snapshot),
+            self._build_news_section(snapshot),
             self._build_price_context_section(candles_context),
         ]
 
@@ -337,6 +339,23 @@ class PromptBuilder:
                     f"  [{w.significance.upper()}] {label}: "
                     f"{w.amount:.2f} {w.chain}{usd_part} {action} {w.exchange}"
                 )
+
+        return "\n".join(lines)
+
+    def _build_news_section(self, snapshot: MarketSnapshot) -> str:
+        if snapshot.news_sentiment is None:
+            return "## News Sentiment\nNot available"
+
+        s = snapshot.news_sentiment
+        lines = [
+            "## News Sentiment",
+            f"- Fear & Greed Index: {s.score}/100 ({s.label})",
+        ]
+
+        if s.headlines:
+            lines.append("Recent headlines:")
+            for h in s.headlines:
+                lines.append(f'- "{h.title}" ({h.source}, {h.category})')
 
         return "\n".join(lines)
 

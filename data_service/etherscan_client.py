@@ -85,8 +85,8 @@ class EtherscanClient:
         cutoff = int((time.time() - hours * 3600) * 1000)
         return [m for m in self._movements if m.timestamp >= cutoff]
 
-    def serialize_movements(self, hours: int = 24) -> str:
-        """Serialize recent movements to JSON including wallet labels."""
+    def serialize_movements(self, hours: int = 24) -> list[dict]:
+        """Serialize recent movements to list of dicts including wallet labels."""
         movements = self.get_recent_movements(hours)
         records = []
         for m in movements:
@@ -103,7 +103,7 @@ class EtherscanClient:
                 "significance": m.significance,
                 "chain": m.chain,
             })
-        return json.dumps(records)
+        return records
 
     # ================================================================
     # Polling loop
@@ -159,7 +159,7 @@ class EtherscanClient:
             loop = asyncio.get_running_loop()
             resp = await loop.run_in_executor(
                 None,
-                functools.partial(requests.get, _ETHERSCAN_BASE, params=params, timeout=10),
+                functools.partial(requests.get, _ETHERSCAN_BASE, params=params, timeout=15),
             )
             data = resp.json()
         except requests.RequestException as e:

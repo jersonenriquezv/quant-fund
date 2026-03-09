@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from dashboard.api.database import init_db, close_db
-from dashboard.api.routes import health, market, trades, ai, risk, candles, stats, whales, profile, strategy
+from dashboard.api.routes import health, market, trades, ai, risk, candles, stats, whales, profile, strategy, sentiment
 from dashboard.api.ws import router as ws_router
 
 
@@ -41,4 +41,5 @@ app.include_router(stats.router, prefix="/api")
 app.include_router(whales.router, prefix="/api")
 app.include_router(profile.router, prefix="/api")
 app.include_router(strategy.router, prefix="/api")
+app.include_router(sentiment.router, prefix="/api")
 app.include_router(ws_router, prefix="/api")

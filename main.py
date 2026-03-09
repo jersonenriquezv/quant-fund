@@ -288,7 +288,15 @@ def _pre_filter_for_claude(setup, snapshot) -> str | None:
             if setup.direction == "short" and rate < -threshold:
                 return f"Funding extreme against short ({rate*100:.4f}% < -{threshold*100:.4f}%)"
 
-    # Check 2: CVD strong divergence against trade direction
+    # Check 2: Fear & Greed extreme against trade direction
+    if snapshot.news_sentiment is not None:
+        fg = snapshot.news_sentiment.score
+        if setup.direction == "long" and fg < settings.NEWS_EXTREME_FEAR_THRESHOLD:
+            return f"Extreme Fear (F&G={fg}) — rejecting long"
+        if setup.direction == "short" and fg > settings.NEWS_EXTREME_GREED_THRESHOLD:
+            return f"Extreme Greed (F&G={fg}) — rejecting short"
+
+    # Check 3: CVD strong divergence against trade direction
     if snapshot.cvd is not None:
         buy_vol = snapshot.cvd.buy_volume
         sell_vol = snapshot.cvd.sell_volume

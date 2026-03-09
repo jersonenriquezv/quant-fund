@@ -26,12 +26,13 @@ Si el dashboard crashea, el bot sigue operando normalmente.
 | `POST /api/profile` | Redis write | Cambiar perfil de estrategia |
 | `GET /api/strategy/order-blocks` | Redis (`qf:bot:order_blocks`) | OBs activos (ambos pares, LTF) |
 | `GET /api/strategy/htf-bias` | Redis (`qf:bot:htf_bias`) | HTF bias por par |
+| `GET /api/sentiment` | Redis (`qf:bot:news:fear_greed`) | Fear & Greed score + label |
 | `POST /api/trades/{pair}/cancel` | Redis write (`qf:cancel_request:{pair}`) | Solicita cancelación de posición (TTL 60s) |
 
 ## Frontend — Layout
 
 ```
-HEADER: Status dot + "QF" + LIVE/DEMO pill + Profile Selector + UTC clock (time only)
+HEADER: Status dot + "QF" + LIVE/DEMO pill + F&G pill (colored) + Profile Selector + UTC clock (time only)
 ├── BTC/USDT panel (gradient bg, HTF bias badge) | ETH/USDT panel (gradient bg) | Risk gauges (arcos con glow)
 ├── Open Positions (rich cards: TP2/TP3/leverage/AI confidence/time open/cancel) | Equity curve
 ├── Trade Log (tabla, hover rows) | AI Decision Log (mini-cards con confidence ring)
@@ -65,6 +66,7 @@ Para que el dashboard muestre datos, el bot ahora escribe a PostgreSQL:
 - **Redis** — `qf:bot:whale_movements` → JSON de whale movements (TTL 600s, actualizado cada poll de Etherscan)
 - **Redis** — `qf:bot:order_blocks` → JSON de OBs activos (TTL 600s, actualizado en cada candle confirmada)
 - **Redis** — `qf:bot:htf_bias` → JSON de HTF bias por par (TTL 600s, actualizado en cada candle confirmada)
+- **Redis** — `qf:bot:news:fear_greed` → JSON `{score, label}` (TTL 1800s, actualizado cada 5 min por NewsClient)
 
 ## Docker
 
@@ -102,14 +104,15 @@ dashboard/
 │   │   ├── stats.py     # GET /api/stats
 │   │   ├── whales.py    # GET /api/whales
 │   │   ├── profile.py   # GET/POST /api/profile
-│   │   └── strategy.py  # GET /api/strategy/order-blocks, /api/strategy/htf-bias
+│   │   ├── strategy.py  # GET /api/strategy/order-blocks, /api/strategy/htf-bias
+│   │   └── sentiment.py # GET /api/sentiment
 │   ├── ws.py            # WS /api/ws
 │   ├── requirements.txt
 │   └── Dockerfile
 └── web/
     ├── src/
     │   ├── app/          # Next.js app router
-    │   ├── components/   # 11 componentes UI (incl. ProfileSelector, OrderBlockPanel)
+    │   ├── components/   # 13 componentes UI (incl. ProfileSelector, OrderBlockPanel, FearGreedPill)
     │   └── lib/          # API client, hooks
     ├── package.json
     ├── Dockerfile
@@ -169,6 +172,16 @@ Mobile: 6-col grid → 3-col. Cancel button full width. Footer stacks.
 - Setup type badge visible
 - Warnings como pills coloreados
 - Empty state: "No AI evaluations yet — decisions appear when the bot detects a setup"
+
+## Fear & Greed Pill
+
+Pill en el Header que muestra el Fear & Greed Index en tiempo real:
+- **Componente:** `FearGreedPill.tsx` — polls `GET /api/sentiment` cada 60s
+- **API:** `sentiment.py` — lee `qf:bot:news:fear_greed` de Redis
+- **Colores:** Rojo (0-25 Extreme Fear/Fear), naranja (26-45 Fear), gris (46-55 Neutral), verde-amarillo (56-75 Greed), verde (76-100 Extreme Greed)
+- **Formato:** `F&G: 23` con tooltip completo ("Fear & Greed: 23/100 (Extreme Fear)")
+- **Graceful:** Si no hay datos en Redis → no renderiza (returns null)
+- **Mobile:** Pill compacto, no wrap
 
 ## Limitaciones v1
 

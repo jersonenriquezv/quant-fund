@@ -43,6 +43,7 @@ class OILiquidationProxy:
     def get_recent_liquidations(self, pair: str | None = None,
                                 minutes: int = 60) -> list[LiquidationEvent]:
         """Get proxy liquidation events from the last N minutes."""
+        self._prune_old_events()
         cutoff = int((time.time() - minutes * 60) * 1000)
         events = [e for e in self._events if e.timestamp >= cutoff]
         if pair:

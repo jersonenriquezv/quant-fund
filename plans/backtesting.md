@@ -1,6 +1,6 @@
 # Backtesting — Sistema de Validacion Estadistica
 
-**Status:** Pendiente
+**Status:** Fase 1 completa (Pasos 1-3). Fase 2 pendiente (Pasos 4-5).
 **Prioridad:** Alta
 **Esfuerzo:** ~8-10 horas
 

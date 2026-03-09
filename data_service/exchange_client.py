@@ -314,4 +314,6 @@ class ExchangeClient:
             "1h": 60 * 60 * 1000,
             "4h": 4 * 60 * 60 * 1000,
         }
-        return multipliers.get(timeframe, 5 * 60 * 1000)
+        if timeframe not in multipliers:
+            raise ValueError(f"Unknown timeframe: {timeframe}")
+        return multipliers[timeframe]

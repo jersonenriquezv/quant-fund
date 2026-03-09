@@ -98,6 +98,24 @@ class WhaleMovement:
     market_price: float = 0.0  # Asset price (USD) when movement was detected
 
 
+@dataclass(frozen=True)
+class NewsHeadline:
+    """Single news headline from cryptocurrency.cv."""
+    title: str
+    source: str
+    timestamp: int          # Unix ms
+    category: str           # "bitcoin", "defi", "macro", etc.
+
+
+@dataclass(frozen=True)
+class NewsSentiment:
+    """Aggregated news sentiment: Fear & Greed score + recent headlines."""
+    score: int                          # 0-100 (Fear & Greed Index)
+    label: str                          # "Extreme Fear", "Fear", "Neutral", "Greed", "Extreme Greed"
+    headlines: list                     # list[NewsHeadline]
+    fetched_at: int                     # Unix ms
+
+
 @dataclass
 class MarketSnapshot:
     """All market data for a pair at a point in time.
@@ -111,6 +129,7 @@ class MarketSnapshot:
     cvd: Optional[CVDSnapshot] = None
     recent_liquidations: list[LiquidationEvent] = field(default_factory=list)
     whale_movements: list[WhaleMovement] = field(default_factory=list)
+    news_sentiment: Optional[NewsSentiment] = None
 
 
 # ============================================================

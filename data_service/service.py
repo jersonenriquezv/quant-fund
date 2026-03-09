@@ -23,7 +23,7 @@ from config.settings import settings
 from shared.logger import setup_logger
 from shared.models import (
     Candle, FundingRate, OpenInterest, CVDSnapshot,
-    LiquidationEvent, WhaleMovement, MarketSnapshot,
+    LiquidationEvent, WhaleMovement, MarketSnapshot, NewsSentiment,
 )
 
 from data_service.exchange_client import ExchangeClient
@@ -33,6 +33,7 @@ from data_service.oi_liquidation_proxy import OILiquidationProxy
 from data_service.etherscan_client import EtherscanClient
 from data_service.btc_whale_client import BtcWhaleClient
 from data_service.data_store import RedisStore, PostgresStore
+from data_service.news_client import NewsClient
 
 logger = setup_logger("data_service")
 
@@ -64,6 +65,10 @@ class DataService:
         self._btc_whale = BtcWhaleClient(price_provider=self._get_btc_price)
         self._redis = RedisStore()
         self._postgres = PostgresStore()
+        self._news = NewsClient(redis_store=self._redis)
+
+        # Latest sentiment data (refreshed by polling loop)
+        self._latest_sentiment: Optional[NewsSentiment] = None
 
         # Async tasks for cleanup on shutdown
         self._tasks: list[asyncio.Task] = []
@@ -140,6 +145,7 @@ class DataService:
             cvd=self._cvd.get_cvd(pair),
             recent_liquidations=self._oi_proxy.get_recent_liquidations(pair, minutes=60),
             whale_movements=self.get_whale_movements(hours=24),
+            news_sentiment=self._latest_sentiment,
         )
 
     # ================================================================
@@ -204,6 +210,7 @@ class DataService:
             asyncio.create_task(self._btc_whale_loop(), name="btc_whale"),
             asyncio.create_task(self._funding_rate_loop(), name="funding_loop"),
             asyncio.create_task(self._oi_loop(), name="oi_loop"),
+            asyncio.create_task(self._news_sentiment_loop(), name="news_sentiment"),
             asyncio.create_task(self._health_check_loop(), name="health_check"),
         ]
 
@@ -225,6 +232,7 @@ class DataService:
         await self._cvd.stop()
         await self._etherscan.stop()
         await self._btc_whale.stop()
+        await self._news.close()
 
         # Cancel remaining tasks
         for task in self._tasks:
@@ -404,9 +412,13 @@ class DataService:
             return
         new_movements = [m for m in movements if id(m) not in before_ids]
         for m in new_movements:
+            # Market makers (Cumberland, Galaxy, etc.): only notify on high significance
+            if m.wallet.lower() in settings.MARKET_MAKER_WALLETS:
+                if m.significance != "high":
+                    continue
             # Tier 1: exchange movements — always notify
             # Tier 2: large or high-significance transfers — likely unrecognized exchange addresses
-            if m.action not in ("exchange_deposit", "exchange_withdrawal"):
+            elif m.action not in ("exchange_deposit", "exchange_withdrawal"):
                 if m.significance != "high" and m.amount_usd < 500_000:
                     continue
             try:
@@ -418,7 +430,7 @@ class DataService:
         """Merge ETH + BTC whale movements and publish to Redis."""
         try:
             import json
-            eth_records = json.loads(self._etherscan.serialize_movements(hours=24))
+            eth_records = self._etherscan.serialize_movements(hours=24)
             btc_records = self._btc_whale.serialize_movements(hours=24)
             combined = eth_records + btc_records
             combined.sort(key=lambda r: r["timestamp"], reverse=True)
@@ -460,6 +472,34 @@ class DataService:
                         self._oi_proxy.update(oi)
                 except Exception as e:
                     logger.error(f"OI poll failed: pair={pair} error={e}")
+
+    async def _news_sentiment_loop(self) -> None:
+        """Poll news sentiment every NEWS_POLL_INTERVAL seconds."""
+        if not settings.NEWS_SENTIMENT_ENABLED:
+            logger.info("News sentiment: disabled in settings")
+            return
+
+        logger.info(f"News sentiment loop started: polling every {settings.NEWS_POLL_INTERVAL}s")
+
+        # Initial fetch immediately
+        try:
+            sentiment = await self._news.fetch_sentiment()
+            if sentiment:
+                self._latest_sentiment = sentiment
+                logger.info(f"News sentiment: F&G={sentiment.score} ({sentiment.label}), "
+                            f"{len(sentiment.headlines)} headlines")
+        except Exception as e:
+            logger.error(f"Initial news sentiment fetch failed: {e}")
+
+        while self._running:
+            await asyncio.sleep(settings.NEWS_POLL_INTERVAL)
+            try:
+                sentiment = await self._news.fetch_sentiment()
+                if sentiment:
+                    self._latest_sentiment = sentiment
+                    logger.debug(f"News sentiment: F&G={sentiment.score} ({sentiment.label})")
+            except Exception as e:
+                logger.error(f"News sentiment poll failed: {e}")
 
     # ================================================================
     # Internal: Health check loop

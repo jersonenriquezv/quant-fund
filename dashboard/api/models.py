@@ -123,6 +123,11 @@ class OrderBlockRecord(BaseModel):
     volume_ratio: float
 
 
+class SentimentResponse(BaseModel):
+    score: int | None = None
+    label: str | None = None
+
+
 class HTFBiasResponse(BaseModel):
     bias: dict[str, str]
 

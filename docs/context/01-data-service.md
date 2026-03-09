@@ -1,6 +1,6 @@
 # Data Service
 > Last updated: 2026-03-09
-> Status: implemented (complete, running in Docker). Audited — 4 CRITICAL fixes applied. Whale tracking with USD enrichment, 3-tier Telegram notifications, new whale wallets (Trump, Jump Trading, a16z, FTX/Alameda, UK Gov BTC).
+> Status: implemented (complete, running in Docker). Audited — 4 CRITICAL fixes applied. Whale tracking with USD enrichment, 3-tier Telegram notifications, new whale wallets (Trump, Jump Trading, a16z, FTX/Alameda, UK Gov BTC). News sentiment (Fear & Greed + headlines) as new data layer.
 
 ## What it does (30 seconds)
 The Data Service is the bot's eyes and ears. It connects to OKX 24/7, collecting price data (candles), trade flow (CVD), market indicators (funding rate, open interest), liquidation cascades (via OI proxy), and whale movements. Every other service gets clean, validated, typed data through here.
@@ -22,6 +22,8 @@ Without real-time market data, the Strategy Service has nothing to analyze. With
 | OI Proxy | Liquidation cascades | OI drop >2% in 5min = cascade | Every 5 minutes (fed by OI poll) |
 | Etherscan REST | ETH whale movements | Transaction polling, 5 calls/sec limit | Every 5 minutes |
 | mempool.space REST | BTC whale movements | UTXO transaction polling, no API key | Every 5 minutes |
+| alternative.me REST | Fear & Greed Index | `GET /fng/?limit=1`, no API key | Every 5 minutes (cached 30min) |
+| cryptocurrency.cv REST | Crypto news headlines | `GET /api/news?asset=BTC&limit=5`, User-Agent required | Every 5 minutes (cached 5min) |
 
 ### Pipeline Flow
 ```
@@ -30,6 +32,7 @@ Without real-time market data, the Strategy Service has nothing to analyze. With
 3. Connect OKX WebSocket → candle channels (8 total: 2 pairs × 4 timeframes)
 4. Connect OKX WebSocket → trades channel (2 pairs) for CVD calculation
 5. Start Etherscan polling loop (whale wallets every 5 min)
+6. Start news sentiment polling (F&G + headlines every 5 min)
 7. Start funding rate polling (every 8 hours) and OI polling (every 5 min)
 8. On confirmed candle (confirm="1"):
    → Store in memory + Redis + PostgreSQL
@@ -42,14 +45,16 @@ All 5 layers run in the same Python process. The Data Service exposes methods th
 ## Implemented Files
 
 ### `shared/models.py` — Typed Dataclasses
-10 frozen dataclasses shared across all layers:
+12 frozen dataclasses shared across all layers:
 - **Candle** — OHLCV with pair, timeframe, confirmed flag
 - **FundingRate** — current rate + next estimated + next funding time
 - **OpenInterest** — in contracts, base currency, and USD
 - **CVDSnapshot** — cumulative volume delta for 5m, 15m, 1h windows + buy/sell volume
 - **LiquidationEvent** — from OI proxy (OI drop >2% = cascade), with side and size_usd
 - **WhaleMovement** — Whale transfers (ETH via Etherscan, BTC via mempool.space). 4 action types: `exchange_deposit` (bearish), `exchange_withdrawal` (bullish), `transfer_out` (neutral), `transfer_in` (neutral). Fields: `amount` (ETH or BTC), `chain` ("ETH" or "BTC"), `exchange` (exchange name or truncated address), `wallet_label` (human-readable name from settings, e.g., "Vitalik Buterin"), `amount_usd` (USD value at detection time), `market_price` (asset price in USD when detected). USD fields default to 0.0 if price provider unavailable.
-- **MarketSnapshot** — wraps funding, OI, CVD, liquidations, whales for a pair
+- **NewsHeadline** — single news headline (title, source, timestamp, category)
+- **NewsSentiment** — Fear & Greed score (0-100) + label + recent headlines + fetched_at
+- **MarketSnapshot** — wraps funding, OI, CVD, liquidations, whales, news_sentiment for a pair
 - **TradeSetup** — detected setup from Strategy Service
 - **AIDecision** — Claude's evaluation with confidence score
 - **RiskApproval** — final risk check with position size and leverage
@@ -57,6 +62,7 @@ All 5 layers run in the same Python process. The Data Service exposes methods th
 All frozen (immutable) except MarketSnapshot which has optional fields.
 
 ### `shared/logger.py` — Loguru Configuration
+- **Test isolation**: `_is_testing()` detecta pytest via `sys.modules`. Bajo pytest, `setup_logger()` solo agrega stderr (WARNING+), sin file sinks. Previene que Mock objects y fixture data contaminen los logs de producción.
 - Format: `{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | {name}:{function}:{line} | {message}`
 - stdout: all levels (for Docker logs)
 - File: `logs/{service}_{date}.log` — daily rotation, 30-day retention, gzip compressed
@@ -124,8 +130,9 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Creates `WhaleMovement(chain="ETH", wallet_label=label, amount_usd=..., market_price=...)` — USD computed at detection time
 
 ### `data_service/btc_whale_client.py` — BTC Whale Wallet Monitor
-- Polls 16 configured wallets every `MEMPOOL_CHECK_INTERVAL` seconds (default 300)
-- Wallet categories: government seizures (US Gov Silk Road, UK Government ~61K BTC ×2 wallets), exchange hack recovery (Bitfinex), individual mega-wallets, sovereign funds (El Salvador), Mt. Gox trustee, Block.one
+- Polls 11 configured wallets every `MEMPOOL_CHECK_INTERVAL` seconds (default 300)
+- Wallet categories: government seizures (US Gov Silk Road, UK Government ~61K BTC ×2 wallets), exchange hack recovery (Bitfinex), individual mega-wallets
+- Removed (2026-03-09): El Salvador, Mt. Gox ×2, Block.one, Unknown 79K — mempool.space returns HTTP 400 "Invalid Bitcoin address" for these high-UTXO addresses
 - Constructor accepts `price_provider` callback (returns current BTC price in USD) for USD enrichment
 - API: `https://mempool.space/api/address/{addr}/txs` — no API key needed
 - Parses BTC UTXO model: `vin[].prevout.scriptpubkey_address` (senders) and `vout[].scriptpubkey_address` (recipients)
@@ -138,6 +145,22 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Significance: >100 BTC = "high", >10 BTC = "medium", <10 BTC ignored
 - Rate limit: 0.5s between calls (~10 req/min, safe for public instance)
 - Creates `WhaleMovement(chain="BTC", wallet_label=label, amount_usd=..., market_price=...)` — USD computed at detection time
+
+### `data_service/news_client.py` — News Sentiment Client
+- Class: `NewsClient(redis_store=None)`
+- Two data sources:
+  - **alternative.me** — Fear & Greed Index (0-100 score, free, no API key, running since 2018)
+  - **cryptocurrency.cv** — Crypto news headlines (free, requires `User-Agent` header for Cloudflare)
+- Methods:
+  - `fetch_fear_greed()` → `tuple[int, str] | None` — score + label ("Extreme Fear", "Fear", "Neutral", "Greed", "Extreme Greed")
+  - `fetch_headlines(asset, limit=5)` → `list[NewsHeadline]` — recent headlines for BTC or ETH
+  - `fetch_sentiment()` → `NewsSentiment | None` — combines F&G + headlines (BTC 3 + ETH 2)
+- Redis caching via `set_bot_state`/`get_bot_state`:
+  - `news:fear_greed` — TTL 30min (`NEWS_FEAR_GREED_CACHE_TTL`)
+  - `news:headlines:{asset}` — TTL 5min (`NEWS_HEADLINES_CACHE_TTL`)
+- HTTP via `aiohttp` with 15s timeout, `User-Agent: QuantFundBot/1.0`
+- Graceful degradation: F&G failure → `None` (pre-filter skipped). Headlines failure → empty list (Claude context omitted).
+- `close()` shuts down aiohttp session
 
 ### `data_service/data_store.py` — Redis + PostgreSQL
 **Redis (real-time cache):**
@@ -154,7 +177,7 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - **Auto-reconnection:** `_ensure_connected()` checks connection health (sends `SELECT 1`). All DB methods (`store_candles`, `load_candles`, `insert_trade`, `update_trade`, `insert_ai_decision`, `insert_risk_event`) retry once on `psycopg2.OperationalError` / `InterfaceError` — sets `_conn = None` and reconnects.
 
 ### `data_service/service.py` — DataService Facade
-- Wires all 8 sub-modules into a single interface
+- Wires all 9 sub-modules into a single interface (including NewsClient)
 - Public methods: `get_latest_candle()`, `get_candles()`, `get_market_snapshot()`, `get_cvd()`, `fetch_usdt_balance()`, etc.
 - Manages startup (backfill → WebSockets → polling loops) and graceful shutdown
 - On confirmed candle: stores to Redis + PostgreSQL, triggers pipeline callback
@@ -167,13 +190,15 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
   - Tier 2 (notify if large): Non-exchange transfers with `significance == "high"` OR `amount_usd >= $500K` — likely unrecognized exchange addresses
   - Tier 3 (log only): Small non-exchange transfers — too noisy for Telegram
 - **Whale notification format:** Compact single-line format with USD shorthand ($1.2M, $500K). Wallet label preferred, fallback to truncated address.
+- **Market maker filtering:** `MARKET_MAKER_WALLETS` set (Cumberland, Galaxy, Wintermute, etc.) — only notify on `significance == "high"`. Data still collected for AI context.
+- **News sentiment polling:** `_news_sentiment_loop()` fetches F&G + headlines every `NEWS_POLL_INTERVAL` (5min). Stores latest `NewsSentiment` in `_latest_sentiment`. Included in `get_market_snapshot()`. Initial fetch on startup, then periodic.
 
 ### `main.py` — Entry Point
 - Single process, handles SIGINT/SIGTERM for graceful shutdown
 - Creates DataService with pipeline callback
 - **Capital at startup:** Fetches USDT balance from exchange via `data_service.fetch_usdt_balance()`. Falls back to `INITIAL_CAPITAL` setting if fetch fails or returns 0.
 - Pipeline completo: Data → Strategy → Pre-filter → AI → Risk → Execution (5 capas wired)
-- Pre-filter determinístico antes de Claude: HTF bias conflict + funding extreme + CVD divergencia
+- Pre-filter determinístico antes de Claude: funding extreme + F&G extreme + CVD divergencia
 - AI filter obligatorio en todas las profiles (sin bypass)
 - 4H OB summary: cuando cierra la vela 4H, envía resumen de OBs activos via Telegram
 
@@ -203,6 +228,14 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 | `OI_DROP_THRESHOLD_PCT` | `0.02` (2%) | OI proxy cascade threshold |
 | `OI_DROP_WINDOW_SECONDS` | `300` (5min) | OI proxy measurement window |
 | `RECONNECT_BACKOFF_FACTOR` | `2.0` | Backoff multiplier |
+| `NEWS_SENTIMENT_ENABLED` | `True` | Enable/disable news sentiment fetching |
+| `NEWS_FEAR_GREED_URL` | `https://api.alternative.me/fng/` | Fear & Greed API endpoint |
+| `NEWS_HEADLINES_URL` | `https://cryptocurrency.cv/api/news` | Headlines API endpoint |
+| `NEWS_POLL_INTERVAL` | `300` (5min) | News sentiment polling interval |
+| `NEWS_FEAR_GREED_CACHE_TTL` | `1800` (30min) | Redis cache TTL for F&G score |
+| `NEWS_HEADLINES_CACHE_TTL` | `300` (5min) | Redis cache TTL for headlines |
+| `NEWS_EXTREME_FEAR_THRESHOLD` | `15` | F&G < 15 → reject longs (pre-filter) |
+| `NEWS_EXTREME_GREED_THRESHOLD` | `85` | F&G > 85 → reject shorts (pre-filter) |
 
 ## FAQ
 

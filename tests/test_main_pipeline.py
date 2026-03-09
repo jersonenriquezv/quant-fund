@@ -134,6 +134,7 @@ def _wire_services(
     main._ai_service = ai
 
     risk = MagicMock()
+    risk._state.get_capital.return_value = 100.0  # $100 test capital
     if approval is not None:
         risk.check.return_value = approval
     main._risk_service = risk

@@ -64,11 +64,11 @@ class FVGDetector:
         new_fvgs = self._detect_fvgs(candles, pair, timeframe)
 
         # Deduplicate — don't add FVGs we already track
-        existing_timestamps = {
-            fvg.timestamp for fvg in self._active_fvgs[key]
+        existing_keys = {
+            (fvg.timestamp, fvg.direction) for fvg in self._active_fvgs[key]
         }
         for fvg in new_fvgs:
-            if fvg.timestamp not in existing_timestamps:
+            if (fvg.timestamp, fvg.direction) not in existing_keys:
                 self._active_fvgs[key].append(fvg)
 
         # Update fill status with latest candles

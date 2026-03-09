@@ -1,6 +1,6 @@
 # Arquitectura del Sistema
-> Última actualización: 2026-03-06
-> Estado: **5/5 capas implementadas** — pipeline completo Data → Strategy → AI → Risk → Execution. 2 perfiles (default/aggressive). AI filter obligatorio en todas las profiles. Sandbox usa limit orders con tolerancia.
+> Última actualización: 2026-03-09
+> Estado: **5/5 capas implementadas** — pipeline completo Data → Strategy → AI → Risk → Execution. 2 perfiles (default/aggressive). AI filter obligatorio en todas las profiles. Sandbox usa limit orders con tolerancia. News sentiment (F&G + headlines) como nuevo data layer y pre-filter.
 
 ## Qué hace (para entenderlo rápido)
 El sistema es un bot de trading que funciona como una línea de ensamblaje. Los datos entran por un lado, pasan por 5 filtros en orden, y si todos dicen "sí", se ejecuta el trade. Si cualquier filtro dice "no", el trade se descarta.
@@ -66,7 +66,7 @@ Sin esta arquitectura, tendríamos un solo programa gigante donde todo está mez
 2. Cuando hay una vela nueva (cada 5m/15m), manda los datos al Strategy Service
 3. Strategy Service analiza los datos buscando patrones SMC
 4. Si encuentra un setup completo (Setup A/B swing, o C/D/E quick si no hay swing), lo pasa al siguiente filtro
-5. **Swing setups (A/B):** Pre-filter determinístico (HTF bias, funding extreme, CVD divergencia) → Claude evalúa → confianza ≥ 0.60 (0.50 aggressive)
+5. **Swing setups (A/B):** Pre-filter determinístico (funding extreme, Fear & Greed extreme, CVD divergencia) → Claude evalúa → confianza ≥ 0.60 (0.50 aggressive)
 6. **Quick setups (C/D/E):** Skip Claude AI filter (los datos SON la señal). Setup C también skipea funding pre-filter. Se genera `AIDecision` sintético con confidence=1.0
 7. **AI filter obligatorio para swing setups** — quick setups lo bypasean por diseño (data-driven).
 8. Risk Service verifica TODOS los guardrails y calcula el position size
@@ -146,10 +146,36 @@ docker compose build --no-cache  # Rebuild después de cambios en código
 |------|--------|-------|-------------------|
 | 1. Data Service | Implementado + auditoría | 82 | `data_service/service.py` |
 | 2. Strategy Service | Implementado + auditoría | 76 | `strategy_service/service.py` |
-| 3. AI Service | Implementado | 41 | `ai_service/service.py` |
+| 3. AI Service | Implementado | 41 + 26 news | `ai_service/service.py` |
 | 4. Risk Service | Implementado | 72 | `risk_service/service.py` |
 | 5. Execution Service | Implementado + auditoría | 32 | `execution_service/service.py` |
-| **Total** | **5/5 completas** | **356** | `main.py` (pipeline completo) |
+| Backtester | Implementado (fase 1) | 21 | `scripts/backtest.py` |
+| **Total** | **5/5 completas + backtester** | **420** | `main.py` (pipeline completo) |
+
+## Backtesting (`scripts/`)
+
+### `scripts/fetch_history.py`
+Descarga velas históricas de OKX REST (vía ExchangeClient.backfill_candles()) y las almacena en PostgreSQL. Soporta `--days 90`, `--pair`, `--timeframe`. ON CONFLICT maneja dedup.
+
+### `scripts/backtest.py`
+Backtester completo con simulación de fills:
+- **BacktestDataService** — mock del DataService con cursor temporal
+- **SimulatedClock** — patchea `time.time()` para expiración de OBs/FVGs
+- **TradeSimulator** — simula fills candle-by-candle:
+  - Entry: limit order, fill cuando candle toca el precio. Timeout configurable.
+  - SL: stop-market, prioridad máxima (check primero en cada candle).
+  - TP1 (50% @ 1:1 R:R) → SL a breakeven → TP2 (30% @ 2:1) → TP3 (20%)
+  - Timeout: `MAX_TRADE_DURATION_SECONDS`
+  - Position sizing: `(equity * RISK_PER_TRADE) / |entry - sl|`, cap MAX_LEVERAGE
+- **Métricas**: win rate, avg R:R, PnL, max drawdown, Sharpe, profit factor, trades/week
+- **Breakdowns**: por setup type, par, dirección, exit reasons
+- **Export CSV**: `--csv` genera archivo con todas las trades
+
+```bash
+python scripts/backtest.py --days 60 --profile aggressive --capital 10000 --csv
+```
+
+**Tests:** 21 tests en `tests/test_backtest.py` (SL, TP1-3, breakeven, timeout, sizing, métricas).
 
 ## Roadmap v2
 
@@ -169,6 +195,14 @@ Actualmente TP3 usa una limit order fija al siguiente nivel de liquidez. CLAUDE.
 - Ver `docs/to-fix.md` para backlog completo (~30 IMPORTANT + 29 MINOR issues)
 
 ## Cambios recientes
+- 2026-03-09: **Phantom fill debug logging** — `monitor.py` logea WARNING con campos raw de OKX (avgPx, px, state) cuando fill price difiere >0.5% del limit price. Diagnostica caso donde buy-limit a $1937 reportó fill a $1990.
+- 2026-03-09: **Test log isolation** — `shared/logger.py` detecta pytest y skipea file sinks. Previene que Mock objects contaminen logs de producción.
+- 2026-03-09: **5 BTC whale wallets removidos** — mempool.space retorna HTTP 400 "Invalid Bitcoin address" para 1LQoWist8K, 32ixEdpwzG, 1HeKStJGY, 1AsHPP7Wc, 3MfN5to5K. Eliminaba 1130+ warnings/día.
+- 2026-03-09: **Etherscan timeout 10s→15s** — Reduce timeouts transitorios (14/día). Alineado con btc_whale_client.
+- 2026-03-09: **News Sentiment Analysis** — Fear & Greed Index (alternative.me) + crypto headlines (cryptocurrency.cv) como nuevo data layer. Pre-filter rechaza longs en Extreme Fear (F&G<15) y shorts en Extreme Greed (F&G>85). Claude recibe F&G score + headlines como factor 8. `data_service/news_client.py` nuevo con Redis caching. 26 tests nuevos. 420 tests totales.
+- 2026-03-09: **SL vs market validation** — Execution Service ahora verifica que el SL no esté ya "adentro" del mercado antes de colocar la orden. Short con SL < market → skip (OKX 51053). Previene fallos en Setup G cuando precio se movió más allá del breaker block.
+- 2026-03-09: **Market maker noise filter** — `MARKET_MAKER_WALLETS` set en settings filtra notificaciones de Cumberland, Galaxy, Wintermute, etc. (solo notifica significancia alta). Data sigue colectándose para AI context.
+- 2026-03-09: **Backtester con simulación de fills** — `scripts/backtest.py` ahora simula entry/SL/TP fills candle-by-candle con position sizing real, 3-tier TP exits, breakeven SL, timeout. Produce métricas completas (win rate, Sharpe, max DD, profit factor). `scripts/fetch_history.py` nuevo para descargar 90 días de velas históricas. 21 tests nuevos. 394 tests totales.
 - 2026-03-06: **Dynamic capital + fixed margin sizing** — `main.py` ahora busca USDT balance del exchange al arrancar (fallback a `INITIAL_CAPITAL`). `FIXED_TRADE_MARGIN` reemplaza `SANDBOX_MARGIN_PER_TRADE` — cuando > 0, position sizing usa margen fijo en ambos modos (sandbox y live). `fetch_usdt_balance()` añadido a ExchangeClient y DataService.
 - 2026-03-06: **Profile cleanup + slippage fix** — Scalping eliminado. Aggressive rediseñado: PD/HTF alignment ON, AI obligatorio, DD 5%/10%, R:R 1.2. `FORCE_MAX_LEVERAGE` eliminado. Sandbox usa limit orders con tolerancia 0.05% (era market orders con 13.8% slippage). Setup dedup cache evita re-evaluar mismo setup en Claude.
 - 2026-03-05: **Whale notifications + 4H OB summary** — Notificaciones whale ahora muestran nombre de wallet (campo `wallet_label`). Nuevo `notify_ob_summary()` envía resumen de OBs activos cada 4H.
