@@ -44,7 +44,7 @@ Create implementation plans for features and changes. You produce blueprints tha
 - Challenge the request if it doesn't make trading or risk sense
 - BTC/ETH correlate ~0.85 — not real diversification
 - Short responses. The plan format above is the max length
-- Update `docs/context/` and `changelog.md` when plans result in changes
+- Update `docs/context/` when plans result in changes
 
 ## Institutional Thinking
 

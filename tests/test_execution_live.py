@@ -28,10 +28,28 @@ from execution_service.executor import OrderExecutor
 
 
 async def cleanup_only():
-    """Cancel all open orders and close any position for ETH/USDT."""
+    """Cancel all open orders (including algo/trigger) and close any position for ETH/USDT."""
     print("CLEANUP MODE — cancelling orders and closing positions...")
     executor = OrderExecutor()
     pair = "ETH/USDT"
+    inst_id = "ETH-USDT-SWAP"
+
+    # Cancel all pending algo orders (trigger + conditional)
+    for ord_type in ["trigger", "conditional"]:
+        try:
+            result = await executor._run_sync(
+                executor._exchange.privateGetTradeOrdersAlgoPending,
+                {"instType": "SWAP", "instId": inst_id, "ordType": ord_type}
+            )
+            orders = result.get("data", [])
+            for o in orders:
+                algo_id = o.get("algoId")
+                print(f"Cancelling {ord_type} algo order: {algo_id}")
+                await executor._cancel_algo_order(algo_id, pair)
+            if not orders:
+                print(f"No pending {ord_type} orders")
+        except Exception as e:
+            print(f"Error checking {ord_type} orders: {e}")
 
     # Close any open position
     pos = await executor.fetch_position(pair)
@@ -65,8 +83,17 @@ async def main():
 
     executor = OrderExecutor()
     pair = "ETH/USDT"
-    leverage = 3
-    size = 0.01  # Minimum ETH size (~$19 notional, ~$7 margin at 3x)
+    leverage = settings.MAX_LEVERAGE  # Use real bot leverage (5x)
+
+    # Calculate size: TRADE_CAPITAL_PCT % of balance as notional
+    ticker_pre = await executor.fetch_ticker(pair)
+    current_price = float(ticker_pre.get("last", 0))
+    # Use $106 as test capital (approximate live balance)
+    capital = 106.0
+    notional = capital * settings.TRADE_CAPITAL_PCT
+    size = round(notional / current_price, 4)
+    margin = notional / leverage
+    print(f"Position sizing: {settings.TRADE_CAPITAL_PCT*100:.0f}% of ${capital:.0f} = ${notional:.2f} notional = {size} ETH (margin ~${margin:.2f} at {leverage}x)")
 
     # Step 1: Configure pair
     print(f"\n[1] Configuring {pair} (isolated, {leverage}x)...")
@@ -86,13 +113,16 @@ async def main():
     ask = float(ticker.get("ask", 0))
     print(f"Current: ${current:.2f} | Ask: ${ask:.2f}")
 
-    # Step 3: Place entry at ask + 0.1% (will fill immediately)
+    # Step 3: Place entry at ask + 0.1% with ATTACHED SL/TP
     entry_price = round(ask * 1.001, 2)
     sl_price = round(current - 40, 2)    # $40 below = safe SL
     tp_price = round(current + 40, 2)    # $40 above
 
-    print(f"\n[3] Placing limit buy @ ${entry_price:.2f} (ask+0.1%, will fill immediately)...")
-    entry_order = await executor.place_limit_order(pair, "buy", size, entry_price)
+    print(f"\n[3] Placing limit buy @ ${entry_price:.2f} WITH attached SL=${sl_price:.2f} TP=${tp_price:.2f}...")
+    entry_order = await executor.place_limit_order(
+        pair, "buy", size, entry_price,
+        sl_trigger_price=sl_price, tp_price=tp_price,
+    )
     if entry_order is None:
         print("FAILED to place entry. Aborting.")
         return
@@ -118,49 +148,61 @@ async def main():
         await executor.cancel_order(entry_id, pair)
         return
 
-    # Step 5: Place SL
-    print(f"\n[5] Placing SL (stop-market sell) @ ${sl_price:.2f}...")
-    sl_order = await executor.place_stop_market(pair, "sell", size, sl_price)
-    if sl_order is None:
-        print("CRITICAL: SL placement FAILED!")
-        print("Emergency closing position...")
-        await executor.close_position_market(pair, "sell", size)
-        return
-    sl_id = sl_order.get("id")
-    print(f"OK — SL order ID: {sl_id}")
-
-    # Step 6: Place TP
-    print(f"\n[6] Placing TP (limit sell reduceOnly) @ ${tp_price:.2f}...")
-    tp_order = await executor.place_take_profit(pair, "sell", size, tp_price)
+    # Step 5: Verify attached SL/TP on exchange
+    print(f"\n[5] Checking for attached SL/TP orders (waiting 1s for OKX to create them)...")
+    await asyncio.sleep(1)
+    algos = await executor.find_pending_algo_orders(pair)
+    sl_id = None
     tp_id = None
-    if tp_order is None:
-        print("WARNING: TP placement failed. SL still active.")
-    else:
-        tp_id = tp_order.get("id")
-        print(f"OK — TP order ID: {tp_id}")
 
-    # Step 7: Verify all orders
+    print(f"  Found {len(algos)} pending algo orders:")
+    for algo in algos:
+        algo_id = algo.get("algoId", "")
+        trigger = algo.get("triggerPx", "")
+        sl_trigger = algo.get("slTriggerPx", "")
+        tp_trigger = algo.get("tpTriggerPx", "")
+        ord_type = algo.get("ordType", "")
+        print(f"    algoId={algo_id} ordType={ord_type} triggerPx={trigger} slTriggerPx={sl_trigger} tpTriggerPx={tp_trigger}")
+
+        # Match SL — check both triggerPx (trigger type) and slTriggerPx (conditional type)
+        sl_px = float(sl_trigger or trigger or 0)
+        if sl_px > 0 and abs(sl_px - sl_price) < 1:
+            sl_id = algo_id
+            print(f"    → Matched as SL")
+
+    # Check for TP in open limit orders
+    symbol = f"{pair}:USDT"
+    open_orders = await executor._run_sync(executor._exchange.fetch_open_orders, symbol)
+    for order in open_orders:
+        o_price = float(order.get("price", 0) or 0)
+        if o_price > 0 and abs(o_price - tp_price) < 1:
+            tp_id = order.get("id")
+            print(f"  TP found in open orders: id={tp_id} price={o_price:.2f}")
+
+    # Step 6: Results
     print(f"\n{'=' * 60}")
     print("RESULTS:")
     print(f"  Entry: FILLED at ${actual_price:.2f}")
-    print(f"  SL:    {'OK' if sl_order else 'FAIL'} — trigger=${sl_price:.2f}")
-    print(f"  TP:    {'OK' if tp_order else 'FAIL'} — price=${tp_price:.2f}")
+    print(f"  SL:    {'OK — ATTACHED' if sl_id else 'NOT FOUND — placing manually...'} trigger=${sl_price:.2f}")
+    print(f"  TP:    {'OK — ATTACHED' if tp_id else 'NOT FOUND — placing manually...'} price=${tp_price:.2f}")
 
-    # Verify SL is visible
-    print(f"\n[7] Verifying SL order on exchange...")
-    sl_check = await executor.fetch_order(sl_id, pair)
-    if sl_check:
-        print(f"  SL status: {sl_check.get('status')} — VISIBLE ON EXCHANGE")
-    else:
-        print(f"  SL status: NOT FOUND — PROBLEM!")
-
-    if tp_id:
-        print(f"\n[8] Verifying TP order on exchange...")
-        tp_check = await executor.fetch_order(tp_id, pair)
-        if tp_check:
-            print(f"  TP status: {tp_check.get('status')} — VISIBLE ON EXCHANGE")
+    # Fallback: place SL manually if not attached
+    if not sl_id:
+        sl_order = await executor.place_stop_market(pair, "sell", size, sl_price)
+        if sl_order:
+            sl_id = sl_order.get("id")
+            print(f"  SL placed manually: {sl_id}")
         else:
-            print(f"  TP status: NOT FOUND — PROBLEM!")
+            print("  CRITICAL: SL placement FAILED!")
+
+    # Fallback: place TP manually if not attached
+    if not tp_id:
+        tp_order = await executor.place_take_profit(pair, "sell", size, tp_price)
+        if tp_order:
+            tp_id = tp_order.get("id")
+            print(f"  TP placed manually: {tp_id}")
+        else:
+            print("  WARNING: TP placement failed")
 
     print(f"\n{'=' * 60}")
     print("TEST COMPLETE — Now cleaning up...")

@@ -195,7 +195,9 @@ class PositionMonitor:
             return
 
         status = order.get("status", "")
-        filled = float(order.get("filled", 0))
+        # ccxt returns 'filled' in contracts for OKX SWAP — convert to base currency
+        filled_contracts = float(order.get("filled", 0))
+        filled = self._executor.contracts_to_base(pos.pair, filled_contracts)
 
         if status == "closed" and filled > 0:
             # Fully filled
@@ -219,7 +221,7 @@ class PositionMonitor:
                 self._close_position(pos, "cancelled")
 
     async def _on_entry_filled(self, pos: ManagedPosition) -> None:
-        """Entry filled — place SL + single TP. If SL fails → emergency close."""
+        """Entry filled — find attached SL/TP or place manually. If SL fails → emergency close."""
         close_side = "sell" if pos.direction == "long" else "buy"
 
         # In sandbox mode, remap SL/TP relative to actual fill price
@@ -227,65 +229,90 @@ class PositionMonitor:
         if settings.OKX_SANDBOX and pos.actual_entry_price and pos.entry_price:
             self._remap_sandbox_prices(pos)
 
-        # Place stop-loss FIRST (most critical)
-        # Retry up to 3 times with delays — OKX's algo order service may not
-        # recognize the position immediately after entry fill (error 51205).
-        sl_order = None
-        for attempt in range(3):
-            sl_order = await self._executor.place_stop_market(
-                pos.pair, close_side, pos.filled_size, pos.sl_price
-            )
-            if sl_order is not None:
-                break
-            if attempt < 2:
-                delay = 0.3 * (attempt + 1)  # 0.3s, 0.6s
-                logger.warning(
-                    f"SL placement attempt {attempt + 1}/3 failed, "
-                    f"retrying in {delay}s: {pos.pair}"
-                )
-                await asyncio.sleep(delay)
+        # Try to find attached SL/TP orders (created by OKX when entry filled).
+        # Wait briefly for OKX to create them.
+        sl_found, tp_found = False, False
+        await asyncio.sleep(0.5)
+        algos = await self._executor.find_pending_algo_orders(pos.pair)
 
-        if sl_order is None:
-            logger.error(f"SL placement FAILED after entry fill — EMERGENCY CLOSE: {pos.pair}")
-            # Telegram: emergency close
-            if self._notifier is not None:
-                self._safe_notify(
-                    self._notifier.notify_emergency(pos, "SL placement failed — market closed")
+        for algo in algos:
+            # OKX uses 'triggerPx' for trigger orders, 'slTriggerPx' for conditional/attached
+            trigger_px = float(algo.get("slTriggerPx", 0) or algo.get("triggerPx", 0) or 0)
+            algo_id = algo.get("algoId", "")
+
+            # Match SL by trigger price (within 0.5% tolerance)
+            if not sl_found and trigger_px > 0 and pos.sl_price > 0:
+                diff_pct = abs(trigger_px - pos.sl_price) / pos.sl_price
+                if diff_pct < 0.005:
+                    pos.sl_order_id = algo_id
+                    pos.current_sl_price = trigger_px
+                    sl_found = True
+                    logger.info(
+                        f"Attached SL found: {pos.pair} algoId={algo_id} "
+                        f"trigger={trigger_px:.2f}"
+                    )
+
+        # Also check for TP in pending limit orders (reduceOnly)
+        if not tp_found:
+            tp_found = await self._find_attached_tp(pos)
+
+        # Fallback: place SL manually if attached not found
+        if not sl_found:
+            logger.info(f"No attached SL found, placing manually: {pos.pair}")
+            sl_order = None
+            for attempt in range(3):
+                sl_order = await self._executor.place_stop_market(
+                    pos.pair, close_side, pos.filled_size, pos.sl_price
                 )
-            result = await self._executor.close_position_market(
-                pos.pair, close_side, pos.filled_size
-            )
-            if result is None:
-                logger.critical(f"EMERGENCY CLOSE FAILED: {pos.pair} — will retry on next poll cycle")
-                pos.phase = "emergency_pending"
-                pos.emergency_retries = 1
+                if sl_order is not None:
+                    break
+                if attempt < 2:
+                    delay = 0.3 * (attempt + 1)
+                    logger.warning(
+                        f"SL placement attempt {attempt + 1}/3 failed, "
+                        f"retrying in {delay}s: {pos.pair}"
+                    )
+                    await asyncio.sleep(delay)
+
+            if sl_order is None:
+                logger.error(f"SL placement FAILED after entry fill — EMERGENCY CLOSE: {pos.pair}")
+                if self._notifier is not None:
+                    self._safe_notify(
+                        self._notifier.notify_emergency(pos, "SL placement failed — market closed")
+                    )
+                result = await self._executor.close_position_market(
+                    pos.pair, close_side, pos.filled_size
+                )
+                if result is None:
+                    logger.critical(f"EMERGENCY CLOSE FAILED: {pos.pair} — will retry on next poll cycle")
+                    pos.phase = "emergency_pending"
+                    pos.emergency_retries = 1
+                    return
+                self._close_position(pos, "emergency")
                 return
-            self._close_position(pos, "emergency")
-            return
 
-        pos.sl_order_id = sl_order.get("id")
-        pos.current_sl_price = pos.sl_price
+            pos.sl_order_id = sl_order.get("id")
+            pos.current_sl_price = pos.sl_price
 
-        # Place single TP at tp2_price (2:1 R:R) for 100% of position
-        tp = await self._executor.place_take_profit(
-            pos.pair, close_side, pos.filled_size, pos.tp2_price
-        )
-
-        if tp is None:
-            logger.error(
-                f"TP placement failed: {pos.pair} — "
-                f"position stays open with SL only (no TP on exchange)"
+        # Fallback: place TP manually if attached not found
+        if not tp_found:
+            logger.info(f"No attached TP found, placing manually: {pos.pair}")
+            tp = await self._executor.place_take_profit(
+                pos.pair, close_side, pos.filled_size, pos.tp2_price
             )
-            # Don't emergency close — SL protects us.
-            # Position will close via SL, timeout, or manual cancel.
-
-        pos.tp_order_id = tp.get("id") if tp else None
+            if tp is None:
+                logger.error(
+                    f"TP placement failed: {pos.pair} — "
+                    f"position stays open with SL only (no TP on exchange)"
+                )
+            pos.tp_order_id = tp.get("id") if tp else None
 
         pos.phase = "active"
         self._update_positions_cache()
         logger.info(f"Position ACTIVE: {pos.pair} {pos.direction} "
                      f"entry={pos.actual_entry_price} size={pos.filled_size:.6f} "
-                     f"sl={pos.sl_price:.2f} tp={pos.tp2_price:.2f}")
+                     f"sl={pos.current_sl_price:.2f} tp={pos.tp2_price:.2f} "
+                     f"sl_attached={sl_found} tp_attached={tp_found}")
 
         # Telegram: trade opened
         if self._notifier is not None:
@@ -293,6 +320,31 @@ class PositionMonitor:
 
         # Persist trade to PostgreSQL
         self._persist_trade_open(pos)
+
+    async def _find_attached_tp(self, pos: ManagedPosition) -> bool:
+        """Find attached TP order in open limit orders (reduceOnly).
+
+        OKX attached TP orders appear as regular limit orders, not algo orders.
+        """
+        symbol = f"{pos.pair}:USDT"
+        try:
+            orders = await self._executor._run_sync(
+                self._executor._exchange.fetch_open_orders, symbol
+            )
+            for order in orders:
+                order_price = float(order.get("price", 0) or 0)
+                if order_price > 0 and pos.tp2_price > 0:
+                    diff_pct = abs(order_price - pos.tp2_price) / pos.tp2_price
+                    if diff_pct < 0.005:
+                        pos.tp_order_id = order.get("id")
+                        logger.info(
+                            f"Attached TP found: {pos.pair} orderId={order.get('id')} "
+                            f"price={order_price:.2f}"
+                        )
+                        return True
+        except Exception as e:
+            logger.error(f"Find attached TP error: {pos.pair} {e}")
+        return False
 
     # ================================================================
     # State: active

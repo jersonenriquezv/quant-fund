@@ -283,6 +283,18 @@ class Settings:
         "0x8ae880b5d35305da48b63ce3e52b22d17859f293": "Unknown Whale (107K ETH)",
         "0x5b16fda29c71de07d5e0610c112e16a64baaffb0": "Unknown Whale (105K ETH)",
         "0xbed96d0840201011df1467379a5d311e0040073a": "Unknown Whale (103K ETH)",
+        # --- Political / Insider ---
+        "0x5be9a4959308a0d0c7bc0870e319314d8d957dbb": "World Liberty Financial (Trump)",
+        "0x94845333028b1204fbe14e1278fd4adde46b22ce": "Donald Trump",
+        # --- Trading Firms ---
+        "0xf584f8728b874a6a5c7a8d4d387c9aae9172d621": "Jump Trading",
+        "0x9507c04b10486547584c37bcbd931b2a4fee9a41": "Jump Trading 2",
+        # --- VC / Funds ---
+        "0x05e793ce0c6027323ac150f6d45c2344d28b6019": "a16z",
+        # --- FTX/Alameda (court liquidation) ---
+        "0x2faf487a4414fe77e2327f0bf4ae2a264a776ad2": "FTX Exchange",
+        "0xc098b2a3aa256d2140208c3de6543aaef5cd3a94": "FTX 2",
+        "0x3507e4978e0eb83315d20df86ca0b976c0e40ccb": "Alameda Research",
     })
     # Known exchange addresses — used to detect deposit/withdrawal direction
     EXCHANGE_ADDRESSES: dict = field(default_factory=lambda: {
@@ -350,6 +362,9 @@ class Settings:
         "1AsHPP7WcGRsBYmAuXUojh2DSfmHmPp3F8": "Mt. Gox Trustee 2",
         # --- Block.one (EOS) ---
         "3MfN5to5K5be2RupWE8rjJPQ6X9FqRC9BM": "Block.one (EOS)",
+        # --- UK Government (seized BTC, ~61K BTC) ---
+        "bc1q4vxn43l44h30nkluqfxd9eckf45vr2awz38lwa": "UK Government",
+        "bc1q7ydrtdn8z62xhslqyqtyt38mm4e2c4h3mxjkug": "UK Government 2",
     })
     # Known BTC exchange addresses — used to detect deposit/withdrawal direction
     BTC_EXCHANGE_ADDRESSES: dict = field(default_factory=lambda: {
@@ -392,16 +407,18 @@ class Settings:
     MARGIN_MODE: str = "isolated"
     # Max seconds a trade can stay open (12 hours)
     MAX_TRADE_DURATION_SECONDS: int = int(os.getenv("MAX_TRADE_DURATION_SECONDS", "43200"))
-    # Fixed margin per trade in USDT. When > 0, overrides risk-based sizing.
-    # Set to 0 to use standard risk-based sizing (RISK_PER_TRADE % of capital).
-    FIXED_TRADE_MARGIN: float = float(os.getenv("FIXED_TRADE_MARGIN", "100"))
+    # Percentage of capital to use as notional per trade.
+    # e.g. 0.15 = 15% of $106 balance = $15.90 notional per trade.
+    TRADE_CAPITAL_PCT: float = float(os.getenv("TRADE_CAPITAL_PCT", "0.15"))
     # Sandbox: limit order tolerance from mark price (0.05% = fills like a market but with realistic slippage)
     SANDBOX_LIMIT_TOLERANCE_PCT: float = 0.0005
     # Exchange minimum order sizes per pair (base currency).
-    # Orders below these sizes will be rejected before reaching the exchange.
-    # BTC-USDT-SWAP: 0.01 BTC minimum (perpetual, not spot).
+    # Pre-check to avoid wasting Claude API tokens on impossible trades.
+    # OKX BTC-USDT-SWAP: min 0.01 contracts × 0.01 BTC/contract = 0.0001 BTC.
+    # OKX ETH-USDT-SWAP: min 0.01 contracts × 0.1 ETH/contract = 0.001 ETH.
     MIN_ORDER_SIZES: dict = field(default_factory=lambda: {
-        "BTC/USDT": 0.01,
+        "BTC/USDT": 0.0001,
+        "ETH/USDT": 0.001,
     })
 
     # ========================

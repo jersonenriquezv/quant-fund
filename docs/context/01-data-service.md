@@ -1,6 +1,6 @@
 # Data Service
-> Last updated: 2026-03-06
-> Status: implemented (complete, running in Docker). Audited — 4 CRITICAL fixes applied. Whale tracking with USD enrichment, tiered Telegram notifications, Coinbase/Gemini BTC exchange addresses.
+> Last updated: 2026-03-09
+> Status: implemented (complete, running in Docker). Audited — 4 CRITICAL fixes applied. Whale tracking with USD enrichment, 3-tier Telegram notifications, new whale wallets (Trump, Jump Trading, a16z, FTX/Alameda, UK Gov BTC).
 
 ## What it does (30 seconds)
 The Data Service is the bot's eyes and ears. It connects to OKX 24/7, collecting price data (candles), trade flow (CVD), market indicators (funding rate, open interest), liquidation cascades (via OI proxy), and whale movements. Every other service gets clean, validated, typed data through here.
@@ -111,7 +111,8 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Auto-prunes events older than 1 hour
 
 ### `data_service/etherscan_client.py` — ETH Whale Wallet Monitor
-- Polls configured wallets every `ETHERSCAN_CHECK_INTERVAL` seconds (default 300)
+- Polls 46 configured wallets every `ETHERSCAN_CHECK_INTERVAL` seconds (default 300)
+- Wallet categories: individual whales, institutional funds, trading firms (Jump Trading ×2), VC (a16z), political/insider (Trump ×2, WLFI), FTX/Alameda court liquidations (FTX ×2, Alameda), Ethereum Foundation, unlabeled mega-wallets
 - Constructor accepts `price_provider` callback (returns current ETH price in USD) for USD enrichment
 - Detects ALL large transfers from monitored wallets (not just exchange transfers)
 - Whale → exchange = `exchange_deposit` (bearish signal)
@@ -123,7 +124,8 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Creates `WhaleMovement(chain="ETH", wallet_label=label, amount_usd=..., market_price=...)` — USD computed at detection time
 
 ### `data_service/btc_whale_client.py` — BTC Whale Wallet Monitor
-- Polls configured wallets every `MEMPOOL_CHECK_INTERVAL` seconds (default 300)
+- Polls 16 configured wallets every `MEMPOOL_CHECK_INTERVAL` seconds (default 300)
+- Wallet categories: government seizures (US Gov Silk Road, UK Government ~61K BTC ×2 wallets), exchange hack recovery (Bitfinex), individual mega-wallets, sovereign funds (El Salvador), Mt. Gox trustee, Block.one
 - Constructor accepts `price_provider` callback (returns current BTC price in USD) for USD enrichment
 - API: `https://mempool.space/api/address/{addr}/txs` — no API key needed
 - Parses BTC UTXO model: `vin[].prevout.scriptpubkey_address` (senders) and `vout[].scriptpubkey_address` (recipients)
@@ -160,7 +162,11 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Uses `asyncio.get_running_loop()` (not deprecated `get_event_loop()`)
 - **Whale notification stability:** Uses `id()` snapshot before polling to detect new movements, preventing index instability if pruning occurs during poll
 - **Price providers:** `_get_eth_price()` and `_get_btc_price()` return latest 5m candle close, passed to whale clients for USD conversion
-- **Whale notification tiering:** Only exchange deposits/withdrawals trigger Telegram notifications. Non-exchange transfers (transfer_in/transfer_out) are logged but not pushed to Telegram (reduces noise)
+- **Whale notification tiering (3-tier):**
+  - Tier 1 (always notify): Exchange deposits/withdrawals — actionable trading signals
+  - Tier 2 (notify if large): Non-exchange transfers with `significance == "high"` OR `amount_usd >= $500K` — likely unrecognized exchange addresses
+  - Tier 3 (log only): Small non-exchange transfers — too noisy for Telegram
+- **Whale notification format:** Compact single-line format with USD shorthand ($1.2M, $500K). Wallet label preferred, fallback to truncated address.
 
 ### `main.py` — Entry Point
 - Single process, handles SIGINT/SIGTERM for graceful shutdown
@@ -176,6 +182,7 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 | Setting | Default | Used by |
 |---|---|---|
 | `INITIAL_CAPITAL` | `100` (env) | Fallback capital if exchange balance fetch fails |
+| `TRADE_CAPITAL_PCT` | `0.15` (15%) | % of capital as notional per trade (replaces FIXED_TRADE_MARGIN) |
 | `OKX_SANDBOX` | `true` | exchange_client — demo vs live |
 | `OKX_API_KEY` | `""` | exchange_client — auth |
 | `OKX_SECRET` | `""` | exchange_client — auth |

@@ -77,31 +77,21 @@ class RiskService:
                 )
 
         # --- Position sizing ---
-        if settings.FIXED_TRADE_MARGIN > 0:
-            # Fixed sizing: use $FIXED_TRADE_MARGIN as margin, leverage cap limits notional.
-            # e.g. $100 margin × 5x = $500 notional per trade.
-            capital = settings.FIXED_TRADE_MARGIN
-            risk_pct = 1.0
-        else:
-            # Risk-based sizing: position_size = (capital × risk%) / |entry - SL|
-            capital = self._state.get_capital()
-            risk_pct = settings.RISK_PER_TRADE
+        # Notional = TRADE_CAPITAL_PCT % of balance. Leverage = MAX_LEVERAGE.
+        # e.g. 15% of $106 = $15.90 notional, at 5x leverage = $3.18 margin.
+        capital = self._state.get_capital()
+        notional = capital * settings.TRADE_CAPITAL_PCT
+        leverage = float(settings.MAX_LEVERAGE)
+        position_size = notional / setup.entry_price
 
-        try:
-            position_size, leverage = self._sizer.calculate(
-                entry=setup.entry_price,
-                sl=setup.sl_price,
-                capital=capital,
-                risk_pct=risk_pct,
-            )
-        except ValueError as e:
-            logger.warning(f"Trade REJECTED: position sizing error: {e}")
+        if position_size <= 0 or capital <= 0:
+            logger.warning(f"Trade REJECTED: position sizing error: capital={capital}")
             return RiskApproval(
                 approved=False,
                 position_size=0.0,
                 leverage=0.0,
                 risk_pct=0.0,
-                reason=f"Position sizing error: {e}",
+                reason=f"Position sizing error: capital={capital}",
             )
 
         # --- Exchange minimum order size check ---
@@ -122,9 +112,11 @@ class RiskService:
                 reason=reason,
             )
 
+        risk_pct = settings.TRADE_CAPITAL_PCT
         logger.info(
             f"Trade APPROVED: {setup.pair} {setup.direction} | "
-            f"size={position_size:.6f} leverage={leverage:.2f}x risk={risk_pct*100:.1f}%"
+            f"size={position_size:.6f} leverage={leverage:.2f}x "
+            f"notional=${notional:.2f} ({risk_pct*100:.0f}% of ${capital:.0f})"
         )
 
         return RiskApproval(

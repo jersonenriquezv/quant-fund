@@ -35,8 +35,9 @@ def _make_setup(
 @pytest.fixture
 def risk(monkeypatch):
     monkeypatch.setattr(settings, "OKX_SANDBOX", False)
-    monkeypatch.setattr(settings, "FIXED_TRADE_MARGIN", 0.0)
-    return RiskService(capital=1000.0)
+    monkeypatch.setattr(settings, "TRADE_CAPITAL_PCT", 0.15)
+    # Capital high enough for BTC min order (0.01 BTC = $500 notional needs $3334 capital at 15%)
+    return RiskService(capital=5000.0)
 
 
 # ============================================================
@@ -53,7 +54,7 @@ class TestApproval:
         assert result.approved is True
         assert result.position_size > 0
         assert result.leverage > 0
-        assert result.risk_pct == settings.RISK_PER_TRADE
+        assert result.risk_pct == settings.TRADE_CAPITAL_PCT
         assert result.reason == "All checks passed"
 
     def test_short_approval(self, risk):
@@ -69,10 +70,11 @@ class TestApproval:
         setup = _make_setup(entry=50000, sl=49000, tp2=52000)
         result = risk.check(setup)
 
-        # capital=1000, risk_pct=0.02, distance=1000
-        # expected: 20/1000 = 0.02 BTC
-        assert result.position_size == pytest.approx(0.02, rel=1e-6)
-        assert result.leverage == pytest.approx(1.0, rel=1e-6)
+        # capital=5000, TRADE_CAPITAL_PCT=0.15 → notional=$750
+        # position_size = $750 / $50000 = 0.015 BTC
+        # leverage = MAX_LEVERAGE = 5
+        assert result.position_size == pytest.approx(0.015, rel=1e-6)
+        assert result.leverage == pytest.approx(5.0, rel=1e-6)
 
 
 # ============================================================
@@ -177,7 +179,7 @@ class TestLifecycle:
         setup = _make_setup(entry=50000, sl=49000, tp2=52000)
 
         result1 = risk.check(setup)
-        risk.update_capital(2000.0)
+        risk.update_capital(10000.0)  # double from 5000
         result2 = risk.check(setup)
 
         assert result2.position_size == pytest.approx(

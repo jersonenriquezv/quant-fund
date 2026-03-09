@@ -1,6 +1,6 @@
 # Risk Service
-> Última actualización: 2026-03-07
-> Estado: implementado (completo, integrado en main.py). FORCE_MAX_LEVERAGE eliminado — risk-based sizing siempre.
+> Última actualización: 2026-03-09
+> Estado: implementado (completo, integrado en main.py). TRADE_CAPITAL_PCT sizing (reemplaza FIXED_TRADE_MARGIN).
 
 ## Qué hace (30 segundos)
 El Risk Service es el guardián del capital. Antes de que cualquier trade se ejecute, pasa por 6 checks obligatorios (guardrails) y un cálculo de tamaño de posición. Si cualquier check falla, el trade NO se ejecuta. Sin excepciones.
@@ -78,9 +78,7 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 - Compone: PositionSizer + Guardrails + RiskStateTracker
 - **Método principal:** `check(setup: TradeSetup) -> RiskApproval`
   1. Corre los 6 guardrails en orden (fail fast)
-  2. **Position sizing con 2 modos:**
-     - **Fixed margin mode** (`FIXED_TRADE_MARGIN > 0`): Usa `$FIXED_TRADE_MARGIN` como capital con `risk_pct=1.0` (100%). Esto significa que la fórmula `(capital × risk%) / |entry - SL|` usa el margen fijo completo. El leverage cap de `MAX_LEVERAGE` limita el notional (e.g., $100 margin × 5x = $500 max notional). Funciona igual en sandbox y live.
-     - **Risk-based mode** (`FIXED_TRADE_MARGIN = 0`): Fórmula clásica `(capital × risk%) / |entry - SL|` usando el capital real trackeado por `RiskStateTracker`.
+  2. **Position sizing:** `notional = capital × TRADE_CAPITAL_PCT`, `leverage = MAX_LEVERAGE`, `position_size = notional / entry_price`. Ejemplo: 15% de $106 = $15.90 notional, a 7x = $2.27 margin.
   3. Retorna RiskApproval (approved/rejected con razón)
 - **Para Execution Service (implementado):**
   - `on_trade_opened(pair, direction, entry_price, timestamp)` — llamado al colocar entry order
@@ -96,8 +94,7 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 
 | Setting | Default | Descripción |
 |---|---|---|
-| `FIXED_TRADE_MARGIN` | `100` (env) | Margen fijo por trade (USDT). Cuando > 0, override risk-based sizing. 0 = usar fórmula clásica |
-| `RISK_PER_TRADE` | `0.02` (2%) | % del capital arriesgado por trade (solo en risk-based mode) |
+| `TRADE_CAPITAL_PCT` | `0.15` (15%) | % del capital como notional por trade. e.g. 15% de $106 = $15.90 notional |
 | `MAX_LEVERAGE` | `7` | Apalancamiento máximo permitido |
 | `MAX_DAILY_DRAWDOWN` | `0.03` (3%) | DD diario máximo antes de pausar |
 | `MAX_WEEKLY_DRAWDOWN` | `0.05` (5%) | DD semanal máximo antes de pausar |
@@ -107,7 +104,7 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 | `MIN_RISK_REWARD` | `1.5` | R:R mínimo para swing setups A/B (TP2 vs SL) |
 | `MIN_RISK_REWARD_QUICK` | `1.0` | R:R mínimo para quick setups C/D/E |
 | `MIN_RISK_DISTANCE_PCT` | `0.001` (0.1%) | Distancia mínima SL-entry como fracción del precio. Rechaza noise trades. Para ETH@$2000, SL debe estar al menos $2 away. |
-| `MIN_ORDER_SIZES` | `{"BTC/USDT": 0.01}` | Mínimo de tamaño de orden por par (BTC-USDT-SWAP min = 0.01 BTC). Pre-check en main.py filtra antes de Claude. |
+| `MIN_ORDER_SIZES` | `{"BTC/USDT": 0.0001, "ETH/USDT": 0.001}` | Mínimo de tamaño de orden por par (OKX contract-based: BTC min 0.01 contracts × 0.01 ctVal, ETH min 0.01 × 0.1 ctVal). Pre-check en main.py filtra antes de Claude. |
 
 ## Tests
 
@@ -144,6 +141,7 @@ No crashea. El trade se registra igual (P&L, cooldown, trades_today), pero no re
 
 ## Cambios recientes
 
+- **2026-03-09** — `FIXED_TRADE_MARGIN` replaced by `TRADE_CAPITAL_PCT` (0.15 = 15% of capital as notional). Position sizing simplified: no more dual-mode (fixed vs risk-based). Leverage always `MAX_LEVERAGE`. `MIN_ORDER_SIZES` updated: BTC 0.01→0.0001, ETH 0.001 added (correct OKX contract sizes).
 - **2026-03-07** — `MIN_RISK_DISTANCE_PCT` 0.3% → 0.2%. Was blocking legitimate OB setups (e.g. ETH OB with $5.26 SL = 0.27%, rejected 4 times in one day despite AI approval at 0.75 confidence). 0.2% still filters noise trades ($4 min SL on ETH@$2000).
 - **2026-03-07** — `check_min_risk_distance()` guardrail: rechaza setups donde SL-entry < threshold del precio (noise trades). Pre-check de min order size en `main.py` antes de Claude (ahorra tokens API).
 - **2026-03-07** — `on_trade_cancelled()` method: removes cancelled pending entries from open positions without counting as trade or affecting P&L. `MIN_ORDER_SIZES` check: rejects trades below exchange minimum before reaching exchange API. `MAX_OPEN_POSITIONS` 3→5, `MAX_LEVERAGE` 5→7.

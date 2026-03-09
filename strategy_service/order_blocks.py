@@ -6,7 +6,7 @@ that breaks structure:
 - Bullish OB: last RED candle before a bullish break
 - Bearish OB: last GREEN candle before a bearish break
 
-Entry: 50% of OB candle body.
+Entry: 75% of OB candle body (closer to price for higher fill rate).
 SL: Below/above entire OB (wick-to-wick).
 Volume filter: OB volume must be >= OB_MIN_VOLUME_RATIO * average.
 Freshness: Max OB_MAX_AGE_HOURS. Price closing through full OB = mitigated.
@@ -31,7 +31,7 @@ class OrderBlock:
     low: float                  # OB candle low (wick)
     body_high: float            # max(open, close) of OB candle
     body_low: float             # min(open, close) of OB candle
-    entry_price: float          # 50% of body
+    entry_price: float          # 75% of body (closer to price action)
     volume: float               # OB candle volume
     volume_ratio: float         # OB volume / average volume
     mitigated: bool             # True if price closed through full OB
@@ -185,7 +185,14 @@ class OrderBlockDetector:
 
         body_high = max(candle.open, candle.close)
         body_low = min(candle.open, candle.close)
-        entry_price = (body_high + body_low) / 2  # 50% of body
+        # Entry at 75% of body (closer to price action = higher fill rate).
+        # For bullish OB: 75% from bottom = body_low + 0.75 * range (higher entry)
+        # For bearish OB: 75% from top = body_high - 0.75 * range (lower entry)
+        body_range = body_high - body_low
+        if brk.direction == "bullish":
+            entry_price = body_low + body_range * 0.75
+        else:
+            entry_price = body_high - body_range * 0.75
 
         return OrderBlock(
             timestamp=candle.timestamp,

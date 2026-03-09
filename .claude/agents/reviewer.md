@@ -49,7 +49,7 @@ Review code for correctness, security, and alignment with CLAUDE.md specs. Last 
 - WARNING = potential issue. Should fix
 - INFO = minor improvement. Nice to have
 - Always verify against CLAUDE.md spec
-- Flag if `docs/context/` or `changelog.md` were not updated after changes
+- Flag if `docs/context/` was not updated after changes
 
 ## What You Do NOT Do
 

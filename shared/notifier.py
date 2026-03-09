@@ -122,39 +122,50 @@ class TelegramNotifier:
         await self.send(msg)
 
     _WHALE_ACTION_MAP = {
-        "exchange_deposit": ("deposited to", "\U0001f534 BEARISH"),
-        "exchange_withdrawal": ("withdrew from", "\U0001f7e2 BULLISH"),
-        "transfer_out": ("transferred out to", "\U0001f7e1 NEUTRAL"),
-        "transfer_in": ("received from", "\U0001f7e1 NEUTRAL"),
+        "exchange_deposit": ("deposited", "Bearish (selling pressure)"),
+        "exchange_withdrawal": ("withdrew", "Bullish (accumulation)"),
+        "transfer_out": ("transferred out", "Neutral (inter-wallet)"),
+        "transfer_in": ("received", "Neutral (inter-wallet)"),
     }
+
+    @staticmethod
+    def _format_usd(value: float) -> str:
+        """Format USD value with K/M shorthand."""
+        if value >= 1_000_000:
+            return f"${value / 1_000_000:.1f}M"
+        if value >= 1_000:
+            return f"${value / 1_000:.0f}K"
+        return f"${value:,.0f}"
 
     async def notify_whale_movement(self, movement) -> None:
         """Exchange deposit/withdrawal detected (ETH or BTC)."""
-        action, signal = self._WHALE_ACTION_MAP.get(
-            movement.action, (movement.action, "\u2753 UNKNOWN")
+        action_verb, signal = self._WHALE_ACTION_MAP.get(
+            movement.action, (movement.action, "Unknown")
         )
-        emoji = "\U0001f433"  # whale
         decimals = 4 if movement.chain == "BTC" else 2
 
-        # Wallet label
-        if movement.wallet_label:
-            wallet_line = f"Wallet: <b>{movement.wallet_label}</b>\n"
-        else:
-            truncated = movement.wallet[:6] + "..." + movement.wallet[-4:]
-            wallet_line = f"Wallet: {truncated}\n"
+        # Wallet label — prefer human name, fallback to truncated address
+        label = movement.wallet_label or (movement.wallet[:6] + "..." + movement.wallet[-4:])
 
-        # USD value line
-        usd_line = ""
-        if getattr(movement, "amount_usd", 0) > 0:
-            usd_line = f"Value: <b>${movement.amount_usd:,.0f}</b>\n"
+        # Amount with inline USD
+        amount_str = f"{movement.amount:,.{decimals}f} {movement.chain}"
+        usd_val = getattr(movement, "amount_usd", 0)
+        if usd_val > 0:
+            amount_str += f" ({self._format_usd(usd_val)})"
+
+        # Direction target (exchange name or truncated address)
+        if movement.action == "exchange_deposit":
+            direction = f" to {movement.exchange}"
+        elif movement.action == "exchange_withdrawal":
+            direction = f" from {movement.exchange}"
+        elif movement.action == "transfer_out":
+            direction = f" to {movement.exchange}"
+        else:
+            direction = f" from {movement.exchange}"
 
         msg = (
-            f"{emoji} <b>WHALE {'DEPOSIT' if 'deposit' in movement.action else 'WITHDRAWAL'}</b>\n"
-            f"{wallet_line}"
-            f"{movement.amount:.{decimals}f} {movement.chain} {action} {movement.exchange}\n"
-            f"{usd_line}"
-            f"Signal: {signal}\n"
-            f"Significance: {movement.significance}"
+            f"<b>WHALE</b> | {label} {action_verb} {amount_str}{direction}\n"
+            f"Signal: {signal}. {movement.significance.capitalize()} significance."
         )
         await self.send(msg)
 

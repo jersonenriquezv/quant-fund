@@ -397,15 +397,18 @@ class DataService:
         """Send Telegram alert for new whale movements with tiering.
 
         Tier 1 (always notify): Exchange deposits/withdrawals (actionable signals)
-        Tier 2 (log only): Non-exchange transfers (informational, too noisy for Telegram)
+        Tier 2 (notify if large): Non-exchange transfers > $500K or high significance
+        Tier 3 (log only): Small non-exchange transfers
         """
         if self._notifier is None:
             return
         new_movements = [m for m in movements if id(m) not in before_ids]
         for m in new_movements:
-            # Only send Telegram for exchange-related movements
+            # Tier 1: exchange movements — always notify
+            # Tier 2: large or high-significance transfers — likely unrecognized exchange addresses
             if m.action not in ("exchange_deposit", "exchange_withdrawal"):
-                continue
+                if m.significance != "high" and m.amount_usd < 500_000:
+                    continue
             try:
                 await self._notifier.notify_whale_movement(m)
             except Exception as e:

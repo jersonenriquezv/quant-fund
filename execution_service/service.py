@@ -81,6 +81,8 @@ class ExecutionService:
             direction = "long" if side == "long" else "short"
             entry_price = float(pos_data.get("entryPrice", 0) or 0)
             leverage = float(pos_data.get("leverage", 1) or 1)
+            # ccxt returns contracts count — convert to base currency
+            base_size = self._executor.contracts_to_base(pair, contracts)
 
             adopted = ManagedPosition(
                 pair=pair,
@@ -89,7 +91,7 @@ class ExecutionService:
                 phase="active",
                 entry_price=entry_price,
                 actual_entry_price=entry_price,
-                filled_size=contracts,
+                filled_size=base_size,
                 leverage=leverage,
                 created_at=int(time.time()),
                 filled_at=int(time.time()),
@@ -189,7 +191,11 @@ class ExecutionService:
             return False
 
         # Place entry order (always limit — sandbox uses current price with tolerance)
+        # SL/TP are attached to the entry order — OKX auto-creates them on fill.
         side = "buy" if setup.direction == "long" else "sell"
+        sl_price = setup.sl_price
+        tp_price = setup.tp2_price
+
         if settings.OKX_SANDBOX:
             # Sandbox: OB entry price may be stale, so use current market price
             # with 0.05% tolerance to get immediate fill without crazy slippage
@@ -213,11 +219,13 @@ class ExecutionService:
                 f"original OB entry={setup.entry_price:.2f})"
             )
             order = await self._executor.place_limit_order(
-                setup.pair, side, approval.position_size, entry_price
+                setup.pair, side, approval.position_size, entry_price,
+                sl_trigger_price=sl_price, tp_price=tp_price,
             )
         else:
             order = await self._executor.place_limit_order(
-                setup.pair, side, approval.position_size, setup.entry_price
+                setup.pair, side, approval.position_size, setup.entry_price,
+                sl_trigger_price=sl_price, tp_price=tp_price,
             )
 
         if order is None:

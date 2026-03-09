@@ -77,11 +77,18 @@ def make_order(order_id="ord-123", status="open", filled=0, average=0, price=200
     }
 
 
+def _mock_executor():
+    """Create a mock executor with contracts_to_base as identity (tests use abstract units)."""
+    executor = MagicMock(spec=OrderExecutor)
+    executor.contracts_to_base = MagicMock(side_effect=lambda pair, v: v)
+    return executor
+
+
 def _make_service(executor=None, monitor=None, risk=None):
     """Create an ExecutionService with injected mocks (bypass __init__)."""
     service = ExecutionService.__new__(ExecutionService)
     service._enabled = True
-    service._executor = executor or MagicMock(spec=OrderExecutor)
+    service._executor = executor or _mock_executor()
     service._monitor = monitor or MagicMock(spec=PositionMonitor)
     service._risk = risk or MagicMock()
     return service
@@ -145,7 +152,7 @@ class TestExecutionServiceExecute:
 
     def test_happy_path_entry_placed(self):
         risk = MagicMock()
-        executor = MagicMock(spec=OrderExecutor)
+        executor = _mock_executor()
         monitor = MagicMock(spec=PositionMonitor)
         monitor.positions = {}
 
@@ -169,7 +176,7 @@ class TestExecutionServiceExecute:
 
     def test_short_uses_sell_side(self):
         risk = MagicMock()
-        executor = MagicMock(spec=OrderExecutor)
+        executor = _mock_executor()
         monitor = MagicMock(spec=PositionMonitor)
         monitor.positions = {}
 
@@ -207,7 +214,7 @@ class TestExecutionServiceExecute:
     def test_replaces_pending_entry_with_new_setup(self):
         """Pending (unfilled) entries are cancelled and replaced by new setups."""
         risk = MagicMock()
-        executor = MagicMock(spec=OrderExecutor)
+        executor = _mock_executor()
         monitor = MagicMock(spec=PositionMonitor)
 
         # Existing pending position
@@ -240,7 +247,7 @@ class TestExecutionServiceExecute:
         executor.place_limit_order.assert_called_once()
 
     def test_returns_false_on_configure_failure(self):
-        executor = MagicMock(spec=OrderExecutor)
+        executor = _mock_executor()
         monitor = MagicMock(spec=PositionMonitor)
         monitor.positions = {}
         executor.configure_pair = AsyncMock(return_value=False)
@@ -251,7 +258,7 @@ class TestExecutionServiceExecute:
         assert result is False
 
     def test_returns_false_on_order_failure(self):
-        executor = MagicMock(spec=OrderExecutor)
+        executor = _mock_executor()
         monitor = MagicMock(spec=PositionMonitor)
         monitor.positions = {}
         executor.configure_pair = AsyncMock(return_value=True)
@@ -272,7 +279,7 @@ class TestEntryFill:
     """Entry order fills → SL + single TP placed."""
 
     def test_entry_fill_places_sl_and_tp(self):
-        executor = MagicMock(spec=OrderExecutor)
+        executor = _mock_executor()
         risk = MagicMock()
         monitor = PositionMonitor(executor, risk)
 
@@ -308,7 +315,7 @@ class TestEntryTimeout:
     """Entry not filled within timeout → cancel."""
 
     def test_entry_timeout_cancels_order(self):
-        executor = MagicMock(spec=OrderExecutor)
+        executor = _mock_executor()
         risk = MagicMock()
         monitor = PositionMonitor(executor, risk)
 
@@ -328,7 +335,7 @@ class TestEntryTimeout:
 
     def test_quick_setup_uses_shorter_timeout(self):
         """Quick setups (C/D/E) use ENTRY_TIMEOUT_QUICK_SECONDS."""
-        executor = MagicMock(spec=OrderExecutor)
+        executor = _mock_executor()
         risk = MagicMock()
         monitor = PositionMonitor(executor, risk)
 
@@ -346,7 +353,7 @@ class TestEntryTimeout:
 
     def test_swing_setup_not_timed_out_at_2h(self):
         """Swing setup (A/B) should NOT time out at 2 hours (within 4h timeout)."""
-        executor = MagicMock(spec=OrderExecutor)
+        executor = _mock_executor()
         risk = MagicMock()
         monitor = PositionMonitor(executor, risk)
 
@@ -368,7 +375,7 @@ class TestTPHit:
     """TP fills → position fully closed."""
 
     def test_tp_closes_position(self):
-        executor = MagicMock(spec=OrderExecutor)
+        executor = _mock_executor()
         risk = MagicMock()
         monitor = PositionMonitor(executor, risk)
 
@@ -404,7 +411,7 @@ class TestSLHit:
     """SL fills → cancel TP."""
 
     def test_sl_cancels_tp(self):
-        executor = MagicMock(spec=OrderExecutor)
+        executor = _mock_executor()
         risk = MagicMock()
         monitor = PositionMonitor(executor, risk)
 
@@ -434,7 +441,7 @@ class TestBreakevenTrigger:
     """Price crosses 1:1 R:R → SL moves to entry."""
 
     def test_breakeven_moves_sl_to_entry(self):
-        executor = MagicMock(spec=OrderExecutor)
+        executor = _mock_executor()
         risk = MagicMock()
         monitor = PositionMonitor(executor, risk)
 
@@ -471,7 +478,7 @@ class TestBreakevenTrigger:
 
     def test_breakeven_not_triggered_when_below_tp1(self):
         """Price below tp1_price → SL stays at original level."""
-        executor = MagicMock(spec=OrderExecutor)
+        executor = _mock_executor()
         risk = MagicMock()
         monitor = PositionMonitor(executor, risk)
 
@@ -499,7 +506,7 @@ class TestBreakevenTrigger:
 
     def test_breakeven_short_direction(self):
         """Short: price below tp1_price triggers breakeven."""
-        executor = MagicMock(spec=OrderExecutor)
+        executor = _mock_executor()
         risk = MagicMock()
         monitor = PositionMonitor(executor, risk)
 
@@ -534,7 +541,7 @@ class TestBreakevenTrigger:
 
     def test_breakeven_only_triggers_once(self):
         """Once breakeven_hit=True, don't re-check."""
-        executor = MagicMock(spec=OrderExecutor)
+        executor = _mock_executor()
         risk = MagicMock()
         monitor = PositionMonitor(executor, risk)
 
@@ -561,7 +568,7 @@ class TestTimeoutClose:
     """12h timeout → market close everything."""
 
     def test_duration_timeout_market_closes(self):
-        executor = MagicMock(spec=OrderExecutor)
+        executor = _mock_executor()
         risk = MagicMock()
         monitor = PositionMonitor(executor, risk)
 
@@ -588,7 +595,7 @@ class TestEmergencyClose:
     """SL placement fails after entry fill → emergency market close."""
 
     def test_emergency_close_on_sl_failure(self):
-        executor = MagicMock(spec=OrderExecutor)
+        executor = _mock_executor()
         risk = MagicMock()
         monitor = PositionMonitor(executor, risk)
 
@@ -614,7 +621,7 @@ class TestSlippage:
     """Slippage is logged on entry fill."""
 
     def test_slippage_calculated_correctly(self):
-        executor = MagicMock(spec=OrderExecutor)
+        executor = _mock_executor()
         risk = MagicMock()
         monitor = PositionMonitor(executor, risk)
 
@@ -673,7 +680,7 @@ class TestAdjustSLFailure:
     """If new SL placement fails, old SL is kept."""
 
     def test_adjust_sl_failure_keeps_old(self):
-        executor = MagicMock(spec=OrderExecutor)
+        executor = _mock_executor()
         risk = MagicMock()
         monitor = PositionMonitor(executor, risk)
 
@@ -702,7 +709,7 @@ class TestSLTPValidation:
     def test_long_invalid_sl_above_entry_rejected(self):
         """Long: SL > entry should be rejected in live mode."""
         risk = MagicMock()
-        executor = MagicMock(spec=OrderExecutor)
+        executor = _mock_executor()
         monitor = MagicMock(spec=PositionMonitor)
         monitor.positions = {}
         service = _make_service(executor, monitor, risk)
@@ -715,7 +722,7 @@ class TestSLTPValidation:
     def test_short_invalid_sl_below_entry_rejected(self):
         """Short: SL < entry should be rejected in live mode."""
         risk = MagicMock()
-        executor = MagicMock(spec=OrderExecutor)
+        executor = _mock_executor()
         monitor = MagicMock(spec=PositionMonitor)
         monitor.positions = {}
         service = _make_service(executor, monitor, risk)
@@ -734,7 +741,7 @@ class TestTPPlacementFailure:
 
     def test_tp_failure_keeps_position_with_sl(self):
         """TP fails but position stays active — SL protects us."""
-        executor = MagicMock(spec=OrderExecutor)
+        executor = _mock_executor()
         risk = MagicMock()
         monitor = PositionMonitor(executor, risk)
 

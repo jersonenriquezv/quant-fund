@@ -135,16 +135,19 @@ async def on_candle_confirmed(candle: Candle) -> None:
 
     # Pre-check: can this pair meet exchange minimum order size?
     # Saves Claude API tokens on trades that would fail at execution anyway.
+    # Must account for leverage — margin × leverage = notional.
     min_size = settings.MIN_ORDER_SIZES.get(setup.pair, 0)
-    if min_size > 0 and settings.FIXED_TRADE_MARGIN > 0:
-        max_notional = settings.FIXED_TRADE_MARGIN * settings.MAX_LEVERAGE
+    if min_size > 0:
+        capital = _risk_service._state.get_capital()
+        max_margin = capital * settings.TRADE_CAPITAL_PCT
+        max_notional = max_margin * settings.MAX_LEVERAGE
         max_position = max_notional / setup.entry_price
         if max_position < min_size:
             logger.info(
                 f"Setup skipped: {setup.pair} min order {min_size} > "
                 f"max position {max_position:.6f} "
                 f"(need ${min_size * setup.entry_price:.0f} notional, "
-                f"have ${max_notional:.0f})"
+                f"have ${max_notional:.0f} at {settings.MAX_LEVERAGE}x)"
             )
             return
 

@@ -1,5 +1,5 @@
 # Strategy Service
-> Última actualización: 2026-03-07
+> Última actualización: 2026-03-09 (OB entry 50%→75%)
 > Estado: implementado (completo, integrado en main.py). Audited — 3 CRITICAL fixes applied. Quick Setups C/D/E added. Setups F/G added.
 
 ## Qué hace (30 segundos)
@@ -20,7 +20,7 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
 ### `strategy_service/order_blocks.py` — Order Blocks + Breaker Blocks
 - Bullish OB: última vela roja antes de impulso alcista + BOS
 - Bearish OB: última vela verde antes de impulso bajista + BOS
-- Entry: 50% del body de la vela
+- Entry: 75% del body de la vela (más cerca del precio para mayor fill rate)
 - Validación: volumen >1.5x promedio, máximo 48h de edad
 - Deduplicación por break asociado
 - **`break_timestamp`:** Cada OB almacena el timestamp de la vela que rompió estructura. La mitigación solo evalúa velas posteriores al `break_timestamp`, evitando que la propia vela de ruptura (o anteriores) invalide el OB prematuramente.
@@ -33,7 +33,7 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
 - Tracking de fill parcial/total
 
 ### `strategy_service/liquidity.py` — Sweeps + Premium/Discount
-- Detecta equal highs (BSL) y equal lows (SSL) con tolerancia `EQUAL_LEVEL_TOLERANCE_PCT` (0.2% — ~$146 para BTC, ~$4.3 para ETH)
+- Detecta equal highs (BSL) y equal lows (SSL) con tolerancia `EQUAL_LEVEL_TOLERANCE_PCT` (0.2% — ~$146 para BTC, ~$4.3 para ETH). Originalmente 0.05% ($36 BTC) — demasiado estricto, ETH 15m producía 1 nivel + 0 sweeps. Con 0.2%: 6 niveles + 4 sweeps.
 - Sweep: wick rompe nivel pero cierre queda dentro del rango
 - Volumen mínimo 2x para confirmar sweep institucional
 - Zonas premium (>52%), discount (<48%), **equilibrium (48%-52%)** con banda de tolerancia configurable (`PD_EQUILIBRIUM_BAND`)
@@ -58,7 +58,7 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
   - Bearish OB mitigado → bullish breaker → long entry en retest
   - Requiere HTF bias alineado con dirección del breaker + PD zone + min 2 confluencias
   - Usa `get_breaker_blocks()` de OrderBlockDetector
-- **Zone-based orders** — no requiere proximidad al OB. El bot coloca limit orders al 50% del OB y espera fill.
+- **Zone-based orders** — no requiere proximidad al OB. El bot coloca limit orders al 75% del OB body y espera fill. SL siempre en `ob.low` (long) / `ob.high` (short) — wick-to-wick, independiente del entry.
   - `_find_best_ob()` selecciona por calidad: mayor `volume_ratio`, tiebreak por timestamp más reciente
   - `_is_ob_within_range()` filtra OBs más allá de `OB_MAX_DISTANCE_PCT` (5%) del precio actual
   - `_is_price_near_ob()` se mantiene para notificaciones de OB summary, pero no bloquea setups
@@ -73,7 +73,7 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 - **Setup C — Funding Squeeze:** Funding rate extremo + CVD buy dominance alineado + HTF bias. Entry: precio actual. SL: 0.5%. TPs: 1:1, 1.5:1, 2:1.
   - Long: funding < -0.03%, buy dominance > 55%
   - Short: funding > +0.03%, buy dominance < 45%
-- **Setup D — LTF Structure Scalp:** CHoCH o BOS en 5m + OB fresco cerca del precio. No requiere sweep ni FVG. HTF bias + PD zone alineados. Entry: 50% del OB. TPs: 1:1, 1.5:1, 2:1.
+- **Setup D — LTF Structure Scalp:** CHoCH o BOS en 5m + OB fresco cerca del precio. No requiere sweep ni FVG. HTF bias + PD zone alineados. Entry: 75% del OB. TPs: 1:1, 1.5:1, 2:1.
 - **Setup E — Cascade Reversal:** Caída de OI >2% (cascade proxy) + CVD revertiendo. Long después de cascade de longs, short después de cascade de shorts. Usa OB cercano como anchor o precio actual. TPs: 1:1, 1.5:1, 2:1.
 
 **Diferencias clave quick vs swing:**

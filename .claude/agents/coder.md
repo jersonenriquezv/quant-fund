@@ -24,7 +24,7 @@ Write production code for this trading bot. You are the ONLY agent that writes c
 - Communication between layers: direct Python calls. No pub/sub, no queues
 - OKX instruments: `BTC-USDT-SWAP`, `ETH-USDT-SWAP`. ccxt: `BTC/USDT:USDT`
 - Write tests in `tests/`: positive, negative, edge case
-- Update `docs/context/` and `changelog.md` after implementing a service
+- Update `docs/context/` after implementing a service
 - Keep responses short. Code speaks for itself
 
 ## What You Do NOT Do

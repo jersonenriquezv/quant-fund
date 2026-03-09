@@ -1,6 +1,6 @@
 # Execution Service (Layer 5)
-> Última actualización: 2026-03-08
-> Estado: **Fase 1 — simplificado**. SL + single TP. Breakeven via price polling.
+> Última actualización: 2026-03-09
+> Estado: **Fase 1 — COMPLETADA**. Entry + SL + TP atómicos (attached). Breakeven via price polling.
 
 El brazo ejecutor del bot. Recibe trades aprobados por Risk Service y los ejecuta en OKX via ccxt.
 
@@ -18,15 +18,16 @@ ExecutionService (facade)
 1. `execute(setup, approval, ai_confidence)` recibe trade aprobado
 2. **Valida precio ordering** — Long: `sl < entry < tp2`. Short: inverso.
 3. **Chequea posición existente** — Si hay pending_entry → reemplaza. Si hay adoptada → permite coexistencia. Si hay activa del bot → rechaza.
-4. Configura el par (margin mode isolated + leverage)
-5. Coloca limit entry order al precio calculado (50% OB/FVG)
+4. Configura el par (margin mode isolated + leverage). `defaultMarginMode` seteado a nivel de exchange en ccxt para evitar fallback a `cross`.
+5. Coloca limit entry order al precio calculado (75% OB/FVG) **con SL+TP attached** — OKX crea SL/TP atómicamente cuando el entry se llena.
+   - **Contracts conversion**: `amount` en base currency (ETH/BTC) se convierte a contratos OKX internamente via `_to_contracts()`. OKX SWAP `ctVal`: BTC=0.01, ETH=0.1.
 6. Notifica Risk Service inmediatamente (en PLACE, no en fill)
 7. Registra la posición en el monitor
 
 ## Máquina de estados (Fase 1 — simplificada)
 
 ```
-pending_entry ──[fill]──────> active         (coloca SL + single TP a 2:1 R:R)
+pending_entry ──[fill]──────> active         (SL+TP ya attached; monitor busca IDs)
 pending_entry ──[4h/1h]─────> closed         (cancela entry)
 
 active ──[TP fills]──> closed                (profit)
@@ -41,8 +42,12 @@ emergency_pending ──[3 fails]──> emergency_failed  (intervención manual
 
 ## Exit Management (simplificado)
 
-- **SL**: stop-market al `sl_price` por 100% de la posición
-- **TP**: limit reduceOnly al `tp2_price` (2:1 R:R) por 100%
+- **SL+TP attached**: al colocar la entry order, se pasan `stopLoss` y `takeProfit` como params ccxt. OKX crea las órdenes atómicamente cuando el entry se llena (SL como `conditional` algo order, TP como limit `reduceOnly`).
+- **Monitor discovery**: después del fill, espera 0.5s y busca órdenes attached:
+  - SL: en `find_pending_algo_orders()` (tipos `trigger` + `conditional`), match por `slTriggerPx` con 0.5% tolerancia
+  - TP: en `fetch_open_orders()`, match por price con 0.5% tolerancia
+  - **Fallback**: si no se encuentran attached, coloca SL/TP manualmente (3 retries para SL)
+  - **Contracts→base**: `filled` de ccxt se convierte de contratos a base currency via `contracts_to_base()`
 - **Breakeven**: el monitor poll ticker cada 5s. Cuando price cruza `tp1_price` (1:1 R:R), mueve SL a `entry_price`
 - **TP falla**: posición queda abierta con SL only (no emergency close — SL protege)
 
@@ -85,9 +90,11 @@ Also handles SL cancelled externally: re-places SL immediately.
 
 ## OKX Algo Order Handling
 
-- `place_stop_market()` usa ccxt unified API (ccxt mapea a `slTriggerPx` de OKX)
+- `place_limit_order()` acepta `sl_trigger_price` y `tp_price` opcionales → ccxt los pasa como `stopLoss`/`takeProfit` params → OKX crea attached algo orders al fill
+- `place_stop_market()` usa ccxt unified API → OKX crea `trigger` type algo order
+- `find_pending_algo_orders()` busca en AMBOS tipos: `trigger` Y `conditional` — OKX pone attached SL en `conditional`
 - `fetch_order()` intenta fetch normal; si `OrderNotFound` → fallback a `_fetch_algo_order()`
-- `_fetch_algo_order()` usa OKX native API: pending → effective → canceled
+- `cancel_order()` intenta cancel normal; si `OrderNotFound` → fallback a `_cancel_algo_order()` (POST /trade/cancel-algos)
 - Error throttling: solo logea primer error y cada 12vo
 
 ## Position adoption
@@ -101,9 +108,9 @@ Al startup, `sync_exchange_positions()` consulta OKX por posiciones abiertas. La
 
 | Archivo | Descripción |
 |---------|-------------|
-| `service.py` | Facade — execute(), start(), stop(), health() |
-| `executor.py` | Wrapper ccxt — place/cancel/fetch orders |
-| `monitor.py` | Background loop — máquina de estados simplificada |
+| `service.py` | Facade — execute(), start(), stop(), health(). Position adoption converts contracts→base. |
+| `executor.py` | Wrapper ccxt — place/cancel/fetch orders. Contracts conversion (`_to_contracts`, `contracts_to_base`). Attached SL/TP on entry. Algo cancel fallback. `find_pending_algo_orders()`. |
+| `monitor.py` | Background loop — attached SL/TP discovery + manual fallback, breakeven via price polling |
 | `models.py` | ManagedPosition (SL/TP IDs, breakeven tracking) |
 
 ## Settings
@@ -120,11 +127,11 @@ Al startup, `sync_exchange_positions()` consulta OKX por posiciones abiertas. La
 ## Live Test Script
 
 `tests/test_execution_live.py` — script manual para probar órdenes en OKX live:
-1. Configura ETH/USDT (isolated, 3x)
-2. Coloca limit buy $20 debajo del precio actual
-3. Coloca SL stop-market $40 debajo del entry
-4. Coloca TP limit $40 arriba del entry
-5. Espera confirmación, luego cancela todo
+1. Configura ETH/USDT (isolated, 5x leverage, TRADE_CAPITAL_PCT sizing)
+2. Coloca limit buy at ask+0.1% **con SL+TP attached** ($40 below/above)
+3. Espera fill, luego verifica SL/TP en exchange (algo orders + open orders)
+4. Fallback a placement manual si attached no se encuentran
+5. Cleanup: cancela SL/TP, cierra posición
 
 ## Limitaciones conocidas
 

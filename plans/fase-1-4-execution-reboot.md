@@ -7,8 +7,10 @@
 - [x] SL moves to breakeven cuando price cruza 1:1 R:R (poll ticker)
 - [x] Margin mode: ISOLATED confirmado
 - [x] Script de test live (`tests/test_execution_live.py`)
-- [ ] **Validar en live**: correr script, confirmar SL+TP visibles en OKX
-- [ ] Correr 3 trades manuales via script → 3/3 con SL+TP en exchange
+- [x] **Validar en live**: correr script, confirmar SL+TP visibles en OKX
+- [x] Correr 2 trades via script → 2/2 con SL+TP attached en exchange (SL=conditional algo, TP=limit reduceOnly)
+- [x] Bug fix: `risk_service` → `_risk_service` en main.py (crasheaba todo el pipeline de BTC)
+- [x] SL+TP ahora van attached al entry order (OKX los crea atómicamente al fill)
 
 ## FASE 2: Strategy Backtest (1 semana)
 **Objetivo**: Probar que los setups generan edge real en data histórica.

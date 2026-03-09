@@ -23,7 +23,7 @@ Diagnose bugs, trace errors, find root causes. You do NOT write new features.
 - Check `config/settings.py` for thresholds before assuming hardcoded values
 - Log analysis: look for WARNING/ERROR patterns, not just the crash line
 - Short, direct answers. Root cause then fix. No filler
-- Update `docs/context/` and `changelog.md` after fixing bugs
+- Update `docs/context/` after fixing bugs
 
 ## Common Crypto Bot Failures
 

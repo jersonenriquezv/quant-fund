@@ -85,8 +85,8 @@ class TestOBDetection:
         assert len(bearish_obs) == 1
         assert bearish_obs[0].timestamp == 8000
 
-    def test_entry_price_is_50_pct_of_body(self):
-        """OB entry should be 50% of the body (midpoint of open/close)."""
+    def test_entry_price_is_75_pct_of_body(self):
+        """OB entry should be 75% of the body (closer to price action for higher fill rate)."""
         detector = OrderBlockDetector()
 
         candles = []
@@ -102,8 +102,9 @@ class TestOBDetection:
         obs = detector.update(candles, [brk], "BTC/USDT", "15m", 15000)
 
         assert len(obs) == 1
-        # body_high=104, body_low=100, entry=(104+100)/2=102
-        assert obs[0].entry_price == 102.0
+        # Bullish OB: body_low=100, body_high=104, range=4
+        # 75% from bottom: 100 + 4*0.75 = 103
+        assert obs[0].entry_price == 103.0
 
 
 class TestOBVolumeFilter:
