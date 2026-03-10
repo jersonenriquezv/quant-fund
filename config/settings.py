@@ -111,6 +111,11 @@ class Settings:
     # noise trades through. Higher filters good trades too aggressively.
     MIN_RISK_DISTANCE_PCT: float = 0.002
 
+    # Maximum entry slippage before closing position immediately.
+    # 0.003 = 0.3% → ETH@$2000: max $6 slippage. BTC@$70K: max $210.
+    # Skipped in sandbox mode (synthetic fills).
+    MAX_SLIPPAGE_PCT: float = 0.003
+
     # Tiempo máximo (horas) que un trade puede estar abierto sin moverse
     MAX_TRADE_DURATION_HOURS: int = 12
 

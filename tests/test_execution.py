@@ -679,6 +679,79 @@ class TestEmergencyClose:
         )
 
 
+class TestExcessiveSlippage:
+    """Excessive entry slippage → immediate close (live mode only)."""
+
+    def test_excessive_slippage_closes_position(self):
+        """Fill at 0.5% slippage (> 0.3% threshold) → position closed."""
+        executor = _mock_executor()
+        risk = MagicMock()
+        monitor = PositionMonitor(executor, risk)
+
+        pos = make_position()
+        monitor.register(pos)
+
+        # Fill at 2010.0 vs entry 2000.0 = 0.5% slippage
+        executor.fetch_order = AsyncMock(return_value=make_order(
+            "ord-entry", status="closed", filled=0.05, average=2010.0
+        ))
+        executor.place_stop_market = AsyncMock(return_value=make_order("ord-sl"))
+        executor.place_take_profit = AsyncMock(return_value=make_order("ord-tp"))
+        executor.cancel_order = AsyncMock(return_value=True)
+        executor.close_position_market = AsyncMock(return_value=make_order("ord-close"))
+
+        with patch.object(settings, "OKX_SANDBOX", False):
+            asyncio.run(monitor._check_all_positions())
+
+        assert pos.phase == "closed"
+        assert pos.close_reason == "excessive_slippage"
+        executor.close_position_market.assert_called_once()
+
+    def test_acceptable_slippage_stays_active(self):
+        """Fill at 0.05% slippage (< 0.3% threshold) → stays active."""
+        executor = _mock_executor()
+        risk = MagicMock()
+        monitor = PositionMonitor(executor, risk)
+
+        pos = make_position()
+        monitor.register(pos)
+
+        # Fill at 2001.0 vs entry 2000.0 = 0.05% slippage
+        executor.fetch_order = AsyncMock(return_value=make_order(
+            "ord-entry", status="closed", filled=0.05, average=2001.0
+        ))
+        executor.place_stop_market = AsyncMock(return_value=make_order("ord-sl"))
+        executor.place_take_profit = AsyncMock(return_value=make_order("ord-tp"))
+
+        with patch.object(settings, "OKX_SANDBOX", False):
+            asyncio.run(monitor._check_all_positions())
+
+        assert pos.phase == "active"
+        executor.close_position_market = AsyncMock()
+        executor.close_position_market.assert_not_called()
+
+    def test_slippage_guard_skipped_in_sandbox(self):
+        """Sandbox mode skips slippage guard (synthetic fills)."""
+        executor = _mock_executor()
+        risk = MagicMock()
+        monitor = PositionMonitor(executor, risk)
+
+        pos = make_position()
+        monitor.register(pos)
+
+        # 0.5% slippage — would trigger in live but not in sandbox
+        executor.fetch_order = AsyncMock(return_value=make_order(
+            "ord-entry", status="closed", filled=0.05, average=2010.0
+        ))
+        executor.place_stop_market = AsyncMock(return_value=make_order("ord-sl"))
+        executor.place_take_profit = AsyncMock(return_value=make_order("ord-tp"))
+
+        with patch.object(settings, "OKX_SANDBOX", True):
+            asyncio.run(monitor._check_all_positions())
+
+        assert pos.phase == "active"
+
+
 class TestSlippage:
     """Slippage is logged on entry fill."""
 

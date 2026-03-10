@@ -332,6 +332,34 @@ class PositionMonitor:
                 )
             pos.tp_order_id = tp.get("id") if tp else None
 
+        # Slippage guard — close if entry fill deviates too much from intended price.
+        # Skip in sandbox (synthetic fills have arbitrary slippage).
+        if (not settings.OKX_SANDBOX
+                and pos.actual_entry_price and pos.entry_price
+                and pos.entry_price > 0):
+            slippage_pct = abs(pos.actual_entry_price - pos.entry_price) / pos.entry_price
+            if slippage_pct > settings.MAX_SLIPPAGE_PCT:
+                logger.warning(
+                    f"Excessive slippage: {pos.pair} "
+                    f"expected={pos.entry_price:.2f} actual={pos.actual_entry_price:.2f} "
+                    f"slippage={slippage_pct*100:.3f}% > max {settings.MAX_SLIPPAGE_PCT*100:.1f}% "
+                    f"— closing immediately"
+                )
+                if pos.sl_order_id:
+                    await self._executor.cancel_order(pos.sl_order_id, pos.pair)
+                if pos.tp_order_id:
+                    await self._executor.cancel_order(pos.tp_order_id, pos.pair)
+                result = await self._executor.close_position_market(
+                    pos.pair, close_side, pos.filled_size
+                )
+                if result is None:
+                    logger.error(f"Slippage close FAILED: {pos.pair} — emergency pending")
+                    pos.phase = "emergency_pending"
+                    pos.emergency_retries = 1
+                    return
+                self._close_position(pos, "excessive_slippage")
+                return
+
         # Post-fill SL distance validation.
         # Slippage can shrink the effective SL distance below the minimum.
         # If so, close immediately rather than holding a micro-SL position.
