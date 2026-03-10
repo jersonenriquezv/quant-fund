@@ -11,7 +11,8 @@ Does NOT contain business logic. Just places/cancels/fetches orders.
 """
 
 import asyncio
-from typing import Optional
+import time
+from typing import Callable, Optional
 
 import ccxt
 
@@ -24,7 +25,7 @@ logger = setup_logger("execution_service")
 class OrderExecutor:
     """Thin ccxt wrapper for OKX order operations."""
 
-    def __init__(self):
+    def __init__(self, metrics_callback: Callable | None = None):
         config = {
             "apiKey": settings.OKX_API_KEY,
             "secret": settings.OKX_SECRET,
@@ -37,6 +38,8 @@ class OrderExecutor:
         # defaultMarginMode is set. This ensures ALL orders use isolated.
         self._exchange.options["defaultMarginMode"] = settings.MARGIN_MODE
         self._algo_fetch_errors: dict[str, int] = {}
+
+        self._metrics_cb = metrics_callback
 
         if settings.OKX_SANDBOX:
             self._exchange.set_sandbox_mode(True)
@@ -193,10 +196,13 @@ class OrderExecutor:
                 "price": tp_price,
             }
         try:
+            t0 = time.monotonic()
             order = await self._run_sync(
                 self._exchange.create_order,
                 symbol, "limit", side, contracts, price, params
             )
+            if self._metrics_cb:
+                self._metrics_cb("okx_order_latency_ms", (time.monotonic() - t0) * 1000, pair, {"type": "limit"})
             attached = ""
             if sl_trigger_price > 0 or tp_price > 0:
                 attached = f" attached_sl={sl_trigger_price:.2f} attached_tp={tp_price:.2f}"
@@ -238,10 +244,13 @@ class OrderExecutor:
             # stop-market) do not support reduceOnly in one-way (net) mode
             # and return error 51205 "Reduce Only is not available."
             # In net mode, a sell against a long inherently reduces the position.
+            t0 = time.monotonic()
             order = await self._run_sync(
                 self._exchange.create_stop_market_order,
                 symbol, side, contracts, trigger_price
             )
+            if self._metrics_cb:
+                self._metrics_cb("okx_order_latency_ms", (time.monotonic() - t0) * 1000, pair, {"type": "stop_market"})
             logger.info(
                 f"Stop-market placed: {pair} {side} base={amount:.6f} "
                 f"contracts={contracts} trigger={trigger_price:.2f} order_id={order.get('id')}"
@@ -276,10 +285,13 @@ class OrderExecutor:
         contracts = self._to_contracts(pair, amount)
         try:
             params = {"reduceOnly": True}
+            t0 = time.monotonic()
             order = await self._run_sync(
                 self._exchange.create_order,
                 symbol, "limit", side, contracts, price, params
             )
+            if self._metrics_cb:
+                self._metrics_cb("okx_order_latency_ms", (time.monotonic() - t0) * 1000, pair, {"type": "take_profit"})
             logger.info(
                 f"Take-profit placed: {pair} {side} base={amount:.6f} "
                 f"contracts={contracts} price={price:.2f} order_id={order.get('id')}"

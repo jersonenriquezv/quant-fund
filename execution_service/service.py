@@ -38,12 +38,21 @@ class ExecutionService:
             self._executor = None
             self._monitor = None
         else:
-            self._executor = OrderExecutor()
+            self._executor = OrderExecutor(metrics_callback=self._emit_metric)
             self._monitor = PositionMonitor(
                 self._executor, risk_service, data_store=data_service,
                 alert_manager=alert_manager
             )
             logger.info("Execution Service initialized")
+
+    def _emit_metric(self, name: str, value: float, pair: str | None = None, labels: dict | None = None) -> None:
+        """Write operational metric to PostgreSQL via DataService (fire-and-forget)."""
+        if self._data_service is None:
+            return
+        try:
+            self._data_service.postgres.insert_metric(name, value, pair=pair, labels=labels)
+        except Exception:
+            pass
 
     async def start(self) -> None:
         """Start the position monitor background loop."""

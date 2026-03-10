@@ -69,6 +69,10 @@ class Settings:
     HTF_TIMEFRAMES: List[str] = field(default_factory=lambda: ["4h", "1h"])
     # LTF = para ejecución de trades
     LTF_TIMEFRAMES: List[str] = field(default_factory=lambda: ["15m", "5m"])
+    # Timeframes used for swing setup evaluation (A/B/F/G).
+    # 5m OBs produce micro-SLs (<0.2%) that get eaten by commissions.
+    # Detectors still run on all LTF_TIMEFRAMES (quick setups need 5m data).
+    SWING_SETUP_TIMEFRAMES: List[str] = field(default_factory=lambda: ["15m"])
 
     # ========================
     # RISK MANAGEMENT — Guardrails inquebrantables
@@ -164,11 +168,11 @@ class Settings:
 
     # --- Enabled setups ---
     # Only these setup types will be traded. Others are detected but discarded.
-    # Backtest 60d: A (47.8% WR, +$2510), F (44.7% WR, +$1775).
-    # B disabled: 25% WR, -$2129 — FVG adjacency selects noisy OBs, tight SLs.
+    # Backtest 60d aggressive: A (46.2% WR), B (52.7% WR, +$5169), F (42.9% WR).
+    # B re-enabled after FVG midpoint entry fix (was 25% WR with OB 75% entry).
     # C, D, E, G pending validation.
     ENABLED_SETUPS: list = field(default_factory=lambda: [
-        "setup_a", "setup_f",
+        "setup_a", "setup_b", "setup_f",
     ])
 
     # --- Setup A temporal ---

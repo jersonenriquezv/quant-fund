@@ -104,6 +104,7 @@ El bot corre en 3 containers via `docker-compose.yml`:
 | `postgres` | postgres:16-alpine | 127.0.0.1:5432 | Almacenamiento histórico (candles, trades, AI decisions) |
 | `redis` | redis:7-alpine | 127.0.0.1:6379 | Cache en tiempo real (último precio, OI, funding, estado) |
 | `bot` | python:3.12-slim (build local) | — | Bot de trading (5 capas) |
+| `grafana` | grafana/grafana-oss:11.5-alpine | 3001 (host) | Monitoreo operacional (dashboards SQL sobre PostgreSQL) |
 
 **Archivos Docker:**
 - `.dockerignore` — Excluye .git, venv, tests, docs, .env del build
@@ -116,7 +117,7 @@ El bot corre en 3 containers via `docker-compose.yml`:
 - **Dos archivos `.env`:**
   - Root `.env` — Docker Compose variable interpolation (`${POSTGRES_PASSWORD}`)
   - `config/.env` — Secrets del bot (OKX, Anthropic, Etherscan). Montado read-only en `/app/config/.env`
-- **Volumes:** `pgdata` y `redisdata` persisten datos entre restarts.
+- **Volumes:** `pgdata`, `redisdata` y `grafana_data` persisten datos entre restarts.
 - **Puertos:** Solo `127.0.0.1` (no expuestos a la red externa).
 - **Redis persistence:** `--appendonly yes` para durabilidad.
 - **Graceful shutdown:** `stop_grace_period: 30s` para que el bot cierre WebSockets y cancele entries pendientes.
@@ -129,6 +130,45 @@ docker compose down           # Parar (volumes se preservan)
 docker compose down -v        # Parar y borrar volumes (reset total)
 docker compose build --no-cache  # Rebuild después de cambios en código
 ```
+
+## Monitoreo Operacional (Grafana)
+
+Grafana corre en `http://192.168.1.236:3001` como container Docker. Lee directamente de PostgreSQL — sin Prometheus (volumen bajo, <20 métricas).
+
+### Dashboards provisioned (`monitoring/dashboards/`)
+
+| Dashboard | Fuente de datos | Qué muestra |
+|-----------|----------------|-------------|
+| **Trading Performance** | `trades`, `ai_decisions` | Equity curve, win rate rolling 7d, PnL por setup/dirección, exit reasons, slippage, AI confidence vs outcome |
+| **System Health** | `bot_metrics` | Pipeline/Claude/OKX latency, WS reconnections, health status timeline, uptime % |
+| **AI & Risk Analytics** | `ai_decisions`, `risk_events` | Approval rate over time, confidence distribution, guardrail trigger frequency |
+
+### Tabla `bot_metrics` (métricas operacionales)
+
+```sql
+bot_metrics (metric_name VARCHAR(50), value FLOAT, pair VARCHAR(20), labels JSONB, created_at TIMESTAMP)
+```
+
+| metric_name | Dónde se mide | Frecuencia |
+|---|---|---|
+| `pipeline_latency_ms` | `main.py` (on_candle_confirmed) | Cada candle (~5min) |
+| `claude_latency_ms` | `main.py` (_evaluate_with_claude) | Cada evaluación Claude |
+| `okx_order_latency_ms` | `executor.py` (place_limit/stop/tp) | Cada orden |
+| `ws_reconnection` | `websocket_feeds.py` (start loop) | Cada reconexión |
+| `health_status` | `data_service/service.py` (health check) | Cada 30s |
+
+**Retention:** Cleanup automático cada ~50 min (100 health checks). Borra métricas >30 días.
+
+### Provisioning (`monitoring/provisioning/`)
+
+- `datasources/postgres.yml` — PostgreSQL datasource (auto-conecta al arrancar)
+- `dashboards/default.yml` — Carga dashboards JSON desde `/var/lib/grafana/dashboards/`
+
+### Acceso
+
+- URL: `http://192.168.1.236:3001`
+- Anonymous viewer habilitado (red local, detrás del router)
+- Admin: `admin` / password en `GRAFANA_ADMIN_PASSWORD` env var
 
 ## Glosario
 - **BOS:** Break of Structure. Cuando el precio rompe un máximo/mínimo anterior, confirmando la tendencia.
@@ -194,6 +234,7 @@ python scripts/backtest.py --days 60 --profile aggressive --capital 10000 --csv
 - Ver `docs/to-fix.md` para backlog completo (~30 IMPORTANT + 29 MINOR issues)
 
 ## Cambios recientes
+- 2026-03-10: **Grafana Monitoring** — Grafana OSS container en puerto 3001 con 3 dashboards provisioned (Trading Performance, System Health, AI & Risk Analytics). Nueva tabla `bot_metrics` para métricas operacionales. Pipeline instrumentado: pipeline_latency_ms, claude_latency_ms, okx_order_latency_ms, ws_reconnection, health_status. Retention automático 30d. Trading Performance dashboard funciona sin código nuevo (queries sobre tables existentes).
 - 2026-03-10: **AlertManager** — `shared/alert_manager.py` reemplaza llamadas directas a TelegramNotifier. Prioridades (INFO/WARNING/CRITICAL/EMERGENCY), rate limiting por prioridad, auto-silenciamiento por categoría (3 en 5min → 15min silence), whale batching (2min digest), EMERGENCY retry con backoff. Health check alerta por Telegram cuando infra cae/recupera. `trade_lifecycle` y `emergency` nunca se silencian. 26 tests nuevos. Todos los callers migrados: `main.py`, `execution_service/monitor.py`, `data_service/service.py`.
 - 2026-03-10: **ENABLED_SETUPS gate** — New setting `ENABLED_SETUPS` (default `["setup_b", "setup_f"]`) controls which setup types can trade. Gate in `strategy_service/service.py` checks after detection. Backtest showed B=56.8% WR, F=48.4% WR; A/G not profitable and disabled.
 - 2026-03-10: **MIN_RISK_DISTANCE_PCT 0.1%→0.2%** — Filters micro-SL noise trades (especially Setup B shorts with 0.16-0.45% SL distances). Backtest: 54.5% WR, 0.95 PF. Tested 0.05%, 0.1%, 0.2%, 0.3%, 0.5% — 0.2% optimal.

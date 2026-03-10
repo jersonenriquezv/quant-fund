@@ -388,6 +388,22 @@ class PostgresStore:
                 ON trades(status, opened_at DESC NULLS LAST)
             """)
 
+            # Bot operational metrics (Grafana)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bot_metrics (
+                    id SERIAL PRIMARY KEY,
+                    metric_name VARCHAR(50) NOT NULL,
+                    value DOUBLE PRECISION NOT NULL,
+                    pair VARCHAR(20),
+                    labels JSONB,
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_metrics_name_time
+                ON bot_metrics(metric_name, created_at DESC)
+            """)
+
         logger.info("PostgreSQL tables verified/created")
 
     # --- Candle Storage ---
@@ -644,6 +660,59 @@ class PostgresStore:
                 logger.error(f"PostgreSQL risk_event insert failed: {e}")
                 return None
         return None
+
+    # --- Bot Metrics (Grafana) ---
+
+    def insert_metric(
+        self, name: str, value: float,
+        pair: str | None = None, labels: dict | None = None,
+    ) -> None:
+        """Insert an operational metric (fire-and-forget)."""
+        for attempt in range(2):
+            if not self._ensure_connected():
+                return
+            try:
+                with self._conn.cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO bot_metrics (metric_name, value, pair, labels)
+                           VALUES (%s, %s, %s, %s)""",
+                        (name, value, pair,
+                         json.dumps(labels) if labels else None),
+                    )
+                return
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                logger.warning(f"PostgreSQL metric insert connection error (attempt {attempt+1}): {e}")
+                self._conn = None
+                if attempt == 1:
+                    return
+            except psycopg2.Error as e:
+                logger.error(f"PostgreSQL metric insert failed: {e}")
+                return
+
+    def cleanup_old_metrics(self, retention_days: int = 30) -> int:
+        """Delete metrics older than retention_days. Returns rows deleted."""
+        for attempt in range(2):
+            if not self._ensure_connected():
+                return 0
+            try:
+                with self._conn.cursor() as cur:
+                    cur.execute(
+                        "DELETE FROM bot_metrics WHERE created_at < NOW() - INTERVAL '%s days'",
+                        (retention_days,),
+                    )
+                    deleted = cur.rowcount
+                if deleted > 0:
+                    logger.info(f"PostgreSQL: cleaned up {deleted} old metrics (>{retention_days}d)")
+                return deleted
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                logger.warning(f"PostgreSQL metric cleanup connection error (attempt {attempt+1}): {e}")
+                self._conn = None
+                if attempt == 1:
+                    return 0
+            except psycopg2.Error as e:
+                logger.error(f"PostgreSQL metric cleanup failed: {e}")
+                return 0
+        return 0
 
     def close(self) -> None:
         if self._conn:

@@ -161,6 +161,12 @@ class StrategyService:
                         f"entry={ob.entry_price:.2f} vol_ratio={ob.volume_ratio:.1f}x"
                     )
 
+            # Skip swing setup evaluation for timeframes not in SWING_SETUP_TIMEFRAMES.
+            # 5m OBs produce micro-SLs (<0.2%) that get eaten by commissions.
+            # Detectors still ran above so quick setups (C/D/E) can use 5m data.
+            if ltf not in settings.SWING_SETUP_TIMEFRAMES:
+                continue
+
             # ============================================================
             # Step 4: Evaluate setups — A first, then B
             # Only enabled setups are returned (settings.ENABLED_SETUPS)

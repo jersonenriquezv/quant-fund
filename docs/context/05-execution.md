@@ -1,5 +1,5 @@
 # Execution Service (Layer 5)
-> Última actualización: 2026-03-09
+> Última actualización: 2026-03-10
 > Estado: **Fase 1 — COMPLETADA**. Entry + SL + TP atómicos (attached). Breakeven + trailing SL via price polling.
 
 El brazo ejecutor del bot. Recibe trades aprobados por Risk Service y los ejecuta en OKX via ccxt.
@@ -121,8 +121,8 @@ Al startup, `sync_exchange_positions()` consulta OKX por posiciones abiertas. La
 
 | Archivo | Descripción |
 |---------|-------------|
-| `service.py` | Facade — execute(), start(), stop(), health(). Position adoption converts contracts→base. |
-| `executor.py` | Wrapper ccxt — place/cancel/fetch orders. Contracts conversion (`_to_contracts`, `contracts_to_base`). Attached SL/TP on entry. Algo cancel fallback. `find_pending_algo_orders()`. |
+| `service.py` | Facade — execute(), start(), stop(), health(). Position adoption converts contracts→base. `_emit_metric()` wired to executor for Grafana. |
+| `executor.py` | Wrapper ccxt — place/cancel/fetch orders. Contracts conversion (`_to_contracts`, `contracts_to_base`). Attached SL/TP on entry. Algo cancel fallback. `find_pending_algo_orders()`. Optional `metrics_callback` emits `okx_order_latency_ms` per order. |
 | `monitor.py` | Background loop — attached SL/TP discovery + manual fallback, breakeven + trailing SL via price polling |
 | `models.py` | ManagedPosition (SL/TP IDs, breakeven + trailing tracking) |
 

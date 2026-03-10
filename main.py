@@ -101,6 +101,8 @@ async def on_candle_confirmed(candle: Candle) -> None:
     Strategy Service evaluates LTF candles for SMC setups.
     AI/Risk/Execution layers are stubs — will be wired as they're built.
     """
+    pipeline_start = time.monotonic()
+
     # Check for profile changes from dashboard
     await _sync_profile_from_redis()
 
@@ -195,6 +197,22 @@ async def on_candle_confirmed(candle: Candle) -> None:
         ai_confidence = decision.confidence if decision else 0.0
         await _execution_service.execute(setup, approval, ai_confidence)
 
+    _emit_metric("pipeline_latency_ms", (time.monotonic() - pipeline_start) * 1000, candle.pair)
+
+
+# ================================================================
+# Metrics helper (fire-and-forget to PostgreSQL for Grafana)
+# ================================================================
+
+def _emit_metric(name: str, value: float, pair: str | None = None, labels: dict | None = None) -> None:
+    """Write an operational metric to PostgreSQL. Non-blocking, swallows errors."""
+    if _data_service is None:
+        return
+    try:
+        _data_service.postgres.insert_metric(name, value, pair=pair, labels=labels)
+    except Exception:
+        pass  # Fire-and-forget — never block the pipeline
+
 
 # ================================================================
 # Persistence helpers (called from pipeline callback)
@@ -249,7 +267,9 @@ async def _evaluate_with_claude(setup, candle) -> "AIDecision | None":
         return None
 
     # Claude evaluation
+    claude_start = time.monotonic()
     decision = await _ai_service.evaluate(setup, snapshot)
+    _emit_metric("claude_latency_ms", (time.monotonic() - claude_start) * 1000, setup.pair)
     _setup_dedup_cache[dedup_key] = time.time()
     _persist_ai_decision(None, decision, setup)
     if _alert_manager is not None:

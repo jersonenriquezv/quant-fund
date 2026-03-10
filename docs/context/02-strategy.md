@@ -1,5 +1,5 @@
 # Strategy Service
-> Última actualización: 2026-03-10 (Setup B deshabilitado: 25% WR, -$2129. ENABLED_SETUPS: A+F)
+> Última actualización: 2026-03-10 (Setup B re-habilitado con FVG midpoint entry: 52.7% WR, +$5169. ENABLED_SETUPS: A+B+F)
 > Estado: implementado (completo, integrado en main.py). Audited — 3 CRITICAL fixes applied. Quick Setups C/D/E added. Setups F/G added.
 
 ## Qué hace (30 segundos)
@@ -47,9 +47,12 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
   - **Orden temporal obligatorio**: sweep ANTES del CHoCH
   - **Proximidad temporal**: sweep dentro de `SETUP_A_MAX_SWEEP_CHOCH_GAP` candles del CHoCH (40 candles = ~200min en 5m, ~10h en 15m)
   - **Backtest 60d aggressive**: 46 trades, 47.8% WR, +$2,510. El bottleneck principal era `no_aligned_sweep` — gap=20 solo producía 11 trades. Gap=40 captura sweeps más lejanos sin degradar calidad.
-- **Setup B** (secundario): BOS + FVG adyacente a OB
+- **Setup B** (secundario): BOS + FVG adyacente a OB — **HABILITADO**
   - Dirección BOS determina dirección del trade (bidireccional como Setup A)
-  - FVG-OB adjacency threshold: `FVG_OB_MAX_GAP_PCT` (0.5% — was 0.1%)
+  - **Entry: FVG midpoint** `(fvg.high + fvg.low) / 2` — NO el OB 75%. Esto aprovecha el FVG (feature único de B) y da SL más ancho desde el OB wick.
+  - SL: OB wick (igual que A/F)
+  - FVG-OB adjacency threshold: `FVG_OB_MAX_GAP_PCT` (0.5%)
+  - **Backtest 60d aggressive**: 55 trades, 52.7% WR, +$5,169. Antes con OB 75% entry: 29.8% WR, -$1,680.
 - **Setup F** — Pure OB Retest: BOS + OB, sin FVG requerido
   - Igual que Setup B pero sin necesitar FVG adyacente al OB
   - Dispara cuando hay BOS + OB alineados pero no hay FVG nearby
@@ -59,6 +62,7 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
   - Bearish OB mitigado → bullish breaker → long entry en retest
   - Requiere HTF bias alineado con dirección del breaker + PD zone + min 2 confluencias
   - Usa `get_breaker_blocks()` de OrderBlockDetector
+- **Swing setups solo evalúan 15m OBs** — `SWING_SETUP_TIMEFRAMES = ["15m"]`. Los detectores corren en todos los LTF (15m + 5m) para que quick setups (C/D/E) tengan datos de 5m, pero la evaluación de A/B/F/G solo usa 15m. OBs de 5m producen micro-SLs (<0.2%) que las comisiones se comen.
 - **Zone-based orders** — no requiere proximidad al OB. El bot coloca limit orders al 75% del OB body y espera fill. SL siempre en `ob.low` (long) / `ob.high` (short) — wick-to-wick, independiente del entry.
   - `_find_best_ob()` selecciona por calidad: mayor `volume_ratio`, tiebreak por timestamp más reciente
   - `_is_ob_within_range()` filtra OBs más allá de `OB_MAX_DISTANCE_PCT` (5%) del precio actual
@@ -87,7 +91,7 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 ### `strategy_service/service.py` — Facade
 - `StrategyService(data_service)` — obtiene candles del DataService
 - `evaluate(pair, candle)` — evalúa LTF candles: A → B → F → G → C → D → E, retorna `TradeSetup | None`
-- **`ENABLED_SETUPS` gate** — después de detectar un setup, verifica `setup.setup_type in settings.ENABLED_SETUPS`. Si no está habilitado, logea debug y continúa evaluando el siguiente tipo. Default: `["setup_a", "setup_f"]`. Setup B deshabilitado: 25% WR, -$2129 en backtest 60d — FVG adjacency selecciona OBs ruidosos con SLs muy estrechos. C, D, E, G pendientes de validación.
+- **`ENABLED_SETUPS` gate** — después de detectar un setup, verifica `setup.setup_type in settings.ENABLED_SETUPS`. Si no está habilitado, logea debug y continúa evaluando el siguiente tipo. Default: `["setup_a", "setup_b", "setup_f"]`. B re-habilitado con FVG midpoint entry (52.7% WR, +$5169). C, D, E, G pendientes de validación.
 - Coordina todos los módulos internos
 - Quick setup cooldown tracking per (pair, setup_type)
 
@@ -95,6 +99,7 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 - Exporta `StrategyService`
 
 ## Settings (config/settings.py)
+- `SWING_SETUP_TIMEFRAMES: List[str] = ["15m"]` — timeframes para evaluación de swing setups (A/B/F/G). Detectores corren en todos los LTF.
 - `PD_EQUILIBRIUM_BAND: float = 0.02` — banda ±2% alrededor del 50% para zona equilibrium
 - `OB_PROXIMITY_PCT: float = 0.003` — 0.3% del precio como margen de proximidad al OB (solo para notificaciones)
 - `OB_MAX_DISTANCE_PCT: float = 0.05` — 5% máximo de distancia del precio al OB para zone-based orders

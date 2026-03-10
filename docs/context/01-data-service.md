@@ -1,5 +1,5 @@
 # Data Service
-> Last updated: 2026-03-09
+> Last updated: 2026-03-10
 > Status: implemented (complete, running in Docker). Audited — 4 CRITICAL fixes applied. Whale tracking with USD enrichment, 3-tier Telegram notifications, new whale wallets (Trump, Jump Trading, a16z, FTX/Alameda, UK Gov BTC). News sentiment (Fear & Greed + headlines) as new data layer.
 
 ## What it does (30 seconds)
@@ -95,6 +95,7 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Callback `on_candle_confirmed` triggers the main pipeline
 - Handles OKX text "pong" keepalive messages
 - Reconnection: exponential backoff 1s → 2s → 4s → ... → 60s max
+- **Metrics callback:** Optional `metrics_callback` parameter. Emits `ws_reconnection` metric on each disconnect (for Grafana System Health dashboard).
 
 ### `data_service/cvd_calculator.py` — OKX Trades WebSocket + CVD
 - Connects to `wss://ws.okx.com:8443/ws/v5/public` (trades are on `/public`, separate connection from candle feed on `/business`)
@@ -173,18 +174,21 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - `set_latest_candle()`, `get_latest_candle()`, `pop_cancel_request()`, etc.
 
 **PostgreSQL (historical):**
-- 4 tables matching CLAUDE.md schema: `candles`, `trades`, `ai_decisions`, `risk_events`
+- 5 tables matching CLAUDE.md schema: `candles`, `trades`, `ai_decisions`, `risk_events`, `bot_metrics`
 - `store_candles()` with batch insert + ON CONFLICT DO NOTHING (dedup)
 - `load_candles()` returns oldest-first ordering
 - Index on `(pair, timeframe, timestamp DESC)` for fast lookups
-- **Auto-reconnection:** `_ensure_connected()` checks connection health (sends `SELECT 1`). All DB methods (`store_candles`, `load_candles`, `insert_trade`, `update_trade`, `insert_ai_decision`, `insert_risk_event`) retry once on `psycopg2.OperationalError` / `InterfaceError` — sets `_conn = None` and reconnects.
+- **Auto-reconnection:** `_ensure_connected()` checks connection health (sends `SELECT 1`). All DB methods (`store_candles`, `load_candles`, `insert_trade`, `update_trade`, `insert_ai_decision`, `insert_risk_event`, `insert_metric`) retry once on `psycopg2.OperationalError` / `InterfaceError` — sets `_conn = None` and reconnects.
+- **Operational metrics (Grafana):** `insert_metric(name, value, pair, labels)` writes to `bot_metrics` table. `cleanup_old_metrics(retention_days=30)` deletes old rows. Both fire-and-forget.
 
 ### `data_service/service.py` — DataService Facade
 - Wires all 9 sub-modules into a single interface (including NewsClient)
 - Public methods: `get_latest_candle()`, `get_candles()`, `get_market_snapshot()`, `get_cvd()`, `fetch_usdt_balance()`, etc.
 - Manages startup (backfill → WebSockets → polling loops) and graceful shutdown
 - On confirmed candle: stores to Redis + PostgreSQL, triggers pipeline callback
-- Health check loop every 30 seconds
+- Health check loop every 30 seconds — emits `health_status` metric (1.0=OK, 0.0=degraded) to `bot_metrics`
+- **Metrics cleanup:** Every ~50 min (100 health checks), calls `cleanup_old_metrics(30)` to prune metrics older than 30 days
+- **`_emit_metric()`:** Fire-and-forget metric writer to PostgreSQL `bot_metrics` table. Passed to WebSocket feeds as callback.
 - Uses `asyncio.get_running_loop()` (not deprecated `get_event_loop()`)
 - **Whale notification stability:** Uses `id()` snapshot before polling to detect new movements, preventing index instability if pruning occurs during poll
 - **Price providers:** `_get_eth_price()` and `_get_btc_price()` return latest 5m candle close, passed to whale clients for USD conversion
@@ -204,6 +208,7 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Pre-filter determinístico antes de Claude: funding extreme + F&G extreme + CVD divergencia
 - AI filter obligatorio en todas las profiles (sin bypass)
 - 4H OB summary: cuando cierra la vela 4H, envía resumen de OBs activos via Telegram
+- **Pipeline metrics:** `_emit_metric()` helper writes to `bot_metrics`. Emits `pipeline_latency_ms` (per candle) and `claude_latency_ms` (per AI evaluation).
 
 ## Configuration (`config/settings.py`)
 

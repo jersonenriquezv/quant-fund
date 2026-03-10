@@ -320,8 +320,11 @@ class SetupEvaluator:
             return None
 
         # Calculate SL/TP
+        # Setup B uses FVG midpoint as entry — deeper in the gap zone.
+        # This leverages the FVG (B's unique feature vs F) and gives wider
+        # SL distance since SL stays at OB wick.
         sl_price = self._calculate_sl(best_ob, direction)
-        entry_price = best_ob.entry_price
+        entry_price = (best_fvg.high + best_fvg.low) / 2
         tp1, tp2 = self._calculate_tp_levels(
             entry_price, sl_price, direction, liquidity_levels
         )

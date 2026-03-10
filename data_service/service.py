@@ -58,7 +58,10 @@ class DataService:
 
         # Sub-modules
         self._exchange = ExchangeClient()
-        self._ws_feed = OKXWebSocketFeed(on_candle_confirmed=self._on_candle)
+        self._ws_feed = OKXWebSocketFeed(
+            on_candle_confirmed=self._on_candle,
+            metrics_callback=self._emit_metric,
+        )
         self._cvd = CVDCalculator()
         self._oi_proxy = OILiquidationProxy()
         self._etherscan = EtherscanClient(price_provider=self._get_eth_price)
@@ -76,6 +79,8 @@ class DataService:
 
         # Health check state — track which components were down last check
         self._last_health_down: set[str] = set()
+        # Metrics cleanup counter (runs every ~100 health checks = ~50 min)
+        self._health_check_count: int = 0
 
     # ================================================================
     # Public API — called by Strategy Service and main.py
@@ -508,6 +513,17 @@ class DataService:
                 logger.error(f"News sentiment poll failed: {e}")
 
     # ================================================================
+    # Metrics (Grafana)
+    # ================================================================
+
+    def _emit_metric(self, name: str, value: float, pair: str | None = None, labels: dict | None = None) -> None:
+        """Write operational metric to PostgreSQL (fire-and-forget)."""
+        try:
+            self._postgres.insert_metric(name, value, pair=pair, labels=labels)
+        except Exception:
+            pass
+
+    # ================================================================
     # Internal: Health check loop
     # ================================================================
 
@@ -534,3 +550,11 @@ class DataService:
                     await self._alert_manager.notify_health_recovered(list(newly_up))
 
             self._last_health_down = disconnected
+
+            # Emit health metric: 1.0 = all OK, 0.0 = something down
+            self._emit_metric("health_status", 0.0 if disconnected else 1.0)
+
+            # Periodic cleanup of old metrics (~every 50 min)
+            self._health_check_count += 1
+            if self._health_check_count % 100 == 0:
+                self._postgres.cleanup_old_metrics(retention_days=30)

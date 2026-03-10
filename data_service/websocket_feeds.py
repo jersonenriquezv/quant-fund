@@ -59,18 +59,22 @@ class OKXWebSocketFeed:
     get_latest_candle() and get_candles() — direct function calls.
     """
 
-    def __init__(self, on_candle_confirmed=None):
+    def __init__(self, on_candle_confirmed=None, metrics_callback=None):
         """
         Args:
             on_candle_confirmed: Optional async callback called when a new
                 confirmed candle arrives. Signature: async fn(candle: Candle).
                 This is how main.py triggers the pipeline.
+            metrics_callback: Optional fn(name, value, pair, labels) for operational metrics.
         """
         # Storage: {("BTC/USDT", "5m"): [Candle, Candle, ...]}
         self._candles: dict[tuple[str, str], list[Candle]] = defaultdict(list)
 
         # Callback for pipeline trigger
         self._on_candle_confirmed = on_candle_confirmed
+
+        # Metrics callback for Grafana
+        self._metrics_cb = metrics_callback
 
         # Connection state
         self._ws = None
@@ -141,6 +145,8 @@ class OKXWebSocketFeed:
                 if not self._running:
                     break
                 logger.warning(f"OKX WebSocket disconnected. Reason: {e}")
+                if self._metrics_cb:
+                    self._metrics_cb("ws_reconnection", 1.0, None, {"feed": "candles"})
                 await self._reconnect_backoff()
 
     async def stop(self) -> None:
