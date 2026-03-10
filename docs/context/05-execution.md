@@ -22,7 +22,8 @@ ExecutionService (facade)
 5. Coloca limit entry order al precio calculado (75% OB/FVG) **con SL+TP attached** — OKX crea SL/TP atómicamente cuando el entry se llena.
    - **Contracts conversion**: `amount` en base currency (ETH/BTC) se convierte a contratos OKX internamente via `_to_contracts()`. OKX SWAP `ctVal`: BTC=0.01, ETH=0.1.
 6. Notifica Risk Service inmediatamente (en PLACE, no en fill)
-7. Registra la posición en el monitor
+7. **Telegram: ORDER PLACED** — envía notificación con par, dirección, entry, SL, TP, size, leverage
+8. Registra la posición en el monitor
 
 ## Máquina de estados (Fase 1 — simplificada)
 
@@ -124,9 +125,9 @@ Al startup, `sync_exchange_positions()` consulta OKX por posiciones abiertas. La
 
 | Archivo | Descripción |
 |---------|-------------|
-| `service.py` | Facade — execute(), start(), stop(), health(). Position adoption converts contracts→base. `_emit_metric()` wired to executor for Grafana. Accepts `on_sl_hit` callback for failed OB tracking. |
+| `service.py` | Facade — execute(), start(), stop(), health(). Position adoption converts contracts→base. `_emit_metric()` wired to executor for Grafana. Accepts `on_sl_hit` callback for failed OB tracking. Sends ORDER PLACED Telegram notification on successful order placement. |
 | `executor.py` | Wrapper ccxt — place/cancel/fetch orders. Contracts conversion (`_to_contracts`, `contracts_to_base`). Attached SL/TP on entry. Algo cancel fallback. `find_pending_algo_orders()`. Optional `metrics_callback` emits `okx_order_latency_ms` per order. |
-| `monitor.py` | Background loop — attached SL/TP discovery + manual fallback, breakeven + trailing SL via price polling. Post-fill SL distance check (`sl_too_close` close). Slippage guard (`excessive_slippage` close). |
+| `monitor.py` | Background loop — attached SL/TP discovery + manual fallback, breakeven + trailing SL via price polling. Post-fill SL distance check (`sl_too_close` close). Slippage guard (`excessive_slippage` close). Sends TRADE CLOSED + EMERGENCY Telegram notifications. |
 | `models.py` | ManagedPosition (SL/TP IDs, breakeven + trailing tracking) |
 
 ## Settings

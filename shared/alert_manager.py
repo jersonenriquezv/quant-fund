@@ -261,6 +261,17 @@ class AlertManager:
     # Convenience methods — format + route (drop-in for TelegramNotifier)
     # ================================================================
 
+    async def notify_order_placed(self, setup, approval) -> None:
+        """Limit order sent to exchange — CRITICAL priority."""
+        msg = (
+            f"\U0001f4e4 <b>ORDER PLACED</b>\n"
+            f"{setup.pair} {setup.direction.upper()} ({setup.setup_type})\n"
+            f"Entry: ${setup.entry_price:,.2f} | SL: ${setup.sl_price:,.2f}\n"
+            f"TP: ${setup.tp2_price:,.2f}\n"
+            f"Size: {approval.position_size:.6f} | Leverage: {int(approval.leverage)}x"
+        )
+        await self.alert(AlertPriority.CRITICAL, "trade_lifecycle", msg)
+
     async def notify_trade_opened(self, pos) -> None:
         """Trade opened — CRITICAL priority."""
         slippage = ""

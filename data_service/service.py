@@ -396,9 +396,7 @@ class DataService:
                     f"every {settings.ETHERSCAN_CHECK_INTERVAL}s")
 
         while self._running:
-            before_ids = {id(m) for m in self._etherscan._movements}
             await self._etherscan._poll_all_wallets()
-            await self._notify_new_movements(self._etherscan._movements, before_ids)
             self._publish_whale_movements()
             await asyncio.sleep(settings.ETHERSCAN_CHECK_INTERVAL)
 
@@ -413,9 +411,7 @@ class DataService:
                     f"every {settings.MEMPOOL_CHECK_INTERVAL}s")
 
         while self._running:
-            before_ids = {id(m) for m in self._btc_whale._movements}
             await self._btc_whale._poll_all_wallets()
-            await self._notify_new_movements(self._btc_whale._movements, before_ids)
             self._publish_whale_movements()
             await asyncio.sleep(settings.MEMPOOL_CHECK_INTERVAL)
 
@@ -554,16 +550,6 @@ class DataService:
                 logger.warning(f"Health check: DOWN={list(disconnected)}")
             else:
                 logger.debug(f"Health check: all systems OK")
-
-            # Alert on state changes only (no spam)
-            if self._alert_manager is not None:
-                newly_down = disconnected - self._last_health_down
-                newly_up = self._last_health_down - disconnected
-
-                if newly_down:
-                    await self._alert_manager.notify_health_down(list(newly_down))
-                if newly_up:
-                    await self._alert_manager.notify_health_recovered(list(newly_up))
 
             self._last_health_down = disconnected
 

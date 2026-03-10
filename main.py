@@ -118,12 +118,6 @@ async def on_candle_confirmed(candle: Candle) -> None:
     setup = _strategy_service.evaluate(candle.pair, candle)
     _publish_strategy_state(candle.pair)
 
-    # Send OB summary on every 4H candle close
-    if candle.timeframe == "4h" and _alert_manager is not None:
-        obs = _strategy_service.get_active_order_blocks(candle.pair)
-        htf_bias = _strategy_service.get_htf_bias(candle.pair)
-        await _alert_manager.notify_ob_summary(candle.pair, obs, htf_bias, candle.close)
-
     if setup is None:
         return
 
@@ -282,8 +276,6 @@ async def _evaluate_with_claude(setup, candle) -> "AIDecision | None":
     _emit_metric("claude_latency_ms", (time.monotonic() - claude_start) * 1000, setup.pair)
     _setup_dedup_cache[dedup_key] = time.time()
     _persist_ai_decision(None, decision, setup)
-    if _alert_manager is not None:
-        await _alert_manager.notify_ai_decision(setup, decision)
 
     if not decision.approved:
         logger.info(
@@ -382,67 +374,11 @@ _bot_start_time: float = 0.0
 
 
 async def _daily_summary_loop() -> None:
-    """Send daily summary to Telegram at 00:00 UTC."""
-    import datetime
-
+    """Placeholder — daily summary disabled. Kept for future use."""
+    # Daily summary notification removed — user wants only order/close alerts.
+    # Grafana dashboards provide the same info on demand.
     while True:
-        # Sleep until next 00:00 UTC
-        now = datetime.datetime.now(datetime.timezone.utc)
-        tomorrow = (now + datetime.timedelta(days=1)).replace(
-            hour=0, minute=0, second=5, microsecond=0
-        )
-        wait_seconds = (tomorrow - now).total_seconds()
-        await asyncio.sleep(wait_seconds)
-
-        if _alert_manager is None:
-            continue
-        try:
-            # Uptime
-            elapsed = int(time.time() - _bot_start_time)
-            hours, remainder = divmod(elapsed, 3600)
-            minutes = remainder // 60
-            uptime_str = f"{hours}h {minutes}m"
-
-            # Risk state
-            open_positions = 0
-            trades_today = 0
-            daily_dd = 0.0
-            weekly_dd = 0.0
-            wins = 0
-            losses = 0
-            capital = 0.0
-            if _risk_service is not None:
-                tracker = _risk_service._state
-                open_positions = tracker.get_open_positions_count()
-                trades_today = tracker.get_trades_today_count()
-                daily_dd = tracker.get_daily_dd_pct()
-                weekly_dd = tracker.get_weekly_dd_pct()
-                capital = tracker.get_capital()
-                wins = getattr(tracker, "_wins_today", 0)
-                losses = getattr(tracker, "_losses_today", 0)
-
-            # Prices
-            prices: dict[str, float] = {}
-            for pair in settings.TRADING_PAIRS:
-                if _data_service is not None:
-                    candle = _data_service.get_latest_candle(pair, "5m")
-                    if candle is not None:
-                        prices[pair] = candle.close
-
-            await _alert_manager.notify_daily_summary(
-                uptime_str=uptime_str,
-                profile=settings.STRATEGY_PROFILE,
-                trades_today=trades_today,
-                wins=wins,
-                losses=losses,
-                open_positions=open_positions,
-                daily_dd_pct=daily_dd,
-                weekly_dd_pct=weekly_dd,
-                capital=capital,
-                prices=prices,
-            )
-        except Exception as e:
-            logger.error(f"Daily summary failed: {e}")
+        await asyncio.sleep(86400)
 
 
 # ================================================================
@@ -542,11 +478,6 @@ async def main() -> None:
     global _bot_start_time
     _bot_start_time = time.time()
     status_task = asyncio.create_task(_daily_summary_loop(), name="daily_summary")
-
-    # Notify bot started
-    mode = "DEMO" if settings.OKX_SANDBOX else "LIVE"
-    if _alert_manager is not None:
-        await _alert_manager.notify_bot_started(mode=mode, capital=capital)
 
     # Wait for shutdown signal
     await shutdown_event.wait()

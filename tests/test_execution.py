@@ -89,6 +89,7 @@ def _make_service(executor=None, monitor=None, risk=None):
     service._executor = executor or _mock_executor()
     service._monitor = monitor or MagicMock(spec=PositionMonitor)
     service._risk = risk or MagicMock()
+    service._alert_manager = None
     return service
 
 

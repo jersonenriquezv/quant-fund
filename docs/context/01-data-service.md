@@ -200,14 +200,9 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - **Metrics cleanup:** Every ~50 min (100 health checks), calls `cleanup_old_metrics(30)` to prune metrics older than 30 days
 - **`_emit_metric()`:** Fire-and-forget metric writer to PostgreSQL `bot_metrics` table. Passed to WebSocket feeds as callback.
 - Uses `asyncio.get_running_loop()` (not deprecated `get_event_loop()`)
-- **Whale notification stability:** Uses `id()` snapshot before polling to detect new movements, preventing index instability if pruning occurs during poll
 - **Price providers:** `_get_eth_price()` and `_get_btc_price()` return latest 5m candle close, passed to whale clients for USD conversion
-- **Whale notification filtering (strict):**
-  - `WHALE_NOTIFY_EXCHANGE_ONLY = True`: Only exchange deposits/withdrawals trigger Telegram. Neutral inter-wallet transfers (transfer_out/transfer_in) are data-only (AI context + dashboard).
-  - `WHALE_NOTIFY_MIN_USD = 1,000,000`: Only movements >= $1M are notified. Smaller movements don't move BTC/ETH price.
-  - Market makers (Cumberland, Galaxy, Wintermute, etc.) still filtered to `significance == "high"` only.
-  - **Format:** Directional signal — deposit = BEARISH (selling pressure), withdrawal = BULLISH (accumulation).
-  - All movements still collected for AI context and dashboard regardless of notification filter.
+- **Whale data (no Telegram):** Whale movements are collected and stored for AI context + dashboard, but Telegram notifications for whales are disabled. All filtering settings (`WHALE_NOTIFY_EXCHANGE_ONLY`, `WHALE_NOTIFY_MIN_USD`, market maker filter) remain in config for potential future re-enable.
+- **Health check Telegram removed:** Health status still logged + metric emitted, but no Telegram alerts on component down/recovered.
 - **News sentiment polling:** `_news_sentiment_loop()` fetches F&G + headlines every `NEWS_POLL_INTERVAL` (5min). Stores latest `NewsSentiment` in `_latest_sentiment`. Included in `get_market_snapshot()`. Initial fetch on startup, then periodic.
 
 ### `main.py` — Entry Point
@@ -217,7 +212,6 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Pipeline completo: Data → Strategy → Pre-filter → AI → Risk → Execution (5 capas wired)
 - Pre-filter determinístico antes de Claude: funding extreme + F&G extreme + CVD divergencia
 - AI filter obligatorio en todas las profiles (sin bypass)
-- 4H OB summary: cuando cierra la vela 4H, envía resumen de OBs activos via Telegram
 - **Pipeline metrics:** `_emit_metric()` helper writes to `bot_metrics`. Emits `pipeline_latency_ms` (per candle) and `claude_latency_ms` (per AI evaluation).
 
 ## Configuration (`config/settings.py`)

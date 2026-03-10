@@ -29,6 +29,7 @@ class ExecutionService:
                  on_sl_hit=None) -> None:
         self._risk = risk_service
         self._data_service = data_service
+        self._alert_manager = alert_manager
         self._enabled = bool(settings.OKX_API_KEY)
 
         if not self._enabled:
@@ -286,6 +287,12 @@ class ExecutionService:
         )
 
         self._monitor.register(pos)
+
+        # Telegram: order placed
+        if self._alert_manager is not None:
+            self._monitor._safe_notify(
+                self._alert_manager.notify_order_placed(setup, approval)
+            )
 
         logger.info(
             f"Trade submitted: {setup.pair} {setup.direction} "
