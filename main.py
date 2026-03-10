@@ -375,16 +375,25 @@ def _persist_risk_event(event_type: str, details: dict) -> None:
 
 
 # ================================================================
-# Hourly status loop
+# Daily summary loop (replaces hourly status — available on Grafana)
 # ================================================================
 
 _bot_start_time: float = 0.0
 
 
-async def _hourly_status_loop() -> None:
-    """Send hourly status to Telegram."""
+async def _daily_summary_loop() -> None:
+    """Send daily summary to Telegram at 00:00 UTC."""
+    import datetime
+
     while True:
-        await asyncio.sleep(3600)  # Every hour
+        # Sleep until next 00:00 UTC
+        now = datetime.datetime.now(datetime.timezone.utc)
+        tomorrow = (now + datetime.timedelta(days=1)).replace(
+            hour=0, minute=0, second=5, microsecond=0
+        )
+        wait_seconds = (tomorrow - now).total_seconds()
+        await asyncio.sleep(wait_seconds)
+
         if _alert_manager is None:
             continue
         try:
@@ -394,6 +403,24 @@ async def _hourly_status_loop() -> None:
             minutes = remainder // 60
             uptime_str = f"{hours}h {minutes}m"
 
+            # Risk state
+            open_positions = 0
+            trades_today = 0
+            daily_dd = 0.0
+            weekly_dd = 0.0
+            wins = 0
+            losses = 0
+            capital = 0.0
+            if _risk_service is not None:
+                tracker = _risk_service._state
+                open_positions = tracker.get_open_positions_count()
+                trades_today = tracker.get_trades_today_count()
+                daily_dd = tracker.get_daily_dd_pct()
+                weekly_dd = tracker.get_weekly_dd_pct()
+                capital = tracker.get_capital()
+                wins = getattr(tracker, "_wins_today", 0)
+                losses = getattr(tracker, "_losses_today", 0)
+
             # Prices
             prices: dict[str, float] = {}
             for pair in settings.TRADING_PAIRS:
@@ -402,36 +429,20 @@ async def _hourly_status_loop() -> None:
                     if candle is not None:
                         prices[pair] = candle.close
 
-            # HTF bias
-            htf_bias: dict[str, str] = {}
-            if _strategy_service is not None:
-                for pair in settings.TRADING_PAIRS:
-                    htf_bias[pair] = _strategy_service.get_htf_bias(pair)
-
-            # Risk state
-            open_positions = 0
-            trades_today = 0
-            daily_dd = 0.0
-            weekly_dd = 0.0
-            if _risk_service is not None:
-                tracker = _risk_service._state
-                open_positions = tracker.get_open_positions_count()
-                trades_today = tracker.get_trades_today_count()
-                daily_dd = tracker.get_daily_dd_pct()
-                weekly_dd = tracker.get_weekly_dd_pct()
-
-            await _alert_manager.notify_hourly_status(
+            await _alert_manager.notify_daily_summary(
                 uptime_str=uptime_str,
                 profile=settings.STRATEGY_PROFILE,
-                open_positions=open_positions,
                 trades_today=trades_today,
+                wins=wins,
+                losses=losses,
+                open_positions=open_positions,
                 daily_dd_pct=daily_dd,
                 weekly_dd_pct=weekly_dd,
+                capital=capital,
                 prices=prices,
-                htf_bias=htf_bias,
             )
         except Exception as e:
-            logger.error(f"Hourly status failed: {e}")
+            logger.error(f"Daily summary failed: {e}")
 
 
 # ================================================================
@@ -527,10 +538,15 @@ async def main() -> None:
     # Start DataService in background
     data_task = asyncio.create_task(_data_service.start(), name="data_service")
 
-    # Start hourly status loop
+    # Start daily summary loop + bot started notification
     global _bot_start_time
     _bot_start_time = time.time()
-    status_task = asyncio.create_task(_hourly_status_loop(), name="hourly_status")
+    status_task = asyncio.create_task(_daily_summary_loop(), name="daily_summary")
+
+    # Notify bot started
+    mode = "DEMO" if settings.OKX_SANDBOX else "LIVE"
+    if _alert_manager is not None:
+        await _alert_manager.notify_bot_started(mode=mode, capital=capital)
 
     # Wait for shutdown signal
     await shutdown_event.wait()

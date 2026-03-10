@@ -202,12 +202,12 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Uses `asyncio.get_running_loop()` (not deprecated `get_event_loop()`)
 - **Whale notification stability:** Uses `id()` snapshot before polling to detect new movements, preventing index instability if pruning occurs during poll
 - **Price providers:** `_get_eth_price()` and `_get_btc_price()` return latest 5m candle close, passed to whale clients for USD conversion
-- **Whale notification tiering (3-tier):**
-  - Tier 1 (always notify): Exchange deposits/withdrawals — actionable trading signals
-  - Tier 2 (notify if large): Non-exchange transfers with `significance == "high"` OR `amount_usd >= $500K` — likely unrecognized exchange addresses
-  - Tier 3 (log only): Small non-exchange transfers — too noisy for Telegram
-- **Whale notification format:** Compact single-line format with USD shorthand ($1.2M, $500K). Wallet label preferred, fallback to truncated address.
-- **Market maker filtering:** `MARKET_MAKER_WALLETS` set (Cumberland, Galaxy, Wintermute, etc.) — only notify on `significance == "high"`. Data still collected for AI context.
+- **Whale notification filtering (strict):**
+  - `WHALE_NOTIFY_EXCHANGE_ONLY = True`: Only exchange deposits/withdrawals trigger Telegram. Neutral inter-wallet transfers (transfer_out/transfer_in) are data-only (AI context + dashboard).
+  - `WHALE_NOTIFY_MIN_USD = 1,000,000`: Only movements >= $1M are notified. Smaller movements don't move BTC/ETH price.
+  - Market makers (Cumberland, Galaxy, Wintermute, etc.) still filtered to `significance == "high"` only.
+  - **Format:** Directional signal — deposit = BEARISH (selling pressure), withdrawal = BULLISH (accumulation).
+  - All movements still collected for AI context and dashboard regardless of notification filter.
 - **News sentiment polling:** `_news_sentiment_loop()` fetches F&G + headlines every `NEWS_POLL_INTERVAL` (5min). Stores latest `NewsSentiment` in `_latest_sentiment`. Included in `get_market_snapshot()`. Initial fetch on startup, then periodic.
 
 ### `main.py` — Entry Point

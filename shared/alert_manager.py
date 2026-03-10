@@ -315,10 +315,11 @@ class AlertManager:
             await self.alert(AlertPriority.INFO, "ai_decision", msg)
 
     async def notify_whale_movement(self, movement, immediate: bool = False) -> None:
-        """Whale movement — INFO priority, batched unless immediate."""
-        action_verb, signal_text = TelegramNotifier._WHALE_ACTION_MAP.get(
-            movement.action, (movement.action, "Unknown")
-        )
+        """Whale movement — INFO priority, batched unless immediate.
+
+        Only exchange deposits/withdrawals reach here (filtered by data_service).
+        Format includes directional signal: BEARISH (deposit) / BULLISH (withdrawal).
+        """
         decimals = 4 if movement.chain == "BTC" else 2
         label = movement.wallet_label or (movement.wallet[:6] + "..." + movement.wallet[-4:])
         amount_str = f"{movement.amount:,.{decimals}f} {movement.chain}"
@@ -327,17 +328,22 @@ class AlertManager:
             amount_str += f" ({TelegramNotifier._format_usd(usd_val)})"
 
         if movement.action == "exchange_deposit":
+            signal_emoji = "\U0001f534"  # Red circle
+            signal_text = "BEARISH — selling pressure"
             direction = f" to {movement.exchange}"
         elif movement.action == "exchange_withdrawal":
+            signal_emoji = "\U0001f7e2"  # Green circle
+            signal_text = "BULLISH — accumulation"
             direction = f" from {movement.exchange}"
-        elif movement.action == "transfer_out":
-            direction = f" to {movement.exchange}"
         else:
-            direction = f" from {movement.exchange}"
+            signal_emoji = "\u26aa"  # White circle
+            signal_text = "Neutral"
+            direction = f" to {movement.exchange}" if movement.action == "transfer_out" else f" from {movement.exchange}"
 
         msg = (
-            f"<b>WHALE</b> | {label} {action_verb} {amount_str}{direction}\n"
-            f"Signal: {signal_text}. {movement.significance.capitalize()} significance."
+            f"\U0001f40b {signal_emoji} <b>WHALE {signal_text.split(' — ')[0]}</b>\n"
+            f"{label} → {amount_str}{direction}\n"
+            f"{signal_text}"
         )
 
         if immediate:
@@ -352,9 +358,83 @@ class AlertManager:
         # Reuse TelegramNotifier's formatting (it's complex)
         await self._notifier.notify_ob_summary(pair, obs, htf_bias, current_price)
 
-    async def notify_hourly_status(self, **kwargs) -> None:
-        """Hourly status — INFO priority."""
-        await self._notifier.notify_hourly_status(**kwargs)
+    async def notify_daily_summary(
+        self,
+        uptime_str: str,
+        profile: str,
+        trades_today: int,
+        wins: int,
+        losses: int,
+        open_positions: int,
+        daily_dd_pct: float,
+        weekly_dd_pct: float,
+        capital: float,
+        prices: dict[str, float],
+    ) -> None:
+        """Daily summary at 00:00 UTC — INFO priority."""
+        price_lines = []
+        for pair, price in prices.items():
+            short = pair.replace("/USDT", "")
+            price_lines.append(f"  {short}: ${price:,.2f}")
+        prices_text = "\n".join(price_lines) if price_lines else "  N/A"
+
+        net_pnl = wins - losses  # crude indicator
+        wl_str = f"{wins}W / {losses}L" if (wins + losses) > 0 else "no trades"
+
+        msg = (
+            f"\U0001f4ca <b>DAILY SUMMARY</b>\n"
+            f"Uptime: {uptime_str} | Profile: <b>{profile}</b>\n"
+            f"\n"
+            f"Trades: {trades_today} ({wl_str})\n"
+            f"Open positions: {open_positions}\n"
+            f"Capital: ${capital:,.2f}\n"
+            f"DD: daily {daily_dd_pct*100:.1f}% | weekly {weekly_dd_pct*100:.1f}%\n"
+            f"\n"
+            f"Prices:\n{prices_text}"
+        )
+        await self.alert(AlertPriority.INFO, "daily_summary", msg)
+
+    async def notify_bot_started(self, mode: str, capital: float) -> None:
+        """Bot started — CRITICAL priority (always want to know about restarts)."""
+        msg = (
+            f"\U0001f680 <b>BOT STARTED</b>\n"
+            f"Mode: <b>{mode}</b>\n"
+            f"Capital: ${capital:,.2f}\n"
+            f"Profile: {settings.STRATEGY_PROFILE}"
+        )
+        await self.alert(AlertPriority.CRITICAL, "trade_lifecycle", msg)
+
+    async def notify_breakeven_sl(self, pair: str, direction: str, entry_price: float) -> None:
+        """SL moved to breakeven — INFO priority."""
+        msg = (
+            f"\U0001f6e1 <b>BREAKEVEN</b>\n"
+            f"{pair} {direction.upper()} — SL moved to entry (${entry_price:,.2f})"
+        )
+        await self.alert(AlertPriority.INFO, "sl_management", msg)
+
+    async def notify_trailing_sl(self, pair: str, direction: str, new_sl: float) -> None:
+        """SL moved to TP1 (trailing) — INFO priority."""
+        msg = (
+            f"\U0001f4c8 <b>TRAILING SL</b>\n"
+            f"{pair} {direction.upper()} — SL moved to ${new_sl:,.2f}"
+        )
+        await self.alert(AlertPriority.INFO, "sl_management", msg)
+
+    async def notify_entry_expired(self, pair: str, direction: str, entry_price: float) -> None:
+        """Entry order expired unfilled — INFO priority."""
+        msg = (
+            f"\u23f0 <b>ENTRY EXPIRED</b>\n"
+            f"{pair} {direction.upper()} — limit at ${entry_price:,.2f} not filled"
+        )
+        await self.alert(AlertPriority.INFO, "trade_lifecycle", msg)
+
+    async def notify_dd_warning(self, daily_dd_pct: float, limit_pct: float) -> None:
+        """Drawdown approaching limit — WARNING priority."""
+        msg = (
+            f"\u26a0\ufe0f <b>DRAWDOWN WARNING</b>\n"
+            f"Daily DD: {daily_dd_pct*100:.1f}% — approaching limit ({limit_pct*100:.0f}%)"
+        )
+        await self.alert(AlertPriority.WARNING, "risk_warning", msg)
 
     async def notify_health_down(self, components: list[str]) -> None:
         """Infrastructure component down — WARNING priority."""

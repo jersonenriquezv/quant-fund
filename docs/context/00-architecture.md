@@ -80,6 +80,14 @@ Sin esta arquitectura, tendríamos un solo programa gigante donde todo está mez
 
 **Sistema de alertas (`shared/alert_manager.py`):** AlertManager envuelve TelegramNotifier con prioridades (INFO/WARNING/CRITICAL/EMERGENCY), rate limiting por prioridad (INFO: 10/h, WARNING: 5/15m, CRITICAL: 20/h), auto-silenciamiento por categoría (3 alertas en 5 min → 15 min silence), whale batching (2 min digest), y escalamiento EMERGENCY con retry+backoff (4 intentos: 0s/5s/15s/30s). Las categorías `trade_lifecycle` y `emergency` NUNCA se silencian. Health check de infra ahora alerta por Telegram cuando componentes se caen/recuperan. Configuración en `config/settings.py` (ALERT_*).
 
+**Notificaciones Telegram (actualizado 2026-03-10):**
+- **Whale:** Solo exchange deposits/withdrawals ≥$1M (`WHALE_NOTIFY_EXCHANGE_ONLY`, `WHALE_NOTIFY_MIN_USD`). Formato con señal direccional (BEARISH/BULLISH).
+- **Status horario eliminado** — disponible en Grafana 24/7. Reemplazado por **resumen diario a las 00:00 UTC** (trades, W/L, capital, DD).
+- **BOT STARTED** al arrancar (modo, capital, profile) — CRITICAL priority.
+- **Breakeven/Trailing SL** — notifica cuando SL se mueve a entry o a TP1.
+- **Entry expired** — notifica cuando limit order expira sin fill.
+- **DD warning** — notifica cuando daily DD alcanza 66% del límite (`DD_WARNING_THRESHOLD`).
+
 ## Detalles técnicos
 
 ### Comunicación entre servicios
@@ -234,6 +242,7 @@ python scripts/backtest.py --days 60 --profile aggressive --capital 10000 --csv
 - Ver `docs/to-fix.md` para backlog completo (~30 IMPORTANT + 29 MINOR issues)
 
 ## Cambios recientes
+- 2026-03-10: **Notification overhaul** — Whale alerts filtradas: solo exchange deposits/withdrawals ≥$1M (`WHALE_NOTIFY_EXCHANGE_ONLY`, `WHALE_NOTIFY_MIN_USD`). Formato con señal BEARISH/BULLISH. Status horario eliminado, reemplazado por resumen diario 00:00 UTC. Nuevas notificaciones: BOT STARTED, breakeven SL, trailing SL, entry expired, DD warning (66% del límite). `notify_hourly_status` removido de notifier.py y alert_manager.py.
 - 2026-03-10: **Grafana Monitoring** — Grafana OSS container en puerto 3001 con 3 dashboards provisioned (Trading Performance, System Health, AI & Risk Analytics). Nueva tabla `bot_metrics` para métricas operacionales. Pipeline instrumentado: pipeline_latency_ms, claude_latency_ms, okx_order_latency_ms, ws_reconnection, health_status. Retention automático 30d. Trading Performance dashboard funciona sin código nuevo (queries sobre tables existentes).
 - 2026-03-10: **AlertManager** — `shared/alert_manager.py` reemplaza llamadas directas a TelegramNotifier. Prioridades (INFO/WARNING/CRITICAL/EMERGENCY), rate limiting por prioridad, auto-silenciamiento por categoría (3 en 5min → 15min silence), whale batching (2min digest), EMERGENCY retry con backoff. Health check alerta por Telegram cuando infra cae/recupera. `trade_lifecycle` y `emergency` nunca se silencian. 26 tests nuevos. Todos los callers migrados: `main.py`, `execution_service/monitor.py`, `data_service/service.py`.
 - 2026-03-10: **ENABLED_SETUPS gate** — New setting `ENABLED_SETUPS` (default `["setup_b", "setup_f"]`) controls which setup types can trade. Gate in `strategy_service/service.py` checks after detection. Backtest showed B=56.8% WR, F=48.4% WR; A/G not profitable and disabled.

@@ -188,6 +188,12 @@ class PositionMonitor:
             logger.info(f"Entry timeout: {pos.pair} after {timeout}s")
             if pos.entry_order_id:
                 await self._executor.cancel_order(pos.entry_order_id, pos.pair)
+            if self._alert_manager is not None:
+                self._safe_notify(
+                    self._alert_manager.notify_entry_expired(
+                        pos.pair, pos.direction, pos.entry_price
+                    )
+                )
             self._close_position(pos, "cancelled")
             return
 
@@ -513,6 +519,12 @@ class PositionMonitor:
             )
             await self._adjust_sl(pos, pos.actual_entry_price)
             pos.breakeven_hit = True
+            if self._alert_manager is not None:
+                self._safe_notify(
+                    self._alert_manager.notify_breakeven_sl(
+                        pos.pair, pos.direction, pos.actual_entry_price
+                    )
+                )
 
     # ================================================================
     # Trailing SL — move SL to tp1 when price crosses 1.5:1 R:R
@@ -549,6 +561,12 @@ class PositionMonitor:
             )
             await self._adjust_sl(pos, pos.tp1_price)
             pos.trailing_sl_moved = True
+            if self._alert_manager is not None:
+                self._safe_notify(
+                    self._alert_manager.notify_trailing_sl(
+                        pos.pair, pos.direction, pos.tp1_price
+                    )
+                )
 
     # ================================================================
     # State: emergency_pending (retry failed emergency close)
@@ -783,6 +801,17 @@ class PositionMonitor:
                 self._risk.on_trade_closed(
                     pos.pair, pos.direction, pos.pnl_pct, pos.closed_at
                 )
+                # DD warning check after loss
+                if pos.pnl_pct < 0 and self._alert_manager is not None:
+                    try:
+                        dd = self._risk._state.get_daily_dd_pct()
+                        threshold = settings.DD_WARNING_THRESHOLD * settings.MAX_DAILY_DRAWDOWN
+                        if dd >= threshold:
+                            self._safe_notify(
+                                self._alert_manager.notify_dd_warning(dd, settings.MAX_DAILY_DRAWDOWN)
+                            )
+                    except Exception:
+                        pass
 
         # Remove from tracking
         self._positions.pop(pos.pair, None)
