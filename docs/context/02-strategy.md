@@ -1,5 +1,5 @@
 # Strategy Service
-> Última actualización: 2026-03-09 (OB entry 50%→75%)
+> Última actualización: 2026-03-10 (Setup B deshabilitado: 25% WR, -$2129. ENABLED_SETUPS: A+F)
 > Estado: implementado (completo, integrado en main.py). Audited — 3 CRITICAL fixes applied. Quick Setups C/D/E added. Setups F/G added.
 
 ## Qué hace (30 segundos)
@@ -41,11 +41,12 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
 - **Temporal guard:** Solo evalúa candles cuyo timestamp es > `max(level.timestamps)`. Previene que velas históricas (usadas para formar el nivel) lo "sweepeen" falsamente.
 
 ### `strategy_service/setups.py` — Swing Setups A/B/F/G + Confluencia
-- **Setup A** (primario): Sweep + CHoCH + OB en discount/premium
+- **Setup A** (primario): Sweep + CHoCH + OB en discount/premium — **HABILITADO**
   - **Bidireccional**: LTF CHoCH/BOS determina dirección del trade. HTF bias es contexto para Claude, no un gate.
   - `REQUIRE_HTF_LTF_ALIGNMENT` default `False` — permite counter-trend setups con estructura LTF clara.
   - **Orden temporal obligatorio**: sweep ANTES del CHoCH
-  - **Proximidad temporal**: sweep dentro de `SETUP_A_MAX_SWEEP_CHOCH_GAP` candles del CHoCH
+  - **Proximidad temporal**: sweep dentro de `SETUP_A_MAX_SWEEP_CHOCH_GAP` candles del CHoCH (40 candles = ~200min en 5m, ~10h en 15m)
+  - **Backtest 60d aggressive**: 46 trades, 47.8% WR, +$2,510. El bottleneck principal era `no_aligned_sweep` — gap=20 solo producía 11 trades. Gap=40 captura sweeps más lejanos sin degradar calidad.
 - **Setup B** (secundario): BOS + FVG adyacente a OB
   - Dirección BOS determina dirección del trade (bidireccional como Setup A)
   - FVG-OB adjacency threshold: `FVG_OB_MAX_GAP_PCT` (0.5% — was 0.1%)
@@ -86,7 +87,7 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 ### `strategy_service/service.py` — Facade
 - `StrategyService(data_service)` — obtiene candles del DataService
 - `evaluate(pair, candle)` — evalúa LTF candles: A → B → F → G → C → D → E, retorna `TradeSetup | None`
-- **`ENABLED_SETUPS` gate** — después de detectar un setup, verifica `setup.setup_type in settings.ENABLED_SETUPS`. Si no está habilitado, logea debug y continúa evaluando el siguiente tipo. Default: `["setup_b", "setup_f"]` (backtest mostró B=56.8% WR y F=48.4% WR; A/G no son rentables)
+- **`ENABLED_SETUPS` gate** — después de detectar un setup, verifica `setup.setup_type in settings.ENABLED_SETUPS`. Si no está habilitado, logea debug y continúa evaluando el siguiente tipo. Default: `["setup_a", "setup_f"]`. Setup B deshabilitado: 25% WR, -$2129 en backtest 60d — FVG adjacency selecciona OBs ruidosos con SLs muy estrechos. C, D, E, G pendientes de validación.
 - Coordina todos los módulos internos
 - Quick setup cooldown tracking per (pair, setup_type)
 
@@ -97,7 +98,7 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 - `PD_EQUILIBRIUM_BAND: float = 0.02` — banda ±2% alrededor del 50% para zona equilibrium
 - `OB_PROXIMITY_PCT: float = 0.003` — 0.3% del precio como margen de proximidad al OB (solo para notificaciones)
 - `OB_MAX_DISTANCE_PCT: float = 0.05` — 5% máximo de distancia del precio al OB para zone-based orders
-- `SETUP_A_MAX_SWEEP_CHOCH_GAP: int = 20` — máximo candles entre sweep y CHoCH
+- `SETUP_A_MAX_SWEEP_CHOCH_GAP: int = 40` — máximo candles entre sweep y CHoCH (was 20, increased after backtest validation)
 - `FVG_OB_MAX_GAP_PCT: float = 0.005` — 0.5% gap máximo entre FVG y OB para Setup B adjacency
 - `REQUIRE_HTF_LTF_ALIGNMENT: bool = False` — si True, LTF debe alinearse con HTF; default False para bidireccional
 - `REQUIRE_PD_ALIGNMENT: bool = True` — premium/discount zone debe alinear con dirección (nunca se desactiva — core SMC)

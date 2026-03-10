@@ -176,6 +176,7 @@ Backtester completo con simulación de fills:
 - **Métricas**: win rate, avg R:R, PnL, max drawdown, Sharpe, profit factor, trades/week
 - **Breakdowns**: por setup type, par, dirección, exit reasons, risk rejections
 - **Export CSV**: `--csv` genera archivo con todas las trades
+- **JSON persistence**: cada run guarda automáticamente un resumen JSON en `backtest_results/` con métricas, breakdowns y metadata. Filename: `{timestamp}_{profile}_{days}d.json`. No requiere flag — siempre se guarda.
 
 ```bash
 python scripts/backtest.py --days 60 --profile aggressive --capital 10000 --csv

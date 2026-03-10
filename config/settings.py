@@ -164,15 +164,18 @@ class Settings:
 
     # --- Enabled setups ---
     # Only these setup types will be traded. Others are detected but discarded.
-    # Backtest showed B (45.8% WR) and F (49.4% WR) are profitable.
-    # A, C, D, E, G disabled until validated.
+    # Backtest 60d: A (47.8% WR, +$2510), F (44.7% WR, +$1775).
+    # B disabled: 25% WR, -$2129 — FVG adjacency selects noisy OBs, tight SLs.
+    # C, D, E, G pending validation.
     ENABLED_SETUPS: list = field(default_factory=lambda: [
-        "setup_b", "setup_f",
+        "setup_a", "setup_f",
     ])
 
     # --- Setup A temporal ---
-    # Max candles between sweep and CHoCH for Setup A validity
-    SETUP_A_MAX_SWEEP_CHOCH_GAP: int = 20
+    # Max candles between sweep and CHoCH for Setup A validity.
+    # 40 candles = ~200min on 5m, ~10h on 15m. Backtest showed gap=40
+    # produces 4x more trades than gap=20 while keeping WR>45%.
+    SETUP_A_MAX_SWEEP_CHOCH_GAP: int = 40
 
     # ========================
     # QUICK SETUPS (C, D, E) — Data-driven, shorter duration

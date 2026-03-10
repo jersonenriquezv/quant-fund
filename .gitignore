@@ -28,5 +28,8 @@ logs/
 .DS_Store
 Thumbs.db
 
+# Backtest results (auto-generated)
+backtest_results/
+
 # Claude Code local settings
 .claude/settings.local.json

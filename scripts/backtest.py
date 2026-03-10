@@ -14,6 +14,7 @@ Usage:
 
 import argparse
 import csv
+import json
 import math
 import re
 import sys
@@ -813,6 +814,65 @@ def export_csv(trades: list[SimulatedTrade], filename: str) -> None:
 
 
 # ================================================================
+# JSON result persistence
+# ================================================================
+
+def save_results_json(m: BacktestMetrics, profile: str, period_days: float,
+                      capital: float, pairs: list[str],
+                      setups_found: int, setups_deduped: int) -> str:
+    """Save backtest summary to JSON for future reference."""
+    results_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "backtest_results")
+    os.makedirs(results_dir, exist_ok=True)
+
+    ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
+    filename = os.path.join(results_dir, f"{ts}_{profile}_{int(period_days)}d.json")
+
+    result = {
+        "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+        "profile": profile,
+        "period_days": round(period_days, 1),
+        "capital": capital,
+        "pairs": pairs,
+        "summary": {
+            "total_trades": m.total_trades,
+            "wins": m.wins,
+            "losses": m.losses,
+            "win_rate": round(m.win_rate * 100, 1),
+            "total_pnl_usd": round(m.total_pnl_usd, 2),
+            "total_pnl_pct": round(m.total_pnl_pct, 2),
+            "avg_r_multiple": round(m.avg_r_multiple, 3),
+            "max_drawdown_pct": round(m.max_drawdown_pct, 1),
+            "sharpe_ratio": round(m.sharpe_ratio, 2),
+            "profit_factor": round(m.profit_factor, 2) if m.profit_factor != float("inf") else "inf",
+            "trades_per_week": round(m.trades_per_week, 1),
+            "avg_trade_duration_hours": round(m.avg_trade_duration_hours, 1),
+        },
+        "by_setup": m.by_setup,
+        "by_pair": m.by_pair,
+        "by_direction": m.by_direction,
+        "exit_reasons": m.exit_reasons,
+        "entry_timeouts": m.entry_timeouts,
+        "setups_found": setups_found,
+        "setups_deduped": setups_deduped,
+    }
+
+    # Round floats in nested dicts
+    for section in [result["by_setup"], result["by_pair"], result["by_direction"]]:
+        for key, val in section.items():
+            if isinstance(val, dict):
+                for k, v in val.items():
+                    if isinstance(v, float):
+                        val[k] = round(v, 4)
+
+    with open(filename, "w") as f:
+        json.dump(result, f, indent=2)
+
+    print(f"Results saved: {filename}")
+    return filename
+
+
+# ================================================================
 # Main backtest
 # ================================================================
 
@@ -973,6 +1033,10 @@ def run_backtest(pairs: list[str] | None = None, verbose: bool = False,
     print_report(metrics, simulator, profile, period_days,
                  setups_count, total_evaluated, tracker,
                  setups_deduped=setups_deduped)
+
+    # Always save JSON summary
+    save_results_json(metrics, profile, period_days, capital, pairs,
+                      setups_count, setups_deduped)
 
     # CSV export
     if export:
