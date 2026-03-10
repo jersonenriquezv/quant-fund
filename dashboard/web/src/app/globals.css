@@ -375,6 +375,24 @@ tr:hover td {
   cursor: pointer;
 }
 
+/* ── Pending order row (compact) ── */
+.pending-row {
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 8px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border);
+}
+
+.pending-label {
+  background: rgba(251, 191, 36, 0.12);
+  color: var(--warning);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
 /* ── AI decision card ── */
 .ai-card {
   background: rgba(255, 255, 255, 0.03);
@@ -486,5 +504,8 @@ tr:hover td {
   .position-footer {
     flex-direction: column !important;
     gap: 8px !important;
+  }
+  .pending-lev {
+    display: none;
   }
 }
