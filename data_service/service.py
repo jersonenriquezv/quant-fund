@@ -362,6 +362,14 @@ class DataService:
             logger.error(f"Failed to store candle in PostgreSQL: "
                          f"pair={candle.pair} tf={candle.timeframe} error={e}")
 
+        # Persist CVD snapshot on every confirmed candle (for backtest history)
+        try:
+            cvd = self._cvd.get_cvd(candle.pair)
+            if cvd:
+                self._postgres.store_cvd_snapshot(cvd)
+        except Exception as e:
+            logger.error(f"Failed to store CVD snapshot: pair={candle.pair} error={e}")
+
         # Track last processed timestamp
         self._redis.set_last_candle_ts(candle.pair, candle.timeframe, candle.timestamp)
 

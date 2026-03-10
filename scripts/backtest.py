@@ -28,7 +28,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data_service.data_store import PostgresStore
-from shared.models import Candle, TradeSetup, FundingRate, OpenInterest, MarketSnapshot
+from shared.models import Candle, TradeSetup, FundingRate, OpenInterest, CVDSnapshot, MarketSnapshot
 from strategy_service.service import StrategyService
 from shared.logger import setup_logger
 from config.settings import settings, QUICK_SETUP_TYPES
@@ -54,9 +54,10 @@ class BacktestDataService:
         # {(pair, timeframe): [Candle, ...]} sorted oldest-first
         self._candles: dict[tuple[str, str], list[Candle]] = {}
         self._current_time_ms: int = 0
-        # Historical funding rates and OI per pair, sorted oldest-first
+        # Historical funding rates, OI, and CVD per pair, sorted oldest-first
         self._funding: dict[str, list[FundingRate]] = {}
         self._oi: dict[str, list[OpenInterest]] = {}
+        self._cvd: dict[str, list[CVDSnapshot]] = {}
 
     def load_from_postgres(self, pg: PostgresStore, pairs: list[str],
                            timeframes: list[str], count: int = 50000):
@@ -84,6 +85,12 @@ class BacktestDataService:
                 self._oi[pair] = oi
                 logger.info(f"Loaded {len(oi)} OI snapshots: {pair}")
 
+            # Load historical CVD
+            cvd = pg.load_cvd_snapshots(pair)
+            if cvd:
+                self._cvd[pair] = cvd
+                logger.info(f"Loaded {len(cvd)} CVD snapshots: {pair}")
+
     def set_time(self, time_ms: int):
         self._current_time_ms = time_ms
 
@@ -110,18 +117,22 @@ class BacktestDataService:
         return result
 
     def get_market_snapshot(self, pair: str) -> MarketSnapshot:
-        """Return MarketSnapshot with historical funding + OI at current time."""
+        """Return MarketSnapshot with historical funding + OI + CVD at current time."""
         funding = self._find_nearest(
             self._funding.get(pair, []), self._current_time_ms
         )
         oi = self._find_nearest(
             self._oi.get(pair, []), self._current_time_ms
         )
+        cvd = self._find_nearest(
+            self._cvd.get(pair, []), self._current_time_ms
+        )
         return MarketSnapshot(
             pair=pair,
             timestamp=self._current_time_ms,
             funding=funding,
             oi=oi,
+            cvd=cvd,
         )
 
     def get_trigger_candles(self, pair: str,

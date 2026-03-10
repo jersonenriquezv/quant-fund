@@ -24,7 +24,7 @@ import redis
 
 from config.settings import settings
 from shared.logger import setup_logger
-from shared.models import Candle, FundingRate, OpenInterest
+from shared.models import Candle, CVDSnapshot, FundingRate, OpenInterest
 
 logger = setup_logger("data_service")
 
@@ -434,6 +434,24 @@ class PostgresStore:
             cur.execute("""
                 CREATE INDEX IF NOT EXISTS idx_oi_pair_ts
                 ON open_interest_history(pair, timestamp DESC)
+            """)
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS cvd_history (
+                    id SERIAL PRIMARY KEY,
+                    pair VARCHAR(20) NOT NULL,
+                    timestamp BIGINT NOT NULL,
+                    cvd_5m DOUBLE PRECISION NOT NULL,
+                    cvd_15m DOUBLE PRECISION NOT NULL,
+                    cvd_1h DOUBLE PRECISION NOT NULL,
+                    buy_volume DOUBLE PRECISION NOT NULL,
+                    sell_volume DOUBLE PRECISION NOT NULL,
+                    UNIQUE(pair, timestamp)
+                )
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_cvd_pair_ts
+                ON cvd_history(pair, timestamp DESC)
             """)
 
         logger.info("PostgreSQL tables verified/created")
@@ -937,6 +955,79 @@ class PostgresStore:
                     return []
             except psycopg2.Error as e:
                 logger.error(f"PostgreSQL OI load failed: {e}")
+                return []
+        return []
+
+    # --- CVD History ---
+
+    def store_cvd_snapshot(self, cvd: CVDSnapshot) -> None:
+        """Store a CVD snapshot for backtesting. Called every 5s per pair."""
+        for attempt in range(2):
+            if not self._ensure_connected():
+                return
+            try:
+                with self._conn.cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO cvd_history
+                           (pair, timestamp, cvd_5m, cvd_15m, cvd_1h,
+                            buy_volume, sell_volume)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s)
+                           ON CONFLICT (pair, timestamp) DO NOTHING""",
+                        (cvd.pair, cvd.timestamp, cvd.cvd_5m, cvd.cvd_15m,
+                         cvd.cvd_1h, cvd.buy_volume, cvd.sell_volume),
+                    )
+                return
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                logger.warning(f"PostgreSQL CVD store connection error (attempt {attempt+1}): {e}")
+                self._conn = None
+                if attempt == 1:
+                    return
+            except psycopg2.Error as e:
+                logger.error(f"PostgreSQL CVD store failed: {e}")
+                return
+
+    def load_cvd_snapshots(self, pair: str, since_ms: int = 0,
+                           until_ms: int = 0) -> list[CVDSnapshot]:
+        """Load historical CVD snapshots for a pair, oldest-first."""
+        for attempt in range(2):
+            if not self._ensure_connected():
+                return []
+            try:
+                with self._conn.cursor() as cur:
+                    if until_ms > 0:
+                        cur.execute(
+                            """SELECT timestamp, cvd_5m, cvd_15m, cvd_1h,
+                                      buy_volume, sell_volume
+                               FROM cvd_history
+                               WHERE pair = %s AND timestamp >= %s AND timestamp <= %s
+                               ORDER BY timestamp ASC""",
+                            (pair, since_ms, until_ms),
+                        )
+                    else:
+                        cur.execute(
+                            """SELECT timestamp, cvd_5m, cvd_15m, cvd_1h,
+                                      buy_volume, sell_volume
+                               FROM cvd_history
+                               WHERE pair = %s AND timestamp >= %s
+                               ORDER BY timestamp ASC""",
+                            (pair, since_ms),
+                        )
+                    rows = cur.fetchall()
+                return [
+                    CVDSnapshot(
+                        timestamp=row[0], pair=pair, cvd_5m=row[1],
+                        cvd_15m=row[2], cvd_1h=row[3],
+                        buy_volume=row[4], sell_volume=row[5],
+                    )
+                    for row in rows
+                ]
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                logger.warning(f"PostgreSQL CVD load connection error (attempt {attempt+1}): {e}")
+                self._conn = None
+                if attempt == 1:
+                    return []
+            except psycopg2.Error as e:
+                logger.error(f"PostgreSQL CVD load failed: {e}")
                 return []
         return []
 
