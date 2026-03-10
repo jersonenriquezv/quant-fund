@@ -1,6 +1,6 @@
 # AI Service
-> Última actualización: 2026-03-09
-> Estado: implementado (completo, integrado en main.py). Pre-filter determinístico (funding + F&G + CVD). HTF bias es contexto para Claude, no hard gate. AI obligatorio en todas las profiles. Setup dedup cache. News sentiment (F&G + headlines) como nuevo factor para Claude.
+> Última actualización: 2026-03-10
+> Estado: implementado (completo, integrado en main.py). Pre-filter determinístico (funding + F&G + CVD). HTF bias es contexto para Claude, no hard gate. AI obligatorio en todas las profiles. Setup dedup cache. News sentiment (F&G + headlines) como nuevo factor. CVD interpretation differentiated by setup type (reversal vs continuation).
 
 ## Qué hace (30 segundos)
 El AI Service es el consultor senior del sistema. Recibe cada trade setup del Strategy Service y lo pasa por Claude (Sonnet) para que evalúe si el contexto de mercado apoya ejecutarlo. Claude analiza funding rate, open interest, CVD, liquidaciones, whale movements y precio reciente. Si confidence >= 0.60 y approved=true, el trade pasa al Risk Service. Si no, se descarta.
@@ -40,8 +40,8 @@ AIDecision { confidence, approved, reasoning, adjustments, warnings }
 - Instrucción: responder SOLO con JSON válido
 - HTF bias es CONTEXTO, no garantía. Claude evalúa counter-trend setups con criterio propio
 - Si HTF alineado → high-conviction trend trade. Si HTF opuesto → counter-trend, puede ser válido si LTF structure + CVD + funding apoyan
-- 8 factores a evaluar: funding, CVD (más peso), liquidaciones, whales, OI (snapshot-only), calidad del setup con confluences etiquetadas, R:R, news sentiment (F&G + headlines)
-- Reglas críticas: no aprobar solo por patrón, funding extremo = escepticismo, CVD multi-timeframe divergente = warning, no auto-rechazar counter-trend
+- 8 factores a evaluar: funding, CVD (peso diferenciado por tipo de setup), liquidaciones, whales, OI (snapshot-only), calidad del setup con confluences etiquetadas, R:R, news sentiment (F&G + headlines)
+- Reglas críticas: no aprobar solo por patrón, funding extremo = escepticismo, CVD interpretation per setup type (reversal: counter-CVD expected; continuation: CVD aligned = confirmation), CVD alone never a veto, no auto-rechazar counter-trend
 - Sin cuota de aprobación — aprobar solo cuando evidencia claramente apoya
 
 **User prompt** (por cada evaluación):

@@ -52,7 +52,10 @@ CRITICAL RULES:
   - Do NOT auto-reject counter-trend setups — they are often the most profitable.
 - If funding rate is extreme (>0.03% or <-0.03%), increase skepticism for trades in the crowded direction.
 - If major liquidation cascade just happened in the trade direction, the move may be exhausted — reduce confidence.
-- If CVD is available AND diverges from trade direction across multiple timeframes, reduce confidence.
+- CVD INTERPRETATION DEPENDS ON SETUP TYPE:
+  - Setup A (reversal after liquidity sweep + CHoCH): CVD AGAINST trade direction is EXPECTED and NORMAL. The sweep just happened — CVD still reflects the old move. Do NOT reduce confidence for this. Only reduce if CVD is extreme (buy dominance <35% for longs or >65% for shorts).
+  - Setup B/F (continuation after BOS): CVD aligned with trade direction = strong confirmation. CVD diverging = moderate warning, reduce confidence slightly but do NOT auto-reject if setup quality is high.
+  - In ALL cases: CVD alone should NEVER be the sole reason to reject. It is ONE factor among many. A 0.25 confidence rejection requires multiple data points contradicting the trade, not just CVD.
 - A strong technical setup (4+ confluences, high OB volume, clear structure) should be approved even without CVD/liquidation/whale data.
 - Reject only when present data creates a clear case AGAINST the trade, not when data is simply absent."""
 
