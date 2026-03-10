@@ -192,6 +192,16 @@ async def on_candle_confirmed(candle: Candle) -> None:
             f"leverage={approval.leverage:.2f}x risk={approval.risk_pct*100:.1f}%"
         )
 
+    # Check if this OB already failed (SL hit on same entry/SL combo)
+    if _strategy_service is not None and _strategy_service.is_ob_failed(
+        setup.pair, setup.sl_price, setup.entry_price
+    ):
+        logger.info(
+            f"OB already failed: {setup.pair} entry={setup.entry_price:.2f} "
+            f"sl={setup.sl_price:.2f} — skipping"
+        )
+        return
+
     # Layer 5: Execution Service — place orders on exchange
     if _execution_service is not None and approval is not None and approval.approved:
         ai_confidence = decision.confidence if decision else 0.0
@@ -492,7 +502,15 @@ async def main() -> None:
     _risk_service = RiskService(capital=capital, data_service=_data_service)
 
     # Create ExecutionService — Layer 5
-    _execution_service = ExecutionService(_risk_service, _data_service, alert_manager=_alert_manager)
+    # on_sl_hit callback marks failed OBs so the same OB doesn't re-trigger
+    def _on_sl_hit(pair: str, sl_price: float, entry_price: float) -> None:
+        if _strategy_service is not None:
+            _strategy_service.mark_ob_failed(pair, sl_price, entry_price)
+
+    _execution_service = ExecutionService(
+        _risk_service, _data_service, alert_manager=_alert_manager,
+        on_sl_hit=_on_sl_hit
+    )
     await _execution_service.start()
 
     # Handle graceful shutdown

@@ -468,6 +468,16 @@ class Settings:
     ALERT_AUTO_SILENCE_WINDOW: int = 300     # 5 min window
     ALERT_AUTO_SILENCE_DURATION: int = 900   # 15 min silence
 
+    # Whale notification filtering — reduce noise
+    # Only notify exchange deposits/withdrawals (skip neutral inter-wallet transfers)
+    WHALE_NOTIFY_EXCHANGE_ONLY: bool = True
+    # Minimum USD value to trigger a Telegram notification ($1M = market-moving)
+    WHALE_NOTIFY_MIN_USD: float = 1_000_000
+
+    # Drawdown warning threshold (fraction of MAX_DAILY_DRAWDOWN).
+    # e.g. 0.66 = warn when DD reaches 66% of the daily limit.
+    DD_WARNING_THRESHOLD: float = 0.66
+
     # ========================
     # RECONNECTION
     # ========================
@@ -524,7 +534,7 @@ STRATEGY_PROFILES: dict[str, dict] = {
         "OB_MAX_DISTANCE_PCT": 0.08,          # 8% (default 5%)
         "ENTRY_TIMEOUT_SECONDS": 21600,       # 6 hours (default 4h)
         # Quick setups — more lenient in aggressive mode
-        "QUICK_SETUP_COOLDOWN": 1800,         # 30 min (default 1h)
+        "QUICK_SETUP_COOLDOWN": 3600,         # 1h (same as default)
         "MOMENTUM_CVD_LONG_MIN": 0.52,        # 52% (default 55%)
         "MOMENTUM_CVD_SHORT_MAX": 0.48,       # 48% (default 45%)
     },

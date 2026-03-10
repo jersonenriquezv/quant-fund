@@ -58,6 +58,10 @@ class StrategyService:
         # Quick setup cooldown: (pair, setup_type) → last trigger timestamp
         self._quick_setup_last: dict[tuple[str, str], float] = {}
 
+        # Failed OB tracking: set of (pair, ob_low, ob_high) that hit SL.
+        # Prevents re-entering the same OB after a loss.
+        self._failed_obs: set[tuple[str, float, float]] = {}
+
     def evaluate(self, pair: str,
                  trigger_candle: Candle) -> Optional[TradeSetup]:
         """Main entry point — evaluate a pair for trade setups.
@@ -334,6 +338,21 @@ class StrategyService:
         if last is None:
             return False
         return (now - last) < settings.QUICK_SETUP_COOLDOWN
+
+    def mark_ob_failed(self, pair: str, sl_price: float, entry_price: float) -> None:
+        """Mark an OB range as failed (trade hit SL). Prevents re-entry.
+
+        Uses (pair, sl_price, entry_price) as the key — these uniquely
+        identify the OB that was traded (SL = OB edge, entry = 75% body).
+        """
+        key = (pair, round(sl_price, 2), round(entry_price, 2))
+        self._failed_obs.add(key)
+        logger.info(f"OB marked as failed: {pair} sl={sl_price:.2f} entry={entry_price:.2f}")
+
+    def is_ob_failed(self, pair: str, sl_price: float, entry_price: float) -> bool:
+        """Check if an OB was already traded and lost."""
+        key = (pair, round(sl_price, 2), round(entry_price, 2))
+        return key in self._failed_obs
 
     def get_active_order_blocks(self, pair: str) -> list[OrderBlock]:
         """Get all active OBs for a pair across LTF timeframes."""

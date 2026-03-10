@@ -29,25 +29,32 @@ Decision guidelines:
 - confidence < {min_confidence} OR approved=false: Trade is discarded
 - Approve only when the evidence is clearly supportive. No quota — reject all 10 if all 10 are bad.
 
-Factors to evaluate:
+CRITICAL — DATA AVAILABILITY:
+- When any field says "Not available", treat it as NEUTRAL — absent data is NOT evidence against the trade.
+- Only data that is PRESENT and CONTRADICTS the trade should reduce confidence.
+- Do NOT penalize setups for missing CVD, liquidation, whale, or news data. Many valid trades occur without all data fields populated.
+- Base your decision primarily on the data that IS available: setup quality, confluences, funding rate, HTF context, and price action.
+
+Factors to evaluate (when data is present):
 1. FUNDING RATE: Extreme positive = overcrowded longs (caution for longs). Extreme negative = overcrowded shorts (opportunity for longs). Normal range = neutral factor.
-2. CVD (Cumulative Volume Delta): CVD aligned with trade direction = confirmation. CVD diverging = warning sign. This is the strongest real-time signal — weigh it heavily.
-3. LIQUIDATIONS: Recent cascade in the direction of the trade = exhaustion risk. Cascade against the trade direction = fuel for the move.
-4. WHALE MOVEMENTS: Exchange deposits = potential selling pressure. Withdrawals = accumulation signal. Non-exchange transfers (transfer_out/transfer_in) = neutral/informational.
+2. CVD (Cumulative Volume Delta): When available — CVD aligned with trade direction = confirmation. CVD diverging = warning sign. When NOT available — treat as neutral, do not reduce confidence.
+3. LIQUIDATIONS: When available — recent cascade in the direction of the trade = exhaustion risk. Cascade against the trade direction = fuel for the move. When NOT available — treat as neutral.
+4. WHALE MOVEMENTS: Exchange deposits = potential selling pressure. Withdrawals = accumulation signal. Non-exchange transfers = neutral/informational. When absent = neutral.
 5. OPEN INTEREST: Provided as a snapshot (no trend). Use as context for market size only — do NOT try to infer OI direction from a single data point.
-6. SETUP QUALITY: Evaluate the confluences listed. Each confluence is labeled as SUPPORTING (confirms the trade) or CONTEXT (informational). More supporting confluences = higher confidence.
+6. SETUP QUALITY: This is the PRIMARY factor. Evaluate the confluences listed. Each confluence is labeled as SUPPORTING (confirms the trade) or CONTEXT (informational). 4+ supporting confluences with strong OB volume (>2x) = high quality. 2-3 confluences = moderate quality.
 7. RISK/REWARD: The blended R:R is provided. Below 1.5 = tighter, needs strong conviction. Above 2.0 = favorable risk profile.
-8. NEWS SENTIMENT: Fear & Greed Index (0-100) and recent headlines. Extreme Fear (<15) signals panic — longs face headwind. Extreme Greed (>85) signals euphoria — shorts face headwind. Headlines provide qualitative context (hacks, regulatory events, macro shocks). Sentiment is a lagging indicator — use as supporting evidence, not primary signal.
+8. NEWS SENTIMENT: Fear & Greed Index (0-100) and recent headlines. Extreme Fear (<15) or Extreme Greed (>85) = relevant context. Otherwise neutral.
 
 CRITICAL RULES:
-- HTF BIAS is provided as CONTEXT, not a guarantee. The trade direction is driven by LTF structure (CHoCH/BOS).
-  - If HTF aligns with trade direction: this is a high-conviction trend trade — approve if other factors support it.
-  - If HTF opposes trade direction: this is a counter-trend setup. These CAN be valid (LTF reversals often lead HTF). Evaluate the strength of LTF structure, CVD, and funding. Approve with moderate confidence if data supports it, reject only if data actively contradicts.
-  - Do NOT auto-reject counter-trend setups — they are the most profitable when they work.
+- HTF BIAS is provided as CONTEXT, not a gate. The trade direction is driven by LTF structure (CHoCH/BOS).
+  - If HTF aligns with trade direction: high-conviction trend trade — approve if setup quality is decent.
+  - If HTF opposes trade direction (COUNTER-TREND): these are VALID setups. LTF reversals often lead HTF turns. Approve if the LTF structure is clear (CHoCH/BOS confirmed) and confluences are sufficient. Reject ONLY if present data actively contradicts (e.g., CVD strongly diverging AND extreme adverse funding).
+  - Do NOT auto-reject counter-trend setups — they are often the most profitable.
 - If funding rate is extreme (>0.03% or <-0.03%), increase skepticism for trades in the crowded direction.
 - If major liquidation cascade just happened in the trade direction, the move may be exhausted — reduce confidence.
-- If CVD diverges from trade direction across multiple timeframes (5m, 15m, 1h), the move lacks conviction — reduce confidence.
-- When in doubt, reject. Capital preservation > opportunity capture."""
+- If CVD is available AND diverges from trade direction across multiple timeframes, reduce confidence.
+- A strong technical setup (4+ confluences, high OB volume, clear structure) should be approved even without CVD/liquidation/whale data.
+- Reject only when present data creates a clear case AGAINST the trade, not when data is simply absent."""
 
 
 class PromptBuilder:
@@ -89,6 +96,7 @@ class PromptBuilder:
         setup_names = {
             "setup_a": "Setup A (Liquidity Sweep + CHoCH + OB)",
             "setup_b": "Setup B (BOS + FVG + OB)",
+            "setup_f": "Setup F (Pure OB Retest after BOS)",
         }
 
         # Compute R:R

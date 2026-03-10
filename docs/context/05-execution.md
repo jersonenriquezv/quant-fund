@@ -1,5 +1,5 @@
 # Execution Service (Layer 5)
-> Última actualización: 2026-03-10
+> Última actualización: 2026-03-10 (Post-fill SL distance validation. Failed OB check before execute.)
 > Estado: **Fase 1 — COMPLETADA**. Entry + SL + TP atómicos (attached). Breakeven + trailing SL via price polling.
 
 El brazo ejecutor del bot. Recibe trades aprobados por Risk Service y los ejecuta en OKX via ccxt.
@@ -70,6 +70,8 @@ emergency_pending ──[3 fails]──> emergency_failed  (intervención manual
 6. **Notificación a Risk: en PLACE, no en fill.**
 7. **Cancelled entries no cuentan como trades.**
 8. **Shutdown: cancela entries pendientes, NO cierra posiciones activas.**
+9. **Post-fill SL distance validation** — Después de que la entry se llena, el monitor compara el fill price real con el SL. Si `abs(fill - sl) / fill < MIN_RISK_DISTANCE_PCT`, el SL efectivo es demasiado pequeño (slippage comió el margen). La posición se cierra inmediatamente con `exit_reason = "sl_too_close"` para evitar trades donde las comisiones consumen toda la ganancia potencial.
+10. **Failed OB check pre-execute** — En `main.py:on_candle_confirmed`, antes de llamar a `execute()`, se consulta `strategy_service.is_ob_failed(pair, sl_price, entry_price)`. Si el OB ya resultó en pérdida en esta sesión, el trade se descarta. El callback `on_sl_hit` en el monitor notifica a `StrategyService.mark_ob_failed()` cuando un trade cierra con PnL negativo.
 
 ## Breakeven Logic
 
@@ -121,9 +123,9 @@ Al startup, `sync_exchange_positions()` consulta OKX por posiciones abiertas. La
 
 | Archivo | Descripción |
 |---------|-------------|
-| `service.py` | Facade — execute(), start(), stop(), health(). Position adoption converts contracts→base. `_emit_metric()` wired to executor for Grafana. |
+| `service.py` | Facade — execute(), start(), stop(), health(). Position adoption converts contracts→base. `_emit_metric()` wired to executor for Grafana. Accepts `on_sl_hit` callback for failed OB tracking. |
 | `executor.py` | Wrapper ccxt — place/cancel/fetch orders. Contracts conversion (`_to_contracts`, `contracts_to_base`). Attached SL/TP on entry. Algo cancel fallback. `find_pending_algo_orders()`. Optional `metrics_callback` emits `okx_order_latency_ms` per order. |
-| `monitor.py` | Background loop — attached SL/TP discovery + manual fallback, breakeven + trailing SL via price polling |
+| `monitor.py` | Background loop — attached SL/TP discovery + manual fallback, breakeven + trailing SL via price polling. Post-fill SL distance check (`sl_too_close` close). |
 | `models.py` | ManagedPosition (SL/TP IDs, breakeven + trailing tracking) |
 
 ## Settings

@@ -420,11 +420,10 @@ class DataService:
             await asyncio.sleep(settings.MEMPOOL_CHECK_INTERVAL)
 
     async def _notify_new_movements(self, movements: list, before_ids: set) -> None:
-        """Send whale alerts via AlertManager with tiering.
+        """Send whale alerts via AlertManager with strict filtering.
 
-        Tier 1 (always notify): Exchange deposits/withdrawals (actionable signals)
-        Tier 2 (notify if large): Non-exchange transfers > $500K or high significance
-        Tier 3 (log only): Small non-exchange transfers
+        Only exchange deposits/withdrawals above WHALE_NOTIFY_MIN_USD are sent
+        to Telegram. All movements are still collected for AI context and dashboard.
 
         High significance bypasses whale batch and sends immediately.
         """
@@ -432,15 +431,20 @@ class DataService:
             return
         new_movements = [m for m in movements if id(m) not in before_ids]
         for m in new_movements:
-            # Market makers (Cumberland, Galaxy, etc.): only notify on high significance
+            # Skip neutral inter-wallet transfers (no directional signal)
+            if settings.WHALE_NOTIFY_EXCHANGE_ONLY:
+                if m.action not in ("exchange_deposit", "exchange_withdrawal"):
+                    continue
+
+            # Skip below USD minimum (small moves don't affect BTC/ETH price)
+            if settings.WHALE_NOTIFY_MIN_USD > 0 and m.amount_usd < settings.WHALE_NOTIFY_MIN_USD:
+                continue
+
+            # Market makers: only notify on high significance
             if m.wallet.lower() in settings.MARKET_MAKER_WALLETS:
                 if m.significance != "high":
                     continue
-            # Tier 1: exchange movements — always notify
-            # Tier 2: large or high-significance transfers
-            elif m.action not in ("exchange_deposit", "exchange_withdrawal"):
-                if m.significance != "high" and m.amount_usd < 500_000:
-                    continue
+
             try:
                 immediate = m.significance == "high"
                 await self._alert_manager.notify_whale_movement(m, immediate=immediate)

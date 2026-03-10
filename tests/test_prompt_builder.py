@@ -80,7 +80,7 @@ class TestSystemPrompt:
     def test_contains_critical_rules(self, builder):
         prompt = builder.build_system_prompt()
         assert "CRITICAL RULES" in prompt
-        assert "Capital preservation" in prompt
+        assert "DATA AVAILABILITY" in prompt
 
     def test_threshold_follows_settings(self, builder):
         """System prompt threshold must reflect current AI_MIN_CONFIDENCE."""

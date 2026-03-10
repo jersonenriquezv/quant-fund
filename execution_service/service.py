@@ -25,7 +25,8 @@ logger = setup_logger("execution_service")
 class ExecutionService:
     """Layer 5 — executes approved trades on OKX via ccxt."""
 
-    def __init__(self, risk_service, data_service=None, alert_manager=None) -> None:
+    def __init__(self, risk_service, data_service=None, alert_manager=None,
+                 on_sl_hit=None) -> None:
         self._risk = risk_service
         self._data_service = data_service
         self._enabled = bool(settings.OKX_API_KEY)
@@ -41,7 +42,7 @@ class ExecutionService:
             self._executor = OrderExecutor(metrics_callback=self._emit_metric)
             self._monitor = PositionMonitor(
                 self._executor, risk_service, data_store=data_service,
-                alert_manager=alert_manager
+                alert_manager=alert_manager, on_sl_hit=on_sl_hit
             )
             logger.info("Execution Service initialized")
 

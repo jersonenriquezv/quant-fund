@@ -25,7 +25,7 @@
 **Objetivo**: AI y Risk dejan pasar buenos trades (hoy bloquean ~95%).
 
 - [x] Relajar Risk basado en backtest: MIN_RISK_DISTANCE_PCT 0.1%→0.2%, backtester incluye risk guardrails
-- [ ] Calibrar Claude: correr sobre setups históricos (ganadores vs perdedores) — BLOCKED: necesita MarketSnapshot históricos en backtester
+- [x] Calibrar Claude: correr sobre setups históricos (ganadores vs perdedores) — `--ai` flag en backtester, pre-filter + Claude API evaluation
 - [ ] Forward test 1 semana: >40% de setups pasan filtros — EN CURSO (bot corriendo live)
 - [ ] Done when: bot genera trades reales con filtros que agregan valor
 

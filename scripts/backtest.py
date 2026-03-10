@@ -13,6 +13,7 @@ Usage:
 """
 
 import argparse
+import asyncio
 import csv
 import json
 import math
@@ -28,7 +29,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data_service.data_store import PostgresStore
-from shared.models import Candle, TradeSetup, FundingRate, OpenInterest, CVDSnapshot, MarketSnapshot
+from shared.models import Candle, TradeSetup, AIDecision, FundingRate, OpenInterest, CVDSnapshot, MarketSnapshot
 from strategy_service.service import StrategyService
 from shared.logger import setup_logger
 from config.settings import settings, QUICK_SETUP_TYPES
@@ -203,6 +204,53 @@ class RejectTracker:
 
     def reset_last(self):
         self.last_reasons.clear()
+
+
+# ================================================================
+# Pre-filter for Claude (copied from main.py)
+# ================================================================
+
+def _pre_filter_for_claude(setup, snapshot) -> str | None:
+    """Deterministic pre-filter before Claude API call.
+
+    Returns rejection reason string if setup should be rejected, None if it should
+    proceed to Claude. Conservative: skips checks when data is unavailable.
+
+    Setup C skips funding check (extreme funding IS the signal).
+    """
+    threshold = settings.FUNDING_EXTREME_THRESHOLD
+
+    # Check 1: Funding rate extreme against trade direction
+    # Skip for Setup C — extreme funding IS the signal
+    if setup.setup_type != "setup_c":
+        if snapshot.funding is not None and snapshot.funding.rate is not None:
+            rate = snapshot.funding.rate
+            if setup.direction == "long" and rate > threshold:
+                return f"Funding extreme against long ({rate*100:.4f}% > {threshold*100:.4f}%)"
+            if setup.direction == "short" and rate < -threshold:
+                return f"Funding extreme against short ({rate*100:.4f}% < -{threshold*100:.4f}%)"
+
+    # Check 2: Fear & Greed extreme against trade direction
+    if snapshot.news_sentiment is not None:
+        fg = snapshot.news_sentiment.score
+        if setup.direction == "long" and fg < settings.NEWS_EXTREME_FEAR_THRESHOLD:
+            return f"Extreme Fear (F&G={fg}) — rejecting long"
+        if setup.direction == "short" and fg > settings.NEWS_EXTREME_GREED_THRESHOLD:
+            return f"Extreme Greed (F&G={fg}) — rejecting short"
+
+    # Check 3: CVD strong divergence against trade direction
+    if snapshot.cvd is not None:
+        buy_vol = snapshot.cvd.buy_volume
+        sell_vol = snapshot.cvd.sell_volume
+        total_vol = buy_vol + sell_vol
+        if total_vol > 0:
+            buy_dominance = buy_vol / total_vol
+            if setup.direction == "long" and buy_dominance < 0.40:
+                return f"CVD divergence against long (buy dominance {buy_dominance*100:.1f}% < 40%)"
+            if setup.direction == "short" and buy_dominance > 0.60:
+                return f"CVD divergence against short (buy dominance {buy_dominance*100:.1f}% > 60%)"
+
+    return None
 
 
 # ================================================================
@@ -711,7 +759,8 @@ def print_report(m: BacktestMetrics, simulator: TradeSimulator,
                  profile: str, period_days: float,
                  setups_found: int, total_evaluated: int,
                  tracker: RejectTracker,
-                 setups_deduped: int = 0) -> None:
+                 setups_deduped: int = 0,
+                 ai_stats: dict | None = None) -> None:
     """Print full backtest report to console."""
     print()
     print("=" * 70)
@@ -742,6 +791,34 @@ def print_report(m: BacktestMetrics, simulator: TradeSimulator,
         print(f"\nRISK REJECTIONS ({total_risk} total):")
         for reason, count in sorted(simulator.risk_rejections.items(), key=lambda x: -x[1]):
             print(f"  {reason:<30} {count:>5}")
+
+    # -- AI calibration --
+    if ai_stats is not None:
+        print(f"\n{'='*70}")
+        print(f"AI CALIBRATION (Claude evaluation)")
+        print(f"{'='*70}")
+        sent = ai_stats["total_evaluated_by_ai"]
+        approved = ai_stats["ai_approved"]
+        rejected = ai_stats["ai_rejected"]
+        pre_filtered = ai_stats["ai_pre_filtered"]
+        quick_bypass = ai_stats["ai_quick_bypass"]
+        errors = ai_stats["ai_errors"]
+        print(f"  Setups sent to Claude:  {sent}")
+        print(f"  Approved:               {approved}")
+        print(f"  Rejected:               {rejected}")
+        print(f"  Pre-filtered (no API):  {pre_filtered}")
+        print(f"  Quick bypass (C/D/E):   {quick_bypass}")
+        if errors > 0:
+            print(f"  API errors:             {errors}")
+        if sent > 0:
+            approval_rate = approved / sent * 100
+            print(f"  Claude approval rate:   {approval_rate:.1f}% (target: 30-60%)")
+            # Average confidence of approved setups
+            approved_decisions = [d for d in ai_stats["ai_decisions"]
+                                 if d["result"] == "approved"]
+            if approved_decisions:
+                avg_conf = sum(d["confidence"] for d in approved_decisions) / len(approved_decisions)
+                print(f"  Avg confidence (approved): {avg_conf:.2f}")
 
     # -- Trade simulation --
     trades = simulator.get_closed_trades()
@@ -874,14 +951,16 @@ def export_csv(trades: list[SimulatedTrade], filename: str) -> None:
 
 def save_results_json(m: BacktestMetrics, profile: str, period_days: float,
                       capital: float, pairs: list[str],
-                      setups_found: int, setups_deduped: int) -> str:
+                      setups_found: int, setups_deduped: int,
+                      ai_stats: dict | None = None) -> str:
     """Save backtest summary to JSON for future reference."""
     results_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                "backtest_results")
     os.makedirs(results_dir, exist_ok=True)
 
     ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
-    filename = os.path.join(results_dir, f"{ts}_{profile}_{int(period_days)}d.json")
+    ai_suffix = "_ai" if ai_stats is not None else ""
+    filename = os.path.join(results_dir, f"{ts}_{profile}_{int(period_days)}d{ai_suffix}.json")
 
     result = {
         "timestamp": datetime.now(tz=timezone.utc).isoformat(),
@@ -912,6 +991,26 @@ def save_results_json(m: BacktestMetrics, profile: str, period_days: float,
         "setups_deduped": setups_deduped,
     }
 
+    # Add AI calibration data if present
+    if ai_stats is not None:
+        sent = ai_stats["total_evaluated_by_ai"]
+        approved_decisions = [d for d in ai_stats["ai_decisions"]
+                             if d["result"] == "approved"]
+        result["ai_calibration"] = {
+            "sent_to_claude": sent,
+            "approved": ai_stats["ai_approved"],
+            "rejected": ai_stats["ai_rejected"],
+            "pre_filtered": ai_stats["ai_pre_filtered"],
+            "quick_bypass": ai_stats["ai_quick_bypass"],
+            "errors": ai_stats["ai_errors"],
+            "approval_rate": round(ai_stats["ai_approved"] / sent * 100, 1) if sent > 0 else 0.0,
+            "avg_confidence_approved": (
+                round(sum(d["confidence"] for d in approved_decisions) / len(approved_decisions), 3)
+                if approved_decisions else 0.0
+            ),
+        }
+        result["ai_decisions"] = ai_stats["ai_decisions"]
+
     # Round floats in nested dicts
     for section in [result["by_setup"], result["by_pair"], result["by_direction"]]:
         for key, val in section.items():
@@ -934,7 +1033,7 @@ def save_results_json(m: BacktestMetrics, profile: str, period_days: float,
 def run_backtest(pairs: list[str] | None = None, verbose: bool = False,
                  warmup: int = 50, profile: str = "default",
                  capital: float = 10000.0, export: bool = False,
-                 days: int | None = None):
+                 days: int | None = None, ai_enabled: bool = False):
     from config.settings import Settings, settings, STRATEGY_PROFILES, apply_profile, reset_profile
 
     if pairs is None:
@@ -974,6 +1073,26 @@ def run_backtest(pairs: list[str] | None = None, verbose: bool = False,
     data = BacktestDataService()
     data.load_from_postgres(pg, pairs, all_timeframes, count=load_count)
     pg.close()
+
+    # AI Service initialization
+    ai_service = None
+    _loop = None
+    if ai_enabled:
+        from ai_service import AIService
+        ai_service = AIService(data_service=data)
+        _loop = asyncio.new_event_loop()
+        logger.info("AI calibration mode enabled — Claude will evaluate swing setups")
+
+    # AI stats tracking
+    ai_stats = {
+        "total_evaluated_by_ai": 0,
+        "ai_approved": 0,
+        "ai_rejected": 0,
+        "ai_pre_filtered": 0,
+        "ai_quick_bypass": 0,
+        "ai_errors": 0,
+        "ai_decisions": [],
+    }
 
     # Set up rejection tracker
     tracker = RejectTracker()
@@ -1049,9 +1168,74 @@ def run_backtest(pairs: list[str] | None = None, verbose: bool = False,
                     _dedup_cache[dedup_key] = candle.timestamp
 
                     setups_count += 1
+
+                    # AI evaluation (when --ai is active)
+                    ai_passed = True
+                    if ai_enabled and ai_service is not None:
+                        if setup.setup_type in QUICK_SETUP_TYPES:
+                            # Quick setups bypass Claude (same as production)
+                            ai_stats["ai_quick_bypass"] += 1
+                        else:
+                            # Swing setups go through pre-filter + Claude
+                            snapshot = data.get_market_snapshot(setup.pair)
+                            pre_filter_reason = _pre_filter_for_claude(setup, snapshot)
+                            if pre_filter_reason:
+                                ai_stats["ai_pre_filtered"] += 1
+                                ai_stats["ai_decisions"].append({
+                                    "timestamp": candle.timestamp,
+                                    "pair": setup.pair,
+                                    "direction": setup.direction,
+                                    "setup_type": setup.setup_type,
+                                    "result": "pre_filtered",
+                                    "reason": pre_filter_reason,
+                                    "confidence": 0.0,
+                                })
+                                ai_passed = False
+                                if verbose:
+                                    print(f"  [AI PRE-FILTER] {_ts_to_str(candle.timestamp)} "
+                                          f"{setup.setup_type} {setup.direction} "
+                                          f"— {pre_filter_reason}")
+                            else:
+                                # Call Claude
+                                ai_stats["total_evaluated_by_ai"] += 1
+                                try:
+                                    decision = _loop.run_until_complete(
+                                        ai_service.evaluate(setup, snapshot)
+                                    )
+                                    ai_stats["ai_decisions"].append({
+                                        "timestamp": candle.timestamp,
+                                        "pair": setup.pair,
+                                        "direction": setup.direction,
+                                        "setup_type": setup.setup_type,
+                                        "result": "approved" if decision.approved else "rejected",
+                                        "confidence": decision.confidence,
+                                        "reasoning": decision.reasoning,
+                                    })
+                                    if decision.approved:
+                                        ai_stats["ai_approved"] += 1
+                                        if verbose:
+                                            print(f"  [AI APPROVED] {_ts_to_str(candle.timestamp)} "
+                                                  f"{setup.setup_type} {setup.direction} "
+                                                  f"conf={decision.confidence:.2f}")
+                                    else:
+                                        ai_stats["ai_rejected"] += 1
+                                        ai_passed = False
+                                        if verbose:
+                                            print(f"  [AI REJECTED] {_ts_to_str(candle.timestamp)} "
+                                                  f"{setup.setup_type} {setup.direction} "
+                                                  f"conf={decision.confidence:.2f} "
+                                                  f"— {decision.reasoning[:80]}")
+                                except Exception as e:
+                                    ai_stats["ai_errors"] += 1
+                                    ai_passed = False
+                                    logger.error(f"AI evaluation error: {e}")
+
+                    if not ai_passed:
+                        continue
+
                     taken = simulator.on_setup(setup, candle)
                     if verbose:
-                        status = "TAKEN" if taken else "SKIP (max pos)"
+                        status = "TAKEN" if taken else "SKIP (risk)"
                         print(f"  [SETUP {status}] {_ts_to_str(candle.timestamp)} "
                               f"{candle.timeframe} {setup.setup_type} "
                               f"{setup.direction} entry={setup.entry_price:.2f}")
@@ -1062,6 +1246,20 @@ def run_backtest(pairs: list[str] | None = None, verbose: bool = False,
                           f"reason={reasons[-1] if reasons else '?'}")
 
     loguru.logger.remove(sink_id)
+
+    # AI cleanup
+    if ai_service is not None and _loop is not None:
+        try:
+            _loop.run_until_complete(ai_service.close())
+        except Exception:
+            pass
+        _loop.close()
+        logger.info(
+            f"AI calibration: {ai_stats['total_evaluated_by_ai']} sent to Claude, "
+            f"{ai_stats['ai_approved']} approved, {ai_stats['ai_rejected']} rejected, "
+            f"{ai_stats['ai_pre_filtered']} pre-filtered, "
+            f"{ai_stats['ai_quick_bypass']} quick bypass"
+        )
 
     # Compute period
     all_trigger = []
@@ -1085,13 +1283,14 @@ def run_backtest(pairs: list[str] | None = None, verbose: bool = False,
 
     # Compute metrics and print report
     metrics = compute_metrics(simulator, period_days)
+    ai_report = ai_stats if ai_enabled else None
     print_report(metrics, simulator, profile, period_days,
                  setups_count, total_evaluated, tracker,
-                 setups_deduped=setups_deduped)
+                 setups_deduped=setups_deduped, ai_stats=ai_report)
 
     # Always save JSON summary
     save_results_json(metrics, profile, period_days, capital, pairs,
-                      setups_count, setups_deduped)
+                      setups_count, setups_deduped, ai_stats=ai_report)
 
     # CSV export
     if export:
@@ -1125,6 +1324,8 @@ def main():
                         help="Limit to last N days of data")
     parser.add_argument("--csv", action="store_true",
                         help="Export results to CSV file")
+    parser.add_argument("--ai", action="store_true",
+                        help="Enable Claude AI evaluation on swing setups")
     args = parser.parse_args()
 
     pairs = [args.pair] if args.pair else None
@@ -1136,6 +1337,7 @@ def main():
         capital=args.capital,
         days=args.days,
         export=args.csv,
+        ai_enabled=args.ai,
     )
 
 

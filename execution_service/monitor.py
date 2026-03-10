@@ -40,11 +40,13 @@ class PositionMonitor:
     """Background loop managing open positions through their lifecycle."""
 
     def __init__(self, executor: OrderExecutor, risk_service,
-                 data_store=None, alert_manager=None) -> None:
+                 data_store=None, alert_manager=None,
+                 on_sl_hit=None) -> None:
         self._executor = executor
         self._risk = risk_service
         self._data_store = data_store  # DataService for DB persistence
         self._alert_manager = alert_manager  # AlertManager (optional)
+        self._on_sl_hit = on_sl_hit  # Callback: (pair, sl_price, entry_price) when SL hits
         self._positions: dict[str, ManagedPosition] = {}  # keyed by pair
         self._running = False
         self._task: Optional[asyncio.Task] = None
@@ -324,6 +326,35 @@ class PositionMonitor:
                 )
             pos.tp_order_id = tp.get("id") if tp else None
 
+        # Post-fill SL distance validation.
+        # Slippage can shrink the effective SL distance below the minimum.
+        # If so, close immediately rather than holding a micro-SL position.
+        if pos.actual_entry_price and pos.actual_entry_price > 0:
+            sl_price = pos.current_sl_price or pos.sl_price
+            actual_risk_pct = abs(pos.actual_entry_price - sl_price) / pos.actual_entry_price
+            if actual_risk_pct < settings.MIN_RISK_DISTANCE_PCT:
+                logger.warning(
+                    f"Post-fill SL too close: {pos.pair} "
+                    f"entry={pos.actual_entry_price:.2f} sl={sl_price:.2f} "
+                    f"risk={actual_risk_pct*100:.3f}% < min {settings.MIN_RISK_DISTANCE_PCT*100:.1f}% "
+                    f"— closing immediately"
+                )
+                # Cancel SL and TP, then market close
+                if pos.sl_order_id:
+                    await self._executor.cancel_order(pos.sl_order_id, pos.pair)
+                if pos.tp_order_id:
+                    await self._executor.cancel_order(pos.tp_order_id, pos.pair)
+                result = await self._executor.close_position_market(
+                    pos.pair, close_side, pos.filled_size
+                )
+                if result is None:
+                    logger.error(f"Post-fill close FAILED: {pos.pair} — emergency pending")
+                    pos.phase = "emergency_pending"
+                    pos.emergency_retries = 1
+                    return
+                self._close_position(pos, "sl_too_close")
+                return
+
         pos.phase = "active"
         self._update_positions_cache()
         logger.info(f"Position ACTIVE: {pos.pair} {pos.direction} "
@@ -403,6 +434,9 @@ class PositionMonitor:
                 await self._cancel_tp(pos)
                 sl_exit = pos.current_sl_price or pos.sl_price
                 self._calculate_pnl(pos, float(sl_status.get("average", 0) or sl_exit))
+                # Mark OB as failed if it was a real loss (not breakeven)
+                if self._on_sl_hit and pos.pnl_pct < 0:
+                    self._on_sl_hit(pos.pair, pos.sl_price, pos.entry_price)
                 self._close_position(pos, "sl")
                 return
             if sl_status and sl_status.get("status") == "canceled":

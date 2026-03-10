@@ -117,6 +117,7 @@ def _wire_services(
     strategy.evaluate.return_value = setup
     strategy.get_htf_bias.return_value = htf_bias
     strategy.get_active_order_blocks.return_value = []
+    strategy.is_ob_failed.return_value = False
     main._strategy_service = strategy
 
     data = MagicMock()

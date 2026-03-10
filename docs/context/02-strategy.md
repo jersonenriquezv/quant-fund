@@ -1,5 +1,5 @@
 # Strategy Service
-> Última actualización: 2026-03-10 (Setup D habilitado: 66.7% WR en combinado, +$2,553. ENABLED_SETUPS: A+B+D+F. Backtester con MarketSnapshot histórico.)
+> Última actualización: 2026-03-10 (Failed OB tracking implementado. Aggressive profile cooldown igualado al default: 3600s.)
 > Estado: implementado (completo, integrado en main.py). Audited — 3 CRITICAL fixes applied. Quick Setups C/D/E added. Setups F/G added.
 
 ## Qué hace (30 segundos)
@@ -99,6 +99,7 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 - **`ENABLED_SETUPS` gate** — después de detectar un setup, verifica `setup.setup_type in settings.ENABLED_SETUPS`. Si no está habilitado, logea debug y continúa evaluando el siguiente tipo. Default: `["setup_a", "setup_b", "setup_d", "setup_f"]`. D habilitado con 66.7% WR en combinado (+$2,553). C, E, G pendientes de validación. G descartado (6.2% WR).
 - Coordina todos los módulos internos
 - Quick setup cooldown tracking per (pair, setup_type)
+- **Failed OB tracking** — `mark_ob_failed(pair, sl_price, entry_price)` registra en memoria OBs que resultaron en pérdida (PnL < 0). `is_ob_failed(pair, sl_price, entry_price)` consulta el registro antes de ejecutar un nuevo trade: si el OB ya perdió, el setup se descarta. El tracking usa la clave `(pair, sl_price, entry_price)`. Breakeven (PnL = 0%) NO marca el OB como fallido porque el setup parcialmente funcionó. Se resetea en restart.
 
 ### `strategy_service/__init__.py`
 - Exporta `StrategyService`
@@ -116,7 +117,7 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 - `HTF_BIAS_REQUIRE_4H: bool = True` — si 4H debe definir trend o 1H solo basta (aggressive: False)
 - `MIN_RISK_REWARD_QUICK: float = 1.0` — R:R mínimo para quick setups (C/D/E)
 - `MAX_TRADE_DURATION_QUICK: int = 14400` — timeout 4h para quick setups
-- `QUICK_SETUP_COOLDOWN: int = 3600` — cooldown 1h por (pair, setup_type)
+- `QUICK_SETUP_COOLDOWN: int = 3600` — cooldown 1h por (pair, setup_type). Mismo valor en default y aggressive — el perfil aggressive ya no reduce el cooldown.
 - `MOMENTUM_FUNDING_THRESHOLD: float = 0.0003` — umbral funding rate para Setup C
 - `MOMENTUM_CVD_LONG_MIN: float = 0.55` — buy dominance mínimo para long (Setup C)
 - `MOMENTUM_CVD_SHORT_MAX: float = 0.45` — buy dominance máximo para short (Setup C)
@@ -131,8 +132,8 @@ El bot soporta 2 perfiles de estrategia, switcheables desde dashboard o env var:
 
 | Perfil | Setups/día | Descripción |
 |--------|-----------|-------------|
-| `default` | ~1-2 | Conservador — todos los filtros activos, 4H requerido, R:R 1.5 |
-| `aggressive` | ~3-5 | 1H suficiente para HTF, OB proximity 0.8%, R:R min 1.2, AI confidence 0.50, 10 trades/día, DD 5%/10% |
+| `default` | ~1-2 | Conservador — todos los filtros activos, 4H requerido, R:R 1.5, cooldown 1h |
+| `aggressive` | ~3-5 | 1H suficiente para HTF, OB proximity 0.8%, R:R min 1.2, AI confidence 0.50, 10 trades/día, DD 5%/10%, cooldown 1h (igual que default desde 2026-03-10) |
 
 **Reglas que NUNCA cambian entre perfiles:**
 - PD alignment (long=discount, short=premium) — core SMC
@@ -143,6 +144,17 @@ El bot soporta 2 perfiles de estrategia, switcheables desde dashboard o env var:
 Los perfiles se definen en `STRATEGY_PROFILES` (config/settings.py) y se aplican via `apply_profile()`.
 
 El perfil activo se almacena en Redis (`qf:bot:strategy_profile`) y se sincroniza al inicio de cada pipeline cycle en `main.py`.
+
+## AI Calibration en Backtester
+El backtester soporta `--ai` flag para evaluar swing setups con Claude sobre data histórica. Permite medir si el AI filter agrega alpha comparando backtest con/sin AI.
+
+- `python scripts/backtest.py --days 60 --profile aggressive --ai` — activa Claude evaluation
+- Quick setups (C/D/E) bypass Claude (igual que producción)
+- Swing setups (A/B/F/G) pasan por pre-filter + Claude API
+- Pre-filter: funding extreme, F&G extreme, CVD divergence (mismos checks que `main.py`)
+- Report incluye sección AI CALIBRATION con approval rate, avg confidence
+- JSON output incluye `ai_calibration` summary + `ai_decisions` list para análisis
+- Filename con sufijo `_ai` para distinguir de baseline
 
 ## Tests
 101 tests en 6 archivos:
