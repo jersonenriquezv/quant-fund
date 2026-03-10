@@ -14,7 +14,7 @@
       "title": "AI Approval Rate Over Time",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
-      "datasource": { "type": "postgres", "uid": "" },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
       "targets": [
         {
           "rawSql": "SELECT DATE_TRUNC('day', created_at) AS time, ROUND(100.0 * SUM(CASE WHEN approved = true THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) AS \"Approval Rate %\" FROM ai_decisions WHERE $__timeFilter(created_at) GROUP BY DATE_TRUNC('day', created_at) ORDER BY time",
@@ -47,7 +47,7 @@
       "title": "AI Stats (All Time)",
       "type": "stat",
       "gridPos": { "h": 4, "w": 12, "x": 12, "y": 0 },
-      "datasource": { "type": "postgres", "uid": "" },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
       "targets": [
         {
           "rawSql": "SELECT COUNT(*) AS \"Total Evaluations\", SUM(CASE WHEN approved = true THEN 1 ELSE 0 END) AS \"Approved\", ROUND(100.0 * SUM(CASE WHEN approved = true THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) AS \"Approval Rate %\", ROUND(AVG(CASE WHEN approved = true THEN confidence ELSE NULL END)::numeric, 2) AS \"Avg Confidence (Approved)\" FROM ai_decisions",
@@ -65,7 +65,7 @@
       "title": "Confidence Distribution",
       "type": "histogram",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
-      "datasource": { "type": "postgres", "uid": "" },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
       "targets": [
         {
           "rawSql": "SELECT confidence AS \"Confidence\" FROM ai_decisions WHERE confidence > 0",
@@ -83,7 +83,7 @@
       "title": "AI Approval Rate by Setup Type",
       "type": "bargauge",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
-      "datasource": { "type": "postgres", "uid": "" },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
       "targets": [
         {
           "rawSql": "SELECT setup_type AS metric, ROUND(100.0 * SUM(CASE WHEN approved = true THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) AS value FROM ai_decisions WHERE setup_type IS NOT NULL GROUP BY setup_type ORDER BY setup_type",
@@ -111,7 +111,7 @@
       "title": "Risk Events Timeline",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
-      "datasource": { "type": "postgres", "uid": "" },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
       "targets": [
         {
           "rawSql": "SELECT DATE_TRUNC('day', created_at) AS time, event_type AS metric, COUNT(*) AS value FROM risk_events WHERE $__timeFilter(created_at) GROUP BY DATE_TRUNC('day', created_at), event_type ORDER BY time",
@@ -134,7 +134,7 @@
       "title": "Guardrail Trigger Frequency",
       "type": "piechart",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
-      "datasource": { "type": "postgres", "uid": "" },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
       "targets": [
         {
           "rawSql": "SELECT event_type AS metric, COUNT(*) AS value FROM risk_events GROUP BY event_type ORDER BY value DESC",
@@ -148,7 +148,7 @@
       "title": "Recent AI Decisions",
       "type": "table",
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
-      "datasource": { "type": "postgres", "uid": "" },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
       "targets": [
         {
           "rawSql": "SELECT created_at AS \"Time\", pair AS \"Pair\", direction AS \"Dir\", setup_type AS \"Setup\", CASE WHEN approved THEN 'YES' ELSE 'NO' END AS \"Approved\", ROUND(confidence::numeric, 2) AS \"Confidence\", LEFT(reasoning, 120) AS \"Reasoning\" FROM ai_decisions ORDER BY created_at DESC LIMIT 50",
