@@ -180,12 +180,13 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - `set_latest_candle()`, `get_latest_candle()`, `pop_cancel_request()`, etc.
 
 **PostgreSQL (historical):**
-- 7 tables: `candles`, `trades`, `ai_decisions`, `risk_events`, `bot_metrics`, `funding_rate_history`, `open_interest_history`
+- 8 tables: `candles`, `trades`, `ai_decisions`, `risk_events`, `bot_metrics`, `funding_rate_history`, `open_interest_history`, `cvd_history`
 - `store_candles()` with batch insert + ON CONFLICT DO NOTHING (dedup)
 - `load_candles()` returns oldest-first ordering
 - Index on `(pair, timeframe, timestamp DESC)` for fast lookups
 - **Funding rate history:** `store_funding_rate(fr)`, `store_funding_rates_batch(records)`, `load_funding_rates(pair, since_ms, until_ms)`. Populated by live polling + `fetch_history.py` backfill. Used by backtester for MarketSnapshot.
 - **OI history:** `store_open_interest(oi)`, `store_open_interest_batch(records)`, `load_open_interest(pair, since_ms, until_ms)`. Same pattern. OKX 1h resolution, ~30 days back.
+- **CVD history:** `store_cvd_snapshot(cvd)`, `load_cvd_snapshots(pair, since_ms, until_ms)`. Persisted on every confirmed candle. Accumulates from 2026-03-10 onwards. Needed for Setup C/E backtesting.
 - **Auto-reconnection:** `_ensure_connected()` checks connection health (sends `SELECT 1`). All DB methods (`store_candles`, `load_candles`, `insert_trade`, `update_trade`, `insert_ai_decision`, `insert_risk_event`, `insert_metric`) retry once on `psycopg2.OperationalError` / `InterfaceError` — sets `_conn = None` and reconnects.
 - **Operational metrics (Grafana):** `insert_metric(name, value, pair, labels)` writes to `bot_metrics` table. `cleanup_old_metrics(retention_days=30)` deletes old rows. Both fire-and-forget.
 
@@ -194,7 +195,7 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Public methods: `get_latest_candle()`, `get_candles()`, `get_market_snapshot()`, `get_cvd()`, `fetch_usdt_balance()`, etc.
 - Manages startup (backfill → WebSockets → polling loops) and graceful shutdown
 - On confirmed candle: stores to Redis + PostgreSQL, triggers pipeline callback
-- **Funding/OI persistence:** Polling loops now persist funding rates and OI snapshots to PostgreSQL (`store_funding_rate`, `store_open_interest`) on every poll, building historical data for backtesting.
+- **Funding/OI/CVD persistence:** Polling loops persist funding rates and OI snapshots to PostgreSQL on every poll. CVD snapshots persisted on every confirmed candle. Building historical data for backtesting Setup C/E.
 - Health check loop every 30 seconds — emits `health_status` metric (1.0=OK, 0.0=degraded) to `bot_metrics`
 - **Metrics cleanup:** Every ~50 min (100 health checks), calls `cleanup_old_metrics(30)` to prune metrics older than 30 days
 - **`_emit_metric()`:** Fire-and-forget metric writer to PostgreSQL `bot_metrics` table. Passed to WebSocket feeds as callback.
