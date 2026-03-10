@@ -149,22 +149,25 @@ class SetupEvaluator:
 
         # Minimum confluence check — non-negotiable: 2+
         if not self._check_confluence_minimum(confluences):
+            logger.debug(f"Setup A [{pair}]: insufficient confluences "
+                         f"({len(confluences)}<2 confluences={confluences})")
             return None
 
         # Calculate TP levels
         sl_price = self._calculate_sl(best_ob, direction)
         entry_price = best_ob.entry_price
-        tp1, tp2, tp3 = self._calculate_tp_levels(
+        tp1, tp2 = self._calculate_tp_levels(
             entry_price, sl_price, direction, liquidity_levels
         )
 
-        # Validate blended R:R meets minimum
-        # Weighted average: 50% at TP1 + 30% at TP2 + 20% at TP3
+        # Validate R:R to tp2 meets minimum
         risk = abs(entry_price - sl_price)
         if risk <= 0:
             return None
-        blended_rr = self._compute_blended_rr(entry_price, sl_price, tp1, tp2, tp3)
-        if blended_rr < settings.MIN_RISK_REWARD:
+        rr = self._compute_rr(entry_price, sl_price, tp2)
+        if rr < settings.MIN_RISK_REWARD:
+            logger.debug(f"Setup A [{pair}]: R:R too low "
+                         f"({rr:.2f} < {settings.MIN_RISK_REWARD})")
             return None
 
         return TradeSetup(
@@ -176,7 +179,6 @@ class SetupEvaluator:
             sl_price=sl_price,
             tp1_price=tp1,
             tp2_price=tp2,
-            tp3_price=tp3,
             confluences=confluences,
             htf_bias=htf_bias,
             ob_timeframe=best_ob.timeframe,
@@ -320,16 +322,16 @@ class SetupEvaluator:
         # Calculate SL/TP
         sl_price = self._calculate_sl(best_ob, direction)
         entry_price = best_ob.entry_price
-        tp1, tp2, tp3 = self._calculate_tp_levels(
+        tp1, tp2 = self._calculate_tp_levels(
             entry_price, sl_price, direction, liquidity_levels
         )
 
-        # Validate blended R:R meets minimum
+        # Validate R:R to tp2 meets minimum
         risk = abs(entry_price - sl_price)
         if risk <= 0:
             return None
-        blended_rr = self._compute_blended_rr(entry_price, sl_price, tp1, tp2, tp3)
-        if blended_rr < settings.MIN_RISK_REWARD:
+        rr = self._compute_rr(entry_price, sl_price, tp2)
+        if rr < settings.MIN_RISK_REWARD:
             return None
 
         return TradeSetup(
@@ -341,7 +343,6 @@ class SetupEvaluator:
             sl_price=sl_price,
             tp1_price=tp1,
             tp2_price=tp2,
-            tp3_price=tp3,
             confluences=confluences,
             htf_bias=htf_bias,
             ob_timeframe=best_ob.timeframe,
@@ -434,15 +435,15 @@ class SetupEvaluator:
 
         sl_price = self._calculate_sl(best_ob, direction)
         entry_price = best_ob.entry_price
-        tp1, tp2, tp3 = self._calculate_tp_levels(
+        tp1, tp2 = self._calculate_tp_levels(
             entry_price, sl_price, direction, liquidity_levels
         )
 
         risk = abs(entry_price - sl_price)
         if risk <= 0:
             return None
-        blended_rr = self._compute_blended_rr(entry_price, sl_price, tp1, tp2, tp3)
-        if blended_rr < settings.MIN_RISK_REWARD:
+        rr = self._compute_rr(entry_price, sl_price, tp2)
+        if rr < settings.MIN_RISK_REWARD:
             return None
 
         return TradeSetup(
@@ -454,7 +455,6 @@ class SetupEvaluator:
             sl_price=sl_price,
             tp1_price=tp1,
             tp2_price=tp2,
-            tp3_price=tp3,
             confluences=confluences,
             htf_bias=htf_bias,
             ob_timeframe=best_ob.timeframe,
@@ -538,15 +538,15 @@ class SetupEvaluator:
 
         sl_price = self._calculate_sl(best_bb, direction)
         entry_price = best_bb.entry_price
-        tp1, tp2, tp3 = self._calculate_tp_levels(
+        tp1, tp2 = self._calculate_tp_levels(
             entry_price, sl_price, direction, liquidity_levels
         )
 
         risk = abs(entry_price - sl_price)
         if risk <= 0:
             return None
-        blended_rr = self._compute_blended_rr(entry_price, sl_price, tp1, tp2, tp3)
-        if blended_rr < settings.MIN_RISK_REWARD:
+        rr = self._compute_rr(entry_price, sl_price, tp2)
+        if rr < settings.MIN_RISK_REWARD:
             return None
 
         return TradeSetup(
@@ -558,7 +558,6 @@ class SetupEvaluator:
             sl_price=sl_price,
             tp1_price=tp1,
             tp2_price=tp2,
-            tp3_price=tp3,
             confluences=confluences,
             htf_bias=htf_bias,
             ob_timeframe=best_bb.timeframe,
@@ -570,42 +569,22 @@ class SetupEvaluator:
         sl: float,
         direction: str,
         liquidity_levels: list[LiquidityLevel],
-    ) -> tuple[float, float, float]:
-        """Calculate TP1, TP2, TP3 from entry/SL.
+    ) -> tuple[float, float]:
+        """Calculate TP1 and TP2 from entry/SL.
 
-        TP1: settings.TP1_RR_RATIO (1:1 R:R)
-        TP2: settings.TP2_RR_RATIO (1:2 R:R)
-        TP3: next liquidity level or 1:3 R:R fallback
+        TP1: settings.TP1_RR_RATIO (1:1 R:R) — breakeven trigger
+        TP2: settings.TP2_RR_RATIO (2:1 R:R) — single TP, 100% close
         """
         risk = abs(entry - sl)
 
         if direction == "bullish":
             tp1 = entry + (risk * settings.TP1_RR_RATIO)
             tp2 = entry + (risk * settings.TP2_RR_RATIO)
-
-            # TP3: next BSL level above entry, or 1:3 fallback
-            tp3_fallback = entry + (risk * 3.0)
-            tp3 = tp3_fallback
-
-            for level in sorted(liquidity_levels, key=lambda l: l.price):
-                if level.level_type == "bsl" and level.price > tp2:
-                    tp3 = level.price
-                    break
-
         else:
             tp1 = entry - (risk * settings.TP1_RR_RATIO)
             tp2 = entry - (risk * settings.TP2_RR_RATIO)
 
-            # TP3: next SSL level below entry, or 1:3 fallback
-            tp3_fallback = entry - (risk * 3.0)
-            tp3 = tp3_fallback
-
-            for level in sorted(liquidity_levels, key=lambda l: l.price, reverse=True):
-                if level.level_type == "ssl" and level.price < tp2:
-                    tp3 = level.price
-                    break
-
-        return tp1, tp2, tp3
+        return tp1, tp2
 
     def _check_volume_confirmation(
         self,
@@ -752,32 +731,17 @@ class SetupEvaluator:
 
         return max(candidates, key=lambda ob: (ob.volume_ratio, ob.timestamp))
 
-    def _compute_blended_rr(
+    def _compute_rr(
         self,
         entry: float,
         sl: float,
-        tp1: float,
         tp2: float,
-        tp3: float,
     ) -> float:
-        """Compute weighted-average R:R across partial closes.
-
-        Weights: TP1=50%, TP2=30%, TP3=20% (from settings).
-        This gives a realistic expected R:R instead of checking a single level.
-        """
+        """Compute R:R to tp2 (single TP, 100% close)."""
         risk = abs(entry - sl)
         if risk <= 0:
             return 0.0
-
-        rr1 = abs(tp1 - entry) / risk
-        rr2 = abs(tp2 - entry) / risk
-        rr3 = abs(tp3 - entry) / risk
-
-        return (
-            settings.TP1_CLOSE_PCT * rr1
-            + settings.TP2_CLOSE_PCT * rr2
-            + settings.TP3_CLOSE_PCT * rr3
-        )
+        return abs(tp2 - entry) / risk
 
     def _find_candle_index_by_ts(
         self,

@@ -479,7 +479,6 @@ class TestQuickRR:
             entry_price=100.0, sl_price=99.0,
             tp1_price=101.0,
             tp2_price=101.2,  # R:R = 1.2
-            tp3_price=102.0,
             confluences=["a", "b"], htf_bias="bullish", ob_timeframe="5m",
         )
         passed, reason = guardrails.check_rr_ratio(setup_quick)
@@ -493,7 +492,6 @@ class TestQuickRR:
             entry_price=100.0, sl_price=99.0,
             tp1_price=101.0,
             tp2_price=101.2,  # R:R = 1.2
-            tp3_price=102.0,
             confluences=["a", "b"], htf_bias="bullish", ob_timeframe="5m",
         )
         passed, reason = guardrails.check_rr_ratio(setup_swing)

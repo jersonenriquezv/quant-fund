@@ -10,7 +10,7 @@ from strategy_service.market_structure import (
 from strategy_service.order_blocks import OrderBlock
 from strategy_service.fvg import FairValueGap
 from strategy_service.liquidity import (
-    LiquiditySweep, LiquidityLevel, PremiumDiscountZone,
+    LiquiditySweep, PremiumDiscountZone,
 )
 from shared.models import LiquidationEvent
 from config.settings import settings
@@ -343,18 +343,17 @@ class TestTPCalculation:
     """Test take profit level calculation."""
 
     def test_bullish_tp_levels(self):
-        """TP1=1:1, TP2=1:2, TP3=1:3 (no liquidity levels)."""
+        """TP1=1:1, TP2=1:2 (no liquidity levels)."""
         evaluator = SetupEvaluator()
 
         entry = 100.0
         sl = 97.0  # Risk = 3.0
-        tp1, tp2, tp3 = evaluator._calculate_tp_levels(
+        tp1, tp2 = evaluator._calculate_tp_levels(
             entry, sl, "bullish", [],
         )
 
         assert tp1 == pytest.approx(103.0, abs=0.01)   # 100 + 3*1.0
         assert tp2 == pytest.approx(106.0, abs=0.01)   # 100 + 3*2.0
-        assert tp3 == pytest.approx(109.0, abs=0.01)   # 100 + 3*3.0 (fallback)
 
     def test_bearish_tp_levels(self):
         """Bearish TP levels go below entry."""
@@ -362,32 +361,12 @@ class TestTPCalculation:
 
         entry = 100.0
         sl = 103.0  # Risk = 3.0
-        tp1, tp2, tp3 = evaluator._calculate_tp_levels(
+        tp1, tp2 = evaluator._calculate_tp_levels(
             entry, sl, "bearish", [],
         )
 
         assert tp1 == pytest.approx(97.0, abs=0.01)
         assert tp2 == pytest.approx(94.0, abs=0.01)
-        assert tp3 == pytest.approx(91.0, abs=0.01)
-
-    def test_tp3_uses_liquidity_level(self):
-        """TP3 should target the next liquidity level if available."""
-        evaluator = SetupEvaluator()
-
-        entry = 100.0
-        sl = 97.0  # Risk = 3.0
-
-        # BSL at 108 (above TP2=106)
-        levels = [
-            LiquidityLevel(price=108.0, level_type="bsl",
-                           touch_count=2, timestamps=[1000, 2000]),
-        ]
-
-        tp1, tp2, tp3 = evaluator._calculate_tp_levels(
-            entry, sl, "bullish", levels,
-        )
-
-        assert tp3 == 108.0  # Uses the BSL level instead of 1:3
 
 
 # ============================================================
@@ -461,30 +440,25 @@ class TestFVGAdjacency:
 # Blended R:R tests
 # ============================================================
 
-class TestBlendedRR:
-    """Test blended R:R calculation."""
+class TestRR:
+    """Test simple R:R calculation to tp2."""
 
-    def test_standard_blended_rr(self):
-        """Standard TP levels: blended = 0.5*1.0 + 0.3*2.0 + 0.2*3.0 = 1.7."""
+    def test_standard_rr(self):
+        """Entry=100, SL=97, TP2=106 → R:R = 6/3 = 2.0."""
         evaluator = SetupEvaluator()
-        # Entry=100, SL=97, risk=3
-        # TP1=103 (1:1), TP2=106 (2:1), TP3=109 (3:1)
-        rr = evaluator._compute_blended_rr(100.0, 97.0, 103.0, 106.0, 109.0)
-        assert rr == pytest.approx(1.7, abs=0.01)
+        rr = evaluator._compute_rr(100.0, 97.0, 106.0)
+        assert rr == pytest.approx(2.0, abs=0.01)
 
-    def test_tp3_liquidity_level_close_lowers_rr(self):
-        """TP3 at a closer liquidity level lowers blended R:R."""
+    def test_short_rr(self):
+        """Short: Entry=100, SL=103, TP2=94 → R:R = 6/3 = 2.0."""
         evaluator = SetupEvaluator()
-        # Entry=100, SL=97, risk=3
-        # TP3 at 107 (2.33:1) instead of 109 (3:1)
-        rr = evaluator._compute_blended_rr(100.0, 97.0, 103.0, 106.0, 107.0)
-        # 0.5*1.0 + 0.3*2.0 + 0.2*2.33 = 0.5 + 0.6 + 0.467 = 1.567
-        assert rr == pytest.approx(1.567, abs=0.01)
+        rr = evaluator._compute_rr(100.0, 103.0, 94.0)
+        assert rr == pytest.approx(2.0, abs=0.01)
 
     def test_zero_risk_returns_zero(self):
         """Zero risk (entry == SL) should return 0.0."""
         evaluator = SetupEvaluator()
-        rr = evaluator._compute_blended_rr(100.0, 100.0, 103.0, 106.0, 109.0)
+        rr = evaluator._compute_rr(100.0, 100.0, 106.0)
         assert rr == 0.0
 
 

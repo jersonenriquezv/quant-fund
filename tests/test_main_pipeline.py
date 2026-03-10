@@ -58,7 +58,6 @@ def _make_setup(pair="ETH/USDT", direction="long") -> TradeSetup:
         entry_price=entry, sl_price=sl,
         tp1_price=2040.0 if direction == "long" else 1960.0,
         tp2_price=2080.0 if direction == "long" else 1920.0,
-        tp3_price=2120.0 if direction == "long" else 1880.0,
         confluences=["choch", "ob", "sweep"],
         htf_bias="bullish" if direction == "long" else "bearish",
         ob_timeframe="15m",

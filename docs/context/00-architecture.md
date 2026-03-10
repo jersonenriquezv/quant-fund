@@ -1,6 +1,6 @@
 # Arquitectura del Sistema
-> Última actualización: 2026-03-09
-> Estado: **5/5 capas implementadas** — pipeline completo Data → Strategy → AI → Risk → Execution. 2 perfiles (default/aggressive). AI filter obligatorio en todas las profiles. Sandbox usa limit orders con tolerancia. News sentiment (F&G + headlines) como nuevo data layer y pre-filter.
+> Última actualización: 2026-03-10
+> Estado: **5/5 capas implementadas** — pipeline completo Data → Strategy → AI → Risk → Execution. AlertManager con prioridades, rate limiting, silenciamiento, whale batching, y EMERGENCY escalation. 2 perfiles (default/aggressive). AI filter obligatorio en todas las profiles.
 
 ## Qué hace (para entenderlo rápido)
 El sistema es un bot de trading que funciona como una línea de ensamblaje. Los datos entran por un lado, pasan por 5 filtros en orden, y si todos dicen "sí", se ejecuta el trade. Si cualquier filtro dice "no", el trade se descarta.
@@ -52,13 +52,16 @@ Sin esta arquitectura, tendríamos un solo programa gigante donde todo está mez
                 └──────────────┘
 
         ┌─────────────────────────────┐
-        │  TELEGRAM NOTIFIER          │ ← Push al celular
-        │  (observador silencioso)    │
+        │  ALERT MANAGER              │ ← Push al celular
+        │  (observador inteligente)   │
         └─────────────────────────────┘
-          ↑ Notifica en cada evento clave:
-          │ setup detectado, AI aprobó/rechazó,
-          │ risk rechazó, trade abierto/cerrado,
-          │ emergencias
+          ↑ Rutea alertas con prioridad:
+          │ EMERGENCY: retry con backoff
+          │ CRITICAL: 1 retry, trade_lifecycle
+          │ WARNING: AI decisions, health check
+          │ INFO: OB summary, whale digest
+          │ + rate limiting, auto-silencing,
+          │   whale batching (2 min digest)
 ```
 
 ## Cómo se comunican los servicios
@@ -70,12 +73,12 @@ Sin esta arquitectura, tendríamos un solo programa gigante donde todo está mez
 6. **Quick setups (C/D/E):** Skip Claude AI filter (los datos SON la señal). Setup C también skipea funding pre-filter. Se genera `AIDecision` sintético con confidence=1.0
 7. **AI filter obligatorio para swing setups** — quick setups lo bypasean por diseño (data-driven).
 8. Risk Service verifica TODOS los guardrails y calcula el position size
-9. Execution Service coloca la orden limit en OKX, con SL (stop-market) y 3 TPs (limit). **En sandbox**: limit al ask/bid actual + 0.05% tolerancia (evita slippage de market orders).
-10. PositionMonitor gestiona el ciclo de vida: entry fill → TP1 (SL→breakeven) → TP2 (SL→TP1) → TP3/SL
+9. Execution Service coloca la orden limit en OKX, con SL (stop-market) y TP (limit al tp2, 100% close). **En sandbox**: limit al ask/bid actual + 0.05% tolerancia (evita slippage de market orders).
+10. PositionMonitor gestiona el ciclo de vida: entry fill → breakeven (SL→entry al cruzar tp1) → trailing SL (SL→tp1 al cruzar midpoint) → TP/SL
 
 **Regla clave:** Si CUALQUIER servicio dice NO, el trade se descarta. No hay "pero" ni "tal vez".
 
-**Notificaciones Telegram:** En cada paso del pipeline (setup detectado, AI pre-filtered, AI decision, risk rejection, trade abierto/cerrado, emergencias, whale exchange deposits/withdrawals con USD y nombre de wallet, resumen de OBs cada 4H), el bot envía push notification al celular via Telegram Bot API. Whale transfers neutrales (transfer_in/transfer_out) se loguean pero no generan notificación. Fire-and-forget — si Telegram falla, el bot sigue operando.
+**Sistema de alertas (`shared/alert_manager.py`):** AlertManager envuelve TelegramNotifier con prioridades (INFO/WARNING/CRITICAL/EMERGENCY), rate limiting por prioridad (INFO: 10/h, WARNING: 5/15m, CRITICAL: 20/h), auto-silenciamiento por categoría (3 alertas en 5 min → 15 min silence), whale batching (2 min digest), y escalamiento EMERGENCY con retry+backoff (4 intentos: 0s/5s/15s/30s). Las categorías `trade_lifecycle` y `emergency` NUNCA se silencian. Health check de infra ahora alerta por Telegram cuando componentes se caen/recuperan. Configuración en `config/settings.py` (ALERT_*).
 
 ## Detalles técnicos
 
@@ -150,7 +153,8 @@ docker compose build --no-cache  # Rebuild después de cambios en código
 | 4. Risk Service | Implementado | 72 | `risk_service/service.py` |
 | 5. Execution Service | Implementado + auditoría | 32 | `execution_service/service.py` |
 | Backtester | Implementado (fase 1) | 21 | `scripts/backtest.py` |
-| **Total** | **5/5 completas + backtester** | **420** | `main.py` (pipeline completo) |
+| Alert Manager | Implementado | 26 | `shared/alert_manager.py` |
+| **Total** | **5/5 completas + backtester + alerts** | **450** | `main.py` (pipeline completo) |
 
 ## Backtesting (`scripts/`)
 
@@ -164,30 +168,24 @@ Backtester completo con simulación de fills:
 - **TradeSimulator** — simula fills candle-by-candle:
   - Entry: limit order, fill cuando candle toca el precio. Timeout configurable.
   - SL: stop-market, prioridad máxima (check primero en cada candle).
-  - TP1 (50% @ 1:1 R:R) → SL a breakeven → TP2 (30% @ 2:1) → TP3 (20%)
+  - Single TP at tp2 (2:1 R:R) → 100% close. Breakeven at tp1 (1:1). Trailing SL at midpoint(tp1,tp2) → SL to tp1.
   - Timeout: `MAX_TRADE_DURATION_SECONDS`
   - Position sizing: `(equity * RISK_PER_TRADE) / |entry - sl|`, cap MAX_LEVERAGE
+- **Risk guardrails** (matching live RiskService): MIN_RISK_DISTANCE_PCT, R:R check, cooldown after loss, max trades/day, daily DD, weekly DD. Tracks `risk_rejections` dict.
+- **Setup dedup cache**: key=(pair, direction, setup_type, round(entry_price, 2)), TTL=1h. Matches main.py live dedup.
 - **Métricas**: win rate, avg R:R, PnL, max drawdown, Sharpe, profit factor, trades/week
-- **Breakdowns**: por setup type, par, dirección, exit reasons
+- **Breakdowns**: por setup type, par, dirección, exit reasons, risk rejections
 - **Export CSV**: `--csv` genera archivo con todas las trades
 
 ```bash
 python scripts/backtest.py --days 60 --profile aggressive --capital 10000 --csv
 ```
 
-**Tests:** 21 tests en `tests/test_backtest.py` (SL, TP1-3, breakeven, timeout, sizing, métricas).
+**Tests:** 21 tests en `tests/test_backtest.py` (SL, single TP, breakeven, trailing SL, timeout, sizing, métricas).
 
 ## Roadmap v2
 
-### Trailing stop para TP3
-Actualmente TP3 usa una limit order fija al siguiente nivel de liquidez. CLAUDE.md especifica "trailing stop or next liquidity level". La implementación v2:
-- OKX soporta trailing stops via API (`trigger-order` con `callbackRatio`)
-- Cuando `phase == "tp2_hit"`, cancelar el TP3 limit y colocar trailing stop
-- Nuevo setting: `TRAILING_STOP_CALLBACK_PCT` (e.g., 0.5% = $250 en BTC a $50k)
-- Nuevo estado en máquina de estados: `tp2_hit` → trailing en vez de limit fijo
-- Requiere testing extensivo en sandbox — trailing stops se comportan diferente a limits en volátil
-
-### Otras mejoras v2
+### Mejoras v2
 - Persistencia de estado del monitor en Redis (sobrevivir restarts)
 - Detección de posiciones huérfanas al reiniciar
 - Aplicar `AIDecision.adjustments` a SL/TP antes de ejecutar
@@ -195,6 +193,15 @@ Actualmente TP3 usa una limit order fija al siguiente nivel de liquidez. CLAUDE.
 - Ver `docs/to-fix.md` para backlog completo (~30 IMPORTANT + 29 MINOR issues)
 
 ## Cambios recientes
+- 2026-03-10: **AlertManager** — `shared/alert_manager.py` reemplaza llamadas directas a TelegramNotifier. Prioridades (INFO/WARNING/CRITICAL/EMERGENCY), rate limiting por prioridad, auto-silenciamiento por categoría (3 en 5min → 15min silence), whale batching (2min digest), EMERGENCY retry con backoff. Health check alerta por Telegram cuando infra cae/recupera. `trade_lifecycle` y `emergency` nunca se silencian. 26 tests nuevos. Todos los callers migrados: `main.py`, `execution_service/monitor.py`, `data_service/service.py`.
+- 2026-03-10: **ENABLED_SETUPS gate** — New setting `ENABLED_SETUPS` (default `["setup_b", "setup_f"]`) controls which setup types can trade. Gate in `strategy_service/service.py` checks after detection. Backtest showed B=56.8% WR, F=48.4% WR; A/G not profitable and disabled.
+- 2026-03-10: **MIN_RISK_DISTANCE_PCT 0.1%→0.2%** — Filters micro-SL noise trades (especially Setup B shorts with 0.16-0.45% SL distances). Backtest: 54.5% WR, 0.95 PF. Tested 0.05%, 0.1%, 0.2%, 0.3%, 0.5% — 0.2% optimal.
+- 2026-03-10: **Backtester risk guardrails** — TradeSimulator now applies same checks as live RiskService: MIN_RISK_DISTANCE_PCT, R:R, cooldown, max trades/day, daily DD, weekly DD. Setup dedup cache added (matching main.py). Reports risk rejection counts.
+- 2026-03-10: **Whale log format** — ETH/BTC whale logs now prefix BEARISH|BULLISH|NEUTRAL, show wallet label first, include USD value consistently, show significance in brackets.
+- 2026-03-10: **WebSocket volume fix** — `websocket_feeds.py` uses `candle_data[6]` (base currency) instead of `[5]` (contracts). Fixes 100x volume mismatch for BTC, 10x for ETH vs REST backfill.
+- 2026-03-10: **Notifier returns bool** — `TelegramNotifier.send()` now returns `True`/`False` for success/failure.
+- 2026-03-10: **Trailing SL + TP3 cleanup** — Simplified exit management from 3-tier partial closes (TP1 50%, TP2 30%, TP3 20%) to single TP at tp2 (2:1 R:R, 100% close) + progressive SL: breakeven at tp1 (1:1), trailing SL at midpoint(tp1,tp2) (1.5:1) → SL moves to tp1. Removed `tp3_price` from TradeSetup, ManagedPosition, SimulatedTrade, settings, all setups, AI prompt, and tests. Backtester rewritten to match live execution. R:R simplified from weighted blended to simple `abs(tp2-entry)/abs(entry-sl)`. PostgreSQL `tp3_price` column kept for historical data (param default 0.0). 450 tests pass.
+- 2026-03-10: **PricePanel hides undefined bias** — Dashboard hides the bias badge when HTF bias is "undefined" instead of showing "undefined" text.
 - 2026-03-09: **Phantom fill debug logging** — `monitor.py` logea WARNING con campos raw de OKX (avgPx, px, state) cuando fill price difiere >0.5% del limit price. Diagnostica caso donde buy-limit a $1937 reportó fill a $1990.
 - 2026-03-09: **Test log isolation** — `shared/logger.py` detecta pytest y skipea file sinks. Previene que Mock objects contaminen logs de producción.
 - 2026-03-09: **5 BTC whale wallets removidos** — mempool.space retorna HTTP 400 "Invalid Bitcoin address" para 1LQoWist8K, 32ixEdpwzG, 1HeKStJGY, 1AsHPP7Wc, 3MfN5to5K. Eliminaba 1130+ warnings/día.

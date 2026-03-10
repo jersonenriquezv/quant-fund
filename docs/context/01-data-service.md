@@ -87,6 +87,7 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Connects to `wss://ws.okx.com:8443/ws/v5/business` (candle channels live here, NOT on `/public`)
 - Subscribes to 8 channels: 2 instIds × 4 timeframes (candle5m, candle15m, candle1H, candle4H)
 - **Candle confirmation:** OKX sends `confirm="1"` when candle is closed — only these are processed
+- **Volume units:** Uses `candle_data[6]` (volCcy = base currency) instead of `candle_data[5]` (vol = contracts). This matches ccxt REST backfill which returns volume in base currency. OKX candle format: `[ts, o, h, l, c, vol(contracts), volCcy(base), volCcyQuote(quote), confirm]`. Fix applied 2026-03-09 — previously used contracts, causing 100x volume mismatch for BTC (ctVal=0.01) and 10x for ETH (ctVal=0.1), which broke OB volume filter detection.
 - Stores last 600 candles per pair/timeframe in memory
 - Public methods: `get_latest_candle(pair, tf)`, `get_candles(pair, tf, count)`
 - `store_candles()` accepts backfilled candles with deduplication
@@ -128,6 +129,7 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Significance: >100 ETH = "high", >10 ETH = "medium", <10 ETH ignored
 - Rate limit enforced: max 4.5 calls/sec (safely under Etherscan's 5/sec)
 - Creates `WhaleMovement(chain="ETH", wallet_label=label, amount_usd=..., market_price=...)` — USD computed at detection time
+- Log format: `BEARISH|BULLISH|NEUTRAL Whale {action}: {label} → {dest} {amount} ETH (~$USD) [{significance}]`
 
 ### `data_service/btc_whale_client.py` — BTC Whale Wallet Monitor
 - Polls 11 configured wallets every `MEMPOOL_CHECK_INTERVAL` seconds (default 300)
@@ -145,6 +147,7 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Significance: >100 BTC = "high", >10 BTC = "medium", <10 BTC ignored
 - Rate limit: 0.5s between calls (~10 req/min, safe for public instance)
 - Creates `WhaleMovement(chain="BTC", wallet_label=label, amount_usd=..., market_price=...)` — USD computed at detection time
+- Log format: `BEARISH|BULLISH|NEUTRAL BTC whale {action}: {label} → {dest} {amount} BTC (~$USD) [{significance}]`
 
 ### `data_service/news_client.py` — News Sentiment Client
 - Class: `NewsClient(redis_store=None)`

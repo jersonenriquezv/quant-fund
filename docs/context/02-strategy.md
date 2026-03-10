@@ -63,18 +63,18 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
   - `_is_ob_within_range()` filtra OBs más allá de `OB_MAX_DISTANCE_PCT` (5%) del precio actual
   - `_is_price_near_ob()` se mantiene para notificaciones de OB summary, pero no bloquea setups
 - Mínimo 2 confluencias obligatorio (no configurable — hardcoded)
-- Cálculo de TP1 (1:1), TP2 (1:2), TP3 (trailing/liquidity)
-- **R:R blended** — validación ponderada: 50%×TP1 + 30%×TP2 + 20%×TP3 ≥ `MIN_RISK_REWARD`
+- Cálculo de TP1 (1:1 R:R, breakeven trigger) y TP2 (2:1 R:R, single TP)
+- **R:R simple** — `abs(tp2 - entry) / abs(entry - sl)` ≥ `MIN_RISK_REWARD`
 - **Validación premium/discount** — equilibrium zone bloquea trades por defecto, configurable via `ALLOW_EQUILIBRIUM_TRADES`
 
 ### `strategy_service/quick_setups.py` — Quick Setups (C, D, E)
 Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan cuando no hay swing setup (A/B).
 
-- **Setup C — Funding Squeeze:** Funding rate extremo + CVD buy dominance alineado + HTF bias. Entry: precio actual. SL: 0.5%. TPs: 1:1, 1.5:1, 2:1.
+- **Setup C — Funding Squeeze:** Funding rate extremo + CVD buy dominance alineado + HTF bias. Entry: precio actual. SL: 0.5%. TP1: 1:1 (breakeven trigger), TP2: 2:1 (single TP).
   - Long: funding < -0.03%, buy dominance > 55%
   - Short: funding > +0.03%, buy dominance < 45%
-- **Setup D — LTF Structure Scalp:** CHoCH o BOS en 5m + OB fresco cerca del precio. No requiere sweep ni FVG. HTF bias + PD zone alineados. Entry: 75% del OB. TPs: 1:1, 1.5:1, 2:1.
-- **Setup E — Cascade Reversal:** Caída de OI >2% (cascade proxy) + CVD revertiendo. Long después de cascade de longs, short después de cascade de shorts. Usa OB cercano como anchor o precio actual. TPs: 1:1, 1.5:1, 2:1.
+- **Setup D — LTF Structure Scalp:** CHoCH o BOS en 5m + OB fresco cerca del precio. No requiere sweep ni FVG. HTF bias + PD zone alineados. Entry: 75% del OB. TP1: 1:1 (breakeven trigger), TP2: 2:1 (single TP).
+- **Setup E — Cascade Reversal:** Caída de OI >2% (cascade proxy) + CVD revertiendo. Long después de cascade de longs, short después de cascade de shorts. Usa OB cercano como anchor o precio actual. TP1: 1:1 (breakeven trigger), TP2: 2:1 (single TP).
 
 **Diferencias clave quick vs swing:**
 - Skip Claude AI filter (los datos SON la señal)
@@ -86,6 +86,7 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 ### `strategy_service/service.py` — Facade
 - `StrategyService(data_service)` — obtiene candles del DataService
 - `evaluate(pair, candle)` — evalúa LTF candles: A → B → F → G → C → D → E, retorna `TradeSetup | None`
+- **`ENABLED_SETUPS` gate** — después de detectar un setup, verifica `setup.setup_type in settings.ENABLED_SETUPS`. Si no está habilitado, logea debug y continúa evaluando el siguiente tipo. Default: `["setup_b", "setup_f"]` (backtest mostró B=56.8% WR y F=48.4% WR; A/G no son rentables)
 - Coordina todos los módulos internos
 - Quick setup cooldown tracking per (pair, setup_type)
 
@@ -138,5 +139,5 @@ El perfil activo se almacena en Redis (`qf:bot:strategy_profile`) y se sincroniz
 - `test_order_blocks.py` — detección, volumen, expiración, mitigación
 - `test_fvg.py` — detección, fill, expiración
 - `test_liquidity.py` — clustering, sweeps, premium/discount, equilibrium band, swept persistence
-- `test_setups.py` — Setup A/B, confluencia, TPs, PD alignment, blended R:R, OB proximity, temporal ordering
+- `test_setups.py` — Setup A/B, confluencia, TPs, PD alignment, simple R:R, OB proximity, temporal ordering
 - `test_quick_setups.py` — Setup C/D/E, cooldowns, R:R quick vs swing, AI bypass, data validation

@@ -480,10 +480,10 @@ class PostgresStore:
         sl_price: float,
         tp1_price: float,
         tp2_price: float,
-        tp3_price: float,
         position_size: float,
         ai_confidence: float,
         actual_entry: float | None = None,
+        tp3_price: float = 0.0,
     ) -> int | None:
         """Insert a new trade record. Returns trade id or None on failure."""
         for attempt in range(2):

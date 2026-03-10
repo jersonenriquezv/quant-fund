@@ -264,7 +264,7 @@ class TestPreFilterIntegration:
         return None
 
     def test_extreme_fear_rejects_long(self):
-        result = self._pre_filter_fg("long", 8)
+        result = self._pre_filter_fg("long", 3)
         assert result is not None
         assert "Extreme Fear" in result
 

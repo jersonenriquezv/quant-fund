@@ -147,7 +147,6 @@ class TradeSetup:
     sl_price: float
     tp1_price: float
     tp2_price: float
-    tp3_price: float
     confluences: list       # List of confirmation strings found
     htf_bias: str           # "bullish" or "bearish"
     ob_timeframe: str       # Timeframe of the order block used

@@ -37,12 +37,12 @@ def _candle(pair: str = "BTC/USDT", timestamp: int = 1000000,
 
 def _setup(pair: str = "BTC/USDT", direction: str = "long",
            entry: float = 49500, sl: float = 49000,
-           tp1: float = 50000, tp2: float = 50500, tp3: float = 51000,
+           tp1: float = 50000, tp2: float = 50500,
            setup_type: str = "setup_a", timestamp: int = 1000000) -> TradeSetup:
     return TradeSetup(
         timestamp=timestamp, pair=pair, direction=direction,
         setup_type=setup_type, entry_price=entry, sl_price=sl,
-        tp1_price=tp1, tp2_price=tp2, tp3_price=tp3,
+        tp1_price=tp1, tp2_price=tp2,
         confluences=["ob", "sweep"], htf_bias="bullish",
         ob_timeframe="15m",
     )
@@ -73,7 +73,7 @@ class TestEntryFill:
         """Short limit order fills when candle high >= entry price."""
         sim = TradeSimulator(initial_capital=10000)
         setup = _setup(direction="short", entry=50500, sl=51000,
-                       tp1=50000, tp2=49500, tp3=49000)
+                       tp1=50000, tp2=49500)
         candle0 = _candle(timestamp=1000000, close=50000)
 
         sim.on_setup(setup, candle0)
@@ -105,6 +105,13 @@ class TestEntryFill:
         mock_settings.TP1_CLOSE_PCT = 0.50
         mock_settings.TP2_CLOSE_PCT = 0.30
         mock_settings.MAX_TRADE_DURATION_SECONDS = 43200
+        mock_settings.MIN_RISK_DISTANCE_PCT = 0.001
+        mock_settings.MIN_RISK_REWARD = 1.5
+        mock_settings.MIN_RISK_REWARD_QUICK = 1.0
+        mock_settings.COOLDOWN_MINUTES = 30
+        mock_settings.MAX_TRADES_PER_DAY = 100
+        mock_settings.MAX_DAILY_DRAWDOWN = 0.10
+        mock_settings.MAX_WEEKLY_DRAWDOWN = 0.20
 
         sim = TradeSimulator(initial_capital=10000)
         setup = _setup(direction="long", entry=49500, timestamp=1000000)
@@ -153,7 +160,7 @@ class TestStopLoss:
         """Short trade: SL triggers when candle high >= sl_price."""
         sim = TradeSimulator(initial_capital=10000)
         setup = _setup(direction="short", entry=50500, sl=51000,
-                       tp1=50000, tp2=49500, tp3=49000)
+                       tp1=50000, tp2=49500)
         candle0 = _candle(timestamp=1000000)
 
         sim.on_setup(setup, candle0)
@@ -194,39 +201,38 @@ class TestStopLoss:
 # ================================================================
 
 class TestTakeProfit:
-    def test_tp1_partial_close_and_breakeven(self):
-        """TP1 closes 50% and moves SL to breakeven."""
+    def test_breakeven_triggers_at_tp1(self):
+        """Price crosses tp1 → SL moves to breakeven (entry price)."""
         sim = TradeSimulator(initial_capital=10000)
         setup = _setup(direction="long", entry=49500, sl=49000,
-                       tp1=50000, tp2=50500, tp3=51000)
+                       tp1=50000, tp2=50500)
         candle0 = _candle(timestamp=1000000)
 
         sim.on_setup(setup, candle0)
         candle1 = _candle(timestamp=2000000, low=49400)
         sim.on_candle(candle1)
 
-        # TP1 hit
+        # TP1 hit — breakeven triggered, trade still active
         candle2 = _candle(timestamp=3000000, high=50100, low=49600)
         sim.on_candle(candle2)
 
-        assert len(sim.active) == 1  # Still active (50% remaining)
+        assert len(sim.active) == 1
         trade = sim.active[0]
-        assert trade.tp_phase == 1
-        assert trade.remaining_pct == pytest.approx(0.5)
+        assert trade.breakeven_hit is True
         assert trade.current_sl == trade.entry_price  # Breakeven
 
-    def test_breakeven_sl_after_tp1(self):
-        """After TP1, SL at breakeven closes remaining with ~0 PnL."""
+    def test_breakeven_sl_closes_at_entry(self):
+        """After breakeven, SL at entry → PnL ~= 0."""
         sim = TradeSimulator(initial_capital=10000)
         setup = _setup(direction="long", entry=49500, sl=49000,
-                       tp1=50000, tp2=50500, tp3=51000)
+                       tp1=50000, tp2=50500)
         candle0 = _candle(timestamp=1000000)
 
         sim.on_setup(setup, candle0)
         candle1 = _candle(timestamp=2000000, low=49400)
         sim.on_candle(candle1)
 
-        # TP1 hit
+        # TP1 hit → breakeven
         candle2 = _candle(timestamp=3000000, high=50100, low=49600)
         sim.on_candle(candle2)
 
@@ -238,61 +244,104 @@ class TestTakeProfit:
         assert len(trades) == 1
         trade = trades[0]
         assert trade.exit_reason == "breakeven_sl"
-        # PnL should be positive (TP1 gain + breakeven)
-        assert trade.pnl_usd > 0
+        assert trade.pnl_usd == pytest.approx(0.0, abs=0.01)
 
-    def test_full_tp3_exit(self):
-        """Trade hits all 3 TPs for maximum profit."""
+    def test_trailing_sl_moves_to_tp1(self):
+        """Price crosses midpoint(tp1,tp2) → SL moves to tp1."""
         sim = TradeSimulator(initial_capital=10000)
+        # entry=49500, sl=49000, tp1=50000, tp2=50500
+        # midpoint = (50000 + 50500) / 2 = 50250
         setup = _setup(direction="long", entry=49500, sl=49000,
-                       tp1=50000, tp2=50500, tp3=51000)
+                       tp1=50000, tp2=50500)
         candle0 = _candle(timestamp=1000000)
 
         sim.on_setup(setup, candle0)
         candle1 = _candle(timestamp=2000000, low=49400)
         sim.on_candle(candle1)
 
-        # TP1 hit
+        # TP1 hit → breakeven
         candle2 = _candle(timestamp=3000000, high=50100, low=49600)
         sim.on_candle(candle2)
 
-        # TP2 hit
-        candle3 = _candle(timestamp=4000000, high=50600, low=49800)
+        # Midpoint hit → trailing SL to tp1
+        candle3 = _candle(timestamp=4000000, high=50300, low=49800)
         sim.on_candle(candle3)
-        assert sim.active[0].tp_phase == 2
-        assert sim.active[0].remaining_pct == pytest.approx(0.2)
 
-        # TP3 hit
-        candle4 = _candle(timestamp=5000000, high=51100, low=50000)
+        assert len(sim.active) == 1
+        trade = sim.active[0]
+        assert trade.trailing_sl_moved is True
+        assert trade.current_sl == trade.tp1_price  # 50000
+
+    def test_trailing_sl_exit(self):
+        """After trailing SL set to tp1, price drops → exits at tp1."""
+        sim = TradeSimulator(initial_capital=10000)
+        setup = _setup(direction="long", entry=49500, sl=49000,
+                       tp1=50000, tp2=50500)
+        candle0 = _candle(timestamp=1000000)
+
+        sim.on_setup(setup, candle0)
+        candle1 = _candle(timestamp=2000000, low=49400)
+        sim.on_candle(candle1)
+
+        # TP1 hit → breakeven
+        candle2 = _candle(timestamp=3000000, high=50100, low=49600)
+        sim.on_candle(candle2)
+
+        # Midpoint hit → trailing SL to tp1
+        candle3 = _candle(timestamp=4000000, high=50300, low=49800)
+        sim.on_candle(candle3)
+
+        # Price drops to tp1 (trailing SL)
+        candle4 = _candle(timestamp=5000000, low=49900, high=50100)
         sim.on_candle(candle4)
 
         trades = sim.get_closed_trades()
         assert len(trades) == 1
-        trade = trades[0]
-        assert trade.exit_reason == "tp3"
-        assert trade.remaining_pct == 0.0
-        assert trade.pnl_usd > 0
-        assert len(trade.exits) == 3
+        assert trades[0].exit_reason == "trailing_sl"
+        assert trades[0].exit_price == 50000  # tp1
+        assert trades[0].pnl_usd > 0  # Profit (exit at tp1 > entry)
 
-    def test_multiple_tps_same_candle(self):
-        """Large candle triggers all TPs at once."""
+    def test_full_tp_exit(self):
+        """Price reaches tp2 → 100% close with full profit."""
         sim = TradeSimulator(initial_capital=10000)
         setup = _setup(direction="long", entry=49500, sl=49000,
-                       tp1=50000, tp2=50500, tp3=51000)
+                       tp1=50000, tp2=50500)
         candle0 = _candle(timestamp=1000000)
 
         sim.on_setup(setup, candle0)
         candle1 = _candle(timestamp=2000000, low=49400)
         sim.on_candle(candle1)
 
-        # Huge candle covers all TPs
+        # TP2 hit — full close
+        candle2 = _candle(timestamp=3000000, high=50600, low=49600)
+        sim.on_candle(candle2)
+
+        trades = sim.get_closed_trades()
+        assert len(trades) == 1
+        trade = trades[0]
+        assert trade.exit_reason == "tp"
+        assert trade.exit_price == 50500
+        assert trade.pnl_usd > 0
+
+    def test_large_candle_hits_tp_directly(self):
+        """Large candle covers tp2 directly → closes at tp2."""
+        sim = TradeSimulator(initial_capital=10000)
+        setup = _setup(direction="long", entry=49500, sl=49000,
+                       tp1=50000, tp2=50500)
+        candle0 = _candle(timestamp=1000000)
+
+        sim.on_setup(setup, candle0)
+        candle1 = _candle(timestamp=2000000, low=49400)
+        sim.on_candle(candle1)
+
+        # Huge candle covers all levels
         candle2 = _candle(timestamp=3000000, low=49600, high=51200)
         sim.on_candle(candle2)
 
         trades = sim.get_closed_trades()
         assert len(trades) == 1
-        assert trades[0].exit_reason == "tp3"
-        assert len(trades[0].exits) == 3
+        assert trades[0].exit_reason == "tp"
+        assert trades[0].exit_price == 50500
 
 
 # ================================================================
@@ -312,10 +361,17 @@ class TestTimeout:
         mock_settings.ENTRY_TIMEOUT_QUICK_SECONDS = 3600
         mock_settings.TP1_CLOSE_PCT = 0.50
         mock_settings.TP2_CLOSE_PCT = 0.30
+        mock_settings.MIN_RISK_DISTANCE_PCT = 0.001
+        mock_settings.MIN_RISK_REWARD = 1.5
+        mock_settings.MIN_RISK_REWARD_QUICK = 1.0
+        mock_settings.COOLDOWN_MINUTES = 30
+        mock_settings.MAX_TRADES_PER_DAY = 100
+        mock_settings.MAX_DAILY_DRAWDOWN = 0.10
+        mock_settings.MAX_WEEKLY_DRAWDOWN = 0.20
 
         sim = TradeSimulator(initial_capital=10000)
         setup = _setup(direction="long", entry=49500, sl=49000,
-                       tp1=50000, tp2=50500, tp3=51000, timestamp=1000000)
+                       tp1=50000, tp2=50500, timestamp=1000000)
         candle0 = _candle(timestamp=1000000)
 
         sim.on_setup(setup, candle0)
@@ -345,7 +401,7 @@ class TestPositionSizing:
         # risk = 10000 * 0.02 = $200
         # size = 200 / 500 = 0.4 BTC
         setup = _setup(direction="long", entry=50000, sl=49500,
-                       tp1=50500, tp2=51000, tp3=51500)
+                       tp1=50500, tp2=51000)
         candle0 = _candle(timestamp=1000000)
 
         sim.on_setup(setup, candle0)
@@ -357,12 +413,12 @@ class TestPositionSizing:
     def test_leverage_cap(self):
         """Leverage capped at MAX_LEVERAGE when risk-based size is too large."""
         sim = TradeSimulator(initial_capital=1000)
-        # entry=50000, sl=49990 → distance=$10
+        # entry=50000, sl=49850 → distance=$150 (0.3%, passes MIN_RISK_DISTANCE_PCT)
         # risk = 1000 * 0.02 = $20
-        # size = 20 / 10 = 2 BTC → notional = 100,000 → leverage = 100x
-        # Capped: leverage=5x → notional=5000 → size=0.1 BTC
-        setup = _setup(direction="long", entry=50000, sl=49990,
-                       tp1=50010, tp2=50020, tp3=50030)
+        # size = 20 / 150 = 0.133 BTC → notional = 6,667 → leverage = 6.67x
+        # Capped: leverage=MAX → notional=MAX*1000 → size=MAX*1000/50000
+        setup = _setup(direction="long", entry=50000, sl=49850,
+                       tp1=50150, tp2=50300)
         candle0 = _candle(timestamp=1000000)
 
         sim.on_setup(setup, candle0)
@@ -399,7 +455,7 @@ class TestPnLComputation:
         # risk = 10000 * 0.02 = $200, size = 0.4 BTC
         # SL loss = (49500 - 50000) * 0.4 = -$200
         setup = _setup(direction="long", entry=50000, sl=49500,
-                       tp1=50500, tp2=51000, tp3=51500)
+                       tp1=50500, tp2=51000)
         candle0 = _candle(timestamp=1000000)
 
         sim.on_setup(setup, candle0)
@@ -418,7 +474,7 @@ class TestPnLComputation:
 
         # Trade 1: SL hit → lose $200
         setup1 = _setup(direction="long", entry=50000, sl=49500,
-                        tp1=50500, tp2=51000, tp3=51500, timestamp=1000000)
+                        tp1=50500, tp2=51000, timestamp=1000000)
         candle0 = _candle(timestamp=1000000)
         sim.on_setup(setup1, candle0)
         sim.on_candle(_candle(timestamp=2000000, low=49900))  # Fill
@@ -463,11 +519,11 @@ class TestMetrics:
 # ================================================================
 
 class TestShortTrades:
-    def test_short_tp1_and_breakeven(self):
-        """Short trade: TP1 profit, then breakeven SL."""
+    def test_short_breakeven_and_tp(self):
+        """Short trade: breakeven triggers at tp1, then TP hit at tp2."""
         sim = TradeSimulator(initial_capital=10000)
         setup = _setup(direction="short", entry=50500, sl=51000,
-                       tp1=50000, tp2=49500, tp3=49000)
+                       tp1=50000, tp2=49500)
         candle0 = _candle(timestamp=1000000)
 
         sim.on_setup(setup, candle0)
@@ -475,11 +531,35 @@ class TestShortTrades:
         candle1 = _candle(timestamp=2000000, high=50600, low=50000)
         sim.on_candle(candle1)
 
-        # TP1 hit (price drops to tp1)
+        # TP1 hit (price drops to tp1) → breakeven
         candle2 = _candle(timestamp=3000000, low=49900, high=50400)
         sim.on_candle(candle2)
-        assert sim.active[0].tp_phase == 1
+        assert sim.active[0].breakeven_hit is True
         assert sim.active[0].current_sl == 50500  # Breakeven
+
+        # TP2 hit → full close
+        candle3 = _candle(timestamp=4000000, low=49400, high=50100)
+        sim.on_candle(candle3)
+
+        trades = sim.get_closed_trades()
+        assert len(trades) == 1
+        assert trades[0].exit_reason == "tp"
+        assert trades[0].pnl_usd > 0
+
+    def test_short_breakeven_sl_exit(self):
+        """Short trade: breakeven SL triggered after tp1 cross."""
+        sim = TradeSimulator(initial_capital=10000)
+        setup = _setup(direction="short", entry=50500, sl=51000,
+                       tp1=50000, tp2=49500)
+        candle0 = _candle(timestamp=1000000)
+
+        sim.on_setup(setup, candle0)
+        candle1 = _candle(timestamp=2000000, high=50600, low=50000)
+        sim.on_candle(candle1)
+
+        # TP1 hit → breakeven
+        candle2 = _candle(timestamp=3000000, low=49900, high=50400)
+        sim.on_candle(candle2)
 
         # Price goes back up to breakeven SL
         candle3 = _candle(timestamp=4000000, high=50600, low=50100)
@@ -488,4 +568,4 @@ class TestShortTrades:
         trades = sim.get_closed_trades()
         assert len(trades) == 1
         assert trades[0].exit_reason == "breakeven_sl"
-        assert trades[0].pnl_usd > 0  # TP1 profit > breakeven loss
+        assert trades[0].pnl_usd == pytest.approx(0.0, abs=0.01)

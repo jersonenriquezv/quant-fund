@@ -39,7 +39,6 @@ def make_setup(
     sl=1960.0,
     tp1=2040.0,
     tp2=2080.0,
-    tp3=2120.0,
 ) -> TradeSetup:
     return TradeSetup(
         timestamp=int(time.time()),
@@ -50,7 +49,6 @@ def make_setup(
         sl_price=sl,
         tp1_price=tp1,
         tp2_price=tp2,
-        tp3_price=tp3,
         confluences=["ob", "fvg", "sweep"],
         htf_bias="bullish" if direction == "long" else "bearish",
         ob_timeframe="15m",
@@ -111,7 +109,6 @@ def make_position(
         sl_price=sl_price,
         tp1_price=2040.0,    # Breakeven trigger (1:1 R:R)
         tp2_price=2080.0,    # TP order level (2:1 R:R)
-        tp3_price=2120.0,
         total_size=size,
         filled_size=size if phase != "pending_entry" else 0.0,
         leverage=3.0,
@@ -188,7 +185,7 @@ class TestExecutionServiceExecute:
 
         setup = make_setup(
             direction="short", entry=2000.0, sl=2040.0,
-            tp1=1960.0, tp2=1920.0, tp3=1880.0
+            tp1=1960.0, tp2=1920.0
         )
         result = asyncio.run(
             service.execute(setup, make_approval(), 0.70)
@@ -237,7 +234,7 @@ class TestExecutionServiceExecute:
 
         setup = make_setup(
             pair="ETH/USDT", direction="short", entry=2077.0, sl=2084.0,
-            tp1=2070.0, tp2=2063.0, tp3=2056.0
+            tp1=2070.0, tp2=2063.0
         )
         result = asyncio.run(service.execute(setup, make_approval(size=0.05), 0.75))
 
@@ -540,7 +537,7 @@ class TestBreakevenTrigger:
         assert sl_call[0][3] == 2000.0  # breakeven
 
     def test_breakeven_only_triggers_once(self):
-        """Once breakeven_hit=True, don't re-check."""
+        """Once breakeven_hit=True, don't re-check breakeven (but trailing may check)."""
         executor = _mock_executor()
         risk = MagicMock()
         monitor = PositionMonitor(executor, risk)
@@ -551,6 +548,7 @@ class TestBreakevenTrigger:
         pos.sl_order_id = "ord-sl"
         pos.tp_order_id = "ord-tp"
         pos.breakeven_hit = True  # Already triggered
+        pos.trailing_sl_moved = True  # Also already triggered
         monitor.register(pos)
 
         async def mock_fetch(order_id, pair):
@@ -560,8 +558,72 @@ class TestBreakevenTrigger:
 
         asyncio.run(monitor._check_all_positions())
 
-        # No ticker fetch needed — breakeven already triggered
+        # No ticker fetch needed — both breakeven and trailing already triggered
         executor.fetch_ticker.assert_not_called()
+
+
+class TestTrailingSL:
+    """Price crosses 1.5:1 R:R midpoint → SL moves to tp1."""
+
+    def test_trailing_sl_moves_to_tp1(self):
+        executor = _mock_executor()
+        risk = MagicMock()
+        monitor = PositionMonitor(executor, risk)
+
+        pos = make_position(phase="active", size=0.05)
+        pos.actual_entry_price = 2000.0
+        pos.filled_at = int(time.time())
+        pos.sl_order_id = "ord-sl-be"
+        pos.tp_order_id = "ord-tp"
+        pos.current_sl_price = 2000.0  # Already at breakeven
+        pos.breakeven_hit = True
+        monitor.register(pos)
+
+        # midpoint of tp1 (2040) and tp2 (2080) = 2060
+        async def mock_fetch(order_id, pair):
+            return make_order(order_id, status="open")
+
+        executor.fetch_order = AsyncMock(side_effect=mock_fetch)
+        # Price above midpoint (2060)
+        executor.fetch_ticker = AsyncMock(return_value={"last": 2065.0})
+        executor.place_stop_market = AsyncMock(return_value=make_order("ord-sl-trail"))
+        executor.cancel_order = AsyncMock(return_value=True)
+
+        asyncio.run(monitor._check_all_positions())
+
+        assert pos.trailing_sl_moved is True
+        assert pos.sl_order_id == "ord-sl-trail"
+        assert pos.current_sl_price == 2040.0  # tp1_price
+
+        sl_call = executor.place_stop_market.call_args
+        assert sl_call[0][3] == 2040.0  # trailing SL at tp1
+
+    def test_trailing_sl_not_triggered_before_breakeven(self):
+        """Trailing SL only activates after breakeven is hit."""
+        executor = _mock_executor()
+        risk = MagicMock()
+        monitor = PositionMonitor(executor, risk)
+
+        pos = make_position(phase="active", size=0.05)
+        pos.actual_entry_price = 2000.0
+        pos.filled_at = int(time.time())
+        pos.sl_order_id = "ord-sl"
+        pos.tp_order_id = "ord-tp"
+        pos.current_sl_price = 1960.0
+        pos.breakeven_hit = False
+        monitor.register(pos)
+
+        async def mock_fetch(order_id, pair):
+            return make_order(order_id, status="open")
+
+        executor.fetch_order = AsyncMock(side_effect=mock_fetch)
+        # Price below tp1 — no breakeven, no trailing
+        executor.fetch_ticker = AsyncMock(return_value={"last": 2030.0})
+
+        asyncio.run(monitor._check_all_positions())
+
+        assert pos.trailing_sl_moved is False
+        assert pos.breakeven_hit is False
 
 
 class TestTimeoutClose:
@@ -729,7 +791,7 @@ class TestSLTPValidation:
 
         setup = make_setup(
             direction="short", sl=1950.0, entry=2000.0,
-            tp1=1960.0, tp2=1920.0, tp3=1880.0
+            tp1=1960.0, tp2=1920.0
         )
         with patch.object(settings, "OKX_SANDBOX", False):
             result = asyncio.run(service.execute(setup, make_approval(), 0.85))

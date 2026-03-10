@@ -1,20 +1,22 @@
 """
 Position monitor — background async loop that manages position lifecycle.
 
-Simplified state machine (Fase 1):
+State machine:
 
     pending_entry ──[fill]──────> active         (place SL + single TP)
     pending_entry ──[timeout]───> closed         (cancel entry)
 
     active ──[TP fills]──> closed                (full profit)
-    active ──[SL fills]──> closed                (loss or breakeven)
+    active ──[SL fills]──> closed                (loss or breakeven or trailing)
     active ──[timeout]───> closed                (market close)
-    active ──[price >= 1:1 R:R]──> SL moves to breakeven
+    active ──[price >= 1:1 R:R]──> SL moves to breakeven (entry price)
+    active ──[price >= 1.5:1 R:R]──> SL moves to tp1_price (trailing)
 
 Exit management:
 - SL: stop-market at sl_price for 100% of position
 - TP: limit at tp2_price (2:1 R:R) for 100% of position
 - Breakeven: when price crosses tp1_price (1:1), SL moves to entry price
+- Trailing: when price crosses midpoint(tp1,tp2) (1.5:1), SL moves to tp1_price
 
 Critical safety:
 - Entry fill + SL placement fails → EMERGENCY market close
@@ -38,11 +40,11 @@ class PositionMonitor:
     """Background loop managing open positions through their lifecycle."""
 
     def __init__(self, executor: OrderExecutor, risk_service,
-                 data_store=None, notifier=None) -> None:
+                 data_store=None, alert_manager=None) -> None:
         self._executor = executor
         self._risk = risk_service
         self._data_store = data_store  # DataService for DB persistence
-        self._notifier = notifier      # TelegramNotifier (optional)
+        self._alert_manager = alert_manager  # AlertManager (optional)
         self._positions: dict[str, ManagedPosition] = {}  # keyed by pair
         self._running = False
         self._task: Optional[asyncio.Task] = None
@@ -291,9 +293,9 @@ class PositionMonitor:
 
             if sl_order is None:
                 logger.error(f"SL placement FAILED after entry fill — EMERGENCY CLOSE: {pos.pair}")
-                if self._notifier is not None:
+                if self._alert_manager is not None:
                     self._safe_notify(
-                        self._notifier.notify_emergency(pos, "SL placement failed — market closed")
+                        self._alert_manager.notify_emergency(pos, "SL placement failed — market closed")
                     )
                 result = await self._executor.close_position_market(
                     pos.pair, close_side, pos.filled_size
@@ -330,8 +332,8 @@ class PositionMonitor:
                      f"sl_attached={sl_found} tp_attached={tp_found}")
 
         # Telegram: trade opened
-        if self._notifier is not None:
-            self._safe_notify(self._notifier.notify_trade_opened(pos))
+        if self._alert_manager is not None:
+            self._safe_notify(self._alert_manager.notify_trade_opened(pos))
 
         # Persist trade to PostgreSQL
         self._persist_trade_open(pos)
@@ -443,6 +445,10 @@ class PositionMonitor:
         if not pos.breakeven_hit and pos.actual_entry_price:
             await self._check_breakeven(pos)
 
+        # Trailing SL check — move SL to tp1 when price crosses 1.5:1 R:R
+        if pos.breakeven_hit and not pos.trailing_sl_moved and pos.actual_entry_price:
+            await self._check_trailing_sl(pos)
+
     # ================================================================
     # Breakeven trigger — move SL to entry when price crosses 1:1 R:R
     # ================================================================
@@ -473,6 +479,42 @@ class PositionMonitor:
             )
             await self._adjust_sl(pos, pos.actual_entry_price)
             pos.breakeven_hit = True
+
+    # ================================================================
+    # Trailing SL — move SL to tp1 when price crosses 1.5:1 R:R
+    # ================================================================
+
+    async def _check_trailing_sl(self, pos: ManagedPosition) -> None:
+        """Check if price has crossed the 1.5:1 R:R level (midpoint of tp1 and tp2).
+        If so, move SL to tp1_price.
+        """
+        if pos.tp1_price <= 0 or pos.tp2_price <= 0:
+            return
+
+        midpoint = (pos.tp1_price + pos.tp2_price) / 2.0
+
+        ticker = await self._executor.fetch_ticker(pos.pair)
+        if ticker is None:
+            return
+
+        current_price = float(ticker.get("last", 0) or 0)
+        if current_price <= 0:
+            return
+
+        triggered = False
+        if pos.direction == "long" and current_price >= midpoint:
+            triggered = True
+        elif pos.direction == "short" and current_price <= midpoint:
+            triggered = True
+
+        if triggered:
+            logger.info(
+                f"Trailing SL triggered: {pos.pair} {pos.direction} "
+                f"price={current_price:.2f} >= midpoint={midpoint:.2f} "
+                f"→ moving SL to tp1={pos.tp1_price:.2f}"
+            )
+            await self._adjust_sl(pos, pos.tp1_price)
+            pos.trailing_sl_moved = True
 
     # ================================================================
     # State: emergency_pending (retry failed emergency close)
@@ -611,7 +653,6 @@ class PositionMonitor:
         pos.sl_price = round(pos.sl_price * ratio, 2)
         pos.tp1_price = round(pos.tp1_price * ratio, 2)
         pos.tp2_price = round(pos.tp2_price * ratio, 2)
-        pos.tp3_price = round(pos.tp3_price * ratio, 2)
 
         logger.info(
             f"Sandbox price remap: {pos.pair} ratio={ratio:.4f} "
@@ -690,8 +731,8 @@ class PositionMonitor:
         )
 
         # Telegram: trade closed (skip cancelled entries — no real trade)
-        if self._notifier is not None and reason != "cancelled":
-            self._safe_notify(self._notifier.notify_trade_closed(pos))
+        if self._alert_manager is not None and reason != "cancelled":
+            self._safe_notify(self._alert_manager.notify_trade_closed(pos))
 
         # Persist trade close to PostgreSQL
         self._persist_trade_close(pos)
@@ -731,7 +772,7 @@ class PositionMonitor:
                 sl_price=pos.sl_price,
                 tp1_price=pos.tp1_price,
                 tp2_price=pos.tp2_price,
-                tp3_price=pos.tp3_price,
+                tp3_price=0.0,
                 position_size=pos.filled_size,
                 ai_confidence=pos.ai_confidence,
                 actual_entry=pos.actual_entry_price,
@@ -787,6 +828,7 @@ class PositionMonitor:
                     "ai_confidence": pos.ai_confidence,
                     "pnl_pct": pos.pnl_pct,
                     "breakeven_hit": pos.breakeven_hit,
+                    "trailing_sl_moved": pos.trailing_sl_moved,
                     "created_at": pos.created_at,
                     "filled_at": pos.filled_at,
                 })

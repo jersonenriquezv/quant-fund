@@ -121,15 +121,15 @@ class RejectTracker:
         (r"Setup A.*no aligned sweep before", "setup_a_no_aligned_sweep"),
         (r"Setup A.*PD misaligned", "setup_a_pd_misaligned"),
         (r"Setup A.*no aligned OBs", "setup_a_no_obs"),
-        (r"Setup A.*OBs exist but price not near", "setup_a_ob_price_far"),
-        (r"Setup A.*price not near best OB", "setup_a_price_not_near_ob"),
+        (r"Setup A.*no OBs within range", "setup_a_ob_out_of_range"),
+        (r"Setup A.*insufficient confluences", "setup_a_low_confluences"),
+        (r"Setup A.*R:R too low", "setup_a_rr_too_low"),
         (r"Setup B.*no BOS", "setup_b_no_bos"),
         (r"Setup B.*BOS.*!= HTF", "setup_b_bos_htf_mismatch"),
         (r"Setup B.*PD misaligned", "setup_b_pd_misaligned"),
         (r"Setup B.*no aligned OBs", "setup_b_no_obs"),
         (r"Setup B.*no aligned FVGs", "setup_b_no_fvgs"),
         (r"Setup B.*no adjacent OB\+FVG", "setup_b_no_ob_fvg_pair"),
-        (r"Setup B.*price not near OB", "setup_b_price_not_near_ob"),
     ]
 
     def __init__(self):
@@ -155,7 +155,14 @@ class RejectTracker:
 
 @dataclass
 class SimulatedTrade:
-    """A trade being simulated through candle replay."""
+    """A trade being simulated through candle replay.
+
+    Exit management (matches live execution):
+    - SL at sl_price for 100% of position
+    - Single TP at tp2_price (2:1 R:R) for 100% close
+    - Breakeven: price crosses tp1_price (1:1) → SL moves to entry
+    - Trailing: price crosses midpoint(tp1,tp2) (1.5:1) → SL moves to tp1
+    """
 
     # Setup identity
     pair: str
@@ -167,7 +174,6 @@ class SimulatedTrade:
     sl_price: float
     tp1_price: float
     tp2_price: float
-    tp3_price: float
 
     # Sizing
     position_size: float        # base currency
@@ -175,9 +181,9 @@ class SimulatedTrade:
 
     # State tracking
     phase: str = "pending"      # "pending" -> "active" -> "closed"
-    tp_phase: int = 0           # 0=pre-TP1, 1=post-TP1, 2=post-TP2
-    current_sl: float = 0.0     # Tracks SL moves (breakeven)
-    remaining_pct: float = 1.0  # Fraction of position still open
+    current_sl: float = 0.0     # Tracks SL moves (breakeven, trailing)
+    breakeven_hit: bool = False
+    trailing_sl_moved: bool = False
 
     # Timing (ms)
     setup_time_ms: int = 0
@@ -185,10 +191,8 @@ class SimulatedTrade:
     entry_time_ms: int = 0
     close_time_ms: int = 0
 
-    # Partial exits: [(price, pct_of_total, reason, timestamp_ms)]
-    exits: list = field(default_factory=list)
-
-    # Final result
+    # Exit info
+    exit_price: float = 0.0
     pnl_usd: float = 0.0
     exit_reason: str = ""
 
@@ -198,7 +202,12 @@ class SimulatedTrade:
 # ================================================================
 
 class TradeSimulator:
-    """Simulates entry fills, SL, TPs, and timeouts candle-by-candle."""
+    """Simulates entry fills, SL, TPs, and timeouts candle-by-candle.
+
+    Applies the same risk guardrails as the live RiskService:
+    min_risk_distance, R:R check, cooldown, max_trades_per_day,
+    daily/weekly drawdown limits.
+    """
 
     def __init__(self, initial_capital: float):
         self.initial_capital: float = initial_capital
@@ -209,22 +218,91 @@ class TradeSimulator:
         # (timestamp_ms, equity) — for drawdown calculation
         self.equity_curve: list[tuple[int, float]] = [(0, initial_capital)]
 
+        # Risk state tracking (mirrors RiskStateTracker)
+        self._last_loss_time_ms: int | None = None
+        self._trades_today: int = 0
+        self._current_day: str = ""
+        self._daily_pnl: float = 0.0
+        self._weekly_pnl: float = 0.0
+        self._current_week: int = -1  # ISO week number
+        self.risk_rejections: dict[str, int] = {}
+
+    def _reject(self, reason: str) -> bool:
+        """Record a risk rejection and return False."""
+        key = reason.split(":")[0].split("(")[0].strip()
+        self.risk_rejections[key] = self.risk_rejections.get(key, 0) + 1
+        return False
+
+    def _update_day_week(self, ts_ms: int) -> None:
+        """Reset daily/weekly counters on new day/week."""
+        dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+        day_str = dt.strftime("%Y-%m-%d")
+        week_num = dt.isocalendar()[1]
+
+        if day_str != self._current_day:
+            self._trades_today = 0
+            self._daily_pnl = 0.0
+            self._current_day = day_str
+
+        if week_num != self._current_week:
+            self._weekly_pnl = 0.0
+            self._current_week = week_num
+
     def on_setup(self, setup: TradeSetup, candle: Candle) -> bool:
         """Accept a new setup. Returns True if trade was created."""
-        # Max open positions check (pending + active)
+        self._update_day_week(candle.timestamp)
+
+        # --- Risk guardrails (same as live RiskService) ---
+
+        # Max open positions
         open_count = len(self.pending) + len(self.active)
         if open_count >= settings.MAX_OPEN_POSITIONS:
-            return False
+            return self._reject("Max open positions")
 
         # Skip if equity depleted
         if self.equity <= 0:
             return False
 
-        # Position sizing: (equity * risk%) / |entry - sl|
+        # Min risk distance
         distance = abs(setup.entry_price - setup.sl_price)
         if distance == 0:
-            return False
+            return self._reject("Zero risk distance")
+        risk_pct = distance / setup.entry_price
+        if risk_pct < settings.MIN_RISK_DISTANCE_PCT:
+            return self._reject("SL too close to entry")
 
+        # R:R check
+        reward = abs(setup.tp2_price - setup.entry_price)
+        rr = reward / distance if distance > 0 else 0
+        min_rr = (settings.MIN_RISK_REWARD_QUICK
+                  if setup.setup_type in QUICK_SETUP_TYPES
+                  else settings.MIN_RISK_REWARD)
+        if rr < min_rr:
+            return self._reject(f"R:R {rr:.2f} below {min_rr}")
+
+        # Cooldown after loss
+        if self._last_loss_time_ms is not None:
+            elapsed_min = (candle.timestamp - self._last_loss_time_ms) / (1000 * 60)
+            if elapsed_min < settings.COOLDOWN_MINUTES:
+                return self._reject("Cooldown after loss")
+
+        # Max trades per day
+        if self._trades_today >= settings.MAX_TRADES_PER_DAY:
+            return self._reject("Max trades per day")
+
+        # Daily drawdown
+        if self.initial_capital > 0:
+            daily_dd = abs(self._daily_pnl) / self.initial_capital if self._daily_pnl < 0 else 0.0
+            if daily_dd >= settings.MAX_DAILY_DRAWDOWN:
+                return self._reject("Daily drawdown limit")
+
+        # Weekly drawdown
+        if self.initial_capital > 0:
+            weekly_dd = abs(self._weekly_pnl) / self.initial_capital if self._weekly_pnl < 0 else 0.0
+            if weekly_dd >= settings.MAX_WEEKLY_DRAWDOWN:
+                return self._reject("Weekly drawdown limit")
+
+        # --- Position sizing ---
         risk_amount = self.equity * settings.RISK_PER_TRADE
         position_size = risk_amount / distance
         notional = position_size * setup.entry_price
@@ -242,6 +320,8 @@ class TradeSimulator:
         else:
             timeout_ms = settings.ENTRY_TIMEOUT_SECONDS * 1000
 
+        self._trades_today += 1
+
         trade = SimulatedTrade(
             pair=setup.pair,
             direction=setup.direction,
@@ -250,7 +330,6 @@ class TradeSimulator:
             sl_price=setup.sl_price,
             tp1_price=setup.tp1_price,
             tp2_price=setup.tp2_price,
-            tp3_price=setup.tp3_price,
             position_size=position_size,
             leverage=leverage,
             current_sl=setup.sl_price,
@@ -300,7 +379,14 @@ class TradeSimulator:
         self.pending = still_pending
 
     def _process_active(self, candle: Candle) -> None:
-        """Check SL, TPs, and timeout for active trades."""
+        """Check SL, TP, breakeven, trailing, and timeout for active trades.
+
+        Exit management (matches live execution):
+        1. SL check first (always priority)
+        2. TP hit = price reaches tp2 → close 100% (reason="tp")
+        3. Breakeven: price crosses tp1 → SL moves to entry
+        4. Trailing: price crosses midpoint(tp1,tp2) → SL moves to tp1
+        """
         still_active = []
         for trade in self.active:
             if trade.pair != candle.pair:
@@ -315,7 +401,7 @@ class TradeSimulator:
 
             duration_ms = candle.timestamp - trade.entry_time_ms
             if duration_ms >= max_duration_ms:
-                self._close_remaining(trade, candle.close, "timeout", candle.timestamp)
+                self._close_trade(trade, candle.close, "timeout", candle.timestamp)
                 self.closed.append(trade)
                 continue
 
@@ -327,44 +413,35 @@ class TradeSimulator:
                 sl_hit = candle.high >= trade.current_sl
 
             if sl_hit:
-                reason = "breakeven_sl" if trade.tp_phase > 0 else "sl"
-                self._close_remaining(trade, trade.current_sl, reason, candle.timestamp)
+                if trade.trailing_sl_moved:
+                    reason = "trailing_sl"
+                elif trade.breakeven_hit:
+                    reason = "breakeven_sl"
+                else:
+                    reason = "sl"
+                self._close_trade(trade, trade.current_sl, reason, candle.timestamp)
                 self.closed.append(trade)
                 continue
 
-            # TP checks (sequential — can cascade within one candle)
-            if trade.tp_phase == 0:
-                tp1_hit = self._price_reached(trade, candle, trade.tp1_price)
-                if tp1_hit:
-                    pct = settings.TP1_CLOSE_PCT
-                    trade.exits.append((trade.tp1_price, pct, "tp1", candle.timestamp))
-                    trade.remaining_pct -= pct
-                    trade.current_sl = trade.entry_price  # Breakeven
-                    trade.tp_phase = 1
-                    self._record_partial_pnl(trade, trade.tp1_price, pct)
+            # TP check — single TP at tp2 (100% close)
+            tp_hit = self._price_reached(trade, candle, trade.tp2_price)
+            if tp_hit:
+                self._close_trade(trade, trade.tp2_price, "tp", candle.timestamp)
+                self.closed.append(trade)
+                continue
 
-            if trade.tp_phase == 1:
-                tp2_hit = self._price_reached(trade, candle, trade.tp2_price)
-                if tp2_hit:
-                    pct = settings.TP2_CLOSE_PCT
-                    trade.exits.append((trade.tp2_price, pct, "tp2", candle.timestamp))
-                    trade.remaining_pct -= pct
-                    trade.tp_phase = 2
-                    self._record_partial_pnl(trade, trade.tp2_price, pct)
+            # Breakeven: price crosses tp1 → SL moves to entry
+            if not trade.breakeven_hit:
+                if self._price_reached(trade, candle, trade.tp1_price):
+                    trade.current_sl = trade.entry_price
+                    trade.breakeven_hit = True
 
-            if trade.tp_phase == 2:
-                tp3_hit = self._price_reached(trade, candle, trade.tp3_price)
-                if tp3_hit:
-                    pct = trade.remaining_pct
-                    trade.exits.append((trade.tp3_price, pct, "tp3", candle.timestamp))
-                    trade.remaining_pct = 0.0
-                    trade.phase = "closed"
-                    trade.close_time_ms = candle.timestamp
-                    trade.exit_reason = "tp3"
-                    self._record_partial_pnl(trade, trade.tp3_price, pct)
-                    self._finalize_trade(trade)
-                    self.closed.append(trade)
-                    continue
+            # Trailing: price crosses midpoint(tp1,tp2) → SL moves to tp1
+            if trade.breakeven_hit and not trade.trailing_sl_moved:
+                midpoint = (trade.tp1_price + trade.tp2_price) / 2.0
+                if self._price_reached(trade, candle, midpoint):
+                    trade.current_sl = trade.tp1_price
+                    trade.trailing_sl_moved = True
 
             # Still active
             still_active.append(trade)
@@ -379,38 +456,29 @@ class TradeSimulator:
         else:
             return candle.low <= target
 
-    def _close_remaining(self, trade: SimulatedTrade, price: float,
-                         reason: str, timestamp_ms: int) -> None:
-        """Close all remaining position at given price."""
-        if trade.remaining_pct > 0:
-            pct = trade.remaining_pct
-            trade.exits.append((price, pct, reason, timestamp_ms))
-            self._record_partial_pnl(trade, price, pct)
-            trade.remaining_pct = 0.0
+    def _close_trade(self, trade: SimulatedTrade, price: float,
+                     reason: str, timestamp_ms: int) -> None:
+        """Close entire position at given price."""
         trade.phase = "closed"
+        trade.exit_price = price
         trade.close_time_ms = timestamp_ms
         trade.exit_reason = reason
-        self._finalize_trade(trade)
 
-    def _record_partial_pnl(self, trade: SimulatedTrade, exit_price: float,
-                            pct: float) -> None:
-        """Update equity for a partial exit."""
+        # Compute PnL
         if trade.direction == "long":
-            partial_pnl = (exit_price - trade.entry_price) * trade.position_size * pct
+            trade.pnl_usd = (price - trade.entry_price) * trade.position_size
         else:
-            partial_pnl = (trade.entry_price - exit_price) * trade.position_size * pct
-        self.equity += partial_pnl
-        self.equity_curve.append((trade.exits[-1][3], self.equity))
+            trade.pnl_usd = (trade.entry_price - price) * trade.position_size
 
-    def _finalize_trade(self, trade: SimulatedTrade) -> None:
-        """Compute final trade PnL from all exits."""
-        total_pnl = 0.0
-        for exit_price, pct, reason, ts in trade.exits:
-            if trade.direction == "long":
-                total_pnl += (exit_price - trade.entry_price) * trade.position_size * pct
-            else:
-                total_pnl += (trade.entry_price - exit_price) * trade.position_size * pct
-        trade.pnl_usd = total_pnl
+        # Update equity
+        self.equity += trade.pnl_usd
+        self.equity_curve.append((timestamp_ms, self.equity))
+
+        # Update risk state
+        self._daily_pnl += trade.pnl_usd
+        self._weekly_pnl += trade.pnl_usd
+        if trade.pnl_usd < 0:
+            self._last_loss_time_ms = trade.close_time_ms
 
     def get_closed_trades(self) -> list[SimulatedTrade]:
         """Return all closed trades (excludes entry_timeout)."""
@@ -612,6 +680,13 @@ def print_report(m: BacktestMetrics, simulator: TradeSimulator,
             label = reason.replace("_", " ").title()
             print(f"  {label:<40} {count:>5} ({pct:>5.1f}%)")
 
+    # -- Risk rejections --
+    if simulator.risk_rejections:
+        total_risk = sum(simulator.risk_rejections.values())
+        print(f"\nRISK REJECTIONS ({total_risk} total):")
+        for reason, count in sorted(simulator.risk_rejections.items(), key=lambda x: -x[1]):
+            print(f"  {reason:<30} {count:>5}")
+
     # -- Trade simulation --
     trades = simulator.get_closed_trades()
     print(f"\n{'='*70}")
@@ -695,16 +770,9 @@ def print_report(m: BacktestMetrics, simulator: TradeSimulator,
               f"{'Dir':<6} {'Entry':>10} {'Exit':>10} {'PnL':>10} {'Reason':<14}")
         print(f"  {'-'*95}")
         for i, t in enumerate(trades, 1):
-            # Weighted average exit price
-            if t.exits:
-                total_pct = sum(pct for _, pct, _, _ in t.exits)
-                avg_exit = (sum(p * pct for p, pct, _, _ in t.exits) / total_pct
-                            if total_pct > 0 else 0)
-            else:
-                avg_exit = 0
             print(f"  {i:<4} {_ts_to_str(t.entry_time_ms):<17} {t.pair:<10} "
                   f"{t.setup_type:<10} {t.direction:<6} "
-                  f"{t.entry_price:>10.2f} {avg_exit:>10.2f} "
+                  f"{t.entry_price:>10.2f} {t.exit_price:>10.2f} "
                   f"${t.pnl_usd:>+9.2f} {t.exit_reason:<14}")
         print()
 
@@ -724,10 +792,10 @@ def export_csv(trades: list[SimulatedTrade], filename: str) -> None:
     """Export trade results to CSV."""
     headers = [
         "trade_id", "pair", "direction", "setup_type",
-        "entry_price", "sl_price", "tp1", "tp2", "tp3",
+        "entry_price", "sl_price", "tp1", "tp2",
         "position_size", "leverage",
         "entry_time", "close_time",
-        "pnl_usd", "exit_reason",
+        "exit_price", "pnl_usd", "exit_reason",
     ]
     with open(filename, "w", newline="") as f:
         writer = csv.writer(f)
@@ -736,10 +804,10 @@ def export_csv(trades: list[SimulatedTrade], filename: str) -> None:
             writer.writerow([
                 i, t.pair, t.direction, t.setup_type,
                 f"{t.entry_price:.2f}", f"{t.sl_price:.2f}",
-                f"{t.tp1_price:.2f}", f"{t.tp2_price:.2f}", f"{t.tp3_price:.2f}",
+                f"{t.tp1_price:.2f}", f"{t.tp2_price:.2f}",
                 f"{t.position_size:.6f}", f"{t.leverage:.2f}",
                 _ts_to_str(t.entry_time_ms), _ts_to_str(t.close_time_ms),
-                f"{t.pnl_usd:.2f}", t.exit_reason,
+                f"{t.exit_price:.2f}", f"{t.pnl_usd:.2f}", t.exit_reason,
             ])
     print(f"CSV exported: {filename}")
 

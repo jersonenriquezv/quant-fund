@@ -85,16 +85,14 @@ class QuickSetupEvaluator:
         else:
             sl_price = entry_price + sl_distance
 
-        # TPs at 1:1, 1.5:1, 2:1 R:R
+        # TPs at 1:1 (breakeven trigger), 2:1 (single TP)
         risk = abs(entry_price - sl_price)
         if direction == "long":
             tp1 = entry_price + risk * 1.0
-            tp2 = entry_price + risk * 1.5
-            tp3 = entry_price + risk * 2.0
+            tp2 = entry_price + risk * 2.0
         else:
             tp1 = entry_price - risk * 1.0
-            tp2 = entry_price - risk * 1.5
-            tp3 = entry_price - risk * 2.0
+            tp2 = entry_price - risk * 2.0
 
         confluences = [
             f"funding_extreme_{rate*100:.4f}pct",
@@ -115,7 +113,6 @@ class QuickSetupEvaluator:
             sl_price=sl_price,
             tp1_price=tp1,
             tp2_price=tp2,
-            tp3_price=tp3,
             confluences=confluences,
             htf_bias=htf_bias,
             ob_timeframe="5m",
@@ -195,15 +192,13 @@ class QuickSetupEvaluator:
         if risk <= 0:
             return None
 
-        # TPs at 1:1, 1.5:1, 2:1 R:R
+        # TPs at 1:1 (breakeven trigger), 2:1 (single TP)
         if direction == "bullish":
             tp1 = entry_price + risk * 1.0
-            tp2 = entry_price + risk * 1.5
-            tp3 = entry_price + risk * 2.0
+            tp2 = entry_price + risk * 2.0
         else:
             tp1 = entry_price - risk * 1.0
-            tp2 = entry_price - risk * 1.5
-            tp3 = entry_price - risk * 2.0
+            tp2 = entry_price - risk * 2.0
 
         confluences = [
             f"{latest_break.break_type}_5m",
@@ -227,7 +222,6 @@ class QuickSetupEvaluator:
             sl_price=sl_price,
             tp1_price=tp1,
             tp2_price=tp2,
-            tp3_price=tp3,
             confluences=confluences,
             htf_bias=htf_bias,
             ob_timeframe=best_ob.timeframe,
@@ -338,15 +332,13 @@ class QuickSetupEvaluator:
         if risk <= 0:
             return None
 
-        # TPs at 1:1, 1.5:1, 2:1 R:R
+        # TPs at 1:1 (breakeven trigger), 2:1 (single TP)
         if direction == "long":
             tp1 = entry_price + risk * 1.0
-            tp2 = entry_price + risk * 1.5
-            tp3 = entry_price + risk * 2.0
+            tp2 = entry_price + risk * 2.0
         else:
             tp1 = entry_price - risk * 1.0
-            tp2 = entry_price - risk * 1.5
-            tp3 = entry_price - risk * 2.0
+            tp2 = entry_price - risk * 2.0
 
         total_liq_usd = long_liq_usd + short_liq_usd
         confluences = [
@@ -372,7 +364,6 @@ class QuickSetupEvaluator:
             sl_price=sl_price,
             tp1_price=tp1,
             tp2_price=tp2,
-            tp3_price=tp3,
             confluences=confluences,
             htf_bias=htf_bias,
             ob_timeframe=best_ob.timeframe if best_ob else "5m",

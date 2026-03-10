@@ -31,10 +31,10 @@ class TelegramNotifier:
         else:
             logger.info("Telegram notifications enabled")
 
-    async def send(self, message: str) -> None:
-        """Send a message to Telegram. Fire-and-forget."""
+    async def send(self, message: str) -> bool:
+        """Send a message to Telegram. Returns True on success, False on failure."""
         if not self._enabled:
-            return
+            return False
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 resp = await client.post(
@@ -47,8 +47,11 @@ class TelegramNotifier:
                 )
                 if resp.status_code != 200:
                     logger.warning(f"Telegram API returned {resp.status_code}: {resp.text}")
+                    return False
+                return True
         except Exception as e:
             logger.warning(f"Telegram send failed: {e}")
+            return False
 
     async def notify_setup_detected(self, setup) -> None:
         """Setup found by Strategy Service."""

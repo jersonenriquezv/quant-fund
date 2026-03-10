@@ -19,8 +19,7 @@ You must respond ONLY with valid JSON in this exact format:
     "reasoning": "<2-4 sentences. State the decisive factor first, then supporting evidence.>",
     "adjustments": {{
         "sl_price": <float or null>,
-        "tp2_price": <float or null>,
-        "tp3_price": <float or null>
+        "tp2_price": <float or null>
     }},
     "warnings": ["<warning 1>", "<warning 2>"]
 }}
@@ -95,18 +94,8 @@ class PromptBuilder:
         # Compute R:R
         risk = abs(setup.entry_price - setup.sl_price)
         if risk > 0:
-            rr1 = abs(setup.tp1_price - setup.entry_price) / risk
-            rr2 = abs(setup.tp2_price - setup.entry_price) / risk
-            rr3 = abs(setup.tp3_price - setup.entry_price) / risk
-            blended_rr = (
-                settings.TP1_CLOSE_PCT * rr1
-                + settings.TP2_CLOSE_PCT * rr2
-                + settings.TP3_CLOSE_PCT * rr3
-            )
-            rr_line = (
-                f"- Risk: {risk:.2f} | TP1 R:R {rr1:.1f} | TP2 R:R {rr2:.1f} "
-                f"| TP3 R:R {rr3:.1f} | Blended R:R {blended_rr:.2f}"
-            )
+            rr = abs(setup.tp2_price - setup.entry_price) / risk
+            rr_line = f"- Risk: {risk:.2f} | R:R to TP {rr:.1f}"
         else:
             rr_line = "- Risk: 0 (invalid)"
 
@@ -120,9 +109,8 @@ class PromptBuilder:
             f"- Type: {setup_names.get(setup.setup_type, setup.setup_type)}\n"
             f"- Entry: {setup.entry_price}\n"
             f"- Stop Loss: {setup.sl_price}\n"
-            f"- TP1: {setup.tp1_price} (50% close)\n"
-            f"- TP2: {setup.tp2_price} (30% close)\n"
-            f"- TP3: {setup.tp3_price} (20% trailing)\n"
+            f"- TP1: {setup.tp1_price} (breakeven trigger at 1:1 R:R)\n"
+            f"- TP2: {setup.tp2_price} (100% close at 2:1 R:R)\n"
             f"{rr_line}\n"
             f"- HTF Bias: {setup.htf_bias} ({'aligned' if self._is_htf_aligned(setup) else 'COUNTER-TREND'})\n"
             f"- OB Timeframe: {setup.ob_timeframe}\n"

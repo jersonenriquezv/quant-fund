@@ -248,8 +248,8 @@ class BtcWhaleClient:
                     )
                     self._movements.append(movement)
                     usd_str = f" (~${amount_usd:,.0f})" if amount_usd > 0 else ""
-                    logger.info(f"BTC whale deposit: {value_btc:.4f} BTC{usd_str} → {exchange} "
-                                f"from {label or wallet[:10] + '...'} significance={significance}")
+                    logger.info(f"BEARISH BTC whale deposit: {label or wallet[:10] + '...'} → {exchange} "
+                                f"{value_btc:.4f} BTC{usd_str} [{significance}]")
 
             # No exchange output found → transfer out to non-exchange (neutral)
             if not found_exchange_output:
@@ -279,8 +279,9 @@ class BtcWhaleClient:
                         market_price=market_price,
                     )
                     self._movements.append(movement)
-                    logger.info(f"BTC whale transfer out: {value_btc:.4f} BTC → {truncated} "
-                                f"from {wallet[:10]}... significance={significance}")
+                    usd_str = f" (~${amount_usd:,.0f})" if amount_usd > 0 else ""
+                    logger.info(f"NEUTRAL BTC whale transfer: {label or wallet[:10] + '...'} → {truncated} "
+                                f"{value_btc:.4f} BTC{usd_str} [{significance}]")
 
         # Case 2: Exchange is sender → check if wallet is in outputs (withdrawal)
         found_exchange_input = False
@@ -308,8 +309,8 @@ class BtcWhaleClient:
                     )
                     self._movements.append(movement)
                     usd_str = f" (~${amount_usd:,.0f})" if amount_usd > 0 else ""
-                    logger.info(f"BTC whale withdrawal: {value_btc:.4f} BTC{usd_str} ← {exchange} "
-                                f"to {label or wallet[:10] + '...'} significance={significance}")
+                    logger.info(f"BULLISH BTC whale withdrawal: {label or wallet[:10] + '...'} ← {exchange} "
+                                f"{value_btc:.4f} BTC{usd_str} [{significance}]")
                 break  # Only count once per tx
 
         # Case 3: Wallet receives from non-exchange → transfer in (neutral)
@@ -335,8 +336,9 @@ class BtcWhaleClient:
                     market_price=market_price,
                 )
                 self._movements.append(movement)
-                logger.info(f"BTC whale transfer in: {value_btc:.4f} BTC ← {truncated} "
-                            f"to {wallet[:10]}... significance={significance}")
+                usd_str = f" (~${amount_usd:,.0f})" if amount_usd > 0 else ""
+                logger.info(f"NEUTRAL BTC whale transfer: {label or wallet[:10] + '...'} ← {truncated} "
+                            f"{value_btc:.4f} BTC{usd_str} [{significance}]")
 
         # Prune old movements (keep last 24h)
         self._prune_old_movements()

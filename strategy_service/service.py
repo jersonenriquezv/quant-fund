@@ -163,6 +163,7 @@ class StrategyService:
 
             # ============================================================
             # Step 4: Evaluate setups — A first, then B
+            # Only enabled setups are returned (settings.ENABLED_SETUPS)
             # ============================================================
             setup = self._setups.evaluate_setup_a(
                 structure_state=ltf_state,
@@ -177,12 +178,15 @@ class StrategyService:
             )
 
             if setup is not None:
-                logger.info(
-                    f"Setup A found: pair={pair} direction={setup.direction} "
-                    f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
-                    f"tp1={setup.tp1_price:.2f} confluences={setup.confluences}"
-                )
-                return setup
+                if setup.setup_type not in settings.ENABLED_SETUPS:
+                    logger.debug(f"Setup A detected but disabled (not in ENABLED_SETUPS)")
+                else:
+                    logger.info(
+                        f"Setup A found: pair={pair} direction={setup.direction} "
+                        f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
+                        f"tp1={setup.tp1_price:.2f} confluences={setup.confluences}"
+                    )
+                    return setup
 
             setup = self._setups.evaluate_setup_b(
                 structure_state=ltf_state,
@@ -197,12 +201,15 @@ class StrategyService:
             )
 
             if setup is not None:
-                logger.info(
-                    f"Setup B found: pair={pair} direction={setup.direction} "
-                    f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
-                    f"tp1={setup.tp1_price:.2f} confluences={setup.confluences}"
-                )
-                return setup
+                if setup.setup_type not in settings.ENABLED_SETUPS:
+                    logger.debug(f"Setup B detected but disabled (not in ENABLED_SETUPS)")
+                else:
+                    logger.info(
+                        f"Setup B found: pair={pair} direction={setup.direction} "
+                        f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
+                        f"tp1={setup.tp1_price:.2f} confluences={setup.confluences}"
+                    )
+                    return setup
 
             # Setup F — Pure OB Retest (BOS + OB, no FVG required)
             setup = self._setups.evaluate_setup_f(
@@ -217,12 +224,15 @@ class StrategyService:
             )
 
             if setup is not None:
-                logger.info(
-                    f"Setup F found: pair={pair} direction={setup.direction} "
-                    f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
-                    f"tp1={setup.tp1_price:.2f} confluences={setup.confluences}"
-                )
-                return setup
+                if setup.setup_type not in settings.ENABLED_SETUPS:
+                    logger.debug(f"Setup F detected but disabled (not in ENABLED_SETUPS)")
+                else:
+                    logger.info(
+                        f"Setup F found: pair={pair} direction={setup.direction} "
+                        f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
+                        f"tp1={setup.tp1_price:.2f} confluences={setup.confluences}"
+                    )
+                    return setup
 
             # Setup G — Breaker Block Retest
             breaker_blocks = self._order_blocks.get_breaker_blocks(pair, ltf)
@@ -237,12 +247,15 @@ class StrategyService:
             )
 
             if setup is not None:
-                logger.info(
-                    f"Setup G found: pair={pair} direction={setup.direction} "
-                    f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
-                    f"tp1={setup.tp1_price:.2f} confluences={setup.confluences}"
-                )
-                return setup
+                if setup.setup_type not in settings.ENABLED_SETUPS:
+                    logger.debug(f"Setup G detected but disabled (not in ENABLED_SETUPS)")
+                else:
+                    logger.info(
+                        f"Setup G found: pair={pair} direction={setup.direction} "
+                        f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
+                        f"tp1={setup.tp1_price:.2f} confluences={setup.confluences}"
+                    )
+                    return setup
 
         # ============================================================
         # Step 5: Quick setups (C, D, E) — only if no swing setup found
@@ -251,7 +264,10 @@ class StrategyService:
             pair, htf_bias, candles_5m, market_snapshot, pd_zone,
         )
         if quick_setup is not None:
-            return quick_setup
+            if quick_setup.setup_type not in settings.ENABLED_SETUPS:
+                logger.debug(f"{quick_setup.setup_type} detected but disabled")
+            else:
+                return quick_setup
 
         return None
 

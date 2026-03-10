@@ -25,6 +25,7 @@ from ai_service import AIService
 from risk_service import RiskService
 from execution_service import ExecutionService
 from shared.notifier import TelegramNotifier
+from shared.alert_manager import AlertManager
 
 logger = setup_logger("main")
 
@@ -40,6 +41,7 @@ _ai_service: AIService | None = None
 _risk_service: RiskService | None = None
 _execution_service: ExecutionService | None = None
 _notifier: TelegramNotifier | None = None
+_alert_manager: AlertManager | None = None
 
 
 # ================================================================
@@ -115,10 +117,10 @@ async def on_candle_confirmed(candle: Candle) -> None:
     _publish_strategy_state(candle.pair)
 
     # Send OB summary on every 4H candle close
-    if candle.timeframe == "4h" and _notifier is not None:
+    if candle.timeframe == "4h" and _alert_manager is not None:
         obs = _strategy_service.get_active_order_blocks(candle.pair)
         htf_bias = _strategy_service.get_htf_bias(candle.pair)
-        await _notifier.notify_ob_summary(candle.pair, obs, htf_bias, candle.close)
+        await _alert_manager.notify_ob_summary(candle.pair, obs, htf_bias, candle.close)
 
     if setup is None:
         return
@@ -250,8 +252,8 @@ async def _evaluate_with_claude(setup, candle) -> "AIDecision | None":
     decision = await _ai_service.evaluate(setup, snapshot)
     _setup_dedup_cache[dedup_key] = time.time()
     _persist_ai_decision(None, decision, setup)
-    if _notifier is not None:
-        await _notifier.notify_ai_decision(setup, decision)
+    if _alert_manager is not None:
+        await _alert_manager.notify_ai_decision(setup, decision)
 
     if not decision.approved:
         logger.info(
@@ -353,7 +355,7 @@ async def _hourly_status_loop() -> None:
     """Send hourly status to Telegram."""
     while True:
         await asyncio.sleep(3600)  # Every hour
-        if _notifier is None:
+        if _alert_manager is None:
             continue
         try:
             # Uptime
@@ -388,7 +390,7 @@ async def _hourly_status_loop() -> None:
                 daily_dd = tracker.get_daily_dd_pct()
                 weekly_dd = tracker.get_weekly_dd_pct()
 
-            await _notifier.notify_hourly_status(
+            await _alert_manager.notify_hourly_status(
                 uptime_str=uptime_str,
                 profile=settings.STRATEGY_PROFILE,
                 open_positions=open_positions,
@@ -443,13 +445,14 @@ async def main() -> None:
         logger.error("Config validation failed. Exiting.")
         sys.exit(1)
 
-    global _data_service, _strategy_service, _ai_service, _risk_service, _execution_service, _notifier
+    global _data_service, _strategy_service, _ai_service, _risk_service, _execution_service, _notifier, _alert_manager
 
-    # Create Telegram notifier (disabled gracefully if not configured)
+    # Create Telegram notifier + AlertManager wrapper
     _notifier = TelegramNotifier(settings.TELEGRAM_BOT_TOKEN, settings.TELEGRAM_CHAT_ID)
+    _alert_manager = AlertManager(_notifier)
 
-    # Create DataService with pipeline callback + notifier for whale alerts
-    _data_service = DataService(on_candle_confirmed=on_candle_confirmed, notifier=_notifier)
+    # Create DataService with pipeline callback + alert manager for whale alerts
+    _data_service = DataService(on_candle_confirmed=on_candle_confirmed, alert_manager=_alert_manager)
 
     # Create StrategyService — Layer 2
     _strategy_service = StrategyService(_data_service)
@@ -469,7 +472,7 @@ async def main() -> None:
     _risk_service = RiskService(capital=capital, data_service=_data_service)
 
     # Create ExecutionService — Layer 5
-    _execution_service = ExecutionService(_risk_service, _data_service, notifier=_notifier)
+    _execution_service = ExecutionService(_risk_service, _data_service, alert_manager=_alert_manager)
     await _execution_service.start()
 
     # Handle graceful shutdown

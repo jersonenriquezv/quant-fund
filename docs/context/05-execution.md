@@ -1,6 +1,6 @@
 # Execution Service (Layer 5)
 > Última actualización: 2026-03-09
-> Estado: **Fase 1 — COMPLETADA**. Entry + SL + TP atómicos (attached). Breakeven via price polling.
+> Estado: **Fase 1 — COMPLETADA**. Entry + SL + TP atómicos (attached). Breakeven + trailing SL via price polling.
 
 El brazo ejecutor del bot. Recibe trades aprobados por Risk Service y los ejecuta en OKX via ccxt.
 
@@ -30,9 +30,10 @@ ExecutionService (facade)
 pending_entry ──[fill]──────> active         (SL+TP ya attached; monitor busca IDs)
 pending_entry ──[4h/1h]─────> closed         (cancela entry)
 
-active ──[TP fills]──> closed                (profit)
-active ──[SL fills]──> closed                (loss o breakeven)
-active ──[price >= 1:1 R:R]──> SL moves to breakeven
+active ──[TP fills]──> closed                (profit — 100% at tp2)
+active ──[SL fills]──> closed                (loss, breakeven, or trailing)
+active ──[price >= tp1 (1:1)]──> SL moves to breakeven
+active ──[price >= midpoint(tp1,tp2) (1.5:1)]──> SL moves to tp1 (trailing)
 active ──[12h/4h]────> closed                (market close)
 active ──[SL fail]───> emergency_pending     (retry x3)
 
@@ -79,6 +80,17 @@ emergency_pending ──[3 fails]──> emergency_failed  (intervención manual
 5. On trigger: `_adjust_sl(pos, actual_entry_price)`, set `breakeven_hit = True`
 6. Solo se dispara una vez (idempotente)
 
+## Trailing SL Logic
+
+1. Después del breakeven check, si `breakeven_hit == True` y `trailing_sl_moved == False`:
+2. Calcula midpoint = `(tp1_price + tp2_price) / 2`
+3. Fetch ticker via `fetch_ticker(pair)`
+4. Long: si `current_price >= midpoint` → trigger
+5. Short: si `current_price <= midpoint` → trigger
+6. On trigger: `_adjust_sl(pos, tp1_price)`, set `trailing_sl_moved = True`
+7. Solo se dispara una vez (idempotente)
+8. Misma mecánica que breakeven: nuevo SL se coloca ANTES de cancelar el viejo
+
 ## SL vanished fallback
 
 Cuando el SL algo order no se encuentra por 12 polls consecutivos (~60s):
@@ -111,8 +123,8 @@ Al startup, `sync_exchange_positions()` consulta OKX por posiciones abiertas. La
 |---------|-------------|
 | `service.py` | Facade — execute(), start(), stop(), health(). Position adoption converts contracts→base. |
 | `executor.py` | Wrapper ccxt — place/cancel/fetch orders. Contracts conversion (`_to_contracts`, `contracts_to_base`). Attached SL/TP on entry. Algo cancel fallback. `find_pending_algo_orders()`. |
-| `monitor.py` | Background loop — attached SL/TP discovery + manual fallback, breakeven via price polling |
-| `models.py` | ManagedPosition (SL/TP IDs, breakeven tracking) |
+| `monitor.py` | Background loop — attached SL/TP discovery + manual fallback, breakeven + trailing SL via price polling |
+| `models.py` | ManagedPosition (SL/TP IDs, breakeven + trailing tracking) |
 
 ## Settings
 

@@ -25,7 +25,6 @@ def _make_setup(direction="long", pair="BTC/USDT", confluences=None) -> TradeSet
         sl_price=49000.0,
         tp1_price=51000.0,
         tp2_price=52000.0,
-        tp3_price=53000.0,
         confluences=confluences if confluences is not None else ["choch", "ob", "sweep"],
         htf_bias="bullish",
         ob_timeframe="15m",

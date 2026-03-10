@@ -45,7 +45,7 @@ AIDecision { confidence, approved, reasoning, adjustments, warnings }
 - Sin cuota de aprobación — aprobar solo cuando evidencia claramente apoya
 
 **User prompt** (por cada evaluación):
-- Setup completo: pair, direction, entry, SL, TPs, R:R computado (TP1/TP2/TP3/blended), HTF bias labeled as "aligned" or "COUNTER-TREND"
+- Setup completo: pair, direction, entry, SL, TP1 (breakeven trigger), TP2 (single TP), R:R to TP2, HTF bias labeled as "aligned" or "COUNTER-TREND"
 - Confluences etiquetadas: cada una marcada como [SUPPORTING] o [CONTEXT] con descripción humana
 - Funding rate con interpretación (normal/extreme)
 - Open interest (snapshot sin tendencia — solo contexto de tamaño de mercado)
@@ -62,7 +62,7 @@ AIDecision { confidence, approved, reasoning, adjustments, warnings }
 - `build_system_prompt()` → system prompt con threshold dinámico de `settings.AI_MIN_CONFIDENCE`
 - `build_evaluation_prompt(setup, snapshot, candles_context)` → user prompt con datos concretos
 - `_format_confluences(confluences, direction)` → convierte labels internos a descripción humana con tags [SUPPORTING]/[CONTEXT]
-- Computa R:R por TP level y blended R:R en el setup section
+- Computa R:R simple (reward to tp2 / risk) en el setup section
 - Interpreta funding rate: normal/extreme basado en `FUNDING_EXTREME_THRESHOLD` (0.03%)
 - OI marcado como snapshot-only (sin tendencia)
 - Maneja datos faltantes gracefully ("Not available")

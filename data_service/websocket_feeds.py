@@ -272,7 +272,9 @@ class OKXWebSocketFeed:
                 h = float(candle_data[2])
                 l = float(candle_data[3])
                 c = float(candle_data[4])
-                vol = float(candle_data[5])
+                # candle_data[5] = vol in contracts, [6] = volCcy in base currency
+                # Use base currency (index 6) to match ccxt REST backfill units
+                vol = float(candle_data[6]) if candle_data[6] else float(candle_data[5])
                 vol_quote = float(candle_data[7]) if candle_data[7] else vol * c
             except (ValueError, IndexError) as e:
                 logger.error(f"OKX candle parse error: pair={pair} tf={timeframe} "

@@ -60,9 +60,9 @@ Requires: confidence >= 0.50 (aggressive) or 0.60 (default) + approved=true
 
 - Entry: limit order at the OB price
 - SL: stop-market (guaranteed fill on crash)
-- TP1: 50% of position at 1:1 R:R → SL moves to breakeven
-- TP2: 30% at 2:1 R:R → SL moves to TP1
-- TP3: remaining 20% at the next liquidity level
+- Single TP at tp2 (2:1 R:R) — 100% close
+- Breakeven: price crosses tp1 (1:1 R:R) → SL moves to entry
+- Trailing SL: price crosses midpoint(tp1,tp2) (1.5:1 R:R) → SL moves to tp1
 
 ### The ideal setup
 
@@ -339,9 +339,9 @@ Deterministic Python engine that detects SMC patterns. No AI. Pure rules.
 ### Exit Rules
 
 * Stop Loss mandatory. Never move against trade.
-* TP1: 50% at 1:1 R/R, move SL to breakeven
-* TP2: 30% at 1:2 R/R
-* TP3: 20% trailing stop or next liquidity level
+* Single TP at tp2 (2:1 R:R) — closes 100% of position
+* Breakeven: price crosses tp1 (1:1 R:R) → SL moves to entry
+* Trailing SL: price crosses midpoint of tp1 and tp2 (1.5:1 R:R) → SL moves to tp1
 * Max duration: 12 hours
 * Invalidation: Close through full OB/FVG → exit immediately
 
@@ -414,13 +414,13 @@ Instrument format: `"BTC-USDT-SWAP"`, `"ETH-USDT-SWAP"` (OKX convention).
 1. Receive approved trade from Risk Service (TradeSetup + RiskApproval)
 2. Place limit entry order at calculated price (50% OB/FVG)
 3. Attach SL as stop-market order (guaranteed fill on volatile moves)
-4. Attach TP1/TP2/TP3 as limit orders with scaled sizes (50%/30%/20%)
-5. Monitor fill status
+4. Attach TP as limit order at tp2 (2:1 R:R, 100% close)
+5. Monitor fill status + progressive SL management
 
 **Order types:**
 * Entry: Limit order. If not filled within 15 minutes → cancel.
 * Stop Loss: Stop-market (not stop-limit — stop-limits can skip during crashes)
-* Take Profit: Limit orders (TP1, TP2, TP3 as separate orders)
+* Take Profit: Single limit order at tp2 (100% of position)
 
 **Partial fills & edge cases:**
 * Entry partially fills → keep order open, SL/TP scale to filled amount
@@ -429,9 +429,9 @@ Instrument format: `"BTC-USDT-SWAP"`, `"ETH-USDT-SWAP"` (OKX convention).
 * Slippage tracking: log expected vs actual fill price on every order
 
 **Position management after entry:**
-* TP1 hit (50% at 1:1 R/R) → move SL to breakeven
-* TP2 hit (30% at 1:2 R/R) → trail SL to TP1 level
-* TP3: trailing stop or next liquidity level for remaining 20%
+* Breakeven: price crosses tp1 (1:1 R:R) → SL moves to entry price
+* Trailing SL: price crosses midpoint of tp1 and tp2 (1.5:1 R:R) → SL moves to tp1
+* TP: price reaches tp2 (2:1 R:R) → 100% close
 
 **Trading Mode:**
 * Demo first (4-week minimum): set `OKX_SANDBOX=true`, adds `x-simulated-trading: 1` header
@@ -488,7 +488,7 @@ All inter-service communication uses typed frozen dataclasses. No raw dicts betw
 * `MarketSnapshot` — aggregates all of the above for a single pair at a point in time
 
 **Layer 2 (Strategy) outputs:**
-* `TradeSetup` — detected setup with entry/SL/TP1-3, confluences list, htf_bias, ob_timeframe
+* `TradeSetup` — detected setup with entry/SL/TP1/TP2, confluences list, htf_bias, ob_timeframe
 
 **Layer 3 (AI) outputs:**
 * `AIDecision` — confidence (0-1), approved (bool), reasoning, adjustments (dict), warnings (list)
@@ -519,10 +519,10 @@ trades (
     setup_type VARCHAR(10),   -- "setup_a" or "setup_b"
     entry_price FLOAT,
     sl_price FLOAT,
-    tp1_price FLOAT, tp2_price FLOAT, tp3_price FLOAT,
+    tp1_price FLOAT, tp2_price FLOAT, tp3_price FLOAT,  -- tp3 kept for historical data
     actual_entry FLOAT,       -- Real fill price (slippage tracking)
     actual_exit FLOAT,
-    exit_reason VARCHAR(20),  -- "tp1", "tp2", "tp3", "sl", "timeout", "invalidation"
+    exit_reason VARCHAR(20),  -- "tp", "sl", "breakeven_sl", "trailing_sl", "timeout", "invalidation"
     position_size FLOAT,
     pnl_usd FLOAT,
     pnl_pct FLOAT,

@@ -17,7 +17,6 @@ def _make_setup(
     sl=49000.0,
     tp1=51000.0,
     tp2=52000.0,
-    tp3=53000.0,
     direction="long",
 ) -> TradeSetup:
     """Create a TradeSetup with controllable prices."""
@@ -30,7 +29,6 @@ def _make_setup(
         sl_price=sl,
         tp1_price=tp1,
         tp2_price=tp2,
-        tp3_price=tp3,
         confluences=["choch", "ob", "sweep"],
         htf_bias="bullish" if direction == "long" else "bearish",
         ob_timeframe="15m",

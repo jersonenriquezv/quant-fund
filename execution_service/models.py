@@ -37,7 +37,6 @@ class ManagedPosition:
     sl_price: float = 0.0
     tp1_price: float = 0.0       # Breakeven trigger level (1:1 R:R)
     tp2_price: float = 0.0       # TP order level (2:1 R:R)
-    tp3_price: float = 0.0       # Unused in Fase 1
 
     # Position sizing (from RiskApproval)
     total_size: float = 0.0     # Full position size in base currency
@@ -64,8 +63,9 @@ class ManagedPosition:
     close_reason: Optional[str] = None  # "tp", "sl", "timeout", "emergency", "cancelled"
     pnl_pct: float = 0.0
 
-    # Breakeven tracking
-    breakeven_hit: bool = False  # True after SL moved to breakeven
+    # Breakeven + trailing tracking
+    breakeven_hit: bool = False   # True after SL moved to breakeven
+    trailing_sl_moved: bool = False  # True after SL moved to tp1_price
 
     # Emergency close retry tracking
     emergency_retries: int = 0

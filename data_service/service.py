@@ -45,16 +45,16 @@ class DataService:
     No direct imports of sub-modules outside of data_service/.
     """
 
-    def __init__(self, on_candle_confirmed=None, notifier=None):
+    def __init__(self, on_candle_confirmed=None, alert_manager=None):
         """
         Args:
             on_candle_confirmed: Optional async callback triggered on each
                 confirmed candle. Signature: async fn(candle: Candle).
                 This is how main.py hooks the Strategy → AI → Risk → Execution pipeline.
-            notifier: Optional TelegramNotifier for whale movement alerts.
+            alert_manager: Optional AlertManager for whale movement and health alerts.
         """
         self._pipeline_callback = on_candle_confirmed
-        self._notifier = notifier
+        self._alert_manager = alert_manager
 
         # Sub-modules
         self._exchange = ExchangeClient()
@@ -73,6 +73,9 @@ class DataService:
         # Async tasks for cleanup on shutdown
         self._tasks: list[asyncio.Task] = []
         self._running = False
+
+        # Health check state — track which components were down last check
+        self._last_health_down: set[str] = set()
 
     # ================================================================
     # Public API — called by Strategy Service and main.py
@@ -402,13 +405,15 @@ class DataService:
             await asyncio.sleep(settings.MEMPOOL_CHECK_INTERVAL)
 
     async def _notify_new_movements(self, movements: list, before_ids: set) -> None:
-        """Send Telegram alert for new whale movements with tiering.
+        """Send whale alerts via AlertManager with tiering.
 
         Tier 1 (always notify): Exchange deposits/withdrawals (actionable signals)
         Tier 2 (notify if large): Non-exchange transfers > $500K or high significance
         Tier 3 (log only): Small non-exchange transfers
+
+        High significance bypasses whale batch and sends immediately.
         """
-        if self._notifier is None:
+        if self._alert_manager is None:
             return
         new_movements = [m for m in movements if id(m) not in before_ids]
         for m in new_movements:
@@ -417,14 +422,15 @@ class DataService:
                 if m.significance != "high":
                     continue
             # Tier 1: exchange movements — always notify
-            # Tier 2: large or high-significance transfers — likely unrecognized exchange addresses
+            # Tier 2: large or high-significance transfers
             elif m.action not in ("exchange_deposit", "exchange_withdrawal"):
                 if m.significance != "high" and m.amount_usd < 500_000:
                     continue
             try:
-                await self._notifier.notify_whale_movement(m)
+                immediate = m.significance == "high"
+                await self._alert_manager.notify_whale_movement(m, immediate=immediate)
             except Exception as e:
-                logger.error(f"Failed to send whale Telegram notification: {e}")
+                logger.error(f"Failed to send whale alert: {e}")
 
     def _publish_whale_movements(self) -> None:
         """Merge ETH + BTC whale movements and publish to Redis."""
@@ -506,14 +512,25 @@ class DataService:
     # ================================================================
 
     async def _health_check_loop(self) -> None:
-        """Log health status every 30 seconds."""
+        """Log health status every 30 seconds. Alert on state changes."""
         while self._running:
             await asyncio.sleep(30)
             status = self.health()
-            connected = [k for k, v in status.items() if v is True]
-            disconnected = [k for k, v in status.items() if v is False]
+            disconnected = {k for k, v in status.items() if v is False}
 
             if disconnected:
-                logger.warning(f"Health check: OK={connected} DOWN={disconnected}")
+                logger.warning(f"Health check: DOWN={list(disconnected)}")
             else:
                 logger.debug(f"Health check: all systems OK")
+
+            # Alert on state changes only (no spam)
+            if self._alert_manager is not None:
+                newly_down = disconnected - self._last_health_down
+                newly_up = self._last_health_down - disconnected
+
+                if newly_down:
+                    await self._alert_manager.notify_health_down(list(newly_down))
+                if newly_up:
+                    await self._alert_manager.notify_health_recovered(list(newly_up))
+
+            self._last_health_down = disconnected

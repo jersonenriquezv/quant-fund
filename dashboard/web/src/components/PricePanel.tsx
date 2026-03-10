@@ -37,7 +37,8 @@ export function PricePanel({ pair, ws }: { pair: string; ws: WSMessage | null })
   const changePct = market?.change_pct;
   const isPositive = (changePct ?? 0) >= 0;
 
-  const bias = biasData?.bias?.[pair] ?? "undefined";
+  const rawBias = biasData?.bias?.[pair];
+  const bias = rawBias && rawBias !== "undefined" ? rawBias : null;
 
   const gradientClass = isPositive ? "price-panel-positive" : "price-panel-negative";
 
@@ -45,9 +46,11 @@ export function PricePanel({ pair, ws }: { pair: string; ws: WSMessage | null })
     <div className={gradientClass} style={{ borderRadius: 8 }}>
       <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
         {pair}
-        <span className={`badge ${biasClass(bias)}`} style={{ fontSize: 9, letterSpacing: "0.08em" }}>
-          {bias}
-        </span>
+        {bias && (
+          <span className={`badge ${biasClass(bias)}`} style={{ fontSize: 9, letterSpacing: "0.08em" }}>
+            {bias}
+          </span>
+        )}
       </div>
 
       <div className="price-value" style={{ fontSize: 28, fontWeight: 700, marginBottom: 4, fontVariantNumeric: "tabular-nums" }}>

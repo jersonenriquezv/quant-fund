@@ -102,8 +102,10 @@ class Settings:
 
     # Minimum SL distance as fraction of entry price.
     # Rejects noise trades where commissions eat the profit.
-    # 0.001 = 0.1% → for ETH@$2000, SL must be at least $2 away.
-    MIN_RISK_DISTANCE_PCT: float = 0.001
+    # 0.002 = 0.2% → ETH@$2000: SL >= $4. BTC@$68K: SL >= $136.
+    # Backtest: 0.2% was optimal (54.5% WR, -$588). Lower lets micro-SL
+    # noise trades through. Higher filters good trades too aggressively.
+    MIN_RISK_DISTANCE_PCT: float = 0.002
 
     # Tiempo máximo (horas) que un trade puede estar abierto sin moverse
     MAX_TRADE_DURATION_HOURS: int = 12
@@ -159,6 +161,14 @@ class Settings:
     # Max gap between FVG and OB as fraction of price to count as "adjacent".
     # 0.005 = 0.5% → for ETH@$2000, FVG and OB can be up to $10 apart.
     FVG_OB_MAX_GAP_PCT: float = 0.005
+
+    # --- Enabled setups ---
+    # Only these setup types will be traded. Others are detected but discarded.
+    # Backtest showed B (45.8% WR) and F (49.4% WR) are profitable.
+    # A, C, D, E, G disabled until validated.
+    ENABLED_SETUPS: list = field(default_factory=lambda: [
+        "setup_b", "setup_f",
+    ])
 
     # --- Setup A temporal ---
     # Max candles between sweep and CHoCH for Setup A validity
@@ -222,8 +232,6 @@ class Settings:
     TP2_CLOSE_PCT: float = 0.30  # 30%
     TP2_RR_RATIO: float = 2.0
 
-    # TP3: cerrar el resto con trailing stop
-    TP3_CLOSE_PCT: float = 0.20  # 20%
 
     # ========================
     # DATA SERVICE — Intervalos de polling
@@ -409,7 +417,7 @@ class Settings:
     NEWS_POLL_INTERVAL: int = 300                       # 5 minutes
     NEWS_FEAR_GREED_CACHE_TTL: int = 1800               # 30 minutes
     NEWS_HEADLINES_CACHE_TTL: int = 300                  # 5 minutes
-    NEWS_EXTREME_FEAR_THRESHOLD: int = 15               # F&G < 15 → reject longs
+    NEWS_EXTREME_FEAR_THRESHOLD: int = 5                # F&G < 5 → reject longs (only systemic crashes)
     NEWS_EXTREME_GREED_THRESHOLD: int = 85              # F&G > 85 → reject shorts
 
     # ========================
@@ -438,6 +446,20 @@ class Settings:
         "BTC/USDT": 0.0001,
         "ETH/USDT": 0.001,
     })
+
+    # ========================
+    # ALERT MANAGER
+    # ========================
+    ALERT_RATE_LIMIT_INFO: int = 10          # 10 per hour
+    ALERT_RATE_LIMIT_WARNING: int = 5        # 5 per 15 min
+    ALERT_RATE_LIMIT_CRITICAL: int = 20      # 20 per hour
+    ALERT_RATE_WINDOW_INFO: int = 3600       # 1 hour
+    ALERT_RATE_WINDOW_WARNING: int = 900     # 15 min
+    ALERT_RATE_WINDOW_CRITICAL: int = 3600   # 1 hour
+    ALERT_WHALE_BATCH_WINDOW: int = 120      # 2 min — group whales into digest
+    ALERT_AUTO_SILENCE_THRESHOLD: int = 3    # alerts before auto-silence
+    ALERT_AUTO_SILENCE_WINDOW: int = 300     # 5 min window
+    ALERT_AUTO_SILENCE_DURATION: int = 900   # 15 min silence
 
     # ========================
     # RECONNECTION

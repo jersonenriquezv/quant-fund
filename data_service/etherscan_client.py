@@ -260,8 +260,8 @@ class EtherscanClient:
             )
             self._movements.append(movement)
             usd_str = f" (~${amount_usd:,.0f})" if amount_usd > 0 else ""
-            logger.info(f"Whale deposit: {value_eth:.2f} ETH{usd_str} → {exchange} "
-                        f"from {label or wallet[:10] + '...'} significance={significance}")
+            logger.info(f"BEARISH Whale deposit: {label or wallet[:10] + '...'} → {exchange} "
+                        f"{value_eth:.2f} ETH{usd_str} [{significance}]")
 
         # Wallet receives FROM an exchange → withdrawal (bullish)
         elif to_addr == wallet_lower and from_addr in self._exchange_lookup:
@@ -280,8 +280,8 @@ class EtherscanClient:
             )
             self._movements.append(movement)
             usd_str = f" (~${amount_usd:,.0f})" if amount_usd > 0 else ""
-            logger.info(f"Whale withdrawal: {value_eth:.2f} ETH{usd_str} ← {exchange} "
-                        f"to {label or wallet[:10] + '...'} significance={significance}")
+            logger.info(f"BULLISH Whale withdrawal: {label or wallet[:10] + '...'} ← {exchange} "
+                        f"{value_eth:.2f} ETH{usd_str} [{significance}]")
 
         # Wallet sends to non-exchange address → transfer out (neutral)
         elif from_addr == wallet_lower:
@@ -299,8 +299,9 @@ class EtherscanClient:
                 market_price=market_price,
             )
             self._movements.append(movement)
-            logger.info(f"Whale transfer out: {value_eth:.2f} ETH → {truncated} "
-                        f"from {wallet[:10]}... significance={significance}")
+            usd_str = f" (~${amount_usd:,.0f})" if amount_usd > 0 else ""
+            logger.info(f"NEUTRAL Whale transfer: {label or wallet[:10] + '...'} → {truncated} "
+                        f"{value_eth:.2f} ETH{usd_str} [{significance}]")
 
         # Wallet receives from non-exchange address → transfer in (neutral)
         elif to_addr == wallet_lower:
@@ -318,8 +319,9 @@ class EtherscanClient:
                 market_price=market_price,
             )
             self._movements.append(movement)
-            logger.info(f"Whale transfer in: {value_eth:.2f} ETH ← {truncated} "
-                        f"to {wallet[:10]}... significance={significance}")
+            usd_str = f" (~${amount_usd:,.0f})" if amount_usd > 0 else ""
+            logger.info(f"NEUTRAL Whale transfer: {label or wallet[:10] + '...'} ← {truncated} "
+                        f"{value_eth:.2f} ETH{usd_str} [{significance}]")
 
         # Prune old movements (keep last 24h)
         self._prune_old_movements()
