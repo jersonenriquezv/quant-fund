@@ -2,8 +2,8 @@
 
 ## Estado General
 - **Inicio:** 2026-03-10
-- **Setups activos:** A, F
-- **Objetivo:** Validar y habilitar G, D, C, E (en ese orden). Setup B deshabilitado — WR 18-24%.
+- **Setups activos:** A, B, D, F
+- **Objetivo:** Validar C, E (en ese orden). G descartado (6.2% WR). D habilitado (66.7% WR combinado). Backtester tiene MarketSnapshot.
 
 ## Fase 1: Setup A — Liquidity Sweep + CHoCH + OB
 **Estado:** COMPLETADO
@@ -79,17 +79,78 @@ Swing setups (A/B/F/G) ahora solo evalúan OBs de 15m (`SWING_SETUP_TIMEFRAMES =
 ---
 
 ## Fase 2: Setup G — Breaker Block Retest
-**Estado:** PENDIENTE
+**Estado:** COMPLETADO — NO HABILITAR (6.2% WR, -$6,741)
+
+### Backtest (60d, aggressive, $10K, G solo)
+| Metric | Result |
+|--------|--------|
+| Trades | 81 |
+| WR | 6.2% |
+| PnL | -$6,741 |
+| Max DD | 68.1% |
+| Sharpe | -33.57 |
+
+### Problemas Fundamentales
+1. **Mismo breaker dispara repetidamente** — ETH 2056.59 entry aparece 15+ veces, BTC 72821.97 aparece 20 veces. Dedup TTL (1h) insuficiente para breakers que persisten 48h.
+2. **100% longs** — HTF bias filter solo permite entrar long en momentos bullish breves durante un periodo bearish de 60d. Compra dips que siguen cayendo.
+3. **Entry 75% de zona ya mitigada** — breaker blocks fueron fully breached por definición. 93.8% de trades hit SL.
+
+### Decisión
+**DESCARTADO.** El concepto de breaker blocks como S/R invertido es válido en SMC pero la implementación requiere un rediseño fundamental (no solo ajuste de parámetros). Posibles fixes futuros:
+- Invalidar breaker después del primer SL hit
+- Usar midpoint entry (como Setup B) en vez de 75%
+- Remover HTF bias requirement para permitir shorts
+- Pero dado que hay otros setups pendientes con mayor potencial, G se pospone indefinidamente.
 
 ---
 
 ## Fase 3: Setup D — LTF Structure Scalp
-**Estado:** PENDIENTE
+**Estado:** COMPLETADO — HABILITADO
+
+### Backtest D solo (60d, aggressive, $10K)
+| Metric | Result |
+|--------|--------|
+| Trades | 56 |
+| WR | 42.9% |
+| PnL | +$3,596 |
+| Max DD | 4.8% |
+| Sharpe | 8.51 |
+| PF | 2.26 |
+
+### Backtest combinado A+B+D+F (60d, aggressive, $10K)
+| Setup | Trades | WR | PnL |
+|-------|--------|------|-------|
+| A | 20 | 45.0% | -$395 |
+| B | 51 | 49.0% | +$3,647 |
+| **D** | **9** | **66.7%** | **+$2,553** |
+| F | 17 | 58.8% | +$1,753 |
+| **Total** | **97** | **51.5%** | **+$7,558** |
+
+### Notas
+- D solo genera 9 trades en combinado (A/B/F tienen prioridad en 15m). Pero cuando dispara, WR 66.7%.
+- BTC 11.1% WR en D solo (9 trades) — muestra insuficiente, monitorear en live.
+- ETH domina (97/97 trades en combinado). Quick setup — skip AI filter por diseño.
+
+### Decisión
+**HABILITADO.** `ENABLED_SETUPS: ["setup_a", "setup_b", "setup_d", "setup_f"]`.
 
 ---
 
 ## Fase 4: Backtester MarketSnapshot
-**Estado:** PENDIENTE
+**Estado:** COMPLETADO
+
+### Implementación
+- **PostgreSQL:** 2 nuevas tablas: `funding_rate_history`, `open_interest_history`
+- **ExchangeClient:** `fetch_funding_rate_history()` y `fetch_open_interest_history()` (ccxt)
+- **DataService:** Polling loops persisten funding/OI a PostgreSQL automáticamente
+- **BacktestDataService:** `get_market_snapshot()` retorna `MarketSnapshot` con funding + OI históricos (binary search por timestamp más cercano)
+- **fetch_history.py:** Backfill automático de funding (~3 meses) y OI (1h resolution, ~30 días)
+
+### Limitaciones
+- **CVD:** No disponible históricamente (requeriría almacenar raw trades). Queda `None` en backtest.
+- **OI resolution:** Solo 1h desde OKX (no 5m). Suficiente para confluencias y cascade detection.
+- **OI range:** OKX limita a ~30 días para 1h, ~99 días para 1D.
+- **Whales/Liquidations:** No disponibles históricamente. Quedan vacíos en backtest.
 
 ---
 

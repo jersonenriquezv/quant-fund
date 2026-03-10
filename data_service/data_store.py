@@ -404,6 +404,38 @@ class PostgresStore:
                 ON bot_metrics(metric_name, created_at DESC)
             """)
 
+            # Historical funding rates and OI for backtesting
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS funding_rate_history (
+                    id SERIAL PRIMARY KEY,
+                    pair VARCHAR(20) NOT NULL,
+                    timestamp BIGINT NOT NULL,
+                    rate DOUBLE PRECISION NOT NULL,
+                    next_rate DOUBLE PRECISION,
+                    UNIQUE(pair, timestamp)
+                )
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_funding_pair_ts
+                ON funding_rate_history(pair, timestamp DESC)
+            """)
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS open_interest_history (
+                    id SERIAL PRIMARY KEY,
+                    pair VARCHAR(20) NOT NULL,
+                    timestamp BIGINT NOT NULL,
+                    oi_contracts DOUBLE PRECISION NOT NULL,
+                    oi_base DOUBLE PRECISION NOT NULL,
+                    oi_usd DOUBLE PRECISION NOT NULL,
+                    UNIQUE(pair, timestamp)
+                )
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_oi_pair_ts
+                ON open_interest_history(pair, timestamp DESC)
+            """)
+
         logger.info("PostgreSQL tables verified/created")
 
     # --- Candle Storage ---
@@ -713,6 +745,200 @@ class PostgresStore:
                 logger.error(f"PostgreSQL metric cleanup failed: {e}")
                 return 0
         return 0
+
+    # --- Funding Rate History ---
+
+    def store_funding_rate(self, fr: FundingRate) -> None:
+        """Store a single funding rate snapshot for backtesting."""
+        for attempt in range(2):
+            if not self._ensure_connected():
+                return
+            try:
+                with self._conn.cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO funding_rate_history (pair, timestamp, rate, next_rate)
+                           VALUES (%s, %s, %s, %s)
+                           ON CONFLICT (pair, timestamp) DO NOTHING""",
+                        (fr.pair, fr.timestamp, fr.rate, fr.next_rate),
+                    )
+                return
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                logger.warning(f"PostgreSQL funding store connection error (attempt {attempt+1}): {e}")
+                self._conn = None
+                if attempt == 1:
+                    return
+            except psycopg2.Error as e:
+                logger.error(f"PostgreSQL funding store failed: {e}")
+                return
+
+    def store_funding_rates_batch(self, rates: list[tuple]) -> int:
+        """Batch insert funding rates. rates = [(pair, ts, rate, next_rate), ...].
+        Returns number inserted."""
+        if not rates:
+            return 0
+        for attempt in range(2):
+            if not self._ensure_connected():
+                return 0
+            try:
+                with self._conn.cursor() as cur:
+                    psycopg2.extras.execute_values(
+                        cur,
+                        """INSERT INTO funding_rate_history (pair, timestamp, rate, next_rate)
+                           VALUES %s ON CONFLICT (pair, timestamp) DO NOTHING""",
+                        rates,
+                        page_size=100,
+                    )
+                    inserted = cur.rowcount
+                return inserted
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                logger.warning(f"PostgreSQL funding batch connection error (attempt {attempt+1}): {e}")
+                self._conn = None
+                if attempt == 1:
+                    return 0
+            except psycopg2.Error as e:
+                logger.error(f"PostgreSQL funding batch failed: {e}")
+                return 0
+        return 0
+
+    def load_funding_rates(self, pair: str, since_ms: int = 0,
+                           until_ms: int = 0) -> list[FundingRate]:
+        """Load historical funding rates for a pair, oldest-first."""
+        for attempt in range(2):
+            if not self._ensure_connected():
+                return []
+            try:
+                with self._conn.cursor() as cur:
+                    if until_ms > 0:
+                        cur.execute(
+                            """SELECT timestamp, rate, next_rate
+                               FROM funding_rate_history
+                               WHERE pair = %s AND timestamp >= %s AND timestamp <= %s
+                               ORDER BY timestamp ASC""",
+                            (pair, since_ms, until_ms),
+                        )
+                    else:
+                        cur.execute(
+                            """SELECT timestamp, rate, next_rate
+                               FROM funding_rate_history
+                               WHERE pair = %s AND timestamp >= %s
+                               ORDER BY timestamp ASC""",
+                            (pair, since_ms),
+                        )
+                    rows = cur.fetchall()
+                return [
+                    FundingRate(
+                        timestamp=row[0], pair=pair, rate=row[1],
+                        next_rate=row[2] or 0.0, next_funding_time=0,
+                    )
+                    for row in rows
+                ]
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                logger.warning(f"PostgreSQL funding load connection error (attempt {attempt+1}): {e}")
+                self._conn = None
+                if attempt == 1:
+                    return []
+            except psycopg2.Error as e:
+                logger.error(f"PostgreSQL funding load failed: {e}")
+                return []
+        return []
+
+    # --- Open Interest History ---
+
+    def store_open_interest(self, oi: OpenInterest) -> None:
+        """Store a single OI snapshot for backtesting."""
+        for attempt in range(2):
+            if not self._ensure_connected():
+                return
+            try:
+                with self._conn.cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO open_interest_history
+                           (pair, timestamp, oi_contracts, oi_base, oi_usd)
+                           VALUES (%s, %s, %s, %s, %s)
+                           ON CONFLICT (pair, timestamp) DO NOTHING""",
+                        (oi.pair, oi.timestamp, oi.oi_contracts, oi.oi_base, oi.oi_usd),
+                    )
+                return
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                logger.warning(f"PostgreSQL OI store connection error (attempt {attempt+1}): {e}")
+                self._conn = None
+                if attempt == 1:
+                    return
+            except psycopg2.Error as e:
+                logger.error(f"PostgreSQL OI store failed: {e}")
+                return
+
+    def store_open_interest_batch(self, records: list[tuple]) -> int:
+        """Batch insert OI records. records = [(pair, ts, contracts, base, usd), ...].
+        Returns number inserted."""
+        if not records:
+            return 0
+        for attempt in range(2):
+            if not self._ensure_connected():
+                return 0
+            try:
+                with self._conn.cursor() as cur:
+                    psycopg2.extras.execute_values(
+                        cur,
+                        """INSERT INTO open_interest_history
+                           (pair, timestamp, oi_contracts, oi_base, oi_usd)
+                           VALUES %s ON CONFLICT (pair, timestamp) DO NOTHING""",
+                        records,
+                        page_size=100,
+                    )
+                    inserted = cur.rowcount
+                return inserted
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                logger.warning(f"PostgreSQL OI batch connection error (attempt {attempt+1}): {e}")
+                self._conn = None
+                if attempt == 1:
+                    return 0
+            except psycopg2.Error as e:
+                logger.error(f"PostgreSQL OI batch failed: {e}")
+                return 0
+        return 0
+
+    def load_open_interest(self, pair: str, since_ms: int = 0,
+                           until_ms: int = 0) -> list[OpenInterest]:
+        """Load historical OI for a pair, oldest-first."""
+        for attempt in range(2):
+            if not self._ensure_connected():
+                return []
+            try:
+                with self._conn.cursor() as cur:
+                    if until_ms > 0:
+                        cur.execute(
+                            """SELECT timestamp, oi_contracts, oi_base, oi_usd
+                               FROM open_interest_history
+                               WHERE pair = %s AND timestamp >= %s AND timestamp <= %s
+                               ORDER BY timestamp ASC""",
+                            (pair, since_ms, until_ms),
+                        )
+                    else:
+                        cur.execute(
+                            """SELECT timestamp, oi_contracts, oi_base, oi_usd
+                               FROM open_interest_history
+                               WHERE pair = %s AND timestamp >= %s
+                               ORDER BY timestamp ASC""",
+                            (pair, since_ms),
+                        )
+                    rows = cur.fetchall()
+                return [
+                    OpenInterest(
+                        timestamp=row[0], pair=pair, oi_contracts=row[1],
+                        oi_base=row[2], oi_usd=row[3],
+                    )
+                    for row in rows
+                ]
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                logger.warning(f"PostgreSQL OI load connection error (attempt {attempt+1}): {e}")
+                self._conn = None
+                if attempt == 1:
+                    return []
+            except psycopg2.Error as e:
+                logger.error(f"PostgreSQL OI load failed: {e}")
+                return []
+        return []
 
     def close(self) -> None:
         if self._conn:

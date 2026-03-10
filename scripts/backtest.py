@@ -28,7 +28,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data_service.data_store import PostgresStore
-from shared.models import Candle, TradeSetup
+from shared.models import Candle, TradeSetup, FundingRate, OpenInterest, MarketSnapshot
 from strategy_service.service import StrategyService
 from shared.logger import setup_logger
 from config.settings import settings, QUICK_SETUP_TYPES
@@ -45,16 +45,22 @@ class BacktestDataService:
 
     Implements get_candles() and get_market_snapshot() — the only two
     methods StrategyService.evaluate() calls on the data service.
+
+    Now includes historical funding rates and OI from PostgreSQL for
+    realistic MarketSnapshot during backtests.
     """
 
     def __init__(self):
         # {(pair, timeframe): [Candle, ...]} sorted oldest-first
         self._candles: dict[tuple[str, str], list[Candle]] = {}
         self._current_time_ms: int = 0
+        # Historical funding rates and OI per pair, sorted oldest-first
+        self._funding: dict[str, list[FundingRate]] = {}
+        self._oi: dict[str, list[OpenInterest]] = {}
 
     def load_from_postgres(self, pg: PostgresStore, pairs: list[str],
                            timeframes: list[str], count: int = 50000):
-        """Load historical candles from PostgreSQL."""
+        """Load historical candles, funding rates, and OI from PostgreSQL."""
         for pair in pairs:
             for tf in timeframes:
                 candles = pg.load_candles(pair, tf, count)
@@ -66,6 +72,18 @@ class BacktestDataService:
                 else:
                     logger.warning(f"No candles in DB: {pair} {tf}")
 
+            # Load historical funding rates
+            funding = pg.load_funding_rates(pair)
+            if funding:
+                self._funding[pair] = funding
+                logger.info(f"Loaded {len(funding)} funding rates: {pair}")
+
+            # Load historical OI
+            oi = pg.load_open_interest(pair)
+            if oi:
+                self._oi[pair] = oi
+                logger.info(f"Loaded {len(oi)} OI snapshots: {pair}")
+
     def set_time(self, time_ms: int):
         self._current_time_ms = time_ms
 
@@ -76,9 +94,35 @@ class BacktestDataService:
         visible = [c for c in all_candles if c.timestamp <= self._current_time_ms]
         return visible[-count:]
 
-    def get_market_snapshot(self, pair: str):
-        """No historical OI/CVD/funding — return None."""
-        return None
+    def _find_nearest(self, records: list, time_ms: int):
+        """Binary search for the most recent record at or before time_ms."""
+        if not records:
+            return None
+        lo, hi = 0, len(records) - 1
+        result = None
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if records[mid].timestamp <= time_ms:
+                result = records[mid]
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        return result
+
+    def get_market_snapshot(self, pair: str) -> MarketSnapshot:
+        """Return MarketSnapshot with historical funding + OI at current time."""
+        funding = self._find_nearest(
+            self._funding.get(pair, []), self._current_time_ms
+        )
+        oi = self._find_nearest(
+            self._oi.get(pair, []), self._current_time_ms
+        )
+        return MarketSnapshot(
+            pair=pair,
+            timestamp=self._current_time_ms,
+            funding=funding,
+            oi=oi,
+        )
 
     def get_trigger_candles(self, pair: str,
                             ltf_timeframes: list[str]) -> list[Candle]:

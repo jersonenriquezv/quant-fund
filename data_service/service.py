@@ -325,6 +325,7 @@ class DataService:
                 fr = self._exchange.fetch_funding_rate(pair)
                 if fr:
                     self._redis.set_funding_rate(fr)
+                    self._postgres.store_funding_rate(fr)
             except Exception as e:
                 logger.error(f"Initial funding rate fetch failed: pair={pair} error={e}")
 
@@ -333,6 +334,7 @@ class DataService:
                 if oi:
                     self._redis.set_open_interest(oi)
                     self._oi_proxy.update(oi)
+                    self._postgres.store_open_interest(oi)
             except Exception as e:
                 logger.error(f"Initial OI fetch failed: pair={pair} error={e}")
 
@@ -463,6 +465,7 @@ class DataService:
                     )
                     if fr:
                         self._redis.set_funding_rate(fr)
+                        self._postgres.store_funding_rate(fr)
                 except Exception as e:
                     logger.error(f"Funding rate poll failed: pair={pair} error={e}")
 
@@ -481,6 +484,7 @@ class DataService:
                     if oi:
                         self._redis.set_open_interest(oi)
                         self._oi_proxy.update(oi)
+                        self._postgres.store_open_interest(oi)
                 except Exception as e:
                     logger.error(f"OI poll failed: pair={pair} error={e}")
 

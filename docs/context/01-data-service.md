@@ -68,7 +68,7 @@ All frozen (immutable) except MarketSnapshot which has optional fields.
 - File: `logs/{service}_{date}.log` — daily rotation, 30-day retention, gzip compressed
 
 ### `data_service/exchange_client.py` — OKX REST via ccxt
-Four methods:
+Six methods:
 - `fetch_usdt_balance()` → `float | None`
   - Fetches USDT available balance from exchange via `fetch_balance()`
   - Returns `None` on any failure (logged as warning)
@@ -78,6 +78,12 @@ Four methods:
   - All returned candles are confirmed (historical)
 - `fetch_funding_rate(pair)` → `FundingRate | None`
 - `fetch_open_interest(pair)` → `OpenInterest | None`
+- `fetch_funding_rate_history(pair, since_ms, limit)` → `list[dict]`
+  - Historical funding rates via ccxt. OKX provides ~3 months of history. Max 100 per request.
+  - Returns `{timestamp, rate, next_rate}` dicts. Used by `fetch_history.py` for backtest backfill.
+- `fetch_open_interest_history(pair, since_ms, limit, timeframe)` → `list[dict]`
+  - Historical OI via ccxt. OKX limits: 1h goes back ~30 days, 1D ~99 days.
+  - Returns `{timestamp, oi_contracts, oi_base, oi_usd}` dicts. Only `oi_usd` is populated (OKX limitation).
 
 Auth: API key + secret + passphrase via ccxt. Market data is public, but auth is needed for trading.
 Instrument format: `BTC-USDT-SWAP` (hyphens). ccxt translates `BTC/USDT:USDT` internally.
@@ -174,10 +180,12 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - `set_latest_candle()`, `get_latest_candle()`, `pop_cancel_request()`, etc.
 
 **PostgreSQL (historical):**
-- 5 tables matching CLAUDE.md schema: `candles`, `trades`, `ai_decisions`, `risk_events`, `bot_metrics`
+- 7 tables: `candles`, `trades`, `ai_decisions`, `risk_events`, `bot_metrics`, `funding_rate_history`, `open_interest_history`
 - `store_candles()` with batch insert + ON CONFLICT DO NOTHING (dedup)
 - `load_candles()` returns oldest-first ordering
 - Index on `(pair, timeframe, timestamp DESC)` for fast lookups
+- **Funding rate history:** `store_funding_rate(fr)`, `store_funding_rates_batch(records)`, `load_funding_rates(pair, since_ms, until_ms)`. Populated by live polling + `fetch_history.py` backfill. Used by backtester for MarketSnapshot.
+- **OI history:** `store_open_interest(oi)`, `store_open_interest_batch(records)`, `load_open_interest(pair, since_ms, until_ms)`. Same pattern. OKX 1h resolution, ~30 days back.
 - **Auto-reconnection:** `_ensure_connected()` checks connection health (sends `SELECT 1`). All DB methods (`store_candles`, `load_candles`, `insert_trade`, `update_trade`, `insert_ai_decision`, `insert_risk_event`, `insert_metric`) retry once on `psycopg2.OperationalError` / `InterfaceError` — sets `_conn = None` and reconnects.
 - **Operational metrics (Grafana):** `insert_metric(name, value, pair, labels)` writes to `bot_metrics` table. `cleanup_old_metrics(retention_days=30)` deletes old rows. Both fire-and-forget.
 
@@ -186,6 +194,7 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Public methods: `get_latest_candle()`, `get_candles()`, `get_market_snapshot()`, `get_cvd()`, `fetch_usdt_balance()`, etc.
 - Manages startup (backfill → WebSockets → polling loops) and graceful shutdown
 - On confirmed candle: stores to Redis + PostgreSQL, triggers pipeline callback
+- **Funding/OI persistence:** Polling loops now persist funding rates and OI snapshots to PostgreSQL (`store_funding_rate`, `store_open_interest`) on every poll, building historical data for backtesting.
 - Health check loop every 30 seconds — emits `health_status` metric (1.0=OK, 0.0=degraded) to `bot_metrics`
 - **Metrics cleanup:** Every ~50 min (100 health checks), calls `cleanup_old_metrics(30)` to prune metrics older than 30 days
 - **`_emit_metric()`:** Fire-and-forget metric writer to PostgreSQL `bot_metrics` table. Passed to WebSocket feeds as callback.

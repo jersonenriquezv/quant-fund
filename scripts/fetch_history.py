@@ -69,10 +69,69 @@ def fetch_history(days: int, pairs: list[str] | None = None,
             else:
                 logger.warning(f"  {pair} {tf}: no candles returned")
 
+    # Fetch historical funding rates
+    logger.info("Fetching historical funding rates...")
+    import time
+    total_funding = 0
+    for pair in pairs:
+        since_ms = int((time.time() - days * 86400) * 1000)
+        all_rates = []
+        current_since = since_ms
+        while True:
+            batch = client.fetch_funding_rate_history(pair, since_ms=current_since, limit=100)
+            if not batch:
+                break
+            all_rates.extend(batch)
+            # Paginate forward
+            last_ts = batch[-1]["timestamp"]
+            if last_ts <= current_since:
+                break
+            current_since = last_ts + 1
+            if len(batch) < 100:
+                break
+            time.sleep(0.2)  # Rate limit courtesy
+
+        if all_rates:
+            records = [(pair, r["timestamp"], r["rate"], r["next_rate"]) for r in all_rates]
+            inserted = pg.store_funding_rates_batch(records)
+            total_funding += inserted
+            logger.info(f"  {pair}: fetched={len(all_rates)} funding rates, new={inserted}")
+
+    # Fetch historical OI (1h resolution, OKX limits to ~30 days back)
+    oi_days = min(days, 30)
+    logger.info(f"Fetching historical open interest ({oi_days}d at 1h resolution)...")
+    total_oi = 0
+    for pair in pairs:
+        since_ms = int((time.time() - oi_days * 86400) * 1000)
+        all_oi = []
+        current_since = since_ms
+        while True:
+            batch = client.fetch_open_interest_history(
+                pair, since_ms=current_since, limit=100, timeframe="1h"
+            )
+            if not batch:
+                break
+            all_oi.extend(batch)
+            last_ts = batch[-1]["timestamp"]
+            if last_ts <= current_since:
+                break
+            current_since = last_ts + 1
+            if len(batch) < 100:
+                break
+            time.sleep(0.2)
+
+        if all_oi:
+            records = [(pair, r["timestamp"], r["oi_contracts"], r["oi_base"], r["oi_usd"])
+                       for r in all_oi]
+            inserted = pg.store_open_interest_batch(records)
+            total_oi += inserted
+            logger.info(f"  {pair}: fetched={len(all_oi)} OI snapshots, new={inserted}")
+
     pg.close()
 
     print()
-    print(f"Done. Fetched {total_fetched} candles, stored {total_stored} new.")
+    print(f"Done. Candles: fetched={total_fetched}, new={total_stored}. "
+          f"Funding: {total_funding} new. OI: {total_oi} new.")
 
 
 def main():

@@ -1,5 +1,5 @@
 # Strategy Service
-> Última actualización: 2026-03-10 (Setup B re-habilitado con FVG midpoint entry: 52.7% WR, +$5169. ENABLED_SETUPS: A+B+F)
+> Última actualización: 2026-03-10 (Setup D habilitado: 66.7% WR en combinado, +$2,553. ENABLED_SETUPS: A+B+D+F. Backtester con MarketSnapshot histórico.)
 > Estado: implementado (completo, integrado en main.py). Audited — 3 CRITICAL fixes applied. Quick Setups C/D/E added. Setups F/G added.
 
 ## Qué hace (30 segundos)
@@ -57,9 +57,11 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
   - Igual que Setup B pero sin necesitar FVG adyacente al OB
   - Dispara cuando hay BOS + OB alineados pero no hay FVG nearby
   - Evaluado después de B — si B matchea primero, F no se evalúa
+  - DEBUG logs en cada early return (HTF undefined, no BOS, BOS≠HTF, PD misaligned, no OBs, no OBs in range, confluences, R:R)
 - **Setup G** — Breaker Block Retest: OB mitigado con dirección invertida
   - Bullish OB mitigado → bearish breaker → short entry en retest
   - Bearish OB mitigado → bullish breaker → long entry en retest
+  - DEBUG logs en cada early return (HTF undefined, no breakers, no aligned, PD misaligned, no in range, confluences, R:R)
   - Requiere HTF bias alineado con dirección del breaker + PD zone + min 2 confluencias
   - Usa `get_breaker_blocks()` de OrderBlockDetector
 - **Swing setups solo evalúan 15m OBs** — `SWING_SETUP_TIMEFRAMES = ["15m"]`. Los detectores corren en todos los LTF (15m + 5m) para que quick setups (C/D/E) tengan datos de 5m, pero la evaluación de A/B/F/G solo usa 15m. OBs de 5m producen micro-SLs (<0.2%) que las comisiones se comen.
@@ -78,7 +80,10 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 - **Setup C — Funding Squeeze:** Funding rate extremo + CVD buy dominance alineado + HTF bias. Entry: precio actual. SL: 0.5%. TP1: 1:1 (breakeven trigger), TP2: 2:1 (single TP).
   - Long: funding < -0.03%, buy dominance > 55%
   - Short: funding > +0.03%, buy dominance < 45%
-- **Setup D — LTF Structure Scalp:** CHoCH o BOS en 5m + OB fresco cerca del precio. No requiere sweep ni FVG. HTF bias + PD zone alineados. Entry: 75% del OB. TP1: 1:1 (breakeven trigger), TP2: 2:1 (single TP).
+- **Setup D — LTF Structure Scalp:** CHoCH o BOS en 5m + OB fresco cerca del precio. No requiere sweep ni FVG. HTF bias + PD zone alineados. Entry: 75% del OB. TP1: 1:1 (breakeven trigger), TP2: 2:1 (single TP). — **HABILITADO**
+  - **Backtest 60d solo**: 56 trades, 42.9% WR, +$3,596. Sharpe 8.51, PF 2.26, max DD 4.8%.
+  - **Backtest 60d combinado A+B+D+F**: 9 trades D, 66.7% WR, +$2,553. Total combinado: 97 trades, 51.5% WR, +$7,558.
+  - ETH dominante (47/56 trades solo, 97/97 combinado). BTC 11.1% WR pero solo 9 trades — muestra insuficiente.
 - **Setup E — Cascade Reversal:** Caída de OI >2% (cascade proxy) + CVD revertiendo. Long después de cascade de longs, short después de cascade de shorts. Usa OB cercano como anchor o precio actual. TP1: 1:1 (breakeven trigger), TP2: 2:1 (single TP).
 
 **Diferencias clave quick vs swing:**
@@ -91,7 +96,7 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 ### `strategy_service/service.py` — Facade
 - `StrategyService(data_service)` — obtiene candles del DataService
 - `evaluate(pair, candle)` — evalúa LTF candles: A → B → F → G → C → D → E, retorna `TradeSetup | None`
-- **`ENABLED_SETUPS` gate** — después de detectar un setup, verifica `setup.setup_type in settings.ENABLED_SETUPS`. Si no está habilitado, logea debug y continúa evaluando el siguiente tipo. Default: `["setup_a", "setup_b", "setup_f"]`. B re-habilitado con FVG midpoint entry (52.7% WR, +$5169). C, D, E, G pendientes de validación.
+- **`ENABLED_SETUPS` gate** — después de detectar un setup, verifica `setup.setup_type in settings.ENABLED_SETUPS`. Si no está habilitado, logea debug y continúa evaluando el siguiente tipo. Default: `["setup_a", "setup_b", "setup_d", "setup_f"]`. D habilitado con 66.7% WR en combinado (+$2,553). C, E, G pendientes de validación. G descartado (6.2% WR).
 - Coordina todos los módulos internos
 - Quick setup cooldown tracking per (pair, setup_type)
 

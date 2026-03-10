@@ -168,11 +168,11 @@ class Settings:
 
     # --- Enabled setups ---
     # Only these setup types will be traded. Others are detected but discarded.
-    # Backtest 60d aggressive: A (46.2% WR), B (52.7% WR, +$5169), F (42.9% WR).
-    # B re-enabled after FVG midpoint entry fix (was 25% WR with OB 75% entry).
-    # C, D, E, G pending validation.
+    # Backtest 60d aggressive combined A+B+D+F: 97 trades, 51.5% WR, +$7,558.
+    # D added: 66.7% WR in combined (9 trades, +$2,553). Quick setup — skips AI.
+    # C, E, G pending validation.
     ENABLED_SETUPS: list = field(default_factory=lambda: [
-        "setup_a", "setup_b", "setup_f",
+        "setup_a", "setup_b", "setup_d", "setup_f",
     ])
 
     # --- Setup A temporal ---

@@ -302,6 +302,78 @@ class ExchangeClient:
             return None
 
     # ================================================================
+    # Historical funding rates — for backtest backfill
+    # ================================================================
+
+    def fetch_funding_rate_history(self, pair: str,
+                                   since_ms: int | None = None,
+                                   limit: int = 100) -> list[dict]:
+        """Fetch historical funding rates from OKX via ccxt.
+
+        Returns list of dicts: {timestamp, rate, next_rate}.
+        OKX provides ~3 months of history. Max 100 per request.
+        """
+        try:
+            symbol = self._ccxt_symbol(pair)
+            records = self._market_exchange.fetch_funding_rate_history(
+                symbol, since=since_ms, limit=limit
+            )
+            results = []
+            for r in records:
+                results.append({
+                    "timestamp": r.get("timestamp", 0),
+                    "rate": r.get("fundingRate", 0.0),
+                    "next_rate": r.get("nextFundingRate", 0.0) or 0.0,
+                })
+            return results
+        except ccxt.RateLimitExceeded as e:
+            logger.warning(f"Funding history rate limited: pair={pair}. Error: {e}")
+            return []
+        except (ccxt.NetworkError, ccxt.ExchangeError) as e:
+            logger.error(f"Funding history fetch failed: pair={pair}. Error: {e}")
+            return []
+
+    # ================================================================
+    # Historical open interest — for backtest backfill
+    # ================================================================
+
+    def fetch_open_interest_history(self, pair: str,
+                                    since_ms: int | None = None,
+                                    limit: int = 100,
+                                    timeframe: str = "1h") -> list[dict]:
+        """Fetch historical OI from OKX via ccxt.
+
+        OKX limits: 1h goes back ~30 days, 1D goes back ~99 days.
+        OKX returns openInterestValue (USD) only — base/contracts are 0.
+
+        Returns list of dicts: {timestamp, oi_contracts, oi_base, oi_usd}.
+        """
+        try:
+            symbol = self._ccxt_symbol(pair)
+            records = self._market_exchange.fetch_open_interest_history(
+                symbol, timeframe=timeframe, since=since_ms, limit=limit
+            )
+            results = []
+            for r in records:
+                ts = r.get("timestamp", 0)
+                oi_usd = float(r.get("openInterestValue", 0) or 0)
+                if oi_usd <= 0:
+                    continue
+                results.append({
+                    "timestamp": ts,
+                    "oi_contracts": 0.0,
+                    "oi_base": 0.0,
+                    "oi_usd": oi_usd,
+                })
+            return results
+        except ccxt.RateLimitExceeded as e:
+            logger.warning(f"OI history rate limited: pair={pair}. Error: {e}")
+            return []
+        except (ccxt.NetworkError, ccxt.ExchangeError) as e:
+            logger.error(f"OI history fetch failed: pair={pair}. Error: {e}")
+            return []
+
+    # ================================================================
     # Helpers
     # ================================================================
 

@@ -377,6 +377,7 @@ class SetupEvaluator:
         7. Blended R:R >= MIN_RISK_REWARD
         """
         if htf_bias not in ("bullish", "bearish"):
+            logger.debug(f"Setup F [{pair}]: HTF bias undefined")
             return None
 
         bos_breaks = [
@@ -384,15 +385,19 @@ class SetupEvaluator:
             if b.break_type == "bos"
         ]
         if not bos_breaks:
+            logger.debug(f"Setup F [{pair}]: no BOS")
             return None
 
         latest_bos = bos_breaks[-1]
         direction = latest_bos.direction
 
         if settings.REQUIRE_HTF_LTF_ALIGNMENT and direction != htf_bias:
+            logger.debug(f"Setup F [{pair}]: BOS {direction} != HTF {htf_bias}")
             return None
 
         if not self._check_pd_alignment(pd_zone, direction):
+            zone = pd_zone.zone if pd_zone else "none"
+            logger.debug(f"Setup F [{pair}]: PD misaligned (zone={zone} dir={direction})")
             return None
 
         aligned_obs = [
@@ -400,11 +405,13 @@ class SetupEvaluator:
             if ob.direction == direction
         ]
         if not aligned_obs:
+            logger.debug(f"Setup F [{pair}]: no aligned OBs (total={len(active_obs)} dir={direction})")
             return None
 
         current_price = candles[-1].close if candles else 0
         best_ob = self._find_best_ob(aligned_obs, current_price, direction)
         if best_ob is None:
+            logger.debug(f"Setup F [{pair}]: no OBs within range (aligned={len(aligned_obs)})")
             return None
 
         # Volume + CVD confirmation
@@ -434,6 +441,7 @@ class SetupEvaluator:
         confluences.extend(vol_confluences)
 
         if not self._check_confluence_minimum(confluences):
+            logger.debug(f"Setup F [{pair}]: insufficient confluences ({len(confluences)}<2: {confluences})")
             return None
 
         sl_price = self._calculate_sl(best_ob, direction)
@@ -447,6 +455,7 @@ class SetupEvaluator:
             return None
         rr = self._compute_rr(entry_price, sl_price, tp2)
         if rr < settings.MIN_RISK_REWARD:
+            logger.debug(f"Setup F [{pair}]: R:R too low ({rr:.2f} < {settings.MIN_RISK_REWARD})")
             return None
 
         return TradeSetup(
@@ -489,9 +498,11 @@ class SetupEvaluator:
         5. Blended R:R >= MIN_RISK_REWARD
         """
         if htf_bias not in ("bullish", "bearish"):
+            logger.debug(f"Setup G [{pair}]: HTF bias undefined")
             return None
 
         if not breaker_blocks:
+            logger.debug(f"Setup G [{pair}]: no breaker blocks")
             return None
 
         aligned_breakers = [
@@ -499,14 +510,18 @@ class SetupEvaluator:
             if bb.direction == htf_bias
         ]
         if not aligned_breakers:
+            logger.debug(f"Setup G [{pair}]: no aligned breakers (total={len(breaker_blocks)} bias={htf_bias})")
             return None
 
         if not self._check_pd_alignment(pd_zone, htf_bias):
+            zone = pd_zone.zone if pd_zone else "none"
+            logger.debug(f"Setup G [{pair}]: PD misaligned (zone={zone} dir={htf_bias})")
             return None
 
         current_price = candles[-1].close if candles else 0
         best_bb = self._find_best_ob(aligned_breakers, current_price, htf_bias)
         if best_bb is None:
+            logger.debug(f"Setup G [{pair}]: no breakers within range (aligned={len(aligned_breakers)})")
             return None
 
         direction = htf_bias
@@ -537,6 +552,7 @@ class SetupEvaluator:
         confluences.extend(vol_confluences)
 
         if not self._check_confluence_minimum(confluences):
+            logger.debug(f"Setup G [{pair}]: insufficient confluences ({len(confluences)}<2: {confluences})")
             return None
 
         sl_price = self._calculate_sl(best_bb, direction)
@@ -550,6 +566,7 @@ class SetupEvaluator:
             return None
         rr = self._compute_rr(entry_price, sl_price, tp2)
         if rr < settings.MIN_RISK_REWARD:
+            logger.debug(f"Setup G [{pair}]: R:R too low ({rr:.2f} < {settings.MIN_RISK_REWARD})")
             return None
 
         return TradeSetup(
