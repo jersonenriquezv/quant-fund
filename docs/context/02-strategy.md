@@ -49,7 +49,7 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
   - **Backtest 60d aggressive**: 46 trades, 47.8% WR, +$2,510. El bottleneck principal era `no_aligned_sweep` — gap=20 solo producía 11 trades. Gap=40 captura sweeps más lejanos sin degradar calidad.
 - **Setup B** (secundario): BOS + FVG adyacente a OB — **HABILITADO**
   - Dirección BOS determina dirección del trade (bidireccional como Setup A)
-  - **Entry: FVG midpoint** `(fvg.high + fvg.low) / 2` — NO el OB 50%. Esto aprovecha el FVG (feature único de B) y da SL más ancho desde el OB wick.
+  - **Entry: FVG 75%** `fvg.low + FVG_ENTRY_PCT * range` (bullish) — shallower que midpoint para mayor fill rate. Configurable via `FVG_ENTRY_PCT` (default 0.75). SL ancho desde el OB wick.
   - SL: OB wick (igual que A/F)
   - FVG-OB adjacency threshold: `FVG_OB_MAX_GAP_PCT` (0.5%)
   - **Backtest 60d aggressive**: 55 trades, 52.7% WR, +$5,169. Antes con OB 75% entry (previo cambio): 29.8% WR, -$1,680.

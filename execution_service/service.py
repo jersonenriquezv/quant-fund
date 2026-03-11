@@ -229,6 +229,7 @@ class ExecutionService:
                     f"old={existing.direction}@{existing.entry_price:.2f} → "
                     f"new={setup.direction}@{setup.entry_price:.2f}"
                 )
+                self._monitor._record_pending_replaced(existing)
                 old = await self._monitor.cancel_and_remove_pending(setup.pair)
                 if old and self._risk is not None:
                     self._risk.on_trade_cancelled(setup.pair, old.direction)

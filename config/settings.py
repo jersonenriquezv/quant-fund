@@ -174,6 +174,11 @@ class Settings:
     # Max gap between FVG and OB as fraction of price to count as "adjacent".
     # 0.005 = 0.5% → for ETH@$2000, FVG and OB can be up to $10 apart.
     FVG_OB_MAX_GAP_PCT: float = 0.005
+    # FVG entry percentage — where within the FVG gap to place the entry.
+    # 0.50 = midpoint (old default), 0.75 = shallower (closer to price, easier fill).
+    # Bullish: entry = fvg.low + pct * (fvg.high - fvg.low)
+    # Bearish: entry = fvg.high - pct * (fvg.high - fvg.low)
+    FVG_ENTRY_PCT: float = float(os.getenv("FVG_ENTRY_PCT", "0.75"))
 
     # --- Enabled setups ---
     # Only these setup types will be traded. Others are detected but discarded.
@@ -210,6 +215,12 @@ class Settings:
     CASCADE_CVD_REVERSAL_LONG: float = 0.50       # Buy dominance > 50% after long cascade
     CASCADE_CVD_REVERSAL_SHORT: float = 0.50      # Buy dominance < 50% after short cascade
     CASCADE_MAX_AGE_SECONDS: int = 900            # 15 min — cascade must be recent
+
+    # --- Expectancy filters (post-detection, pre-AI) ---
+    # Minimum ATR(14) as fraction of price. Rejects low-volatility setups.
+    MIN_ATR_PCT: float = float(os.getenv("MIN_ATR_PCT", "0.0025"))  # 0.25%
+    # Minimum open space to nearest opposing structure as multiple of risk.
+    MIN_TARGET_SPACE_R: float = float(os.getenv("MIN_TARGET_SPACE_R", "1.2"))
 
     # --- Strategy behavior (profile-controlled) ---
     # If True, LTF structure (CHoCH/BOS) must align with HTF bias direction.

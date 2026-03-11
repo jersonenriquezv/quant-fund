@@ -203,6 +203,34 @@ active ──[timeout 7d]─────────> closed        (max duratio
 | `HTF_ENTRY_TIMEOUT_SECONDS` | 86400 (24h) | Timeout de entry para limit orders HTF |
 | `HTF_MAX_CAMPAIGNS` | 1 | Máximo de campañas concurrentes |
 
+## Execution Metrics
+
+El monitor emite métricas a `bot_metrics` en PostgreSQL (fire-and-forget):
+
+| Métrica | Descripción |
+|---------|-------------|
+| `pending_replaced` | Limit order reemplazada por un setup mejor (count=1 per event) |
+| `pending_timeout` | Limit order expirada sin fill (count=1 per event) |
+| `pending_filled` | Limit order filled exitosamente (count=1 per event) |
+| `time_to_fill_seconds` | Segundos entre placement y fill (label: setup_type) |
+
+**Fill rate**: `pending_filled / (pending_filled + pending_timeout + pending_replaced)` — calculable desde Grafana.
+
+**Queries útiles:**
+```sql
+-- Fill rate global
+SELECT
+  SUM(CASE WHEN metric_name = 'pending_filled' THEN 1 ELSE 0 END)::float /
+  NULLIF(COUNT(*), 0) AS fill_rate
+FROM bot_metrics
+WHERE metric_name IN ('pending_filled', 'pending_timeout', 'pending_replaced');
+
+-- Average time to fill by setup
+SELECT labels->>'setup_type', AVG(value) AS avg_seconds
+FROM bot_metrics WHERE metric_name = 'time_to_fill_seconds'
+GROUP BY labels->>'setup_type';
+```
+
 ## Live Test Script
 
 `tests/test_execution_live.py` — script manual para probar órdenes en OKX live:

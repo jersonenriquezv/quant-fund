@@ -50,6 +50,12 @@ class PositionMonitor:
         self._positions: dict[str, ManagedPosition] = {}  # keyed by pair
         self._running = False
         self._task: Optional[asyncio.Task] = None
+        # Execution metrics (persisted to PostgreSQL via insert_metric)
+        self._pending_replaced: int = 0
+        self._pending_timeout: int = 0
+        self._pending_filled: int = 0
+        # Per-setup fill tracking: setup_type -> list of fill times (seconds)
+        self._fill_times: dict[str, list[int]] = {}
 
     @property
     def positions(self) -> dict[str, ManagedPosition]:
@@ -191,6 +197,7 @@ class PositionMonitor:
             logger.info(f"Entry timeout: {pos.pair} after {timeout}s")
             if pos.entry_order_id:
                 await self._executor.cancel_order(pos.entry_order_id, pos.pair)
+            self._record_pending_timeout(pos)
             self._close_position(pos, "cancelled")
             return
 
@@ -244,6 +251,7 @@ class PositionMonitor:
 
     async def _on_entry_filled(self, pos: ManagedPosition) -> None:
         """Entry filled — find attached SL/TP or place manually. If SL fails → emergency close."""
+        self._record_pending_filled(pos)
         close_side = "sell" if pos.direction == "long" else "buy"
 
         # In sandbox mode, remap SL/TP relative to actual fill price
@@ -763,6 +771,52 @@ class PositionMonitor:
                     self._calculate_pnl(pos, close_price)
 
         self._close_position(pos, "timeout")
+
+    def _emit_metric(self, name: str, value: float,
+                     pair: str | None = None,
+                     labels: dict | None = None) -> None:
+        """Write execution metric to PostgreSQL (fire-and-forget)."""
+        if self._data_store is None:
+            return
+        try:
+            self._data_store.postgres.insert_metric(name, value, pair=pair, labels=labels)
+        except Exception:
+            pass
+
+    def _record_pending_replaced(self, pos: ManagedPosition) -> None:
+        """Record a pending entry being replaced by a new setup."""
+        self._pending_replaced += 1
+        self._emit_metric("pending_replaced", 1, pos.pair,
+                          {"setup_type": pos.setup_type})
+
+    def _record_pending_timeout(self, pos: ManagedPosition) -> None:
+        """Record a pending entry that timed out without filling."""
+        self._pending_timeout += 1
+        self._emit_metric("pending_timeout", 1, pos.pair,
+                          {"setup_type": pos.setup_type})
+
+    def _record_pending_filled(self, pos: ManagedPosition) -> None:
+        """Record a pending entry that filled, with time-to-fill."""
+        self._pending_filled += 1
+        fill_time = (pos.filled_at or int(time.time())) - pos.created_at
+        setup = pos.setup_type or "unknown"
+        if setup not in self._fill_times:
+            self._fill_times[setup] = []
+        self._fill_times[setup].append(fill_time)
+        self._emit_metric("pending_filled", 1, pos.pair,
+                          {"setup_type": setup})
+        self._emit_metric("time_to_fill_seconds", fill_time, pos.pair,
+                          {"setup_type": setup})
+        # Log fill rate summary
+        total = self._pending_filled + self._pending_timeout + self._pending_replaced
+        if total > 0:
+            fill_rate = self._pending_filled / total
+            logger.info(
+                f"Execution stats: filled={self._pending_filled} "
+                f"timeout={self._pending_timeout} replaced={self._pending_replaced} "
+                f"fill_rate={fill_rate:.1%} avg_fill_time_{setup}="
+                f"{sum(self._fill_times.get(setup, [0])) / max(len(self._fill_times.get(setup, [1])), 1):.0f}s"
+            )
 
     def _safe_notify(self, coro) -> None:
         """Fire-and-forget notification with error logging."""
