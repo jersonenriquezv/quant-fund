@@ -164,6 +164,7 @@ export interface HeadlineData {
   source: string;
   timestamp: number;
   category: string;
+  url: string;
   sentiment: string | null;
 }
 

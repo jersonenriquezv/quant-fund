@@ -449,15 +449,18 @@ tr:hover td {
   gap: 6px;
 }
 
-.news-item {
+a.news-item {
+  display: block;
   padding: 8px 10px;
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.02);
   border: 1px solid var(--border);
   transition: background 0.2s;
+  text-decoration: none;
+  color: inherit;
 }
 
-.news-item:hover {
+a.news-item:hover {
   background: rgba(255, 255, 255, 0.05);
 }
 

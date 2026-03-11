@@ -48,6 +48,7 @@ async def get_headlines():
                     source=h["source"],
                     timestamp=h["timestamp"],
                     category=h["category"],
+                    url=h.get("url", ""),
                     sentiment=h.get("sentiment"),
                 ))
         except (json.JSONDecodeError, KeyError):

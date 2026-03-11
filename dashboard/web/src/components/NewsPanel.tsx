@@ -34,7 +34,13 @@ export function NewsPanel() {
       ) : (
         <div className="scroll-y news-list">
           {headlines.map((h, i) => (
-            <div key={i} className="news-item">
+            <a
+              key={i}
+              className="news-item"
+              href={h.url || undefined}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
               <div className="news-header">
                 <span className="news-badge" style={{ color: sentimentColor(h.sentiment) }}>
                   {h.category}
@@ -43,7 +49,7 @@ export function NewsPanel() {
                 <span className="news-time">{timeAgo(h.timestamp)}</span>
               </div>
               <div className="news-title">{h.title}</div>
-            </div>
+            </a>
           ))}
         </div>
       )}

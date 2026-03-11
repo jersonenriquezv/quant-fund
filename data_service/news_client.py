@@ -125,6 +125,7 @@ class NewsClient:
                         source=h["source"],
                         timestamp=h["timestamp"],
                         category=h["category"],
+                        url=h.get("url", ""),
                         sentiment=h.get("sentiment"),
                     )
                     for h in items
@@ -153,6 +154,7 @@ class NewsClient:
                     source=art.get("source", "Unknown"),
                     timestamp=art.get("published_on", 0) * 1000,  # seconds → ms
                     category=asset,
+                    url=art.get("url", ""),
                     sentiment=sentiment,
                 ))
 
@@ -160,7 +162,7 @@ class NewsClient:
             cache_data = [
                 {"title": h.title, "source": h.source,
                  "timestamp": h.timestamp, "category": h.category,
-                 "sentiment": h.sentiment}
+                 "url": h.url, "sentiment": h.sentiment}
                 for h in headlines
             ]
             self._set_cached(cache_key, json.dumps(cache_data),

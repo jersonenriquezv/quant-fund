@@ -133,6 +133,7 @@ class HeadlineRecord(BaseModel):
     source: str
     timestamp: int
     category: str
+    url: str = ""
     sentiment: str | None = None
 
 

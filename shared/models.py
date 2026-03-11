@@ -100,11 +100,12 @@ class WhaleMovement:
 
 @dataclass(frozen=True)
 class NewsHeadline:
-    """Single news headline from CryptoPanic."""
+    """Single news headline from CryptoCompare."""
     title: str
     source: str
     timestamp: int          # Unix ms
     category: str           # "BTC", "ETH", etc.
+    url: str = ""           # Link to the article
     sentiment: Optional[str] = None  # "bullish", "bearish", or None if unavailable
 
 
