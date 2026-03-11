@@ -1,20 +1,28 @@
 """
-In-memory risk state tracker.
+Risk state tracker with optional Redis persistence.
 
 Tracks trades opened today, open positions, daily/weekly P&L, cooldown timer.
-Public methods let Execution Service (future) update state on trade open/close.
+Public methods let Execution Service update state on trade open/close.
 Auto-resets daily counters at midnight UTC and weekly counters on Monday UTC.
+
+If a RedisStore is provided, state is persisted on every mutation and restored
+on init — survives bot restarts without losing guardrail state.
 """
 
 import time
-from datetime import datetime, timezone
+from datetime import datetime, date, timezone
+
+from shared.logger import setup_logger
+
+logger = setup_logger("risk_state")
 
 
 class RiskStateTracker:
     """Tracks live trading state for risk checks."""
 
-    def __init__(self, capital: float) -> None:
+    def __init__(self, capital: float, redis_store=None) -> None:
         self._capital = capital
+        self._redis = redis_store
 
         # Trades completed today (closed)
         self._trades_today: list[dict] = []
@@ -33,6 +41,9 @@ class RiskStateTracker:
         self._current_day = now.date()
         self._current_week: int = now.isocalendar()[1]
 
+        # Restore state from Redis if available
+        self._load_from_redis()
+
     # ================================================================
     # Trade lifecycle
     # ================================================================
@@ -48,6 +59,7 @@ class RiskStateTracker:
             "entry_price": entry_price,
             "timestamp": timestamp,
         })
+        self._save_to_redis()
 
     def record_trade_closed(
         self, pair: str, direction: str, pnl_pct: float, timestamp: int
@@ -86,6 +98,8 @@ class RiskStateTracker:
         if pnl_pct < 0:
             self._last_loss_time = timestamp
 
+        self._save_to_redis()
+
     def record_trade_cancelled(self, pair: str, direction: str) -> None:
         """Remove a cancelled pending entry from open positions tracking.
 
@@ -96,6 +110,7 @@ class RiskStateTracker:
             if pos["pair"] == pair and pos["direction"] == direction:
                 self._open_positions.pop(i)
                 break
+        self._save_to_redis()
 
     # ================================================================
     # Capital
@@ -141,11 +156,90 @@ class RiskStateTracker:
         today = now.date()
         week = now.isocalendar()[1]
 
+        reset = False
         if today != self._current_day:
             self._trades_today.clear()
             self._daily_pnl_pct = 0.0
             self._current_day = today
+            reset = True
 
         if week != self._current_week:
             self._weekly_pnl_pct = 0.0
             self._current_week = week
+            reset = True
+
+        if reset:
+            self._save_to_redis()
+
+    # ================================================================
+    # Redis persistence
+    # ================================================================
+
+    _REDIS_TTL = 172800  # 48 hours
+
+    def _save_to_redis(self) -> None:
+        """Persist risk state to Redis (fire-and-forget)."""
+        if self._redis is None:
+            return
+        try:
+            ttl = self._REDIS_TTL
+            self._redis.set_bot_state("risk_daily_pnl", str(self._daily_pnl_pct), ttl=ttl)
+            self._redis.set_bot_state("risk_weekly_pnl", str(self._weekly_pnl_pct), ttl=ttl)
+            self._redis.set_bot_state(
+                "risk_last_loss_time",
+                str(self._last_loss_time) if self._last_loss_time is not None else "",
+                ttl=ttl,
+            )
+            self._redis.set_bot_state("risk_trades_today", str(len(self._trades_today)), ttl=ttl)
+            self._redis.set_bot_state("risk_state_day", self._current_day.isoformat(), ttl=ttl)
+            self._redis.set_bot_state("risk_state_week", str(self._current_week), ttl=ttl)
+        except Exception as e:
+            logger.warning(f"Failed to save risk state to Redis: {e}")
+
+    def _load_from_redis(self) -> None:
+        """Restore risk state from Redis on startup."""
+        if self._redis is None:
+            return
+        try:
+            saved_day = self._redis.get_bot_state("risk_state_day")
+            if saved_day is None:
+                logger.info("No risk state in Redis — starting fresh")
+                return
+
+            # Parse saved date and check if it's still current
+            saved_date = date.fromisoformat(saved_day)
+            today = self._current_day
+
+            # Restore daily values only if same day
+            if saved_date == today:
+                daily = self._redis.get_bot_state("risk_daily_pnl")
+                if daily is not None:
+                    self._daily_pnl_pct = float(daily)
+
+                trades_today = self._redis.get_bot_state("risk_trades_today")
+                if trades_today is not None:
+                    # Reconstruct _trades_today as a list with N placeholder entries
+                    # (we only need the count for guardrails)
+                    count = int(trades_today)
+                    self._trades_today = [{"pair": "restored", "pnl_pct": 0, "timestamp": 0}] * count
+
+            # Restore weekly values only if same week
+            saved_week = self._redis.get_bot_state("risk_state_week")
+            if saved_week is not None and int(saved_week) == self._current_week:
+                weekly = self._redis.get_bot_state("risk_weekly_pnl")
+                if weekly is not None:
+                    self._weekly_pnl_pct = float(weekly)
+
+            # Cooldown always restores (time-based, not date-based)
+            last_loss = self._redis.get_bot_state("risk_last_loss_time")
+            if last_loss is not None and last_loss != "":
+                self._last_loss_time = int(last_loss)
+
+            logger.info(
+                f"Risk state restored from Redis: "
+                f"daily_pnl={self._daily_pnl_pct:.4f} weekly_pnl={self._weekly_pnl_pct:.4f} "
+                f"trades_today={len(self._trades_today)} "
+                f"last_loss={'set' if self._last_loss_time else 'none'}"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to load risk state from Redis — starting fresh: {e}")

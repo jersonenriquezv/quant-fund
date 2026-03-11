@@ -60,7 +60,7 @@ class StrategyService:
 
         # Failed OB tracking: set of (pair, ob_low, ob_high) that hit SL.
         # Prevents re-entering the same OB after a loss.
-        self._failed_obs: set[tuple[str, float, float]] = {}
+        self._failed_obs: set[tuple[str, float, float]] = set()
 
     def evaluate(self, pair: str,
                  trigger_candle: Candle) -> Optional[TradeSetup]:

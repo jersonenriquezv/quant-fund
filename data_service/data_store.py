@@ -671,6 +671,33 @@ class PostgresStore:
                 return False
         return False
 
+    def fetch_open_trades(self) -> list[dict]:
+        """Fetch all trades with status='open'. Returns list of dicts with id and pair."""
+        for attempt in range(2):
+            if not self._ensure_connected():
+                return []
+            try:
+                with self._conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT id, pair, direction, entry_price, opened_at "
+                        "FROM trades WHERE status = 'open'"
+                    )
+                    rows = cur.fetchall()
+                return [
+                    {"id": r[0], "pair": r[1], "direction": r[2],
+                     "entry_price": r[3], "opened_at": r[4]}
+                    for r in rows
+                ]
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                logger.warning(f"PostgreSQL fetch open trades connection error (attempt {attempt+1}): {e}")
+                self._conn = None
+                if attempt == 1:
+                    return []
+            except psycopg2.Error as e:
+                logger.error(f"PostgreSQL fetch open trades failed: {e}")
+                return []
+        return []
+
     # --- Campaign Storage ---
 
     def insert_campaign(self, campaign) -> int | None:

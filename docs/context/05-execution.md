@@ -124,13 +124,23 @@ Al startup, `sync_exchange_positions()` consulta OKX por posiciones abiertas. La
 - Si la posición desaparece → `manual_close`
 - Permite nueva entry del bot en el mismo par (OKX net mode stacking)
 
+## Orphaned trade reconciliation
+
+Al startup, después de `sync_exchange_positions()`, `_reconcile_orphaned_trades()` detecta trades "huérfanos":
+1. Consulta PostgreSQL por todos los trades con `status='open'`
+2. Para cada trade: verifica si existe una posición activa en OKX para ese par
+3. Si no hay posición en exchange → marca el trade como `status='closed', exit_reason='orphaned_restart'` con PnL 0
+4. Logea WARNING por cada trade reconciliado
+
+Esto resuelve el bug donde trades quedaban como "open" en la DB permanentemente después de un reinicio, porque el PositionMonitor perdía su estado in-memory.
+
 ## Archivos
 
 | Archivo | Descripción |
 |---------|-------------|
 | `service.py` | Facade — execute(), start(), stop(), health(). Position adoption converts contracts→base. `_emit_metric()` wired to executor for Grafana. Accepts `on_sl_hit` callback for failed OB tracking. Sends ORDER PLACED Telegram notification on successful order placement. |
-| `executor.py` | Wrapper ccxt — place/cancel/fetch orders. Contracts conversion (`_to_contracts`, `contracts_to_base`). Attached SL/TP on entry. Algo cancel fallback. `find_pending_algo_orders()`. Optional `metrics_callback` emits `okx_order_latency_ms` per order. |
-| `monitor.py` | Background loop — attached SL/TP discovery + manual fallback, breakeven + trailing SL via price polling. Post-fill SL distance check (`sl_too_close` close). Slippage guard (`excessive_slippage` close). Sends TRADE CLOSED + EMERGENCY Telegram notifications. |
+| `executor.py` | Wrapper ccxt — place/cancel/fetch orders. Contracts conversion (`_to_contracts`, `contracts_to_base`). Attached SL/TP on entry. Algo cancel fallback. `find_pending_algo_orders()`. Optional `metrics_callback` emits `okx_order_latency_ms` per order. `fetch_position()` returns `POSITION_EMPTY` ({}) when API succeeds but no position exists (vs `None` on error). |
+| `monitor.py` | Background loop — attached SL/TP discovery + manual fallback, breakeven + trailing SL via price polling. Post-fill SL distance check (`sl_too_close` close). Slippage guard (`excessive_slippage` close). Sends TRADE CLOSED + EMERGENCY Telegram notifications. Per-position try/catch in poll loop prevents one position's error from blocking others. |
 | `models.py` | ManagedPosition (intraday) + PositionCampaign (HTF) + CampaignAdd (pyramid entries) |
 | `campaign_monitor.py` | Background loop para HTF campaigns — entry fill tracking, pyramid adds, trailing SL en 4H swing levels, SL vanished fallback, timeout 7d. Persiste en PostgreSQL `campaigns` table. Notifica CAMPAIGN CLOSED via AlertManager. |
 
@@ -211,6 +221,6 @@ Fill price mismatch: ETH/USDT expected=1937.22 actual=1990.24 diff=2.74%
 
 ## Limitaciones conocidas
 
-- Estado de posiciones se pierde en restart (SL/TP siguen en exchange)
-- Sin persistencia Redis del estado del monitor (v2)
+- Estado de posiciones se pierde en restart (SL/TP siguen en exchange, positions re-adopted via sync_exchange_positions)
+- Orphaned trades reconciled on startup (closed as `orphaned_restart`)
 - `AIDecision.adjustments` no se aplica a SL/TP (v2)

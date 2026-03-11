@@ -496,8 +496,18 @@ class OrderExecutor:
             logger.error(f"EMERGENCY close FAILED: {pair} {side} {e}")
             return None
 
+    # Sentinel returned by fetch_position when API succeeds but no position exists.
+    # Callers can distinguish from None (network error).
+    POSITION_EMPTY: dict = {}
+
     async def fetch_position(self, pair: str) -> Optional[dict]:
-        """Fetch open position for a pair. Returns position dict or None."""
+        """Fetch open position for a pair.
+
+        Returns:
+            dict with position data if open position exists,
+            POSITION_EMPTY ({}) if API succeeded but no position found,
+            None on network/exchange error.
+        """
         symbol = self._ccxt_symbol(pair)
         try:
             positions = await self._run_sync(
@@ -506,7 +516,7 @@ class OrderExecutor:
             for pos in positions:
                 if pos.get("symbol") == symbol and float(pos.get("contracts", 0)) > 0:
                     return pos
-            return None
+            return self.POSITION_EMPTY
         except (ccxt.NetworkError, ccxt.ExchangeError) as e:
             logger.error(f"Fetch position error: {pair} {e}")
             return None

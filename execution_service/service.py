@@ -63,6 +63,7 @@ class ExecutionService:
         # Sync exchange positions BEFORE starting poll loop
         # so adopted positions are registered before monitoring begins.
         await self.sync_exchange_positions()
+        await self._reconcile_orphaned_trades()
         self._monitor.start()
         logger.info("Execution Service started")
 
@@ -120,6 +121,60 @@ class ExecutionService:
                 f"Adopted exchange position: {pair} {direction} "
                 f"size={contracts} entry={entry_price:.2f} leverage={leverage:.0f}x"
             )
+
+    async def _reconcile_orphaned_trades(self) -> None:
+        """Close trades stuck as 'open' in PostgreSQL with no matching exchange position.
+
+        On restart, the monitor loses all in-memory state. Trades that were open
+        before the restart remain as status='open' in the DB forever. This method
+        detects them by comparing DB records against actual exchange positions
+        (already fetched by sync_exchange_positions) and marks orphans as closed.
+        """
+        if self._data_service is None or self._data_service.postgres is None:
+            return
+        if self._monitor is None:
+            return
+
+        try:
+            open_trades = self._data_service.postgres.fetch_open_trades()
+        except Exception as e:
+            logger.error(f"Failed to fetch open trades for reconciliation: {e}")
+            return
+
+        if not open_trades:
+            return
+
+        # Pairs that currently have positions on the exchange
+        # (already populated by sync_exchange_positions into monitor.positions)
+        active_pairs = set(self._monitor.positions.keys())
+
+        reconciled = 0
+        for trade in open_trades:
+            pair = trade["pair"]
+            trade_id = trade["id"]
+
+            if pair in active_pairs:
+                continue  # Position exists on exchange — trade is genuinely open
+
+            # No position on exchange → orphaned trade
+            try:
+                self._data_service.postgres.update_trade(
+                    trade_id=trade_id,
+                    status="closed",
+                    exit_reason="orphaned_restart",
+                    pnl_usd=0.0,
+                    pnl_pct=0.0,
+                )
+                reconciled += 1
+                logger.warning(
+                    f"Reconciled orphaned trade: id={trade_id} {pair} "
+                    f"{trade['direction']} — no matching exchange position"
+                )
+            except Exception as e:
+                logger.error(f"Failed to reconcile trade id={trade_id}: {e}")
+
+        if reconciled > 0:
+            logger.info(f"Reconciliation complete: {reconciled} orphaned trade(s) closed")
 
     async def stop(self) -> None:
         """Stop the monitor. Cancel unfilled entries, leave filled positions

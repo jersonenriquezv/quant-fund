@@ -139,16 +139,19 @@ class PositionMonitor:
             if pos is None or pos.phase == "closed":
                 continue
 
-            # Check for dashboard cancel request
-            if self._check_cancel_request(pos):
-                continue
+            try:
+                # Check for dashboard cancel request
+                if self._check_cancel_request(pos):
+                    continue
 
-            if pos.phase == "pending_entry":
-                await self._check_pending_entry(pos)
-            elif pos.phase == "active":
-                await self._check_active_position(pos)
-            elif pos.phase == "emergency_pending":
-                await self._retry_emergency_close(pos)
+                if pos.phase == "pending_entry":
+                    await self._check_pending_entry(pos)
+                elif pos.phase == "active":
+                    await self._check_active_position(pos)
+                elif pos.phase == "emergency_pending":
+                    await self._retry_emergency_close(pos)
+            except Exception as e:
+                logger.error(f"Position check error: {pos.pair} {pos.phase} {e}")
 
     def _check_cancel_request(self, pos: ManagedPosition) -> bool:
         """Check Redis for a dashboard cancel request. Returns True if handled."""
@@ -460,7 +463,10 @@ class PositionMonitor:
                 self._calculate_pnl(pos, float(sl_status.get("average", 0) or sl_exit))
                 # Mark OB as failed if it was a real loss (not breakeven)
                 if self._on_sl_hit and pos.pnl_pct < 0:
-                    self._on_sl_hit(pos.pair, pos.sl_price, pos.entry_price)
+                    try:
+                        self._on_sl_hit(pos.pair, pos.sl_price, pos.entry_price)
+                    except Exception as e:
+                        logger.error(f"on_sl_hit callback error: {pos.pair} {e}")
                 self._close_position(pos, "sl")
                 return
             if sl_status and sl_status.get("status") == "canceled":

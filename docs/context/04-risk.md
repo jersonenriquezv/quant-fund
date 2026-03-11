@@ -64,8 +64,13 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
   - `check_daily_drawdown(dd_pct)` — < MAX_DAILY_DRAWDOWN (3%)?
   - `check_weekly_drawdown(dd_pct)` — < MAX_WEEKLY_DRAWDOWN (5%)?
 
-### `risk_service/state_tracker.py` — Estado en memoria
-- Clase: `RiskStateTracker`
+### `risk_service/state_tracker.py` — Estado con persistencia Redis
+- Clase: `RiskStateTracker(capital, redis_store=None)`
+- **Redis persistence**: Si se pasa `redis_store` (de DataService), el estado se persiste en Redis en cada mutación y se restaura al iniciar. Sobrevive reinicios del bot sin perder guardrails.
+  - Keys: `qf:bot:risk_daily_pnl`, `risk_weekly_pnl`, `risk_last_loss_time`, `risk_trades_today`, `risk_state_day`, `risk_state_week`
+  - TTL: 48 horas
+  - Daily values solo se restauran si el día guardado == hoy. Weekly solo si misma semana. Cooldown siempre se restaura (time-based).
+  - Si Redis falla al cargar o guardar → degrada silenciosamente (fire-and-forget). El bot NO se detiene.
 - Lifecycle del trade:
   - `record_trade_opened(pair, direction, entry_price, timestamp)`
   - `record_trade_closed(pair, direction, pnl_pct, timestamp)` — matchea por `(pair, direction)`. Actualiza DD, activa cooldown si pérdida.
@@ -113,13 +118,13 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 
 ## Tests
 
-73 tests en 4 archivos:
+81 tests en 4 archivos:
 - `test_position_sizer.py` — fórmula, leverage cap, edge cases
 - `test_guardrails.py` (23) — cada regla pass/fail/boundary/edge
-- `test_state_tracker.py` (27) — lifecycle, DD, cooldown, date reset, year boundary, direction matching, trade cancelled (4 tests)
+- `test_state_tracker.py` (35) — lifecycle, DD, cooldown, date reset, year boundary, direction matching, trade cancelled (4 tests), Redis persistence round-trip (8 tests)
 - `test_risk_service.py` (14) — check() integración: approvals, rejections, lifecycle, entry==SL, leverage capped
 
-Última corrida: 73 passed, 0 failed
+Última corrida: 81 passed, 0 failed
 
 ## FAQ
 
@@ -133,19 +138,20 @@ Los checks son CPU puro (microsegundos). Depender de una DB haría los checks le
 Si el cooldown está activo, no tiene sentido calcular position size. El primer NO es el NO final.
 
 **¿Qué pasa si el bot se reinicia?**
-Estado se pierde (es in-memory). Empezaría con 0 trades hoy, 0 DD. Esto es conservador — permite tradear inmediatamente. Planeado para v2: reconstruir estado desde PostgreSQL al arrancar.
+Con Redis persistence (implementado): el estado (daily PnL, weekly PnL, trades today, cooldown) se restaura automáticamente desde Redis al iniciar. Si Redis no está disponible, empieza fresh (comportamiento anterior).
 
 **¿Qué pasa si `record_trade_closed()` recibe un pair/direction que no está abierto?**
 No crashea. El trade se registra igual (P&L, cooldown, trades_today), pero no remueve ninguna posición abierta (no hay match por `(pair, direction)`).
 
 ## Limitaciones conocidas
 
-- **Estado in-memory**: Se pierde al reiniciar. Planeado para v2 (Redis persistence).
+- **Estado persiste via Redis**: daily PnL, weekly PnL, trades today count, y cooldown sobreviven reinicios. Posiciones abiertas (open_positions list) NO se persisten — se reconstruyen via sync_exchange_positions + reconciliation al arrancar.
 - **Max trade duration (12h)**: Enforceado por el Execution Service (`PositionMonitor` cierra posiciones después de `MAX_TRADE_DURATION_SECONDS`).
 - **Tracking por (pair, direction)**: El cierre matchea por par Y dirección. Si hubiera BTC long + BTC short simultáneo, se cierran independientemente.
 
 ## Cambios recientes
 
+- **2026-03-11** — Redis persistence for RiskStateTracker. State (daily_pnl, weekly_pnl, trades_today, cooldown) survives bot restarts. 48h TTL, fire-and-forget writes. 8 new tests.
 - **2026-03-10** — `FIXED_TRADE_MARGIN` restored ($20 default). Was accidentally removed on 03-09, causing trades to enter with $3.25 margin instead of $20. Dual-mode: if FIXED_TRADE_MARGIN > 0, uses fixed margin; else falls back to TRADE_CAPITAL_PCT.
 - **2026-03-09** — `FIXED_TRADE_MARGIN` replaced by `TRADE_CAPITAL_PCT` (0.15 = 15% of capital as notional). Position sizing simplified: no more dual-mode (fixed vs risk-based). Leverage always `MAX_LEVERAGE`. `MIN_ORDER_SIZES` updated: BTC 0.01→0.0001, ETH 0.001 added (correct OKX contract sizes).
 - **2026-03-07** — `MIN_RISK_DISTANCE_PCT` 0.3% → 0.2%. Was blocking legitimate OB setups (e.g. ETH OB with $5.26 SL = 0.27%, rejected 4 times in one day despite AI approval at 0.75 confidence). 0.2% still filters noise trades ($4 min SL on ETH@$2000).

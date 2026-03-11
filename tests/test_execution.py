@@ -978,3 +978,98 @@ class TestHealthCheck:
         health = service.health()
         assert health["enabled"] is True
         assert health["active_positions"] == 1
+
+
+class TestOrphanedTradeReconciliation:
+    """Startup reconciliation closes trades stuck as 'open' with no exchange position."""
+
+    def test_orphaned_trade_closed(self):
+        """Trade is 'open' in DB but no position on exchange → closed as orphaned."""
+        service = _make_service()
+        service._monitor.positions = {}  # No exchange positions
+
+        mock_postgres = MagicMock()
+        mock_postgres.fetch_open_trades.return_value = [
+            {"id": 42, "pair": "ETH/USDT", "direction": "long",
+             "entry_price": 2000.0, "opened_at": None},
+        ]
+        mock_postgres.update_trade.return_value = True
+
+        mock_ds = MagicMock()
+        mock_ds.postgres = mock_postgres
+        service._data_service = mock_ds
+
+        asyncio.run(service._reconcile_orphaned_trades())
+
+        mock_postgres.update_trade.assert_called_once_with(
+            trade_id=42,
+            status="closed",
+            exit_reason="orphaned_restart",
+            pnl_usd=0.0,
+            pnl_pct=0.0,
+        )
+
+    def test_active_trade_not_reconciled(self):
+        """Trade is 'open' in DB and position exists on exchange → left alone."""
+        service = _make_service()
+        service._monitor.positions = {
+            "ETH/USDT": MagicMock(phase="active", direction="long")
+        }
+
+        mock_postgres = MagicMock()
+        mock_postgres.fetch_open_trades.return_value = [
+            {"id": 42, "pair": "ETH/USDT", "direction": "long",
+             "entry_price": 2000.0, "opened_at": None},
+        ]
+
+        mock_ds = MagicMock()
+        mock_ds.postgres = mock_postgres
+        service._data_service = mock_ds
+
+        asyncio.run(service._reconcile_orphaned_trades())
+
+        mock_postgres.update_trade.assert_not_called()
+
+    def test_no_open_trades_is_noop(self):
+        """No open trades in DB → nothing happens."""
+        service = _make_service()
+        service._monitor.positions = {}
+
+        mock_postgres = MagicMock()
+        mock_postgres.fetch_open_trades.return_value = []
+
+        mock_ds = MagicMock()
+        mock_ds.postgres = mock_postgres
+        service._data_service = mock_ds
+
+        asyncio.run(service._reconcile_orphaned_trades())
+        mock_postgres.update_trade.assert_not_called()
+
+    def test_no_data_service_is_noop(self):
+        """Without data_service, reconciliation silently skips."""
+        service = _make_service()
+        service._data_service = None
+        # Should not crash
+        asyncio.run(service._reconcile_orphaned_trades())
+
+    def test_multiple_orphans_reconciled(self):
+        """Multiple orphaned trades are all closed."""
+        service = _make_service()
+        service._monitor.positions = {}
+
+        mock_postgres = MagicMock()
+        mock_postgres.fetch_open_trades.return_value = [
+            {"id": 1, "pair": "BTC/USDT", "direction": "long",
+             "entry_price": 50000.0, "opened_at": None},
+            {"id": 2, "pair": "ETH/USDT", "direction": "short",
+             "entry_price": 2000.0, "opened_at": None},
+        ]
+        mock_postgres.update_trade.return_value = True
+
+        mock_ds = MagicMock()
+        mock_ds.postgres = mock_postgres
+        service._data_service = mock_ds
+
+        asyncio.run(service._reconcile_orphaned_trades())
+
+        assert mock_postgres.update_trade.call_count == 2

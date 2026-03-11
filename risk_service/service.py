@@ -23,7 +23,8 @@ class RiskService:
     def __init__(self, capital: float, data_service=None) -> None:
         self._sizer = PositionSizer()
         self._guardrails = Guardrails()
-        self._state = RiskStateTracker(capital)
+        redis_store = data_service.redis if data_service is not None else None
+        self._state = RiskStateTracker(capital, redis_store=redis_store)
         self._data_service = data_service
         self._persist_failures: int = 0
         logger.info(f"Risk Service initialized with capital=${capital:.2f}")
