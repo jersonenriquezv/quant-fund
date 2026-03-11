@@ -1,5 +1,5 @@
 # Execution Service (Layer 5)
-> Última actualización: 2026-03-11 (PnL fix: fee deduction + actual_exit_price + all exit paths compute PnL. Single mode. ENTRY_TIMEOUT swing 6h→24h.)
+> Última actualización: 2026-03-11 (Split entries, expectancy filters, execution metrics.)
 > Estado: **Fase 1 — COMPLETADA**. Entry + SL + TP atómicos (attached). Breakeven + trailing SL via price polling. CampaignMonitor para HTF position trades. PnL tracking con fee deduction (TRADING_FEE_RATE 0.05% per side).
 
 El brazo ejecutor del bot. Recibe trades aprobados por Risk Service y los ejecuta en OKX via ccxt.
@@ -22,9 +22,16 @@ ExecutionService (facade)
 2. **Valida precio ordering** — Long: `sl < entry < tp2`. Short: inverso.
 3. **Chequea posición existente** — Si hay pending_entry → reemplaza. Si hay adoptada → permite coexistencia. Si hay activa del bot → rechaza.
 4. Configura el par (margin mode isolated + leverage). `defaultMarginMode` seteado a nivel de exchange en ccxt para evitar fallback a `cross`.
-5. Coloca limit entry order al precio calculado (50% OB/FVG) **con SL+TP attached** — OKX crea SL/TP atómicamente cuando el entry se llena.
+5. **Split entry check**: si `setup.entry2_price > 0` y es swing setup y live mode:
+   - Divide `position_size` 50/50 entre entry1 (OB 50%) y entry2 (OB 75%)
+   - **Min order size guard**: si la mitad < `MIN_ORDER_SIZES[pair]`, fallback a single entry
+   - Entry1: limit con SL+TP attached (cubre la mitad del tamaño)
+   - Entry2: limit SIN attached (se consolida después)
+   - Si entry2 falla al colocar → continúa con entry1 sola (half size)
+   - Si ambas fallan → sin ejecución
+6. **Single entry** (original): coloca limit entry order al precio calculado (50% OB / 75% FVG) **con SL+TP attached** — OKX crea SL/TP atómicamente cuando el entry se llena.
    - **Contracts conversion**: `amount` en base currency (ETH/BTC) se convierte a contratos OKX internamente via `_to_contracts()`. OKX SWAP `ctVal`: BTC=0.01, ETH=0.1.
-6. Notifica Risk Service inmediatamente (en PLACE, no en fill)
+7. Notifica Risk Service inmediatamente (en PLACE, no en fill)
 7. **Telegram: ORDER PLACED** — envía notificación con par, dirección, entry, SL, TP, size, leverage
 8. Registra la posición en el monitor
 
@@ -44,6 +51,24 @@ active ──[SL fail]───> emergency_pending     (retry x3)
 emergency_pending ──[retry ok]──> closed
 emergency_pending ──[3 fails]──> emergency_failed  (intervención manual)
 ```
+
+### Split Entry State Machine (`_check_split_pending`)
+
+Cuando `is_split_entry == True`, el monitor usa `_check_split_pending()` en vez de `_check_pending_entry()`:
+
+1. **Poll entry1** → si filled, marca `entry1_filled = True`, guarda `entry1_fill_price/size`
+2. **Poll entry2** (solo si entry1 ya filled) → si filled, marca `entry2_filled = True`
+3. **Timeout**:
+   - Ambas sin fill → cancel both, close as `cancelled`
+   - Entry1 filled, entry2 no → activa con entry1 only (SL/TP attached ya correcto para half size)
+4. **Ambas filled** → consolida:
+   - `actual_entry_price = VWAP(fill1, fill2)`
+   - `filled_size = sum`
+   - `_cancel_attached_orders()` → cancela SL/TP de entry1 (que cubría solo la mitad)
+   - `_on_entry_filled()` → coloca SL/TP consolidados para el tamaño total
+5. **Entry1 filled + entry2 cancelled** (antes del timeout) → activa con entry1 only
+
+`_cancel_attached_orders()` cancela todas las algo orders pendientes + TP limit orders (reduceOnly) del par.
 
 ## Exit Management (simplificado)
 
@@ -142,7 +167,7 @@ Esto resuelve el bug donde trades quedaban como "open" en la DB permanentemente 
 | `service.py` | Facade — execute(), start(), stop(), health(). Position adoption converts contracts→base. `_emit_metric()` wired to executor for Grafana. Accepts `on_sl_hit` callback for failed OB tracking. Sends ORDER PLACED Telegram notification on successful order placement. |
 | `executor.py` | Wrapper ccxt — place/cancel/fetch orders. Contracts conversion (`_to_contracts`, `contracts_to_base`). Attached SL/TP on entry. Algo cancel fallback. `find_pending_algo_orders()`. Optional `metrics_callback` emits `okx_order_latency_ms` per order. `fetch_position()` returns `POSITION_EMPTY` ({}) when API succeeds but no position exists (vs `None` on error). |
 | `monitor.py` | Background loop — attached SL/TP discovery + manual fallback, breakeven + trailing SL via price polling. Post-fill SL distance check (`sl_too_close` close). Slippage guard (`excessive_slippage` close). Sends TRADE CLOSED + EMERGENCY Telegram notifications. Per-position try/catch in poll loop prevents one position's error from blocking others. |
-| `models.py` | ManagedPosition (intraday) + PositionCampaign (HTF) + CampaignAdd (pyramid entries) |
+| `models.py` | ManagedPosition (intraday, includes split entry fields: `is_split_entry`, `entry2_price`, `entry1/2_filled/fill_price/fill_size`) + PositionCampaign (HTF) + CampaignAdd (pyramid entries) |
 | `campaign_monitor.py` | Background loop para HTF campaigns — entry fill tracking, pyramid adds, trailing SL en 4H swing levels, SL vanished fallback, timeout 7d. Persiste en PostgreSQL `campaigns` table. Notifica CAMPAIGN CLOSED via AlertManager. |
 
 ## HTF Campaign Monitor (`campaign_monitor.py`)

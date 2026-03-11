@@ -249,6 +249,104 @@ class PositionMonitor:
             else:
                 self._close_position(pos, "cancelled")
 
+    async def _check_split_pending(self, pos: ManagedPosition) -> None:
+        """Handle split entry (two limit orders) pending state."""
+        now = int(time.time())
+        timeout = (settings.ENTRY_TIMEOUT_QUICK_SECONDS
+                   if pos.setup_type in QUICK_SETUP_TYPES
+                   else settings.ENTRY_TIMEOUT_SECONDS)
+
+        # --- Check entry1 fill ---
+        if not pos.entry1_filled and pos.entry_order_id:
+            order = await self._executor.fetch_order(pos.entry_order_id, pos.pair)
+            if order:
+                status = order.get("status", "")
+                filled_contracts = float(order.get("filled", 0))
+                filled = self._executor.contracts_to_base(pos.pair, filled_contracts)
+                if status == "closed" and filled > 0:
+                    pos.entry1_filled = True
+                    pos.entry1_fill_price = float(order.get("average", 0) or order.get("price", 0))
+                    pos.entry1_fill_size = filled
+                    logger.info(f"Split entry1 filled: {pos.pair} price={pos.entry1_fill_price:.2f} size={filled:.6f}")
+                elif status in ("canceled", "cancelled") and filled <= 0:
+                    if pos.entry2_order_id:
+                        await self._executor.cancel_order(pos.entry2_order_id, pos.pair)
+                    self._close_position(pos, "cancelled")
+                    return
+
+        # --- Check entry2 fill (only after entry1 filled) ---
+        if pos.entry1_filled and not pos.entry2_filled and pos.entry2_order_id:
+            order = await self._executor.fetch_order(pos.entry2_order_id, pos.pair)
+            if order:
+                status = order.get("status", "")
+                filled_contracts = float(order.get("filled", 0))
+                filled = self._executor.contracts_to_base(pos.pair, filled_contracts)
+                if status == "closed" and filled > 0:
+                    pos.entry2_filled = True
+                    pos.entry2_fill_price = float(order.get("average", 0) or order.get("price", 0))
+                    pos.entry2_fill_size = filled
+                    logger.info(f"Split entry2 filled: {pos.pair} price={pos.entry2_fill_price:.2f} size={filled:.6f}")
+
+        # --- Timeout ---
+        if now - pos.created_at >= timeout:
+            if not pos.entry1_filled and pos.entry_order_id:
+                await self._executor.cancel_order(pos.entry_order_id, pos.pair)
+            if not pos.entry2_filled and pos.entry2_order_id:
+                await self._executor.cancel_order(pos.entry2_order_id, pos.pair)
+            if pos.entry1_filled:
+                logger.info(f"Split entry2 timeout: {pos.pair} — activating with entry1 only")
+                pos.actual_entry_price = pos.entry1_fill_price
+                pos.filled_size = pos.entry1_fill_size
+                pos.filled_at = int(time.time())
+                pos.is_split_entry = False
+                await self._on_entry_filled(pos)
+            else:
+                self._record_pending_timeout(pos)
+                self._close_position(pos, "cancelled")
+            return
+
+        # --- Both filled → VWAP consolidation ---
+        if pos.entry1_filled and pos.entry2_filled:
+            total_size = pos.entry1_fill_size + pos.entry2_fill_size
+            vwap = ((pos.entry1_fill_price * pos.entry1_fill_size + pos.entry2_fill_price * pos.entry2_fill_size) / total_size) if total_size > 0 else pos.entry1_fill_price
+            logger.info(f"Split entry VWAP: {pos.pair} e1={pos.entry1_fill_price:.2f}×{pos.entry1_fill_size:.6f} + e2={pos.entry2_fill_price:.2f}×{pos.entry2_fill_size:.6f} → vwap={vwap:.2f} total={total_size:.6f}")
+            await self._cancel_attached_orders(pos)
+            pos.actual_entry_price = vwap
+            pos.filled_size = total_size
+            pos.filled_at = int(time.time())
+            pos.is_split_entry = False
+            await self._on_entry_filled(pos)
+            return
+
+        # --- Entry1 filled, entry2 still pending ---
+        if pos.entry1_filled and not pos.entry2_filled and pos.entry2_order_id:
+            order = await self._executor.fetch_order(pos.entry2_order_id, pos.pair)
+            if order and order.get("status") in ("canceled", "cancelled"):
+                filled_contracts = float(order.get("filled", 0))
+                filled = self._executor.contracts_to_base(pos.pair, filled_contracts)
+                if filled <= 0:
+                    logger.info(f"Split entry2 cancelled: {pos.pair} — activating with entry1 only")
+                    pos.actual_entry_price = pos.entry1_fill_price
+                    pos.filled_size = pos.entry1_fill_size
+                    pos.filled_at = int(time.time())
+                    pos.is_split_entry = False
+                    await self._on_entry_filled(pos)
+
+    async def _cancel_attached_orders(self, pos: ManagedPosition) -> None:
+        """Cancel all pending algo/TP orders for VWAP consolidation."""
+        algos = await self._executor.find_pending_algo_orders(pos.pair)
+        for algo in algos:
+            algo_id = algo.get("algoId", "")
+            if algo_id:
+                await self._executor.cancel_algo_order(algo_id, pos.pair)
+        close_side = "sell" if pos.direction == "long" else "buy"
+        open_orders = await self._executor.fetch_open_orders(pos.pair)
+        for o in open_orders:
+            if o.get("reduceOnly") and o.get("side") == close_side:
+                order_id = o.get("id", "")
+                if order_id:
+                    await self._executor.cancel_order(order_id, pos.pair)
+
     async def _on_entry_filled(self, pos: ManagedPosition) -> None:
         """Entry filled — find attached SL/TP or place manually. If SL fails → emergency close."""
         self._record_pending_filled(pos)

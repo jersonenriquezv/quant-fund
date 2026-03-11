@@ -1,5 +1,5 @@
 # Strategy Service
-> Última actualización: 2026-03-11 (Bugfix: `_failed_obs` inicializado como `set()` en vez de `{}` — dict no tiene `.add()`, causaba crash en `mark_ob_failed()` y loop infinito de SL hit en el monitor.)
+> Última actualización: 2026-03-11 (Expectancy filters ATR+target space, FVG_ENTRY_PCT configurable, backtester execution fidelity: pending replacement, fill modes, execution funnel.)
 > Estado: implementado (completo, integrado en main.py). Audited — 3 CRITICAL fixes applied. Quick Setups C/D/E added. Setups F/G added. HTF campaign setup detection.
 
 ## Qué hace (30 segundos)
@@ -73,6 +73,12 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
 - Cálculo de TP1 (1:1 R:R, breakeven trigger) y TP2 (2:1 R:R, single TP)
 - **R:R simple** — `abs(tp2 - entry) / abs(entry - sl)` ≥ `MIN_RISK_REWARD`
 - **Validación premium/discount** — equilibrium zone permite trades por defecto (`ALLOW_EQUILIBRIUM_TRADES = True`)
+### Expectancy Filters (`_apply_expectancy_filters`)
+
+Post-detection filters aplicados a cada swing setup (A/B/F/G) antes de retornar:
+
+1. **ATR filter** — rechaza si volatilidad (ATR 14 / entry_price) < `MIN_ATR_PCT` (0.25%). Mercados laterales con rango < 0.25% no tienen espacio para que un trade sea rentable.
+2. **Target space filter** — rechaza si el swing high/low (1H/4H) más cercano en dirección del trade está a menos de `MIN_TARGET_SPACE_R` (1.2) veces el riesgo. Si hay resistencia/soporte HTF demasiado cerca del entry, el TP no tiene espacio.
 
 ### `strategy_service/quick_setups.py` — Quick Setups (C, D, E)
 Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan cuando no hay swing setup (A/B).
@@ -138,6 +144,31 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 - `HTF_OB_PROXIMITY_PCT: float = 0.015` — 1.5% (vs 0.3% intraday)
 - `HTF_FVG_MAX_AGE_HOURS: int = 168` — 7 días
 - `HTF_MIN_RISK_DISTANCE_PCT: float = 0.005` — 0.5% (vs 0.2% intraday)
+
+## Backtester — Fidelidad con Ejecución Live
+
+### Pending Replacement (per-pair)
+- `TradeSimulator.pending` es un `dict[str, SimulatedTrade]` keyed por pair (no una lista)
+- Un nuevo setup para el mismo pair reemplaza el pending anterior (igual que `ExecutionService.execute()`)
+- Si el pair ya tiene un trade activo, el nuevo setup es rechazado
+- Trades reemplazados se trackean como `exit_reason="pending_replaced"`
+
+### Fill Model Configurable
+- `--fill-mode optimistic` (default): touch = fill (candle.low ≤ entry para longs)
+- `--fill-mode conservative`: precio debe penetrar entry por `--fill-buffer` (default 0.1%)
+  - Long: `candle.low ≤ entry_price × (1 - buffer)`
+  - Short: `candle.high ≥ entry_price × (1 + buffer)`
+- Settings: `BACKTEST_FILL_MODE`, `BACKTEST_FILL_BUFFER_PCT`
+
+### Execution Funnel
+El report incluye sección EXECUTION FUNNEL con contadores:
+- `pending_created` → `pending_replaced` + `pending_timeout` + `pending_filled`
+- `fill_rate` = filled / created
+- Per-setup breakdown: created, filled, timeout, replaced, fill_rate por setup type
+- JSON output incluye `execution_funnel` y `execution_by_setup`
+
+### Intrabar Approximation
+Active trade management (SL/TP/breakeven/trailing) usa OHLC bars. No se puede determinar el orden de high/low dentro de una candle. SL se checkea antes que TP para coincidir con la prioridad live.
 
 ## AI Calibration en Backtester
 El backtester soporta `--ai` flag para evaluar swing setups con Claude sobre data histórica. Permite medir si el AI filter agrega alpha comparando backtest con/sin AI.

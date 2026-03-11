@@ -39,12 +39,13 @@ def make_setup(
     sl=1960.0,
     tp1=2040.0,
     tp2=2080.0,
+    setup_type="setup_a",
 ) -> TradeSetup:
     return TradeSetup(
         timestamp=int(time.time()),
         pair=pair,
         direction=direction,
-        setup_type="setup_a",
+        setup_type=setup_type,
         entry_price=entry,
         sl_price=sl,
         tp1_price=tp1,
@@ -1118,3 +1119,9 @@ class TestOrphanedTradeReconciliation:
         asyncio.run(service._reconcile_orphaned_trades())
 
         assert mock_postgres.update_trade.call_count == 2
+
+
+# ================================================================
+# Split Entry tests
+# ================================================================
+

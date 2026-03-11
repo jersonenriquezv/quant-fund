@@ -190,13 +190,19 @@ class StrategyService:
             if setup is not None:
                 if setup.setup_type not in settings.ENABLED_SETUPS:
                     logger.debug(f"Setup A detected but disabled (not in ENABLED_SETUPS)")
+                    setup = None
                 else:
-                    logger.info(
-                        f"Setup A found: pair={pair} direction={setup.direction} "
-                        f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
-                        f"tp1={setup.tp1_price:.2f} confluences={setup.confluences}"
-                    )
-                    return setup
+                    reject = self._apply_expectancy_filters(setup, candles_15m, state_4h, state_1h)
+                    if reject:
+                        logger.info(f"Expectancy filter rejected: {setup.pair} {setup.setup_type} — {reject}")
+                        setup = None
+                    else:
+                        logger.info(
+                            f"Setup A found: pair={pair} direction={setup.direction} "
+                            f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
+                            f"tp1={setup.tp1_price:.2f} confluences={setup.confluences}"
+                        )
+                        return setup
 
             setup = self._setups.evaluate_setup_b(
                 structure_state=ltf_state,
@@ -213,13 +219,19 @@ class StrategyService:
             if setup is not None:
                 if setup.setup_type not in settings.ENABLED_SETUPS:
                     logger.debug(f"Setup B detected but disabled (not in ENABLED_SETUPS)")
+                    setup = None
                 else:
-                    logger.info(
-                        f"Setup B found: pair={pair} direction={setup.direction} "
-                        f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
-                        f"tp1={setup.tp1_price:.2f} confluences={setup.confluences}"
-                    )
-                    return setup
+                    reject = self._apply_expectancy_filters(setup, candles_15m, state_4h, state_1h)
+                    if reject:
+                        logger.info(f"Expectancy filter rejected: {setup.pair} {setup.setup_type} — {reject}")
+                        setup = None
+                    else:
+                        logger.info(
+                            f"Setup B found: pair={pair} direction={setup.direction} "
+                            f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
+                            f"tp1={setup.tp1_price:.2f} confluences={setup.confluences}"
+                        )
+                        return setup
 
             # Setup F — Pure OB Retest (BOS + OB, no FVG required)
             setup = self._setups.evaluate_setup_f(
@@ -236,13 +248,19 @@ class StrategyService:
             if setup is not None:
                 if setup.setup_type not in settings.ENABLED_SETUPS:
                     logger.debug(f"Setup F detected but disabled (not in ENABLED_SETUPS)")
+                    setup = None
                 else:
-                    logger.info(
-                        f"Setup F found: pair={pair} direction={setup.direction} "
-                        f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
-                        f"tp1={setup.tp1_price:.2f} confluences={setup.confluences}"
-                    )
-                    return setup
+                    reject = self._apply_expectancy_filters(setup, candles_15m, state_4h, state_1h)
+                    if reject:
+                        logger.info(f"Expectancy filter rejected: {setup.pair} {setup.setup_type} — {reject}")
+                        setup = None
+                    else:
+                        logger.info(
+                            f"Setup F found: pair={pair} direction={setup.direction} "
+                            f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
+                            f"tp1={setup.tp1_price:.2f} confluences={setup.confluences}"
+                        )
+                        return setup
 
             # Setup G — Breaker Block Retest
             breaker_blocks = self._order_blocks.get_breaker_blocks(pair, ltf)
@@ -259,13 +277,19 @@ class StrategyService:
             if setup is not None:
                 if setup.setup_type not in settings.ENABLED_SETUPS:
                     logger.debug(f"Setup G detected but disabled (not in ENABLED_SETUPS)")
+                    setup = None
                 else:
-                    logger.info(
-                        f"Setup G found: pair={pair} direction={setup.direction} "
-                        f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
-                        f"tp1={setup.tp1_price:.2f} confluences={setup.confluences}"
-                    )
-                    return setup
+                    reject = self._apply_expectancy_filters(setup, candles_15m, state_4h, state_1h)
+                    if reject:
+                        logger.info(f"Expectancy filter rejected: {setup.pair} {setup.setup_type} — {reject}")
+                        setup = None
+                    else:
+                        logger.info(
+                            f"Setup G found: pair={pair} direction={setup.direction} "
+                            f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
+                            f"tp1={setup.tp1_price:.2f} confluences={setup.confluences}"
+                        )
+                        return setup
 
         # ============================================================
         # Step 5: Quick setups (C, D, E) — only if no swing setup found
@@ -507,6 +531,63 @@ class StrategyService:
     def get_htf_bias(self, pair: str) -> str:
         """Get the cached HTF bias for a pair."""
         return self._cached_htf_bias.get(pair, "undefined")
+
+    def _apply_expectancy_filters(
+        self, setup: TradeSetup, candles: list[Candle],
+        state_4h, state_1h,
+    ) -> Optional[str]:
+        """Post-detection expectancy filters. Returns reject reason or None."""
+        # ATR volatility filter — reject if market too quiet
+        atr = self._compute_atr(candles, 14)
+        if atr is not None and setup.entry_price > 0:
+            atr_pct = atr / setup.entry_price
+            if atr_pct < settings.MIN_ATR_PCT:
+                return (f"ATR too low: {atr_pct*100:.3f}% "
+                        f"< {settings.MIN_ATR_PCT*100:.3f}%")
+
+        # Target space filter — reject if nearest opposing swing too close
+        risk = abs(setup.entry_price - setup.sl_price)
+        if risk <= 0:
+            return None
+
+        min_space = risk * settings.MIN_TARGET_SPACE_R
+        if setup.direction == "long":
+            highs = [s.price for s in state_4h.swing_highs + state_1h.swing_highs
+                     if s.price > setup.entry_price]
+            if highs:
+                nearest = min(highs)
+                space = nearest - setup.entry_price
+                if space < min_space:
+                    return (f"Target space too tight: {space:.2f} "
+                            f"< {min_space:.2f} (1H/4H swing high at {nearest:.2f})")
+        else:
+            lows = [s.price for s in state_4h.swing_lows + state_1h.swing_lows
+                    if s.price < setup.entry_price]
+            if lows:
+                nearest = max(lows)
+                space = setup.entry_price - nearest
+                if space < min_space:
+                    return (f"Target space too tight: {space:.2f} "
+                            f"< {min_space:.2f} (1H/4H swing low at {nearest:.2f})")
+
+        return None
+
+    @staticmethod
+    def _compute_atr(candles: list[Candle], period: int = 14) -> Optional[float]:
+        """Compute ATR(period) from candles. Returns None if insufficient data."""
+        if len(candles) < period + 1:
+            return None
+        trs = []
+        for i in range(-period, 0):
+            c = candles[i]
+            prev_c = candles[i - 1]
+            tr = max(
+                c.high - c.low,
+                abs(c.high - prev_c.close),
+                abs(c.low - prev_c.close),
+            )
+            trs.append(tr)
+        return sum(trs) / len(trs)
 
     def _determine_htf_bias(self, state_4h, state_1h) -> str:
         """Determine HTF bias from 4H and 1H analysis.

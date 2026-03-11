@@ -170,9 +170,6 @@ class SetupEvaluator:
                          f"({rr:.2f} < {settings.MIN_RISK_REWARD})")
             return None
 
-        # OB 75% depth for split entry
-        entry2_price = self._compute_entry2(best_ob, direction)
-
         return TradeSetup(
             timestamp=int(time.time() * 1000),
             pair=pair,
@@ -185,7 +182,6 @@ class SetupEvaluator:
             confluences=confluences,
             htf_bias=htf_bias,
             ob_timeframe=best_ob.timeframe,
-            entry2_price=entry2_price,
         )
 
     def evaluate_setup_b(
@@ -344,9 +340,6 @@ class SetupEvaluator:
         if rr < settings.MIN_RISK_REWARD:
             return None
 
-        # OB 75% depth for split entry
-        entry2_price = self._compute_entry2(best_ob, direction)
-
         return TradeSetup(
             timestamp=int(time.time() * 1000),
             pair=pair,
@@ -359,7 +352,6 @@ class SetupEvaluator:
             confluences=confluences,
             htf_bias=htf_bias,
             ob_timeframe=best_ob.timeframe,
-            entry2_price=entry2_price,
         )
 
     def evaluate_setup_f(
@@ -469,9 +461,6 @@ class SetupEvaluator:
             logger.debug(f"Setup F [{pair}]: R:R too low ({rr:.2f} < {settings.MIN_RISK_REWARD})")
             return None
 
-        # OB 75% depth for split entry
-        entry2_price = self._compute_entry2(best_ob, direction)
-
         return TradeSetup(
             timestamp=int(time.time() * 1000),
             pair=pair,
@@ -484,7 +473,6 @@ class SetupEvaluator:
             confluences=confluences,
             htf_bias=htf_bias,
             ob_timeframe=best_ob.timeframe,
-            entry2_price=entry2_price,
         )
 
     def evaluate_setup_g(
@@ -801,21 +789,6 @@ class SetupEvaluator:
                 best_idx = i
 
         return best_idx
-
-    def _compute_entry2(self, ob: OrderBlock, direction: str) -> float:
-        """Compute OB 75% depth entry for split entries.
-
-        75% depth = 75% from the approach side into the OB body.
-        Bullish (long): price retraces down → 75% from top = body_low + 0.25 * range
-        Bearish (short): price retraces up → 75% from bottom = body_high - 0.25 * range
-        """
-        body_range = ob.body_high - ob.body_low
-        if body_range <= 0:
-            return ob.entry_price  # Fallback to 50% if body is zero-width
-        if direction == "bullish":
-            return ob.body_low + body_range * 0.25
-        else:
-            return ob.body_high - body_range * 0.25
 
     def _calculate_sl(self, ob: OrderBlock, direction: str) -> float:
         """Calculate stop loss — below/above entire OB (wick-to-wick)."""

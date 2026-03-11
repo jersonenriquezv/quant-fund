@@ -16,7 +16,8 @@ from unittest.mock import patch
 from shared.models import Candle, TradeSetup
 from config.settings import settings
 from scripts.backtest import (
-    TradeSimulator, SimulatedTrade, compute_metrics, _compute_max_drawdown,
+    TradeSimulator, SimulatedTrade, BacktestMetrics,
+    compute_metrics, _compute_max_drawdown,
 )
 
 
@@ -408,7 +409,7 @@ class TestPositionSizing:
         candle0 = _candle(timestamp=1000000)
 
         sim.on_setup(setup, candle0)
-        trade = sim.pending[0]
+        trade = sim.pending["BTC/USDT"]
 
         expected_size = (10000 * 0.02) / 500  # 0.4
         assert trade.position_size == pytest.approx(expected_size, rel=0.01)
@@ -425,7 +426,7 @@ class TestPositionSizing:
         candle0 = _candle(timestamp=1000000)
 
         sim.on_setup(setup, candle0)
-        trade = sim.pending[0]
+        trade = sim.pending["BTC/USDT"]
 
         assert trade.leverage == pytest.approx(settings.MAX_LEVERAGE)
         expected_size = (1000 * settings.MAX_LEVERAGE) / 50000
@@ -436,13 +437,16 @@ class TestPositionSizing:
         sim = TradeSimulator(initial_capital=10000)
         candle0 = _candle(timestamp=1000000)
 
+        # Use different pairs to avoid pending replacement
+        pairs = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "DOGE/USDT", "XRP/USDT"]
         for i in range(settings.MAX_OPEN_POSITIONS):
-            setup = _setup(entry=49500 - i * 100, sl=49000 - i * 100,
-                           timestamp=1000000 + i)
+            setup = _setup(pair=pairs[i], entry=49500 - i * 100,
+                           sl=49000 - i * 100, timestamp=1000000 + i)
             assert sim.on_setup(setup, candle0) is True
 
-        # Next one should be rejected
-        extra = _setup(entry=48000, sl=47500, timestamp=1000000 + 100)
+        # Next one should be rejected (different pair)
+        extra = _setup(pair=pairs[settings.MAX_OPEN_POSITIONS],
+                       entry=48000, sl=47500, timestamp=1000000 + 100)
         assert sim.on_setup(extra, candle0) is False
 
 
@@ -575,3 +579,255 @@ class TestShortTrades:
         assert trades[0].exit_reason == "breakeven_sl"
         # Raw PnL=0, but fees ~$20.20 are deducted
         assert trades[0].pnl_usd == pytest.approx(-20.2, abs=1.0)
+
+
+# ================================================================
+# Pending replacement tests
+# ================================================================
+
+class TestPendingReplacement:
+    def test_same_pair_replaces_pending(self):
+        """New setup for same pair replaces existing pending entry."""
+        sim = TradeSimulator(initial_capital=10000)
+        candle0 = _candle(timestamp=1000000)
+
+        setup1 = _setup(pair="BTC/USDT", direction="long", entry=49500,
+                        sl=49000, tp1=50000, tp2=50500, timestamp=1000000)
+        sim.on_setup(setup1, candle0)
+        assert len(sim.pending) == 1
+        assert "BTC/USDT" in sim.pending
+        assert sim.pending["BTC/USDT"].entry_price == 49500
+
+        # New setup replaces old
+        setup2 = _setup(pair="BTC/USDT", direction="long", entry=49300,
+                        sl=48800, tp1=49800, tp2=50300, timestamp=2000000)
+        candle1 = _candle(timestamp=2000000)
+        sim.on_setup(setup2, candle1)
+
+        assert len(sim.pending) == 1
+        assert sim.pending["BTC/USDT"].entry_price == 49300
+        # Old one tracked as replaced
+        replaced = [t for t in sim.closed if t.exit_reason == "pending_replaced"]
+        assert len(replaced) == 1
+        assert replaced[0].entry_price == 49500
+
+    def test_different_pair_keeps_both(self):
+        """Different pair creates second pending, no replacement."""
+        sim = TradeSimulator(initial_capital=10000)
+        candle0 = _candle(timestamp=1000000)
+
+        setup_btc = _setup(pair="BTC/USDT", entry=49500, timestamp=1000000)
+        setup_eth = _setup(pair="ETH/USDT", entry=3400, sl=3300,
+                           tp1=3500, tp2=3600, timestamp=1000000)
+        sim.on_setup(setup_btc, candle0)
+        sim.on_setup(setup_eth, candle0)
+
+        assert len(sim.pending) == 2
+        assert "BTC/USDT" in sim.pending
+        assert "ETH/USDT" in sim.pending
+        assert sim._pending_replaced == 0
+
+    def test_active_pair_blocks_new_setup(self):
+        """Cannot open new entry for pair with active trade."""
+        sim = TradeSimulator(initial_capital=10000)
+        candle0 = _candle(timestamp=1000000)
+
+        setup1 = _setup(pair="BTC/USDT", entry=49500, timestamp=1000000)
+        sim.on_setup(setup1, candle0)
+
+        # Fill the entry
+        candle1 = _candle(timestamp=2000000, low=49400)
+        sim.on_candle(candle1)
+        assert len(sim.active) == 1
+
+        # New setup for same pair should be rejected
+        setup2 = _setup(pair="BTC/USDT", entry=49200, sl=48700,
+                        tp1=49700, tp2=50200, timestamp=3000000)
+        candle2 = _candle(timestamp=3000000)
+        result = sim.on_setup(setup2, candle2)
+        assert result is False
+        assert "Active position exists for pair" in sim.risk_rejections
+
+    def test_replacement_counters(self):
+        """Pending replacement increments correct counters."""
+        sim = TradeSimulator(initial_capital=10000)
+        candle0 = _candle(timestamp=1000000)
+
+        # Create and replace twice
+        for i, entry in enumerate([49500, 49400, 49300]):
+            setup = _setup(pair="BTC/USDT", entry=entry,
+                           sl=entry - 500, tp1=entry + 500,
+                           tp2=entry + 1000,
+                           timestamp=1000000 + i * 1000000)
+            c = _candle(timestamp=1000000 + i * 1000000)
+            sim.on_setup(setup, c)
+
+        assert sim._pending_created == 3
+        assert sim._pending_replaced == 2
+        assert len(sim.pending) == 1
+
+
+# ================================================================
+# Fill mode tests
+# ================================================================
+
+class TestFillModes:
+    def test_optimistic_fills_on_touch(self):
+        """Optimistic mode: long fills when low == entry price."""
+        sim = TradeSimulator(initial_capital=10000, fill_mode="optimistic")
+        setup = _setup(direction="long", entry=49500)
+        candle0 = _candle(timestamp=1000000)
+        sim.on_setup(setup, candle0)
+
+        candle1 = _candle(timestamp=2000000, low=49500, high=50000)
+        sim.on_candle(candle1)
+        assert len(sim.active) == 1
+
+    def test_conservative_rejects_touch(self):
+        """Conservative mode: long does NOT fill when low == entry (no penetration)."""
+        sim = TradeSimulator(initial_capital=10000, fill_mode="conservative",
+                             fill_buffer_pct=0.001)
+        setup = _setup(direction="long", entry=49500)
+        candle0 = _candle(timestamp=1000000)
+        sim.on_setup(setup, candle0)
+
+        # Low exactly at entry — not enough penetration
+        candle1 = _candle(timestamp=2000000, low=49500, high=50000)
+        sim.on_candle(candle1)
+        assert len(sim.pending) == 1
+        assert len(sim.active) == 0
+
+    def test_conservative_fills_with_buffer(self):
+        """Conservative mode: long fills when low penetrates entry by buffer."""
+        sim = TradeSimulator(initial_capital=10000, fill_mode="conservative",
+                             fill_buffer_pct=0.001)  # 0.1% buffer
+        setup = _setup(direction="long", entry=49500)
+        candle0 = _candle(timestamp=1000000)
+        sim.on_setup(setup, candle0)
+
+        # Buffer = 49500 * 0.001 = 49.5 → must go below 49450.5
+        candle1 = _candle(timestamp=2000000, low=49440, high=50000)
+        sim.on_candle(candle1)
+        assert len(sim.active) == 1
+
+    def test_conservative_short_rejects_touch(self):
+        """Conservative mode: short does NOT fill when high == entry."""
+        sim = TradeSimulator(initial_capital=10000, fill_mode="conservative",
+                             fill_buffer_pct=0.001)
+        setup = _setup(direction="short", entry=50500, sl=51000,
+                       tp1=50000, tp2=49500)
+        candle0 = _candle(timestamp=1000000)
+        sim.on_setup(setup, candle0)
+
+        candle1 = _candle(timestamp=2000000, high=50500, low=50000)
+        sim.on_candle(candle1)
+        assert len(sim.pending) == 1
+
+    def test_conservative_short_fills_with_buffer(self):
+        """Conservative mode: short fills when high penetrates entry by buffer."""
+        sim = TradeSimulator(initial_capital=10000, fill_mode="conservative",
+                             fill_buffer_pct=0.001)
+        setup = _setup(direction="short", entry=50500, sl=51000,
+                       tp1=50000, tp2=49500)
+        candle0 = _candle(timestamp=1000000)
+        sim.on_setup(setup, candle0)
+
+        # Buffer = 50500 * 0.001 = 50.5 → must go above 50550.5
+        candle1 = _candle(timestamp=2000000, high=50560, low=50000)
+        sim.on_candle(candle1)
+        assert len(sim.active) == 1
+
+
+# ================================================================
+# Execution funnel tests
+# ================================================================
+
+class TestExecutionFunnel:
+    def test_funnel_counters_full_lifecycle(self):
+        """Created → filled → closed updates all funnel counters."""
+        sim = TradeSimulator(initial_capital=10000)
+        setup = _setup(direction="long", entry=49500, timestamp=1000000)
+        candle0 = _candle(timestamp=1000000)
+        sim.on_setup(setup, candle0)
+
+        # Fill
+        candle1 = _candle(timestamp=2000000, low=49400)
+        sim.on_candle(candle1)
+
+        # SL hit
+        candle2 = _candle(timestamp=3000000, low=48900)
+        sim.on_candle(candle2)
+
+        assert sim._pending_created == 1
+        assert sim._pending_filled == 1
+        assert sim._pending_timeout == 0
+        assert sim._pending_replaced == 0
+        assert len(sim.get_closed_trades()) == 1
+
+    @patch("scripts.backtest.settings")
+    def test_funnel_timeout_counter(self, mock_settings):
+        """Timeout increments pending_timeout counter."""
+        mock_settings.ENTRY_TIMEOUT_SECONDS = 3600
+        mock_settings.ENTRY_TIMEOUT_QUICK_SECONDS = 1800
+        mock_settings.MAX_OPEN_POSITIONS = 5
+        mock_settings.RISK_PER_TRADE = 0.02
+        mock_settings.MAX_LEVERAGE = 5
+        mock_settings.MIN_RISK_DISTANCE_PCT = 0.001
+        mock_settings.MIN_RISK_REWARD = 1.5
+        mock_settings.MIN_RISK_REWARD_QUICK = 1.0
+        mock_settings.COOLDOWN_MINUTES = 0
+        mock_settings.MAX_TRADES_PER_DAY = 100
+        mock_settings.MAX_DAILY_DRAWDOWN = 0.10
+        mock_settings.MAX_WEEKLY_DRAWDOWN = 0.20
+        mock_settings.TRADING_FEE_RATE = 0.0005
+        mock_settings.MAX_TRADE_DURATION_SECONDS = 43200
+        mock_settings.MAX_TRADE_DURATION_QUICK = 14400
+
+        sim = TradeSimulator(initial_capital=10000)
+        setup = _setup(direction="long", entry=49500, timestamp=1000000)
+        candle0 = _candle(timestamp=1000000)
+        sim.on_setup(setup, candle0)
+
+        # Timeout
+        candle_late = _candle(timestamp=1000000 + 3600 * 1000 + 1, low=49600)
+        sim.on_candle(candle_late)
+
+        assert sim._pending_timeout == 1
+        assert sim._pending_filled == 0
+
+    def test_per_setup_tracking(self):
+        """Execution counters track per setup type."""
+        sim = TradeSimulator(initial_capital=10000)
+        candle0 = _candle(timestamp=1000000)
+
+        setup_a = _setup(setup_type="setup_a", entry=49500, timestamp=1000000)
+        setup_b = _setup(setup_type="setup_b", pair="ETH/USDT",
+                         entry=3400, sl=3300, tp1=3500, tp2=3600,
+                         timestamp=1000000)
+        sim.on_setup(setup_a, candle0)
+        sim.on_setup(setup_b, candle0)
+
+        assert sim._exec_by_setup["setup_a"]["created"] == 1
+        assert sim._exec_by_setup["setup_b"]["created"] == 1
+
+    def test_compute_metrics_includes_funnel(self):
+        """compute_metrics populates execution funnel fields."""
+        sim = TradeSimulator(initial_capital=10000)
+        setup = _setup(direction="long", entry=49500, timestamp=1000000)
+        candle0 = _candle(timestamp=1000000)
+        sim.on_setup(setup, candle0)
+
+        # Fill
+        candle1 = _candle(timestamp=2000000, low=49400)
+        sim.on_candle(candle1)
+
+        # TP hit
+        candle2 = _candle(timestamp=3000000, high=50600)
+        sim.on_candle(candle2)
+
+        m = compute_metrics(sim, period_days=30)
+        assert m.pending_created == 1
+        assert m.pending_filled == 1
+        assert m.fill_rate == pytest.approx(1.0)
+        assert "setup_a" in m.execution_by_setup
+        assert m.execution_by_setup["setup_a"]["fill_rate"] == pytest.approx(1.0)

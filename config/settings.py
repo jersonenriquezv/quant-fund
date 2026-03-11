@@ -115,6 +115,12 @@ class Settings:
     # Deducted from PnL: total_fees = (entry_notional + exit_notional) * rate
     TRADING_FEE_RATE: float = float(os.getenv("TRADING_FEE_RATE", "0.0005"))
 
+    # Backtest fill model
+    # "optimistic" = touch entry price = fill (current behavior)
+    # "conservative" = price must penetrate beyond entry by FILL_BUFFER_PCT
+    BACKTEST_FILL_MODE: str = os.getenv("BACKTEST_FILL_MODE", "optimistic")
+    BACKTEST_FILL_BUFFER_PCT: float = float(os.getenv("BACKTEST_FILL_BUFFER_PCT", "0.001"))
+
     # Maximum entry slippage before closing position immediately.
     # 0.003 = 0.3% → ETH@$2000: max $6 slippage. BTC@$70K: max $210.
     # Skipped in sandbox mode (synthetic fills).

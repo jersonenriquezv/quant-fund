@@ -6,9 +6,10 @@ Loads candles from PostgreSQL, replays candle-by-candle, detects setups via
 StrategyService, simulates entry/SL/TP fills, and produces performance metrics.
 
 Usage:
-    python scripts/backtest.py --days 60 --profile aggressive
+    python scripts/backtest.py --days 60
     python scripts/backtest.py --days 90 --capital 10000
-    python scripts/backtest.py --pair BTC/USDT --profile aggressive --verbose
+    python scripts/backtest.py --pair BTC/USDT --verbose
+    python scripts/backtest.py --days 60 --fill-mode conservative --fill-buffer 0.001
     python scripts/backtest.py --days 60 --csv
 """
 
@@ -311,16 +312,32 @@ class TradeSimulator:
     Applies the same risk guardrails as the live RiskService:
     min_risk_distance, R:R check, cooldown, max_trades_per_day,
     daily/weekly drawdown limits.
+
+    Pending entries are stored per-pair (dict), matching live ExecutionService
+    behavior where a new setup replaces the existing pending for the same pair.
     """
 
-    def __init__(self, initial_capital: float):
+    def __init__(self, initial_capital: float,
+                 fill_mode: str = "optimistic",
+                 fill_buffer_pct: float = 0.001):
         self.initial_capital: float = initial_capital
         self.equity: float = initial_capital
-        self.pending: list[SimulatedTrade] = []
+        self.pending: dict[str, SimulatedTrade] = {}   # keyed by pair
         self.active: list[SimulatedTrade] = []
         self.closed: list[SimulatedTrade] = []
         # (timestamp_ms, equity) — for drawdown calculation
         self.equity_curve: list[tuple[int, float]] = [(0, initial_capital)]
+
+        # Fill model: "optimistic" (touch=fill) or "conservative" (penetrate by buffer)
+        self.fill_mode: str = fill_mode
+        self.fill_buffer_pct: float = fill_buffer_pct
+
+        # Execution funnel counters
+        self._pending_created: int = 0
+        self._pending_replaced: int = 0
+        self._pending_timeout: int = 0
+        self._pending_filled: int = 0
+        self._exec_by_setup: dict[str, dict[str, int]] = {}
 
         # Risk state tracking (mirrors RiskStateTracker)
         self._last_loss_time_ms: int | None = None
@@ -336,6 +353,14 @@ class TradeSimulator:
         key = reason.split(":")[0].split("(")[0].strip()
         self.risk_rejections[key] = self.risk_rejections.get(key, 0) + 1
         return False
+
+    def _track_exec(self, setup_type: str, event: str) -> None:
+        """Increment per-setup execution funnel counter."""
+        if setup_type not in self._exec_by_setup:
+            self._exec_by_setup[setup_type] = {
+                "created": 0, "replaced": 0, "timeout": 0, "filled": 0,
+            }
+        self._exec_by_setup[setup_type][event] += 1
 
     def _update_day_week(self, ts_ms: int) -> None:
         """Reset daily/weekly counters on new day/week."""
@@ -353,13 +378,27 @@ class TradeSimulator:
             self._current_week = week_num
 
     def on_setup(self, setup: TradeSetup, candle: Candle) -> bool:
-        """Accept a new setup. Returns True if trade was created."""
+        """Accept a new setup. Returns True if trade was created.
+
+        Matches live ExecutionService behavior:
+        - Only one pending entry per pair (new replaces old)
+        - Rejects if pair already has an active trade
+        """
         self._update_day_week(candle.timestamp)
+
+        # --- Matching live ExecutionService ---
+
+        # Skip if pair already has an active trade
+        if any(t.pair == setup.pair for t in self.active):
+            return self._reject("Active position exists for pair")
 
         # --- Risk guardrails (same as live RiskService) ---
 
-        # Max open positions
+        # Max open positions (don't count the pending we're about to replace)
+        is_replacement = setup.pair in self.pending
         open_count = len(self.pending) + len(self.active)
+        if is_replacement:
+            open_count -= 1
         if open_count >= settings.MAX_OPEN_POSITIONS:
             return self._reject("Max open positions")
 
@@ -426,6 +465,16 @@ class TradeSimulator:
 
         self._trades_today += 1
 
+        # Replace old pending for same pair if exists (matches live behavior)
+        if is_replacement:
+            old = self.pending.pop(setup.pair)
+            old.phase = "closed"
+            old.exit_reason = "pending_replaced"
+            old.close_time_ms = candle.timestamp
+            self.closed.append(old)
+            self._pending_replaced += 1
+            self._track_exec(old.setup_type, "replaced")
+
         trade = SimulatedTrade(
             pair=setup.pair,
             direction=setup.direction,
@@ -440,7 +489,9 @@ class TradeSimulator:
             setup_time_ms=candle.timestamp,
             entry_deadline_ms=candle.timestamp + timeout_ms,
         )
-        self.pending.append(trade)
+        self.pending[setup.pair] = trade
+        self._pending_created += 1
+        self._track_exec(setup.setup_type, "created")
         return True
 
     def on_candle(self, candle: Candle) -> None:
@@ -448,12 +499,30 @@ class TradeSimulator:
         self._process_pending(candle)
         self._process_active(candle)
 
+    def _check_entry_fill(self, trade: SimulatedTrade, candle: Candle) -> bool:
+        """Check if a pending entry would fill on this candle.
+
+        Optimistic mode: touch = fill (price reaches entry level).
+        Conservative mode: price must penetrate beyond entry by buffer,
+        simulating that a limit order needs the market to move through it.
+        """
+        if self.fill_mode == "conservative":
+            buffer = trade.entry_price * self.fill_buffer_pct
+            if trade.direction == "long":
+                return candle.low <= (trade.entry_price - buffer)
+            else:
+                return candle.high >= (trade.entry_price + buffer)
+        else:  # optimistic
+            if trade.direction == "long":
+                return candle.low <= trade.entry_price
+            else:
+                return candle.high >= trade.entry_price
+
     def _process_pending(self, candle: Candle) -> None:
         """Check if pending entries fill or expire."""
-        still_pending = []
-        for trade in self.pending:
-            if trade.pair != candle.pair:
-                still_pending.append(trade)
+        to_remove: list[str] = []
+        for pair, trade in self.pending.items():
+            if pair != candle.pair:
                 continue
 
             # Entry timeout
@@ -462,25 +531,22 @@ class TradeSimulator:
                 trade.exit_reason = "entry_timeout"
                 trade.close_time_ms = candle.timestamp
                 self.closed.append(trade)
+                self._pending_timeout += 1
+                self._track_exec(trade.setup_type, "timeout")
+                to_remove.append(pair)
                 continue
 
             # Entry fill check
-            filled = False
-            if trade.direction == "long":
-                # Buy limit: fills when price drops to entry
-                filled = candle.low <= trade.entry_price
-            else:
-                # Sell limit: fills when price rises to entry
-                filled = candle.high >= trade.entry_price
-
-            if filled:
+            if self._check_entry_fill(trade, candle):
                 trade.phase = "active"
                 trade.entry_time_ms = candle.timestamp
                 self.active.append(trade)
-            else:
-                still_pending.append(trade)
+                self._pending_filled += 1
+                self._track_exec(trade.setup_type, "filled")
+                to_remove.append(pair)
 
-        self.pending = still_pending
+        for pair in to_remove:
+            del self.pending[pair]
 
     def _process_active(self, candle: Candle) -> None:
         """Check SL, TP, breakeven, trailing, and timeout for active trades.
@@ -589,8 +655,9 @@ class TradeSimulator:
             self._last_loss_time_ms = trade.close_time_ms
 
     def get_closed_trades(self) -> list[SimulatedTrade]:
-        """Return all closed trades (excludes entry_timeout)."""
-        return [t for t in self.closed if t.exit_reason != "entry_timeout"]
+        """Return all closed trades (excludes entry_timeout and pending_replaced)."""
+        return [t for t in self.closed
+                if t.exit_reason not in ("entry_timeout", "pending_replaced")]
 
     def get_all_closed(self) -> list[SimulatedTrade]:
         """Return all closed trades including entry timeouts."""
@@ -622,6 +689,12 @@ class BacktestMetrics:
     by_direction: dict = field(default_factory=dict)
     exit_reasons: dict = field(default_factory=dict)
     entry_timeouts: int = 0
+    # Execution funnel
+    pending_created: int = 0
+    pending_replaced: int = 0
+    pending_filled: int = 0
+    fill_rate: float = 0.0
+    execution_by_setup: dict = field(default_factory=dict)
 
 
 def compute_metrics(simulator: TradeSimulator, period_days: float) -> BacktestMetrics:
@@ -631,7 +704,19 @@ def compute_metrics(simulator: TradeSimulator, period_days: float) -> BacktestMe
     all_closed = simulator.get_all_closed()
 
     m.total_trades = len(trades)
-    m.entry_timeouts = len(all_closed) - len(trades)
+    m.entry_timeouts = sum(1 for t in all_closed if t.exit_reason == "entry_timeout")
+
+    # Execution funnel from simulator counters
+    m.pending_created = simulator._pending_created
+    m.pending_replaced = simulator._pending_replaced
+    m.pending_filled = simulator._pending_filled
+    m.fill_rate = m.pending_filled / m.pending_created if m.pending_created > 0 else 0.0
+    for stype, counts in simulator._exec_by_setup.items():
+        created = counts["created"]
+        m.execution_by_setup[stype] = {
+            **counts,
+            "fill_rate": counts["filled"] / created if created > 0 else 0.0,
+        }
 
     if not trades:
         return m
@@ -768,7 +853,7 @@ def print_report(m: BacktestMetrics, simulator: TradeSimulator,
     """Print full backtest report to console."""
     print()
     print("=" * 70)
-    print("BACKTEST RESULTS")
+    print(f"BACKTEST RESULTS  (fill_mode={simulator.fill_mode})")
     print("=" * 70)
 
     # -- Setup detection --
@@ -824,7 +909,33 @@ def print_report(m: BacktestMetrics, simulator: TradeSimulator,
                 avg_conf = sum(d["confidence"] for d in approved_decisions) / len(approved_decisions)
                 print(f"  Avg confidence (approved): {avg_conf:.2f}")
 
+    # -- Execution funnel --
+    if m.pending_created > 0:
+        print(f"\n{'='*70}")
+        print(f"EXECUTION FUNNEL")
+        print(f"{'='*70}")
+        print(f"  Setups detected:     {setups_found}")
+        if ai_stats is not None:
+            ai_approved = ai_stats.get("ai_approved", 0) + ai_stats.get("ai_quick_bypass", 0)
+            print(f"  AI approved:         {ai_approved}")
+        print(f"  Risk approved:       {m.pending_created}")
+        print(f"  Pending replaced:    {m.pending_replaced}")
+        print(f"  Entry timeouts:      {m.entry_timeouts}")
+        print(f"  Entries filled:      {m.pending_filled}")
+        print(f"  Fill rate:           {m.fill_rate*100:.1f}%")
+
+        if m.execution_by_setup:
+            print(f"\n  Per-setup execution:")
+            for stype, stats in sorted(m.execution_by_setup.items()):
+                print(f"    {stype:<12} created={stats['created']:<4} "
+                      f"filled={stats['filled']:<4} timeout={stats['timeout']:<4} "
+                      f"replaced={stats['replaced']:<4} "
+                      f"fill_rate={stats['fill_rate']*100:5.1f}%")
+
     # -- Trade simulation --
+    # Note: active-trade management (SL/TP/breakeven/trailing) uses OHLC bars.
+    # This is an intrabar approximation — we cannot determine the order of
+    # high/low within a candle. SL is checked before TP to match live priority.
     trades = simulator.get_closed_trades()
     print(f"\n{'='*70}")
     print(f"TRADE SIMULATION")
@@ -992,6 +1103,14 @@ def save_results_json(m: BacktestMetrics, period_days: float,
         "entry_timeouts": m.entry_timeouts,
         "setups_found": setups_found,
         "setups_deduped": setups_deduped,
+        "execution_funnel": {
+            "pending_created": m.pending_created,
+            "pending_replaced": m.pending_replaced,
+            "pending_filled": m.pending_filled,
+            "entry_timeouts": m.entry_timeouts,
+            "fill_rate": round(m.fill_rate * 100, 1),
+        },
+        "execution_by_setup": m.execution_by_setup,
     }
 
     # Add AI calibration data if present
@@ -1036,7 +1155,9 @@ def save_results_json(m: BacktestMetrics, period_days: float,
 def run_backtest(pairs: list[str] | None = None, verbose: bool = False,
                  warmup: int = 50,
                  capital: float = 10000.0, export: bool = False,
-                 days: int | None = None, ai_enabled: bool = False):
+                 days: int | None = None, ai_enabled: bool = False,
+                 fill_mode: str | None = None,
+                 fill_buffer_pct: float | None = None):
     from config.settings import settings
 
     if pairs is None:
@@ -1086,7 +1207,10 @@ def run_backtest(pairs: list[str] | None = None, verbose: bool = False,
     )
 
     clock = SimulatedClock()
-    simulator = TradeSimulator(initial_capital=capital)
+    fm = fill_mode or settings.BACKTEST_FILL_MODE
+    fb = fill_buffer_pct if fill_buffer_pct is not None else settings.BACKTEST_FILL_BUFFER_PCT
+    simulator = TradeSimulator(initial_capital=capital, fill_mode=fm,
+                               fill_buffer_pct=fb)
     setups_count = 0
     setups_deduped = 0
     total_evaluated = 0
@@ -1300,6 +1424,11 @@ def main():
                         help="Export results to CSV file")
     parser.add_argument("--ai", action="store_true",
                         help="Enable Claude AI evaluation on swing setups")
+    parser.add_argument("--fill-mode", choices=["optimistic", "conservative"],
+                        default=None,
+                        help="Fill model: optimistic (touch=fill) or conservative (penetrate by buffer)")
+    parser.add_argument("--fill-buffer", type=float, default=None,
+                        help="Fill buffer %% for conservative mode (default: 0.001 = 0.1%%)")
     args = parser.parse_args()
 
     pairs = [args.pair] if args.pair else None
@@ -1311,6 +1440,8 @@ def main():
         days=args.days,
         export=args.csv,
         ai_enabled=args.ai,
+        fill_mode=args.fill_mode,
+        fill_buffer_pct=args.fill_buffer,
     )
 
 
