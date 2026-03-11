@@ -1,5 +1,5 @@
 # Data Service
-> Last updated: 2026-03-11
+> Last updated: 2026-03-11 (news headlines switched from CryptoPanic to CryptoCompare — free, no API key)
 > Status: implemented (complete, running in Docker). Audited — 4 CRITICAL fixes applied. Whale tracking with USD enrichment, 3-tier Telegram notifications, new whale wallets (Trump, Jump Trading, a16z, FTX/Alameda, UK Gov BTC). News sentiment (Fear & Greed + headlines) as new data layer. HTF campaigns: 1D candle support + campaigns table.
 
 ## What it does (30 seconds)
@@ -23,7 +23,7 @@ Without real-time market data, the Strategy Service has nothing to analyze. With
 | Etherscan REST | ETH whale movements | Transaction polling, 5 calls/sec limit | Every 5 minutes |
 | mempool.space REST | BTC whale movements | UTXO transaction polling, no API key | Every 5 minutes |
 | alternative.me REST | Fear & Greed Index | `GET /fng/?limit=1`, no API key | Every 5 minutes (cached 30min) |
-| CryptoPanic REST | Crypto news headlines | `GET /api/free/v1/posts/?currencies=BTC,ETH&filter=hot&kind=news`, requires API key (free tier) | Every 5 minutes (cached 5min) |
+| CryptoCompare REST | Crypto news headlines | `GET /data/v2/news/?lang=EN&categories={BTC,ETH}`, free, no API key | Every 5 minutes (cached 5min) |
 
 ### Pipeline Flow
 ```
@@ -52,7 +52,7 @@ All 5 layers run in the same Python process. The Data Service exposes methods th
 - **CVDSnapshot** — cumulative volume delta for 5m, 15m, 1h windows + buy/sell volume
 - **LiquidationEvent** — from OI proxy (OI drop >2% = cascade), with side and size_usd
 - **WhaleMovement** — Whale transfers (ETH via Etherscan, BTC via mempool.space). 4 action types: `exchange_deposit` (bearish), `exchange_withdrawal` (bullish), `transfer_out` (neutral), `transfer_in` (neutral). Fields: `amount` (ETH or BTC), `chain` ("ETH" or "BTC"), `exchange` (exchange name or truncated address), `wallet_label` (human-readable name from settings, e.g., "Vitalik Buterin"), `amount_usd` (USD value at detection time), `market_price` (asset price in USD when detected). USD fields default to 0.0 if price provider unavailable.
-- **NewsHeadline** — single news headline (title, source, timestamp, category, sentiment). Sentiment is optional ("bullish"/"bearish"/None) from CryptoPanic community votes.
+- **NewsHeadline** — single news headline (title, source, timestamp, category, sentiment). Sentiment is optional ("bullish"/"bearish"/None) derived from CryptoCompare community votes (upvotes vs downvotes).
 - **NewsSentiment** — Fear & Greed score (0-100) + label + recent headlines + fetched_at
 - **MarketSnapshot** — wraps funding, OI, CVD, liquidations, whales, news_sentiment for a pair
 - **TradeSetup** — detected setup from Strategy Service
@@ -160,16 +160,17 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Class: `NewsClient(redis_store=None)`
 - Two data sources:
   - **alternative.me** — Fear & Greed Index (0-100 score, free, no API key, running since 2018)
-  - **CryptoPanic** — Trending crypto news headlines (free tier, requires API key from cryptopanic.com). Aggregates 50+ sources, filters by `hot` (trending) + `kind=news`. Community votes provide per-headline sentiment (bullish/bearish) on paid tier.
+  - **CryptoCompare** — News headlines (free, no API key required). Endpoint: `https://min-api.cryptocompare.com/data/v2/news/`. Filters by asset category (BTC, ETH). Community votes (upvotes/downvotes) provide per-headline sentiment (bullish/bearish/None).
 - Methods:
   - `fetch_fear_greed()` → `tuple[int, str] | None` — score + label ("Extreme Fear", "Fear", "Neutral", "Greed", "Extreme Greed")
-  - `fetch_headlines(asset, limit=5)` → `list[NewsHeadline]` — trending headlines for BTC or ETH. Returns empty if `CRYPTOPANIC_API_KEY` not set.
+  - `fetch_headlines(asset, limit=5)` → `list[NewsHeadline]` — recent headlines for BTC or ETH from CryptoCompare. Free API, always available (no key needed).
   - `fetch_sentiment()` → `NewsSentiment | None` — combines F&G + headlines (BTC 3 + ETH 2)
+- Sentiment derivation: `_extract_sentiment(upvotes, downvotes)` — more upvotes = "bullish", more downvotes = "bearish", tied or no votes = None.
 - Redis caching via `set_bot_state`/`get_bot_state`:
   - `news:fear_greed` — TTL 30min (`NEWS_FEAR_GREED_CACHE_TTL`)
   - `news:headlines:{asset}` — TTL 5min (`NEWS_HEADLINES_CACHE_TTL`)
 - HTTP via `aiohttp` with 15s timeout, `User-Agent: QuantFundBot/1.0`
-- Graceful degradation: F&G failure → `None` (pre-filter skipped). Headlines failure or no API key → empty list (Claude context omitted).
+- Graceful degradation: F&G failure → `None` (pre-filter skipped). Headlines failure → empty list (Claude context omitted).
 - `close()` shuts down aiohttp session
 
 ### `data_service/data_store.py` — Redis + PostgreSQL
@@ -244,11 +245,11 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 | `RECONNECT_BACKOFF_FACTOR` | `2.0` | Backoff multiplier |
 | `NEWS_SENTIMENT_ENABLED` | `True` | Enable/disable news sentiment fetching |
 | `NEWS_FEAR_GREED_URL` | `https://api.alternative.me/fng/` | Fear & Greed API endpoint |
-| `CRYPTOPANIC_API_KEY` | `""` (env) | CryptoPanic API key (free registration at cryptopanic.com) |
+| `NEWS_HEADLINES_URL` | `https://min-api.cryptocompare.com/data/v2/news/` | CryptoCompare news API endpoint (free, no key) |
 | `NEWS_POLL_INTERVAL` | `300` (5min) | News sentiment polling interval |
 | `NEWS_FEAR_GREED_CACHE_TTL` | `1800` (30min) | Redis cache TTL for F&G score |
 | `NEWS_HEADLINES_CACHE_TTL` | `300` (5min) | Redis cache TTL for headlines |
-| `NEWS_EXTREME_FEAR_THRESHOLD` | `15` | F&G < 15 → reject longs (pre-filter) |
+| `NEWS_EXTREME_FEAR_THRESHOLD` | `5` | F&G < 5 → reject longs (only systemic crashes) |
 | `NEWS_EXTREME_GREED_THRESHOLD` | `85` | F&G > 85 → reject shorts (pre-filter) |
 
 ## FAQ

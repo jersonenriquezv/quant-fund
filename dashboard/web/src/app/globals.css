@@ -440,6 +440,55 @@ tr:hover td {
   background: linear-gradient(135deg, rgba(239, 68, 68, 0.04) 0%, transparent 60%);
 }
 
+/* ── News panel ── */
+.news-panel { grid-column: 1 / -1; }
+
+.news-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 6px;
+}
+
+.news-item {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border);
+  transition: background 0.2s;
+}
+
+.news-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.news-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  font-size: 10px;
+}
+
+.news-badge {
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.news-source {
+  color: var(--text-muted);
+}
+
+.news-time {
+  margin-left: auto;
+  color: var(--text-muted);
+}
+
+.news-title {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
 /* ── Responsive: Tablet ≤1023px ── */
 @media (max-width: 1023px) {
   .dashboard {
@@ -447,7 +496,8 @@ tr:hover td {
   }
   .risk-gauge,
   .equity,
-  .ai-log {
+  .ai-log,
+  .news-panel {
     grid-column: 1 / -1;
   }
   .positions,

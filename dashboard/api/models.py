@@ -128,6 +128,18 @@ class SentimentResponse(BaseModel):
     label: str | None = None
 
 
+class HeadlineRecord(BaseModel):
+    title: str
+    source: str
+    timestamp: int
+    category: str
+    sentiment: str | None = None
+
+
+class HeadlinesResponse(BaseModel):
+    headlines: list[HeadlineRecord] = []
+
+
 class HTFBiasResponse(BaseModel):
     bias: dict[str, str]
 

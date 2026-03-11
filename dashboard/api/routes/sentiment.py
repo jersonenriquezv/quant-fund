@@ -1,11 +1,15 @@
-"""Sentiment endpoint — Fear & Greed Index from Redis cache."""
+"""Sentiment endpoints — Fear & Greed Index + news headlines from Redis cache."""
 
 import json
 
 from fastapi import APIRouter
 
 from dashboard.api import database as db
-from dashboard.api.models import SentimentResponse
+from dashboard.api.models import (
+    HeadlineRecord,
+    HeadlinesResponse,
+    SentimentResponse,
+)
 
 router = APIRouter()
 
@@ -24,3 +28,31 @@ async def get_sentiment():
         return SentimentResponse(score=data.get("score"), label=data.get("label"))
     except (json.JSONDecodeError, KeyError):
         return SentimentResponse()
+
+
+@router.get("/headlines", response_model=HeadlinesResponse)
+async def get_headlines():
+    if not db.redis_client:
+        return HeadlinesResponse()
+
+    headlines: list[HeadlineRecord] = []
+    for asset in ("BTC", "ETH"):
+        raw = await db.redis_client.get(f"qf:bot:news:headlines:{asset}")
+        if not raw:
+            continue
+        try:
+            items = json.loads(raw)
+            for h in items:
+                headlines.append(HeadlineRecord(
+                    title=h["title"],
+                    source=h["source"],
+                    timestamp=h["timestamp"],
+                    category=h["category"],
+                    sentiment=h.get("sentiment"),
+                ))
+        except (json.JSONDecodeError, KeyError):
+            continue
+
+    # Sort by timestamp descending (newest first)
+    headlines.sort(key=lambda h: h.timestamp, reverse=True)
+    return HeadlinesResponse(headlines=headlines[:10])

@@ -159,6 +159,18 @@ export interface SentimentData {
   label: string | null;
 }
 
+export interface HeadlineData {
+  title: string;
+  source: string;
+  timestamp: number;
+  category: string;
+  sentiment: string | null;
+}
+
+export interface HeadlinesData {
+  headlines: HeadlineData[];
+}
+
 export interface ProfileInfo {
   label: string;
   description: string;

@@ -11,6 +11,7 @@ import { TradeLog } from "@/components/TradeLog";
 import { AILog } from "@/components/AILog";
 import { OrderBlockPanel } from "@/components/OrderBlockPanel";
 import { WhaleLog } from "@/components/WhaleLog";
+import { NewsPanel } from "@/components/NewsPanel";
 import { HealthGrid } from "@/components/HealthGrid";
 import { useWebSocket } from "@/lib/hooks";
 
@@ -50,6 +51,10 @@ export default function Dashboard() {
 
       <div className="card ob-panel">
         <OrderBlockPanel ws={ws} />
+      </div>
+
+      <div className="card news-panel">
+        <NewsPanel />
       </div>
 
       <div className="card whale-log">
