@@ -43,6 +43,7 @@ _TIMEFRAME_TO_CHANNEL = {
     "15m": "candle15m",
     "1h": "candle1H",
     "4h": "candle4H",
+    "1d": "candle1D",
 }
 
 # Reverse map

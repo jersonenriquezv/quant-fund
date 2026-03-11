@@ -33,6 +33,7 @@ def _make_setup(
 @pytest.fixture
 def risk(monkeypatch):
     monkeypatch.setattr(settings, "OKX_SANDBOX", False)
+    monkeypatch.setattr(settings, "FIXED_TRADE_MARGIN", 0.0)  # Use pct mode for existing tests
     monkeypatch.setattr(settings, "TRADE_CAPITAL_PCT", 0.15)
     # Capital high enough for BTC min order (0.01 BTC = $500 notional needs $3334 capital at 15%)
     return RiskService(capital=5000.0)
@@ -73,6 +74,21 @@ class TestApproval:
         # leverage = MAX_LEVERAGE = 5
         assert result.position_size == pytest.approx(0.015, rel=1e-6)
         assert result.leverage == pytest.approx(5.0, rel=1e-6)
+
+    def test_fixed_margin_mode(self, risk, monkeypatch):
+        """FIXED_TRADE_MARGIN > 0 uses fixed margin instead of pct."""
+        monkeypatch.setattr(settings, "FIXED_TRADE_MARGIN", 20.0)
+        monkeypatch.setattr(settings, "MAX_LEVERAGE", 5)
+        setup = _make_setup(entry=50000, sl=49000, tp2=52000)
+        result = risk.check(setup)
+
+        # margin=$20 × 5x = $100 notional
+        # position_size = $100 / $50000 = 0.002 BTC
+        assert result.approved is True
+        assert result.position_size == pytest.approx(0.002, rel=1e-6)
+        assert result.leverage == pytest.approx(5.0, rel=1e-6)
+        # risk_pct = margin / capital = 20 / 5000 = 0.004
+        assert result.risk_pct == pytest.approx(0.004, rel=1e-6)
 
 
 # ============================================================

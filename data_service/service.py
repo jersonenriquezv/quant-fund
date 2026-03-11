@@ -283,6 +283,9 @@ class DataService:
         """
         loop = asyncio.get_running_loop()
         all_timeframes = settings.HTF_TIMEFRAMES + settings.LTF_TIMEFRAMES
+        # Add daily candles for HTF campaign bias when enabled
+        if settings.HTF_CAMPAIGN_ENABLED and "1d" not in all_timeframes:
+            all_timeframes = all_timeframes + ["1d"]
 
         for pair in settings.TRADING_PAIRS:
             for tf in all_timeframes:

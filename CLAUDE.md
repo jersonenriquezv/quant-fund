@@ -399,7 +399,14 @@ Non-negotiable guardrails:
 Position size formula:
 
 ```
-Position Size = (Capital × Risk%) / (Entry - Stop Loss)
+# Fixed margin mode (default, FIXED_TRADE_MARGIN=20):
+Margin = $20 (fixed)
+Notional = Margin × Leverage = $20 × 5x = $100
+Position Size = Notional / Entry Price
+
+# Percentage mode (fallback, FIXED_TRADE_MARGIN=0):
+Notional = Capital × TRADE_CAPITAL_PCT
+Position Size = Notional / Entry Price
 ```
 
 ---

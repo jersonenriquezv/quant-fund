@@ -4,14 +4,15 @@ deleteDatasources:
     orgId: 1
 datasources:
   - name: PostgreSQL
-    type: postgres
+    type: grafana-postgresql-datasource
     uid: postgres
     url: localhost:5432
-    database: quant_fund
     user: jer
+    database: quant_fund
     secureJsonData:
       password: ${POSTGRES_PASSWORD}
     jsonData:
+      database: quant_fund
       sslmode: disable
       postgresVersion: 1600
       timescaledb: false

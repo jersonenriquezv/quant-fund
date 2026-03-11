@@ -1,6 +1,6 @@
 # Arquitectura del Sistema
-> Última actualización: 2026-03-10
-> Estado: **5/5 capas implementadas** — pipeline completo Data → Strategy → AI → Risk → Execution. AlertManager con prioridades, rate limiting, silenciamiento. Telegram: solo ORDER PLACED + TRADE CLOSED + EMERGENCY. 2 perfiles (default/aggressive). AI filter obligatorio en todas las profiles.
+> Última actualización: 2026-03-11
+> Estado: **5/5 capas implementadas** — pipeline completo Data → Strategy → AI → Risk → Execution. HTF Campaign Trading (4H position trades con pyramid adds y trailing SL en swing levels). AlertManager con prioridades, rate limiting, silenciamiento. Telegram: ORDER PLACED + TRADE CLOSED + CAMPAIGN CLOSED + EMERGENCY + SIGNAL (en signal mode). 2 perfiles (default/aggressive). AI filter obligatorio en todas las profiles. Signal mode disponible (`SIGNAL_ONLY=true`).
 
 ## Qué hace (para entenderlo rápido)
 El sistema es un bot de trading que funciona como una línea de ensamblaje. Los datos entran por un lado, pasan por 5 filtros en orden, y si todos dicen "sí", se ejecuta el trade. Si cualquier filtro dice "no", el trade se descarta.
@@ -55,10 +55,11 @@ Sin esta arquitectura, tendríamos un solo programa gigante donde todo está mez
         │  ALERT MANAGER              │ ← Push al celular
         │  (observador inteligente)   │
         └─────────────────────────────┘
-          ↑ Solo 3 notificaciones:
+          ↑ Solo 4 notificaciones:
           │ 1. ORDER PLACED (limit enviada)
           │ 2. TRADE CLOSED (SL/TP/timeout)
-          │ 3. EMERGENCY (fallo SL, etc.)
+          │ 3. CAMPAIGN CLOSED (HTF position trade)
+          │ 4. EMERGENCY (fallo SL, etc.)
 ```
 
 ## Cómo se comunican los servicios
@@ -73,15 +74,33 @@ Sin esta arquitectura, tendríamos un solo programa gigante donde todo está mez
 9. Execution Service coloca la orden limit en OKX, con SL (stop-market) y TP (limit al tp2, 100% close). **En sandbox**: limit al ask/bid actual + 0.05% tolerancia (evita slippage de market orders).
 10. PositionMonitor gestiona el ciclo de vida: entry fill → breakeven (SL→entry al cruzar tp1) → trailing SL (SL→tp1 al cruzar midpoint) → TP/SL
 
+**HTF Campaign path** (cuando `HTF_CAMPAIGN_ENABLED=true`):
+- Velas 4H disparan evaluación HTF separada: Strategy (`evaluate_htf`) → AI → Risk → CampaignMonitor
+- Daily candles (1D) determinan bias (en vez de 4H/1H)
+- CampaignMonitor gestiona posiciones multi-día con pyramid adds (hasta 3) y trailing SL en swing levels de 4H
+- Intraday bloqueado en el par mientras haya campaña activa (y viceversa)
+- Sin TP orders — la campaña sale solo via trailing SL o timeout (7 días)
+
 **Regla clave:** Si CUALQUIER servicio dice NO, el trade se descarta. No hay "pero" ni "tal vez".
 
 **Sistema de alertas (`shared/alert_manager.py`):** AlertManager envuelve TelegramNotifier con prioridades (INFO/WARNING/CRITICAL/EMERGENCY), rate limiting, auto-silenciamiento, y escalamiento EMERGENCY con retry+backoff. Infraestructura de routing completa, pero solo 3 tipos de notificación activos. Configuración en `config/settings.py` (ALERT_*).
 
-**Notificaciones Telegram (actualizado 2026-03-10) — MINIMALISTAS:**
-- **ORDER PLACED** — cuando se envía la limit order al exchange (par, dirección, entry, SL, TP, size, leverage). CRITICAL priority.
-- **TRADE CLOSED** — cuando la posición cierra (SL, TP, trailing SL, breakeven SL, timeout, invalidation). CRITICAL priority.
+**Notificaciones Telegram (actualizado 2026-03-11) — MINIMALISTAS:**
+- **ORDER PLACED** — cuando se envía la limit order al exchange (par, dirección, entry, SL, TP, size, leverage). CRITICAL priority. También usado para initial campaign entry.
+- **TRADE CLOSED** — cuando la posición intraday cierra (SL, TP, trailing SL, breakeven SL, timeout, invalidation). CRITICAL priority.
+- **CAMPAIGN CLOSED** — cuando una campaña HTF cierra (trailing SL, timeout, emergency). Incluye P&L USD, % y cantidad de adds. CRITICAL priority.
+- **SIGNAL** — (solo en signal mode) setup aprobado con entry/SL/TP/R:R/size/confluences/AI reasoning. CRITICAL priority.
 - **EMERGENCY** — fallo de SL placement, emergency market close. EMERGENCY priority con retry.
 - **Removidos:** OB summary, AI decisions, whale movements, daily summary, bot started, breakeven/trailing SL, entry expired, DD warning, health down/recovered. Todo eso sigue disponible en logs + Grafana.
+
+**Signal Mode (`SIGNAL_ONLY=true`):**
+Modo semi-manual donde el bot detecta setups, pasa por todos los filtros (Strategy → AI → Risk), pero en vez de ejecutar manda una señal por Telegram con toda la info para abrir manualmente:
+- Par, dirección, setup type, R:R
+- Entry, SL (con distancia %), TP (con distancia %)
+- Position size y leverage calculados
+- Confluencias detectadas
+- AI confidence + reasoning (o "bypass" para quick setups)
+El usuario abre el trade manualmente en OKX. Activar: `SIGNAL_ONLY=true` en `.env` o como env var.
 
 ## Detalles técnicos
 
@@ -90,7 +109,7 @@ Por ahora: llamadas directas entre módulos Python (simple, sin overhead). Si el
 
 ### Almacenamiento
 - **Redis:** Cache de datos en tiempo real. Último precio, última vela, estado del bot.
-- **PostgreSQL:** Histórico de trades, velas pasadas, logs de decisiones.
+- **PostgreSQL:** Histórico de trades, velas pasadas, logs de decisiones, HTF campaigns.
 
 ### Infraestructura
 - **Servidor:** Acer Nitro 5 (i5-9300H, 16GB RAM) con Ubuntu Server 24.04
@@ -237,6 +256,8 @@ python scripts/backtest.py --days 60 --profile aggressive --capital 10000 --csv
 - Ver `docs/to-fix.md` para backlog completo (~30 IMPORTANT + 29 MINOR issues)
 
 ## Cambios recientes
+- 2026-03-11: **HTF Campaign Trading** — Position trades en 4H con Daily bias. CampaignMonitor gestiona ciclo de vida: initial entry → pyramid adds (hasta 3, margen decreciente: $30/$15/$10/$5) → trailing SL en 4H swing levels → timeout 7 días. Sin TP — sale solo via trailing SL. Intraday bloqueado en par con campaña activa. Nuevos modelos: `CampaignAdd`, `PositionCampaign`. Nuevo archivo: `execution_service/campaign_monitor.py`. Nueva tabla PostgreSQL: `campaigns`. Daily candles (1D) backfill + WebSocket. Settings: `HTF_CAMPAIGN_*`. Pipeline HTF wired en `main.py`. Alert: `notify_campaign_closed()`.
+- 2026-03-11: **Signal Mode** — Nuevo modo semi-manual (`SIGNAL_ONLY=true`). Bot detecta setups y pasa todos los filtros pero NO ejecuta — manda señal por Telegram con entry/SL/TP/R:R/size/confluences/AI reasoning. Para validar calidad de señales antes de confiar en ejecución automática. `config/settings.py` (SIGNAL_ONLY flag), `shared/alert_manager.py` (notify_signal), `main.py` (pipeline conditional). 5 tests nuevos.
 - 2026-03-10: **Telegram minimalista** — Solo 3 notificaciones activas: ORDER PLACED (nueva, al enviar limit order), TRADE CLOSED (SL/TP), EMERGENCY. Removidos: OB summary, AI decisions, whale movements, daily summary, bot started, breakeven/trailing SL, entry expired, DD warning, health down/recovered. Métodos siguen existiendo en AlertManager para re-enable futuro. Datos de whale/health siguen colectándose para AI context, dashboard y logs.
 - 2026-03-10: **Notification overhaul** — Whale alerts filtradas: solo exchange deposits/withdrawals ≥$1M (`WHALE_NOTIFY_EXCHANGE_ONLY`, `WHALE_NOTIFY_MIN_USD`). Formato con señal BEARISH/BULLISH. Status horario eliminado, reemplazado por resumen diario 00:00 UTC. Nuevas notificaciones: BOT STARTED, breakeven SL, trailing SL, entry expired, DD warning (66% del límite). `notify_hourly_status` removido de notifier.py y alert_manager.py.
 - 2026-03-10: **Grafana Monitoring** — Grafana OSS container en puerto 3001 con 3 dashboards provisioned (Trading Performance, System Health, AI & Risk Analytics). Nueva tabla `bot_metrics` para métricas operacionales. Pipeline instrumentado: pipeline_latency_ms, claude_latency_ms, okx_order_latency_ms, ws_reconnection, health_status. Retention automático 30d. Trading Performance dashboard funciona sin código nuevo (queries sobre tables existentes).

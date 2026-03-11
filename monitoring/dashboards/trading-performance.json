@@ -1,7 +1,9 @@
 {
   "uid": "trading-performance",
   "title": "Trading Performance",
-  "tags": ["trading"],
+  "tags": [
+    "trading"
+  ],
   "timezone": "browser",
   "refresh": "5m",
   "time": {
@@ -13,13 +15,40 @@
       "id": 1,
       "title": "Equity Curve (Cumulative PnL)",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
-      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
       "targets": [
         {
           "rawSql": "SELECT closed_at AS time, SUM(pnl_usd) OVER (ORDER BY closed_at) AS \"Cumulative PnL ($)\" FROM trades WHERE status = 'closed' AND closed_at IS NOT NULL ORDER BY closed_at",
           "format": "time_series",
-          "refId": "A"
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ],
       "fieldConfig": {
@@ -29,13 +58,21 @@
             "lineWidth": 2,
             "fillOpacity": 10,
             "gradientMode": "scheme",
-            "thresholdsStyle": { "mode": "line" }
+            "thresholdsStyle": {
+              "mode": "line"
+            }
           },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "green", "value": 0 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
             ]
           }
         }
@@ -45,17 +82,48 @@
       "id": 2,
       "title": "Summary Stats",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 0 },
-      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
       "targets": [
         {
           "rawSql": "SELECT COUNT(*) AS \"Total Trades\", SUM(CASE WHEN pnl_usd > 0 THEN 1 ELSE 0 END) AS \"Wins\", ROUND(100.0 * SUM(CASE WHEN pnl_usd > 0 THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) AS \"Win Rate %\", ROUND(SUM(pnl_usd)::numeric, 2) AS \"Total PnL $\" FROM trades WHERE status = 'closed'",
           "format": "table",
-          "refId": "A"
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ],
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
         "colorMode": "background",
         "graphMode": "none"
       }
@@ -64,13 +132,40 @@
       "id": 3,
       "title": "Win Rate by Setup Type",
       "type": "bargauge",
-      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 4 },
-      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 12,
+        "y": 4
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
       "targets": [
         {
           "rawSql": "SELECT setup_type AS metric, ROUND(100.0 * SUM(CASE WHEN pnl_usd > 0 THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) AS value FROM trades WHERE status = 'closed' GROUP BY setup_type ORDER BY setup_type",
           "format": "table",
-          "refId": "A"
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ],
       "fieldConfig": {
@@ -81,9 +176,18 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "yellow", "value": 40 },
-              { "color": "green", "value": 50 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 40
+              },
+              {
+                "color": "green",
+                "value": 50
+              }
             ]
           }
         }
@@ -93,13 +197,40 @@
       "id": 4,
       "title": "PnL by Setup Type",
       "type": "barchart",
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 8 },
-      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 8
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
       "targets": [
         {
           "rawSql": "SELECT setup_type, ROUND(SUM(pnl_usd)::numeric, 2) AS \"PnL $\", COUNT(*) AS \"Trades\" FROM trades WHERE status = 'closed' GROUP BY setup_type ORDER BY setup_type",
           "format": "table",
-          "refId": "A"
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ],
       "fieldConfig": {
@@ -108,8 +239,14 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "green", "value": 0 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
             ]
           }
         }
@@ -119,13 +256,40 @@
       "id": 5,
       "title": "Exit Reason Distribution",
       "type": "piechart",
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 8 },
-      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 8
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
       "targets": [
         {
           "rawSql": "SELECT exit_reason AS metric, COUNT(*) AS value FROM trades WHERE status = 'closed' AND exit_reason IS NOT NULL GROUP BY exit_reason ORDER BY value DESC",
           "format": "table",
-          "refId": "A"
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ]
     },
@@ -133,13 +297,40 @@
       "id": 6,
       "title": "Slippage by Pair (Entry)",
       "type": "bargauge",
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 8 },
-      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 8
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
       "targets": [
         {
           "rawSql": "SELECT pair AS metric, ROUND(AVG(ABS(actual_entry - entry_price) / entry_price * 100)::numeric, 4) AS value FROM trades WHERE status = 'closed' AND actual_entry IS NOT NULL AND entry_price > 0 GROUP BY pair",
           "format": "table",
-          "refId": "A"
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ],
       "fieldConfig": {
@@ -148,9 +339,18 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 0.05 },
-              { "color": "red", "value": 0.1 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.05
+              },
+              {
+                "color": "red",
+                "value": 0.1
+              }
             ]
           }
         }
@@ -160,13 +360,40 @@
       "id": 7,
       "title": "Trades per Day",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
-      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
       "targets": [
         {
           "rawSql": "SELECT DATE_TRUNC('day', opened_at) AS time, COUNT(*) AS \"Trades\" FROM trades WHERE opened_at IS NOT NULL GROUP BY DATE_TRUNC('day', opened_at) ORDER BY time",
           "format": "time_series",
-          "refId": "A"
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ],
       "fieldConfig": {
@@ -182,13 +409,40 @@
       "id": 8,
       "title": "AI Confidence vs Outcome",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
-      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
       "targets": [
         {
           "rawSql": "SELECT t.closed_at AS time, t.ai_confidence AS \"Confidence\", CASE WHEN t.pnl_usd > 0 THEN 1 ELSE 0 END AS \"Win (1) / Loss (0)\" FROM trades t WHERE t.status = 'closed' AND t.closed_at IS NOT NULL AND t.ai_confidence IS NOT NULL ORDER BY t.closed_at",
           "format": "time_series",
-          "refId": "A"
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ],
       "fieldConfig": {
@@ -204,13 +458,40 @@
       "id": 9,
       "title": "Win Rate Rolling 7d",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
-      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 24
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
       "targets": [
         {
           "rawSql": "SELECT d.day AS time, ROUND(100.0 * SUM(CASE WHEN t.pnl_usd > 0 THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) AS \"Win Rate %\" FROM generate_series(CURRENT_DATE - INTERVAL '30 days', CURRENT_DATE, '1 day') AS d(day) LEFT JOIN trades t ON DATE_TRUNC('day', t.closed_at) BETWEEN d.day - INTERVAL '6 days' AND d.day AND t.status = 'closed' GROUP BY d.day ORDER BY d.day",
           "format": "time_series",
-          "refId": "A"
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ],
       "fieldConfig": {
@@ -225,8 +506,14 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "green", "value": 45 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 45
+              }
             ]
           }
         }
@@ -236,13 +523,40 @@
       "id": 10,
       "title": "PnL by Direction",
       "type": "barchart",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
-      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 24
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
       "targets": [
         {
           "rawSql": "SELECT direction, ROUND(SUM(pnl_usd)::numeric, 2) AS \"PnL $\", COUNT(*) AS \"Trades\", ROUND(100.0 * SUM(CASE WHEN pnl_usd > 0 THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) AS \"Win Rate %\" FROM trades WHERE status = 'closed' GROUP BY direction",
           "format": "table",
-          "refId": "A"
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ],
       "fieldConfig": {
@@ -251,8 +565,14 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "green", "value": 0 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
             ]
           }
         }
@@ -262,13 +582,40 @@
       "id": 11,
       "title": "Recent Trades",
       "type": "table",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 32 },
-      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 32
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
       "targets": [
         {
           "rawSql": "SELECT opened_at AS \"Opened\", pair AS \"Pair\", direction AS \"Dir\", setup_type AS \"Setup\", ROUND(entry_price::numeric, 2) AS \"Entry\", ROUND(actual_entry::numeric, 2) AS \"Fill\", ROUND(actual_exit::numeric, 2) AS \"Exit\", exit_reason AS \"Reason\", ROUND(pnl_usd::numeric, 2) AS \"PnL $\", ROUND((pnl_pct * 100)::numeric, 2) AS \"PnL %\", ROUND(ai_confidence::numeric, 2) AS \"AI Conf\" FROM trades WHERE status = 'closed' ORDER BY closed_at DESC LIMIT 50",
           "format": "table",
-          "refId": "A"
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ]
     }

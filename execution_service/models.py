@@ -5,6 +5,7 @@ These are mutable — they track position lifecycle in memory.
 NOT in shared/models.py because they're internal to this service.
 """
 
+import uuid
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -77,3 +78,131 @@ class ManagedPosition:
 
     # Database tracking
     db_trade_id: Optional[int] = None
+
+
+@dataclass
+class CampaignAdd:
+    """A single pyramid add within a campaign."""
+    add_number: int             # 1, 2, or 3
+    margin: float               # USDT margin for this add
+    size: float = 0.0           # Base currency size (filled)
+    entry_price: float = 0.0    # Intended entry price
+    actual_entry_price: float = 0.0  # Actual fill price
+    filled: bool = False
+    order_id: Optional[str] = None
+    setup_type: str = ""        # Setup type that triggered this add
+    placed_at: int = 0
+    filled_at: Optional[int] = None
+
+
+@dataclass
+class PositionCampaign:
+    """HTF position trade with pyramid adds and trailing SL.
+
+    State machine:
+        pending_initial → active → closed
+        pending_initial → closed  (entry timeout or cancel)
+        active (pending_add) → active  (add filled or timed out)
+        active → closed  (trailing SL hit, timeout, emergency)
+
+    No TP orders — campaigns exit via trailing SL only.
+    """
+
+    # Identity
+    pair: str
+    direction: str              # "long" or "short"
+    campaign_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+
+    # Phase: pending_initial, active, closed
+    phase: str = "pending_initial"
+
+    # Initial entry
+    initial_entry_price: float = 0.0
+    initial_sl_price: float = 0.0
+    initial_order_id: Optional[str] = None
+    initial_size: float = 0.0        # Base currency (filled)
+    initial_setup_type: str = ""
+    initial_margin: float = 0.0
+
+    # Actual fill
+    actual_initial_entry: Optional[float] = None
+
+    # Campaign SL — one stop-market covering total position
+    current_sl_price: float = 0.0
+    sl_order_id: Optional[str] = None
+
+    # Cumulative position tracking
+    total_size: float = 0.0          # Sum of all filled sizes
+    total_margin: float = 0.0        # Sum of all margins
+    weighted_entry: float = 0.0      # VWAP of all fills
+
+    # Pyramid adds
+    adds: list = field(default_factory=list)  # list[CampaignAdd]
+    pending_add: Optional[CampaignAdd] = None
+
+    # AI / context
+    ai_confidence: float = 0.0
+    htf_bias: str = ""
+
+    # Timestamps
+    created_at: int = 0
+    filled_at: Optional[int] = None
+    closed_at: Optional[int] = None
+
+    # Exit
+    close_reason: Optional[str] = None
+    pnl_pct: float = 0.0
+    pnl_usd: float = 0.0
+
+    # SL fetch failure tracking
+    sl_fetch_failures: int = 0
+    # Emergency retry tracking
+    emergency_retries: int = 0
+
+    # Database tracking
+    db_campaign_id: Optional[int] = None
+
+    # Leverage
+    leverage: float = 1.0
+
+    def update_weighted_entry(self) -> None:
+        """Recalculate VWAP from initial fill + all filled adds."""
+        total_notional = 0.0
+        total_size = 0.0
+
+        if self.actual_initial_entry and self.initial_size > 0:
+            total_notional += self.actual_initial_entry * self.initial_size
+            total_size += self.initial_size
+
+        for add in self.adds:
+            if add.filled and add.actual_entry_price > 0 and add.size > 0:
+                total_notional += add.actual_entry_price * add.size
+                total_size += add.size
+
+        self.total_size = total_size
+        if total_size > 0:
+            self.weighted_entry = total_notional / total_size
+
+    def get_add_margin(self, add_number: int) -> float:
+        """Return the margin for a given add number (1-indexed)."""
+        from config.settings import settings
+        margins = {
+            1: settings.HTF_ADD1_MARGIN,
+            2: settings.HTF_ADD2_MARGIN,
+            3: settings.HTF_ADD3_MARGIN,
+        }
+        return margins.get(add_number, 0.0)
+
+    def current_rr(self) -> float:
+        """Calculate current R:R from weighted entry vs current SL distance and profit."""
+        if not self.weighted_entry or not self.initial_sl_price:
+            return 0.0
+        risk = abs(self.weighted_entry - self.initial_sl_price)
+        if risk <= 0:
+            return 0.0
+        # Use initial entry to measure unrealized progress
+        if self.direction == "long":
+            reward = self.weighted_entry - self.initial_sl_price
+        else:
+            reward = self.initial_sl_price - self.weighted_entry
+        return reward / risk if risk > 0 else 0.0

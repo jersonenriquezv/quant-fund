@@ -339,6 +339,149 @@ class StrategyService:
             return False
         return (now - last) < settings.QUICK_SETUP_COOLDOWN
 
+    # ================================================================
+    # HTF Campaign — evaluate 4H setups with Daily bias
+    # ================================================================
+
+    def evaluate_htf(self, pair: str,
+                     trigger_candle: Candle) -> Optional[TradeSetup]:
+        """Evaluate a pair for HTF campaign setups on 4H candles.
+
+        Uses Daily candles for bias (instead of 4H/1H used by intraday).
+        Runs the same SMC detectors on 4H data with wider age/proximity params.
+        """
+        signal_tf = settings.HTF_CAMPAIGN_SIGNAL_TF  # "4h"
+        bias_tf = settings.HTF_CAMPAIGN_BIAS_TF      # "1d"
+
+        # Only evaluate on the signal timeframe
+        if trigger_candle.timeframe != signal_tf:
+            return None
+
+        current_time_ms = int(time.time() * 1000)
+
+        # Fetch candle data
+        candles_daily = self._data.get_candles(pair, bias_tf, 100)
+        candles_signal = self._data.get_candles(pair, signal_tf, 200)
+
+        if not candles_signal or len(candles_signal) < 20:
+            logger.debug(f"HTF: insufficient {signal_tf} candles for {pair}")
+            return None
+
+        # Daily bias (replaces 4H/1H used by intraday)
+        if candles_daily and len(candles_daily) >= 10:
+            state_daily = self._market_structure.analyze(candles_daily, pair, bias_tf)
+            htf_bias = state_daily.trend
+        else:
+            # Fallback to 4H bias if no daily data
+            state_4h = self._market_structure.analyze(candles_signal, pair, signal_tf)
+            htf_bias = state_4h.trend
+
+        if htf_bias == "undefined":
+            logger.debug(f"HTF: no daily bias for {pair} — skipping")
+            return None
+
+        # Run detectors on signal timeframe with HTF params
+        signal_state = self._market_structure.analyze(candles_signal, pair, signal_tf)
+
+        # Use wider age/proximity for HTF OBs
+        active_obs = self._order_blocks.update(
+            candles_signal, signal_state.structure_breaks,
+            pair, signal_tf, current_time_ms,
+            max_age_hours=settings.HTF_OB_MAX_AGE_HOURS,
+        )
+
+        active_fvgs = self._fvg.update(
+            candles_signal, pair, signal_tf, current_time_ms,
+            max_age_hours=settings.HTF_FVG_MAX_AGE_HOURS,
+        )
+
+        # Premium/Discount from Daily swing range (not 4H)
+        current_price = trigger_candle.close
+        if candles_daily and len(candles_daily) >= 10:
+            daily_state = self._market_structure.analyze(candles_daily, pair, bias_tf)
+            self._liquidity.update_premium_discount(
+                candles_daily, daily_state.swing_highs, daily_state.swing_lows,
+                pair, current_price, current_time_ms,
+            )
+        pd_zone = self._liquidity.get_pd_zone(pair)
+
+        # Liquidity levels and sweeps on signal TF
+        market_snapshot = self._data.get_market_snapshot(pair)
+        self._liquidity.update(
+            candles_signal, signal_state.swing_highs, signal_state.swing_lows,
+            pair, signal_tf, market_snapshot, current_time_ms,
+        )
+        recent_sweeps = self._liquidity.get_recent_sweeps(pair, signal_tf)
+        liq_levels = self._liquidity.get_levels(pair, signal_tf)
+
+        logger.debug(
+            f"[HTF {pair} {signal_tf}] patterns: breaks={len(signal_state.structure_breaks)} "
+            f"obs={len(active_obs)} fvgs={len(active_fvgs)} "
+            f"sweeps={len(recent_sweeps)} bias={htf_bias}"
+        )
+
+        # Temporarily override settings for HTF evaluation
+        orig_proximity = settings.OB_PROXIMITY_PCT
+        orig_distance = settings.OB_MAX_DISTANCE_PCT
+        orig_min_risk = settings.MIN_RISK_DISTANCE_PCT
+        settings.OB_PROXIMITY_PCT = settings.HTF_OB_PROXIMITY_PCT
+        settings.OB_MAX_DISTANCE_PCT = settings.HTF_OB_MAX_DISTANCE_PCT
+        settings.MIN_RISK_DISTANCE_PCT = settings.HTF_MIN_RISK_DISTANCE_PCT
+
+        try:
+            # Evaluate setups A, B, F in order
+            for eval_fn, setup_name, extra_args in [
+                (self._setups.evaluate_setup_a, "A",
+                 {"recent_sweeps": recent_sweeps}),
+                (self._setups.evaluate_setup_b, "B",
+                 {"active_fvgs": active_fvgs}),
+                (self._setups.evaluate_setup_f, "F", {}),
+            ]:
+                kwargs = {
+                    "structure_state": signal_state,
+                    "active_obs": active_obs,
+                    "pd_zone": pd_zone,
+                    "market_snapshot": market_snapshot,
+                    "candles": candles_signal,
+                    "pair": pair,
+                    "htf_bias": htf_bias,
+                    "liquidity_levels": liq_levels,
+                }
+                kwargs.update(extra_args)
+                setup = eval_fn(**kwargs)
+
+                if setup is not None:
+                    if setup.setup_type not in settings.HTF_ENABLED_SETUPS:
+                        logger.debug(f"HTF Setup {setup_name} detected but not in HTF_ENABLED_SETUPS")
+                        continue
+
+                    logger.info(
+                        f"HTF Setup {setup_name} found: pair={pair} direction={setup.direction} "
+                        f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
+                        f"confluences={setup.confluences}"
+                    )
+                    return setup
+        finally:
+            # Restore original settings
+            settings.OB_PROXIMITY_PCT = orig_proximity
+            settings.OB_MAX_DISTANCE_PCT = orig_distance
+            settings.MIN_RISK_DISTANCE_PCT = orig_min_risk
+
+        return None
+
+    def get_htf_swing_levels(self, pair: str) -> tuple[list, list]:
+        """Get 4H swing highs and swing lows for trailing SL computation.
+
+        Returns:
+            (swing_highs, swing_lows) as lists of SwingPoint.
+        """
+        signal_tf = settings.HTF_CAMPAIGN_SIGNAL_TF
+        candles = self._data.get_candles(pair, signal_tf, 100)
+        if not candles or len(candles) < 10:
+            return [], []
+        state = self._market_structure.analyze(candles, pair, signal_tf)
+        return state.swing_highs, state.swing_lows
+
     def mark_ob_failed(self, pair: str, sl_price: float, entry_price: float) -> None:
         """Mark an OB range as failed (trade hit SL). Prevents re-entry.
 

@@ -1,6 +1,6 @@
 # Data Service
-> Last updated: 2026-03-10
-> Status: implemented (complete, running in Docker). Audited — 4 CRITICAL fixes applied. Whale tracking with USD enrichment, 3-tier Telegram notifications, new whale wallets (Trump, Jump Trading, a16z, FTX/Alameda, UK Gov BTC). News sentiment (Fear & Greed + headlines) as new data layer.
+> Last updated: 2026-03-11
+> Status: implemented (complete, running in Docker). Audited — 4 CRITICAL fixes applied. Whale tracking with USD enrichment, 3-tier Telegram notifications, new whale wallets (Trump, Jump Trading, a16z, FTX/Alameda, UK Gov BTC). News sentiment (Fear & Greed + headlines) as new data layer. HTF campaigns: 1D candle support + campaigns table.
 
 ## What it does (30 seconds)
 The Data Service is the bot's eyes and ears. It connects to OKX 24/7, collecting price data (candles), trade flow (CVD), market indicators (funding rate, open interest), liquidation cascades (via OI proxy), and whale movements. Every other service gets clean, validated, typed data through here.
@@ -14,7 +14,7 @@ Without real-time market data, the Strategy Service has nothing to analyze. With
 
 | Source | What | How | Frequency |
 |---|---|---|---|
-| OKX WebSocket | Candles (5m, 15m, 1h, 4h) | `candle{tf}` channel per instId | Real-time, on candle close (confirm="1") |
+| OKX WebSocket | Candles (5m, 15m, 1h, 4h, 1d when HTF campaigns enabled) | `candle{tf}` channel per instId | Real-time, on candle close (confirm="1") |
 | OKX WebSocket | Trades (for CVD) | `trades` channel per instId, batched every 5 seconds | Real-time |
 | OKX REST (ccxt) | Historical candles | `fetch_ohlcv()` via ccxt | On startup (backfill 500) |
 | OKX REST (ccxt) | Funding rate | `fetch_funding_rate()` via ccxt | Every 8 hours |
@@ -23,7 +23,7 @@ Without real-time market data, the Strategy Service has nothing to analyze. With
 | Etherscan REST | ETH whale movements | Transaction polling, 5 calls/sec limit | Every 5 minutes |
 | mempool.space REST | BTC whale movements | UTXO transaction polling, no API key | Every 5 minutes |
 | alternative.me REST | Fear & Greed Index | `GET /fng/?limit=1`, no API key | Every 5 minutes (cached 30min) |
-| cryptocurrency.cv REST | Crypto news headlines | `GET /api/news?asset=BTC&limit=5`, User-Agent required | Every 5 minutes (cached 5min) |
+| CryptoPanic REST | Crypto news headlines | `GET /api/free/v1/posts/?currencies=BTC,ETH&filter=hot&kind=news`, requires API key (free tier) | Every 5 minutes (cached 5min) |
 
 ### Pipeline Flow
 ```
@@ -52,7 +52,7 @@ All 5 layers run in the same Python process. The Data Service exposes methods th
 - **CVDSnapshot** — cumulative volume delta for 5m, 15m, 1h windows + buy/sell volume
 - **LiquidationEvent** — from OI proxy (OI drop >2% = cascade), with side and size_usd
 - **WhaleMovement** — Whale transfers (ETH via Etherscan, BTC via mempool.space). 4 action types: `exchange_deposit` (bearish), `exchange_withdrawal` (bullish), `transfer_out` (neutral), `transfer_in` (neutral). Fields: `amount` (ETH or BTC), `chain` ("ETH" or "BTC"), `exchange` (exchange name or truncated address), `wallet_label` (human-readable name from settings, e.g., "Vitalik Buterin"), `amount_usd` (USD value at detection time), `market_price` (asset price in USD when detected). USD fields default to 0.0 if price provider unavailable.
-- **NewsHeadline** — single news headline (title, source, timestamp, category)
+- **NewsHeadline** — single news headline (title, source, timestamp, category, sentiment). Sentiment is optional ("bullish"/"bearish"/None) from CryptoPanic community votes.
 - **NewsSentiment** — Fear & Greed score (0-100) + label + recent headlines + fetched_at
 - **MarketSnapshot** — wraps funding, OI, CVD, liquidations, whales, news_sentiment for a pair
 - **TradeSetup** — detected setup from Strategy Service
@@ -91,7 +91,7 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 
 ### `data_service/websocket_feeds.py` — OKX Candle WebSocket
 - Connects to `wss://ws.okx.com:8443/ws/v5/business` (candle channels live here, NOT on `/public`)
-- Subscribes to 8 channels: 2 instIds × 4 timeframes (candle5m, candle15m, candle1H, candle4H)
+- Subscribes to 8 channels (base): 2 instIds × 4 timeframes (candle5m, candle15m, candle1H, candle4H). When HTF campaigns enabled, adds candle1D (+2 channels).
 - **Candle confirmation:** OKX sends `confirm="1"` when candle is closed — only these are processed
 - **Volume units:** Uses `candle_data[6]` (volCcy = base currency) instead of `candle_data[5]` (vol = contracts). This matches ccxt REST backfill which returns volume in base currency. OKX candle format: `[ts, o, h, l, c, vol(contracts), volCcy(base), volCcyQuote(quote), confirm]`. Fix applied 2026-03-09 — previously used contracts, causing 100x volume mismatch for BTC (ctVal=0.01) and 10x for ETH (ctVal=0.1), which broke OB volume filter detection.
 - Stores last 600 candles per pair/timeframe in memory
@@ -160,16 +160,16 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Class: `NewsClient(redis_store=None)`
 - Two data sources:
   - **alternative.me** — Fear & Greed Index (0-100 score, free, no API key, running since 2018)
-  - **cryptocurrency.cv** — Crypto news headlines (free, requires `User-Agent` header for Cloudflare)
+  - **CryptoPanic** — Trending crypto news headlines (free tier, requires API key from cryptopanic.com). Aggregates 50+ sources, filters by `hot` (trending) + `kind=news`. Community votes provide per-headline sentiment (bullish/bearish) on paid tier.
 - Methods:
   - `fetch_fear_greed()` → `tuple[int, str] | None` — score + label ("Extreme Fear", "Fear", "Neutral", "Greed", "Extreme Greed")
-  - `fetch_headlines(asset, limit=5)` → `list[NewsHeadline]` — recent headlines for BTC or ETH
+  - `fetch_headlines(asset, limit=5)` → `list[NewsHeadline]` — trending headlines for BTC or ETH. Returns empty if `CRYPTOPANIC_API_KEY` not set.
   - `fetch_sentiment()` → `NewsSentiment | None` — combines F&G + headlines (BTC 3 + ETH 2)
 - Redis caching via `set_bot_state`/`get_bot_state`:
   - `news:fear_greed` — TTL 30min (`NEWS_FEAR_GREED_CACHE_TTL`)
   - `news:headlines:{asset}` — TTL 5min (`NEWS_HEADLINES_CACHE_TTL`)
 - HTTP via `aiohttp` with 15s timeout, `User-Agent: QuantFundBot/1.0`
-- Graceful degradation: F&G failure → `None` (pre-filter skipped). Headlines failure → empty list (Claude context omitted).
+- Graceful degradation: F&G failure → `None` (pre-filter skipped). Headlines failure or no API key → empty list (Claude context omitted).
 - `close()` shuts down aiohttp session
 
 ### `data_service/data_store.py` — Redis + PostgreSQL
@@ -180,18 +180,20 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - `set_latest_candle()`, `get_latest_candle()`, `pop_cancel_request()`, etc.
 
 **PostgreSQL (historical):**
-- 8 tables: `candles`, `trades`, `ai_decisions`, `risk_events`, `bot_metrics`, `funding_rate_history`, `open_interest_history`, `cvd_history`
+- 9 tables: `candles`, `trades`, `ai_decisions`, `risk_events`, `bot_metrics`, `funding_rate_history`, `open_interest_history`, `cvd_history`, `campaigns`
 - `store_candles()` with batch insert + ON CONFLICT DO NOTHING (dedup)
 - `load_candles()` returns oldest-first ordering
 - Index on `(pair, timeframe, timestamp DESC)` for fast lookups
 - **Funding rate history:** `store_funding_rate(fr)`, `store_funding_rates_batch(records)`, `load_funding_rates(pair, since_ms, until_ms)`. Populated by live polling + `fetch_history.py` backfill. Used by backtester for MarketSnapshot.
 - **OI history:** `store_open_interest(oi)`, `store_open_interest_batch(records)`, `load_open_interest(pair, since_ms, until_ms)`. Same pattern. OKX 1h resolution, ~30 days back.
 - **CVD history:** `store_cvd_snapshot(cvd)`, `load_cvd_snapshots(pair, since_ms, until_ms)`. Persisted on every confirmed candle. Accumulates from 2026-03-10 onwards. Needed for Setup C/E backtesting.
+- **Campaigns:** `insert_campaign(campaign)` → DB id, `update_campaign(campaign)` on close. Stores HTF campaign lifecycle (campaign_id, pair, direction, initial/weighted entry, total size/margin, adds detail as JSONB, SL, PnL, close reason, timestamps).
 - **Auto-reconnection:** `_ensure_connected()` checks connection health (sends `SELECT 1`). All DB methods (`store_candles`, `load_candles`, `insert_trade`, `update_trade`, `insert_ai_decision`, `insert_risk_event`, `insert_metric`) retry once on `psycopg2.OperationalError` / `InterfaceError` — sets `_conn = None` and reconnects.
 - **Operational metrics (Grafana):** `insert_metric(name, value, pair, labels)` writes to `bot_metrics` table. `cleanup_old_metrics(retention_days=30)` deletes old rows. Both fire-and-forget.
 
 ### `data_service/service.py` — DataService Facade
 - Wires all 9 sub-modules into a single interface (including NewsClient)
+- **HTF campaign support:** When `HTF_CAMPAIGN_ENABLED=true`, adds "1d" to backfill timeframes so Daily candles are available for campaign bias determination.
 - Public methods: `get_latest_candle()`, `get_candles()`, `get_market_snapshot()`, `get_cvd()`, `fetch_usdt_balance()`, etc.
 - Manages startup (backfill → WebSockets → polling loops) and graceful shutdown
 - On confirmed candle: stores to Redis + PostgreSQL, triggers pipeline callback
@@ -242,7 +244,7 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 | `RECONNECT_BACKOFF_FACTOR` | `2.0` | Backoff multiplier |
 | `NEWS_SENTIMENT_ENABLED` | `True` | Enable/disable news sentiment fetching |
 | `NEWS_FEAR_GREED_URL` | `https://api.alternative.me/fng/` | Fear & Greed API endpoint |
-| `NEWS_HEADLINES_URL` | `https://cryptocurrency.cv/api/news` | Headlines API endpoint |
+| `CRYPTOPANIC_API_KEY` | `""` (env) | CryptoPanic API key (free registration at cryptopanic.com) |
 | `NEWS_POLL_INTERVAL` | `300` (5min) | News sentiment polling interval |
 | `NEWS_FEAR_GREED_CACHE_TTL` | `1800` (30min) | Redis cache TTL for F&G score |
 | `NEWS_HEADLINES_CACHE_TTL` | `300` (5min) | Redis cache TTL for headlines |

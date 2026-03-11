@@ -3,12 +3,13 @@ News sentiment client — Fear & Greed Index + crypto headlines.
 
 Two sources:
 1. alternative.me — Fear & Greed Index (0-100 score, free, no API key)
-2. cryptocurrency.cv — News headlines (free, requires User-Agent header)
+2. CryptoCompare — News headlines (free, no API key, JSON REST)
 
 Both sources are optional — graceful degradation on failure.
 Redis caching prevents hammering the APIs.
 """
 
+import asyncio
 import json
 import time
 from typing import Optional
@@ -23,6 +24,7 @@ logger = setup_logger("news_client")
 
 _USER_AGENT = "QuantFundBot/1.0"
 _REQUEST_TIMEOUT = 15  # seconds
+_CRYPTOCOMPARE_NEWS = "https://min-api.cryptocompare.com/data/v2/news/"
 
 
 class NewsClient:
@@ -103,12 +105,13 @@ class NewsClient:
             return None
 
     # ================================================================
-    # Headlines (cryptocurrency.cv)
+    # Headlines (CryptoCompare)
     # ================================================================
 
     async def fetch_headlines(self, asset: str = "BTC", limit: int = 5) -> list[NewsHeadline]:
-        """Fetch recent news headlines. Returns list of NewsHeadline or empty on error.
+        """Fetch recent news headlines from CryptoCompare.
 
+        Free API, no key required. Filters by asset category.
         Checks Redis cache first (TTL = NEWS_HEADLINES_CACHE_TTL).
         """
         cache_key = f"news:headlines:{asset}"
@@ -122,6 +125,7 @@ class NewsClient:
                         source=h["source"],
                         timestamp=h["timestamp"],
                         category=h["category"],
+                        sentiment=h.get("sentiment"),
                     )
                     for h in items
                 ]
@@ -130,42 +134,46 @@ class NewsClient:
 
         try:
             session = await self._get_session()
-            url = f"{settings.NEWS_HEADLINES_URL}?asset={asset}&limit={limit}"
+            url = f"{_CRYPTOCOMPARE_NEWS}?lang=EN&categories={asset}"
             async with session.get(url) as resp:
                 if resp.status != 200:
-                    logger.warning(f"Headlines API returned {resp.status} for {asset}")
+                    logger.warning(f"CryptoCompare news API returned {resp.status} for {asset}")
                     return []
                 body = await resp.json(content_type=None)
 
-            articles = body.get("articles", [])
-            now_ms = int(time.time() * 1000)
+            articles = body.get("Data", [])
 
             headlines = []
             for art in articles[:limit]:
+                sentiment = _extract_sentiment(
+                    art.get("upvotes", 0), art.get("downvotes", 0)
+                )
                 headlines.append(NewsHeadline(
                     title=art.get("title", ""),
                     source=art.get("source", "Unknown"),
-                    timestamp=_parse_timestamp(art.get("pubDate", ""), now_ms),
-                    category=art.get("category", asset.lower()),
+                    timestamp=art.get("published_on", 0) * 1000,  # seconds → ms
+                    category=asset,
+                    sentiment=sentiment,
                 ))
 
             # Cache result
             cache_data = [
                 {"title": h.title, "source": h.source,
-                 "timestamp": h.timestamp, "category": h.category}
+                 "timestamp": h.timestamp, "category": h.category,
+                 "sentiment": h.sentiment}
                 for h in headlines
             ]
             self._set_cached(cache_key, json.dumps(cache_data),
                              ttl=settings.NEWS_HEADLINES_CACHE_TTL)
 
-            logger.debug(f"Headlines: fetched {len(headlines)} for {asset}")
+            logger.debug(f"CryptoCompare: fetched {len(headlines)} headlines for {asset}")
             return headlines
 
         except asyncio.TimeoutError:
-            logger.warning(f"Headlines API timeout for {asset}")
+            logger.warning(f"CryptoCompare news API timeout for {asset}")
             return []
         except Exception as e:
-            logger.warning(f"Headlines fetch failed for {asset}: {e}")
+            logger.warning(f"CryptoCompare news fetch failed for {asset}: {e}")
             return []
 
     # ================================================================
@@ -216,17 +224,15 @@ class NewsClient:
             pass
 
 
-def _parse_timestamp(date_str: str, fallback_ms: int) -> int:
-    """Parse pubDate string to Unix ms. Returns fallback on failure."""
-    if not date_str:
-        return fallback_ms
-    try:
-        from email.utils import parsedate_to_datetime
-        dt = parsedate_to_datetime(date_str)
-        return int(dt.timestamp() * 1000)
-    except Exception:
-        return fallback_ms
+def _extract_sentiment(upvotes: int, downvotes: int) -> Optional[str]:
+    """Derive sentiment from CryptoCompare community votes.
 
-
-# Need asyncio for TimeoutError reference
-import asyncio
+    Returns "bullish", "bearish", or None if no clear signal.
+    """
+    if upvotes == 0 and downvotes == 0:
+        return None
+    if upvotes > downvotes:
+        return "bullish"
+    if downvotes > upvotes:
+        return "bearish"
+    return None

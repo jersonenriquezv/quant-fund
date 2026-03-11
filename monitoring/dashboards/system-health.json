@@ -1,7 +1,9 @@
 {
   "uid": "system-health",
   "title": "System Health",
-  "tags": ["system"],
+  "tags": [
+    "system"
+  ],
   "timezone": "browser",
   "refresh": "30s",
   "time": {
@@ -13,19 +15,58 @@
       "id": 1,
       "title": "Health Status",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
-      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
       "targets": [
         {
           "rawSql": "SELECT created_at AS time, value AS \"Health\" FROM bot_metrics WHERE metric_name = 'health_status' ORDER BY created_at DESC LIMIT 1",
           "format": "time_series",
-          "refId": "A"
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ],
       "fieldConfig": {
         "defaults": {
           "mappings": [
-            { "type": "value", "options": { "0": { "text": "DEGRADED", "color": "red" }, "1": { "text": "ALL OK", "color": "green" } } }
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "DEGRADED",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "ALL OK",
+                  "color": "green"
+                }
+              }
+            }
           ]
         }
       }
@@ -34,13 +75,40 @@
       "id": 2,
       "title": "Uptime % (24h)",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
-      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
       "targets": [
         {
           "rawSql": "SELECT ROUND(100.0 * SUM(CASE WHEN value = 1 THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) AS \"Uptime %\" FROM bot_metrics WHERE metric_name = 'health_status' AND created_at > NOW() - INTERVAL '24 hours'",
           "format": "table",
-          "refId": "A"
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ],
       "fieldConfig": {
@@ -49,9 +117,18 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "yellow", "value": 95 },
-              { "color": "green", "value": 99 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 95
+              },
+              {
+                "color": "green",
+                "value": 99
+              }
             ]
           }
         }
@@ -61,13 +138,40 @@
       "id": 3,
       "title": "WebSocket Reconnections",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
-      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
       "targets": [
         {
           "rawSql": "SELECT COUNT(*) AS \"Reconnections (24h)\" FROM bot_metrics WHERE metric_name = 'ws_reconnection' AND created_at > NOW() - INTERVAL '24 hours'",
           "format": "table",
-          "refId": "A"
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ],
       "fieldConfig": {
@@ -75,9 +179,18 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 5 },
-              { "color": "red", "value": 20 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 5
+              },
+              {
+                "color": "red",
+                "value": 20
+              }
             ]
           }
         }
@@ -87,13 +200,40 @@
       "id": 4,
       "title": "Pipeline Latency (ms)",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
-      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 4
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
       "targets": [
         {
           "rawSql": "SELECT created_at AS time, value AS \"Pipeline Latency\" FROM bot_metrics WHERE metric_name = 'pipeline_latency_ms' AND $__timeFilter(created_at) ORDER BY created_at",
           "format": "time_series",
-          "refId": "A"
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ],
       "fieldConfig": {
@@ -106,9 +246,18 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 1000 },
-              { "color": "red", "value": 5000 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1000
+              },
+              {
+                "color": "red",
+                "value": 5000
+              }
             ]
           }
         }
@@ -118,13 +267,40 @@
       "id": 5,
       "title": "Claude API Latency (ms)",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
-      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 4
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
       "targets": [
         {
           "rawSql": "SELECT created_at AS time, value AS \"Claude Latency\" FROM bot_metrics WHERE metric_name = 'claude_latency_ms' AND $__timeFilter(created_at) ORDER BY created_at",
           "format": "time_series",
-          "refId": "A"
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ],
       "fieldConfig": {
@@ -137,9 +313,18 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 10000 },
-              { "color": "red", "value": 25000 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 10000
+              },
+              {
+                "color": "red",
+                "value": 25000
+              }
             ]
           }
         }
@@ -149,13 +334,40 @@
       "id": 6,
       "title": "OKX Order Latency (ms)",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
-      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 12
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
       "targets": [
         {
           "rawSql": "SELECT created_at AS time, value AS \"OKX Latency\" FROM bot_metrics WHERE metric_name = 'okx_order_latency_ms' AND $__timeFilter(created_at) ORDER BY created_at",
           "format": "time_series",
-          "refId": "A"
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ],
       "fieldConfig": {
@@ -168,9 +380,18 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 2000 },
-              { "color": "red", "value": 5000 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 2000
+              },
+              {
+                "color": "red",
+                "value": 5000
+              }
             ]
           }
         }
@@ -180,13 +401,40 @@
       "id": 7,
       "title": "WebSocket Reconnections Timeline",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
-      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 12
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
       "targets": [
         {
           "rawSql": "SELECT DATE_TRUNC('hour', created_at) AS time, COUNT(*) AS \"Reconnections\" FROM bot_metrics WHERE metric_name = 'ws_reconnection' AND $__timeFilter(created_at) GROUP BY DATE_TRUNC('hour', created_at) ORDER BY time",
           "format": "time_series",
-          "refId": "A"
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ],
       "fieldConfig": {
@@ -198,8 +446,14 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 5 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
             ]
           }
         }
@@ -209,19 +463,56 @@
       "id": 8,
       "title": "Health Status Over Time",
       "type": "state-timeline",
-      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 20 },
-      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 20
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
       "targets": [
         {
           "rawSql": "SELECT created_at AS time, CASE WHEN value = 1 THEN 'OK' ELSE 'DOWN' END AS \"Status\" FROM bot_metrics WHERE metric_name = 'health_status' AND $__timeFilter(created_at) ORDER BY created_at",
           "format": "time_series",
-          "refId": "A"
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ],
       "fieldConfig": {
         "defaults": {
           "mappings": [
-            { "type": "value", "options": { "OK": { "color": "green" }, "DOWN": { "color": "red" } } }
+            {
+              "type": "value",
+              "options": {
+                "OK": {
+                  "color": "green"
+                },
+                "DOWN": {
+                  "color": "red"
+                }
+              }
+            }
           ]
         }
       }

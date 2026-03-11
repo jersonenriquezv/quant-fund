@@ -113,6 +113,15 @@ class PromptBuilder:
         # Human-readable confluences
         confluence_lines = self._format_confluences(setup.confluences, setup.direction)
 
+        # HTF position trade note
+        htf_note = ""
+        if setup.ob_timeframe in ("4h", "1h"):
+            htf_note = (
+                "\n- **MODE: HIGHER TIMEFRAME POSITION TRADE** — "
+                "Weight setup quality and macro structure more heavily than short-term noise. "
+                "This is a multi-day campaign, not an intraday scalp."
+            )
+
         return (
             f"## Trade Setup\n"
             f"- Pair: {setup.pair}\n"
@@ -126,6 +135,7 @@ class PromptBuilder:
             f"- HTF Bias: {setup.htf_bias} ({'aligned' if self._is_htf_aligned(setup) else 'COUNTER-TREND'})\n"
             f"- OB Timeframe: {setup.ob_timeframe}\n"
             f"- Confluences:\n{confluence_lines}"
+            f"{htf_note}"
         )
 
     @staticmethod
@@ -354,7 +364,8 @@ class PromptBuilder:
         if s.headlines:
             lines.append("Recent headlines:")
             for h in s.headlines:
-                lines.append(f'- "{h.title}" ({h.source}, {h.category})')
+                tag = f", {h.sentiment}" if h.sentiment else ""
+                lines.append(f'- "{h.title}" ({h.source}{tag})')
 
         return "\n".join(lines)
 

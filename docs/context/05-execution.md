@@ -1,6 +1,6 @@
 # Execution Service (Layer 5)
-> Última actualización: 2026-03-10 (Max slippage guard: close if entry slippage > 0.3%.)
-> Estado: **Fase 1 — COMPLETADA**. Entry + SL + TP atómicos (attached). Breakeven + trailing SL via price polling.
+> Última actualización: 2026-03-11 (HTF Campaign Trading: CampaignMonitor con pyramid adds y trailing SL en 4H swing levels.)
+> Estado: **Fase 1 — COMPLETADA**. Entry + SL + TP atómicos (attached). Breakeven + trailing SL via price polling. CampaignMonitor para HTF position trades.
 
 El brazo ejecutor del bot. Recibe trades aprobados por Risk Service y los ejecuta en OKX via ccxt.
 
@@ -9,8 +9,11 @@ El brazo ejecutor del bot. Recibe trades aprobados por Risk Service y los ejecut
 ```
 ExecutionService (facade)
 ├── OrderExecutor     — wrapper ccxt para órdenes (limit, stop-market, TP, cancel)
-├── PositionMonitor   — loop async que gestiona el ciclo de vida de posiciones
-└── ManagedPosition   — estado mutable de cada posición (modelo interno)
+├── PositionMonitor   — loop async que gestiona el ciclo de vida de posiciones intraday
+├── ManagedPosition   — estado mutable de cada posición intraday (modelo interno)
+└── CampaignMonitor   — loop async para HTF position trades (pyramid adds + trailing SL)
+    ├── PositionCampaign — estado mutable de la campaña (initial + adds + SL)
+    └── CampaignAdd      — datos de un add individual
 ```
 
 ## Flujo de una operación
@@ -128,7 +131,45 @@ Al startup, `sync_exchange_positions()` consulta OKX por posiciones abiertas. La
 | `service.py` | Facade — execute(), start(), stop(), health(). Position adoption converts contracts→base. `_emit_metric()` wired to executor for Grafana. Accepts `on_sl_hit` callback for failed OB tracking. Sends ORDER PLACED Telegram notification on successful order placement. |
 | `executor.py` | Wrapper ccxt — place/cancel/fetch orders. Contracts conversion (`_to_contracts`, `contracts_to_base`). Attached SL/TP on entry. Algo cancel fallback. `find_pending_algo_orders()`. Optional `metrics_callback` emits `okx_order_latency_ms` per order. |
 | `monitor.py` | Background loop — attached SL/TP discovery + manual fallback, breakeven + trailing SL via price polling. Post-fill SL distance check (`sl_too_close` close). Slippage guard (`excessive_slippage` close). Sends TRADE CLOSED + EMERGENCY Telegram notifications. |
-| `models.py` | ManagedPosition (SL/TP IDs, breakeven + trailing tracking) |
+| `models.py` | ManagedPosition (intraday) + PositionCampaign (HTF) + CampaignAdd (pyramid entries) |
+| `campaign_monitor.py` | Background loop para HTF campaigns — entry fill tracking, pyramid adds, trailing SL en 4H swing levels, SL vanished fallback, timeout 7d. Persiste en PostgreSQL `campaigns` table. Notifica CAMPAIGN CLOSED via AlertManager. |
+
+## HTF Campaign Monitor (`campaign_monitor.py`)
+
+Position trades en 4H con pyramid adds y trailing SL. Separado del PositionMonitor intraday.
+
+### Lifecycle
+
+```
+pending_initial ──[fill]──────> active        (place SL, no TP)
+pending_initial ──[timeout 24h]> closed       (cancel entry)
+active ──[add fill]───────────> active        (update SL for total size)
+active ──[SL fills]───────────> closed        (trailing SL hit)
+active ──[timeout 7d]─────────> closed        (max duration)
+```
+
+### Diferencias clave vs intraday
+- **Sin TP orders** — sale solo via trailing SL o timeout
+- **Pyramid adds:** hasta 3 adds con margen decreciente ($30 initial → $15 → $10 → $5 = $60 total)
+- **Trailing SL:** sigue 4H swing lows (long) / swing highs (short) via `get_htf_swing_levels()`
+- **Un solo SL** cubre toda la posición stacked (OKX net mode)
+- **Entry timeout:** 24h para limit orders HTF (vs 4h intraday)
+- **Duration timeout:** 7 días (vs 12h intraday)
+
+### Pyramid adds
+- Condiciones: (1) `len(adds) < HTF_MAX_ADDS`, (2) campaign profitable >= `HTF_ADD_MIN_RR` (1.0 R:R), (3) nuevo setup en misma dirección
+- Margen decreciente: add 1 = $15, add 2 = $10, add 3 = $5
+- Después de fill de add: SL se reemplaza para cubrir total_size
+- Add timeout: 4h (después se cancela, campaign sigue)
+
+### Persistencia
+- **PostgreSQL:** `insert_campaign()` al activarse, `update_campaign()` al cerrarse
+- **Redis:** `set_bot_state("htf_campaign", ...)` con datos de la campaña activa (para dashboard)
+- **Risk Service:** `on_trade_opened/closed/cancelled` igual que intraday
+
+### Modelos (`models.py`)
+- **PositionCampaign** — estado de la campaña: phase, initial entry/SL, weighted entry (VWAP), total_size, adds list, campaign SL, PnL. Métodos: `update_weighted_entry()`, `get_add_margin(n)`, `current_rr()`.
+- **CampaignAdd** — datos de un pyramid add individual: add_number, margin, size, entry/actual price, filled status, order_id.
 
 ## Settings
 
@@ -141,6 +182,14 @@ Al startup, `sync_exchange_positions()` consulta OKX por posiciones abiertas. La
 | `MAX_TRADE_DURATION_SECONDS` | 43200 (12h) | Duración máxima trade swing |
 | `MAX_TRADE_DURATION_QUICK` | 14400 (4h) | Duración máxima quick |
 | `MAX_SLIPPAGE_PCT` | 0.003 (0.3%) | Slippage máximo antes de cerrar (live only) |
+| `HTF_CAMPAIGN_ENABLED` | false | Master switch para HTF campaigns (env var) |
+| `HTF_INITIAL_MARGIN` | $30 | Margen de la entry inicial |
+| `HTF_ADD1_MARGIN` / `ADD2` / `ADD3` | $15 / $10 / $5 | Margen decreciente por pyramid add |
+| `HTF_MAX_ADDS` | 3 | Máximo de pyramid adds (4 entries total) |
+| `HTF_ADD_MIN_RR` | 1.0 | R:R mínimo antes de permitir primer add |
+| `HTF_MAX_CAMPAIGN_DURATION` | 604800 (7d) | Duración máxima de la campaña |
+| `HTF_ENTRY_TIMEOUT_SECONDS` | 86400 (24h) | Timeout de entry para limit orders HTF |
+| `HTF_MAX_CAMPAIGNS` | 1 | Máximo de campañas concurrentes |
 
 ## Live Test Script
 

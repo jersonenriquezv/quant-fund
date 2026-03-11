@@ -298,6 +298,19 @@ class AlertManager:
         )
         await self.alert(AlertPriority.CRITICAL, "trade_lifecycle", msg)
 
+    async def notify_campaign_closed(self, campaign) -> None:
+        """HTF campaign closed — CRITICAL priority."""
+        reason_label = (campaign.close_reason or "unknown").upper()
+        pnl_emoji = "\U0001f4b0" if campaign.pnl_pct >= 0 else "\U0001f534"
+        msg = (
+            f"{pnl_emoji} <b>CAMPAIGN CLOSED — {reason_label}</b>\n"
+            f"{campaign.pair} {campaign.direction.upper()} (HTF)\n"
+            f"P&amp;L: {campaign.pnl_pct*100:+.2f}% (${campaign.pnl_usd:+.2f})\n"
+            f"Adds: {len(campaign.adds)} | Duration: "
+            f"{(campaign.closed_at - campaign.created_at) // 3600}h"
+        )
+        await self.alert(AlertPriority.CRITICAL, "trade_lifecycle", msg)
+
     async def notify_emergency(self, pos, reason: str) -> None:
         """Emergency event — EMERGENCY priority with retry."""
         msg = (
@@ -446,6 +459,49 @@ class AlertManager:
             f"Daily DD: {daily_dd_pct*100:.1f}% — approaching limit ({limit_pct*100:.0f}%)"
         )
         await self.alert(AlertPriority.WARNING, "risk_warning", msg)
+
+    async def notify_signal(self, setup, approval, decision) -> None:
+        """Signal mode: send rich trade signal without executing.
+
+        Compact format with all info needed to open manually.
+        """
+        # SL distance %
+        sl_dist = abs(setup.entry_price - setup.sl_price) / setup.entry_price * 100
+        # TP distance %
+        tp_dist = abs(setup.tp2_price - setup.entry_price) / setup.entry_price * 100
+        # R:R
+        risk = abs(setup.entry_price - setup.sl_price)
+        reward = abs(setup.tp2_price - setup.entry_price)
+        rr = reward / risk if risk > 0 else 0
+
+        # Confluences — short joined string
+        conf_str = ", ".join(setup.confluences) if setup.confluences else "—"
+
+        # AI line
+        if decision and decision.confidence > 0:
+            pct = int(decision.confidence * 100)
+            # Trim reasoning to keep message short
+            reason = decision.reasoning[:120]
+            ai_line = f"AI: {pct}% — {reason}"
+        else:
+            ai_line = f"AI: bypass ({setup.setup_type})"
+
+        # Direction arrow
+        arrow = "\u2b06" if setup.direction == "long" else "\u2b07"
+
+        msg = (
+            f"\U0001f4e1 <b>SIGNAL</b> {arrow} {setup.pair} {setup.direction.upper()}\n"
+            f"<b>{setup.setup_type.upper()}</b> | R:R 1:{rr:.1f}\n"
+            f"\n"
+            f"Entry: <code>${setup.entry_price:,.2f}</code>\n"
+            f"SL: <code>${setup.sl_price:,.2f}</code> ({sl_dist:.2f}%)\n"
+            f"TP: <code>${setup.tp2_price:,.2f}</code> (+{tp_dist:.2f}%)\n"
+            f"Size: {approval.position_size:.6f} @ {int(approval.leverage)}x\n"
+            f"\n"
+            f"{conf_str}\n"
+            f"{ai_line}"
+        )
+        await self.alert(AlertPriority.CRITICAL, "trade_lifecycle", msg)
 
     async def notify_health_down(self, components: list[str]) -> None:
         """Infrastructure component down — WARNING priority."""

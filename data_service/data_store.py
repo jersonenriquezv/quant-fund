@@ -454,6 +454,33 @@ class PostgresStore:
                 ON cvd_history(pair, timestamp DESC)
             """)
 
+            # HTF campaigns table
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS campaigns (
+                    id SERIAL PRIMARY KEY,
+                    campaign_id VARCHAR(20) NOT NULL,
+                    pair VARCHAR(20) NOT NULL,
+                    direction VARCHAR(5) NOT NULL,
+                    initial_setup_type VARCHAR(10),
+                    initial_entry_price DOUBLE PRECISION,
+                    weighted_entry DOUBLE PRECISION,
+                    total_size DOUBLE PRECISION,
+                    total_margin DOUBLE PRECISION,
+                    adds_count INT DEFAULT 0,
+                    adds_detail JSONB,
+                    current_sl_price DOUBLE PRECISION,
+                    ai_confidence DOUBLE PRECISION,
+                    htf_bias VARCHAR(10),
+                    pnl_usd DOUBLE PRECISION,
+                    pnl_pct DOUBLE PRECISION,
+                    close_reason VARCHAR(20),
+                    opened_at TIMESTAMP DEFAULT NOW(),
+                    closed_at TIMESTAMP,
+                    status VARCHAR(15) DEFAULT 'open',
+                    UNIQUE(campaign_id)
+                )
+            """)
+
         logger.info("PostgreSQL tables verified/created")
 
     # --- Candle Storage ---
@@ -641,6 +668,100 @@ class PostgresStore:
                     return False
             except psycopg2.Error as e:
                 logger.error(f"PostgreSQL trade update failed: id={trade_id} {e}")
+                return False
+        return False
+
+    # --- Campaign Storage ---
+
+    def insert_campaign(self, campaign) -> int | None:
+        """Insert a new HTF campaign record. Returns DB id or None."""
+        import json as _json
+        for attempt in range(2):
+            if not self._ensure_connected():
+                return None
+            try:
+                adds_detail = _json.dumps([{
+                    "add_number": a.add_number,
+                    "margin": a.margin,
+                    "entry_price": a.entry_price,
+                    "actual_entry_price": a.actual_entry_price,
+                    "size": a.size,
+                    "filled": a.filled,
+                } for a in campaign.adds]) if campaign.adds else "[]"
+
+                with self._conn.cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO campaigns
+                           (campaign_id, pair, direction, initial_setup_type,
+                            initial_entry_price, weighted_entry, total_size,
+                            total_margin, adds_count, adds_detail,
+                            current_sl_price, ai_confidence, htf_bias,
+                            opened_at, status)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), 'open')
+                           RETURNING id""",
+                        (campaign.campaign_id, campaign.pair, campaign.direction,
+                         campaign.initial_setup_type, campaign.initial_entry_price,
+                         campaign.weighted_entry, campaign.total_size,
+                         campaign.total_margin, len(campaign.adds), adds_detail,
+                         campaign.current_sl_price, campaign.ai_confidence,
+                         campaign.htf_bias),
+                    )
+                    row = cur.fetchone()
+                    db_id = row[0] if row else None
+                logger.info(f"PostgreSQL: inserted campaign id={db_id} {campaign.pair}")
+                return db_id
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                logger.warning(f"PostgreSQL campaign insert error (attempt {attempt+1}): {e}")
+                self._conn = None
+                if attempt == 1:
+                    return None
+            except psycopg2.Error as e:
+                logger.error(f"PostgreSQL campaign insert failed: {e}")
+                return None
+        return None
+
+    def update_campaign(self, campaign) -> bool:
+        """Update a campaign record on close."""
+        import json as _json
+        db_id = campaign.db_campaign_id
+        if db_id is None:
+            return False
+
+        adds_detail = _json.dumps([{
+            "add_number": a.add_number,
+            "margin": a.margin,
+            "entry_price": a.entry_price,
+            "actual_entry_price": a.actual_entry_price,
+            "size": a.size,
+            "filled": a.filled,
+        } for a in campaign.adds]) if campaign.adds else "[]"
+
+        for attempt in range(2):
+            if not self._ensure_connected():
+                return False
+            try:
+                with self._conn.cursor() as cur:
+                    cur.execute(
+                        """UPDATE campaigns SET
+                           weighted_entry = %s, total_size = %s, total_margin = %s,
+                           adds_count = %s, adds_detail = %s, current_sl_price = %s,
+                           pnl_usd = %s, pnl_pct = %s, close_reason = %s,
+                           closed_at = NOW(), status = 'closed'
+                           WHERE id = %s""",
+                        (campaign.weighted_entry, campaign.total_size,
+                         campaign.total_margin, len(campaign.adds), adds_detail,
+                         campaign.current_sl_price, campaign.pnl_usd,
+                         campaign.pnl_pct, campaign.close_reason, db_id),
+                    )
+                logger.info(f"PostgreSQL: updated campaign id={db_id} status=closed")
+                return True
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                logger.warning(f"PostgreSQL campaign update error (attempt {attempt+1}): {e}")
+                self._conn = None
+                if attempt == 1:
+                    return False
+            except psycopg2.Error as e:
+                logger.error(f"PostgreSQL campaign update failed: {e}")
                 return False
         return False
 

@@ -1,6 +1,6 @@
 # AI Service
-> Última actualización: 2026-03-10
-> Estado: implementado (completo, integrado en main.py). Pre-filter determinístico (funding + F&G + CVD). HTF bias es contexto para Claude, no hard gate. AI obligatorio en todas las profiles. Setup dedup cache. News sentiment (F&G + headlines) como nuevo factor. CVD interpretation differentiated by setup type (reversal vs continuation).
+> Última actualización: 2026-03-11
+> Estado: implementado (completo, integrado en main.py). Pre-filter determinístico (funding + F&G + CVD). HTF bias es contexto para Claude, no hard gate. AI obligatorio en todas las profiles. Setup dedup cache. News sentiment (F&G + headlines) como nuevo factor. CVD interpretation differentiated by setup type (reversal vs continuation). HTF position trade note en prompt.
 
 ## Qué hace (30 segundos)
 El AI Service es el consultor senior del sistema. Recibe cada trade setup del Strategy Service y lo pasa por Claude (Sonnet) para que evalúe si el contexto de mercado apoya ejecutarlo. Claude analiza funding rate, open interest, CVD, liquidaciones, whale movements y precio reciente. Si confidence >= 0.60 y approved=true, el trade pasa al Risk Service. Si no, se descarta.
@@ -66,6 +66,7 @@ AIDecision { confidence, approved, reasoning, adjustments, warnings }
 - Interpreta funding rate: normal/extreme basado en `FUNDING_EXTREME_THRESHOLD` (0.03%)
 - OI marcado como snapshot-only (sin tendencia)
 - Maneja datos faltantes gracefully ("Not available")
+- **HTF position trade note:** Cuando `setup.ob_timeframe` es "4h" o "1h", agrega nota al prompt indicando "MODE: HIGHER TIMEFRAME POSITION TRADE" — instruye a Claude a pesar setup quality y macro structure por encima de ruido de corto plazo
 
 ### `ai_service/claude_client.py` — Wrapper del API
 - Clase: `ClaudeClient`

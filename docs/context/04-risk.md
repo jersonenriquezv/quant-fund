@@ -1,6 +1,6 @@
 # Risk Service
 > Última actualización: 2026-03-09
-> Estado: implementado (completo, integrado en main.py). TRADE_CAPITAL_PCT sizing (reemplaza FIXED_TRADE_MARGIN).
+> Estado: implementado (completo, integrado en main.py). FIXED_TRADE_MARGIN sizing ($20 margin × leverage = notional).
 
 ## Qué hace (30 segundos)
 El Risk Service es el guardián del capital. Antes de que cualquier trade se ejecute, pasa por 6 checks obligatorios (guardrails) y un cálculo de tamaño de posición. Si cualquier check falla, el trade NO se ejecuta. Sin excepciones.
@@ -78,7 +78,7 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 - Compone: PositionSizer + Guardrails + RiskStateTracker
 - **Método principal:** `check(setup: TradeSetup) -> RiskApproval`
   1. Corre los 6 guardrails en orden (fail fast)
-  2. **Position sizing:** `notional = capital × TRADE_CAPITAL_PCT`, `leverage = MAX_LEVERAGE`, `position_size = notional / entry_price`. Ejemplo: 15% de $106 = $15.90 notional, a 7x = $2.27 margin.
+  2. **Position sizing:** Si `FIXED_TRADE_MARGIN > 0`: `margin = $20`, `notional = margin × leverage`, `position_size = notional / entry_price`. Ejemplo: $20 × 5x = $100 notional. Fallback: `notional = capital × TRADE_CAPITAL_PCT`.
   3. Retorna RiskApproval (approved/rejected con razón)
 - **Para Execution Service (implementado):**
   - `on_trade_opened(pair, direction, entry_price, timestamp)` — llamado al colocar entry order
@@ -94,7 +94,8 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 
 | Setting | Default | Descripción |
 |---|---|---|
-| `TRADE_CAPITAL_PCT` | `0.15` (15%) | % del capital como notional por trade. e.g. 15% de $106 = $15.90 notional |
+| `FIXED_TRADE_MARGIN` | `20` ($20) | Margin fijo por trade en USDT. Notional = margin × leverage. $20 × 5x = $100. Si 0, usa TRADE_CAPITAL_PCT. |
+| `TRADE_CAPITAL_PCT` | `0.15` (15%) | Fallback: % del capital como notional por trade (solo si FIXED_TRADE_MARGIN=0) |
 | `MAX_LEVERAGE` | `7` | Apalancamiento máximo permitido |
 | `MAX_DAILY_DRAWDOWN` | `0.03` (3%) | DD diario máximo antes de pausar |
 | `MAX_WEEKLY_DRAWDOWN` | `0.05` (5%) | DD semanal máximo antes de pausar |
@@ -141,6 +142,7 @@ No crashea. El trade se registra igual (P&L, cooldown, trades_today), pero no re
 
 ## Cambios recientes
 
+- **2026-03-10** — `FIXED_TRADE_MARGIN` restored ($20 default). Was accidentally removed on 03-09, causing trades to enter with $3.25 margin instead of $20. Dual-mode: if FIXED_TRADE_MARGIN > 0, uses fixed margin; else falls back to TRADE_CAPITAL_PCT.
 - **2026-03-09** — `FIXED_TRADE_MARGIN` replaced by `TRADE_CAPITAL_PCT` (0.15 = 15% of capital as notional). Position sizing simplified: no more dual-mode (fixed vs risk-based). Leverage always `MAX_LEVERAGE`. `MIN_ORDER_SIZES` updated: BTC 0.01→0.0001, ETH 0.001 added (correct OKX contract sizes).
 - **2026-03-07** — `MIN_RISK_DISTANCE_PCT` 0.3% → 0.2%. Was blocking legitimate OB setups (e.g. ETH OB with $5.26 SL = 0.27%, rejected 4 times in one day despite AI approval at 0.75 confidence). 0.2% still filters noise trades ($4 min SL on ETH@$2000).
 - **2026-03-07** — `check_min_risk_distance()` guardrail: rechaza setups donde SL-entry < threshold del precio (noise trades). Pre-check de min order size en `main.py` antes de Claude (ahorra tokens API).

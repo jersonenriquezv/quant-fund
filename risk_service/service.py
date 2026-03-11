@@ -77,11 +77,21 @@ class RiskService:
                 )
 
         # --- Position sizing ---
-        # Notional = TRADE_CAPITAL_PCT % of balance. Leverage = MAX_LEVERAGE.
-        # e.g. 15% of $106 = $15.90 notional, at 5x leverage = $3.18 margin.
         capital = self._state.get_capital()
-        notional = capital * settings.TRADE_CAPITAL_PCT
         leverage = float(settings.MAX_LEVERAGE)
+
+        if settings.FIXED_TRADE_MARGIN > 0:
+            # Fixed margin mode: margin is fixed USDT, notional = margin × leverage.
+            # e.g. $20 margin × 5x = $100 notional.
+            margin = settings.FIXED_TRADE_MARGIN
+            notional = margin * leverage
+            risk_pct = margin / capital if capital > 0 else 0.0
+        else:
+            # Percentage mode: notional = capital × pct.
+            notional = capital * settings.TRADE_CAPITAL_PCT
+            margin = notional / leverage
+            risk_pct = settings.TRADE_CAPITAL_PCT
+
         position_size = notional / setup.entry_price
 
         if position_size <= 0 or capital <= 0:
@@ -112,11 +122,10 @@ class RiskService:
                 reason=reason,
             )
 
-        risk_pct = settings.TRADE_CAPITAL_PCT
         logger.info(
             f"Trade APPROVED: {setup.pair} {setup.direction} | "
-            f"size={position_size:.6f} leverage={leverage:.2f}x "
-            f"notional=${notional:.2f} ({risk_pct*100:.0f}% of ${capital:.0f})"
+            f"size={position_size:.6f} leverage={leverage:.1f}x "
+            f"margin=${margin:.2f} notional=${notional:.2f}"
         )
 
         return RiskApproval(

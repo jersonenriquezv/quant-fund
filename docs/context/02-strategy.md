@@ -1,6 +1,6 @@
 # Strategy Service
-> Última actualización: 2026-03-10 (Failed OB tracking implementado. Aggressive profile cooldown igualado al default: 3600s.)
-> Estado: implementado (completo, integrado en main.py). Audited — 3 CRITICAL fixes applied. Quick Setups C/D/E added. Setups F/G added.
+> Última actualización: 2026-03-11 (HTF Campaign evaluation: evaluate_htf() con Daily bias y params 4H más amplios.)
+> Estado: implementado (completo, integrado en main.py). Audited — 3 CRITICAL fixes applied. Quick Setups C/D/E added. Setups F/G added. HTF campaign setup detection.
 
 ## Qué hace (30 segundos)
 El Strategy Service es el detective del sistema. Analiza los datos del Data Service buscando patrones de Smart Money Concepts (SMC): rupturas de estructura (BOS/CHoCH), order blocks, fair value gaps, sweeps de liquidez, y zonas premium/discount. Cuando encuentra un setup con suficiente confluencia, genera un `TradeSetup` para evaluación.
@@ -21,7 +21,7 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
 - Bullish OB: última vela roja antes de impulso alcista + BOS
 - Bearish OB: última vela verde antes de impulso bajista + BOS
 - Entry: 75% del body de la vela (más cerca del precio para mayor fill rate)
-- Validación: volumen >1.5x promedio, máximo 48h de edad
+- Validación: volumen >1.5x promedio, máximo 48h de edad (overrideable via `max_age_hours` param — HTF campaigns use 168h/7 days)
 - Deduplicación por break asociado
 - **`break_timestamp`:** Cada OB almacena el timestamp de la vela que rompió estructura. La mitigación solo evalúa velas posteriores al `break_timestamp`, evitando que la propia vela de ruptura (o anteriores) invalide el OB prematuramente.
 - **Breaker Blocks:** Cuando un OB es mitigado (precio cierra a través de él), se crea un breaker block con dirección invertida. Bullish OB mitigado → bearish breaker (resistencia). Bearish OB mitigado → bullish breaker (soporte). Almacenados en `_breaker_blocks` dict, accesibles via `get_breaker_blocks(pair, timeframe)`. Expiran después de `OB_MAX_AGE_HOURS`.
@@ -29,7 +29,7 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
 ### `strategy_service/fvg.py` — Fair Value Gaps
 - Gap de 3 velas donde wick de vela 1 no toca wick de vela 3
 - Tamaño mínimo: 0.1% del precio
-- Expiración: 48 horas
+- Expiración: 48 horas (overrideable via `max_age_hours` param — HTF campaigns use 168h/7 days)
 - Tracking de fill parcial/total
 
 ### `strategy_service/liquidity.py` — Sweeps + Premium/Discount
@@ -96,6 +96,8 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 ### `strategy_service/service.py` — Facade
 - `StrategyService(data_service)` — obtiene candles del DataService
 - `evaluate(pair, candle)` — evalúa LTF candles: A → B → F → G → C → D → E, retorna `TradeSetup | None`
+- **`evaluate_htf(pair, candle)`** — evalúa 4H candles para HTF campaigns. Usa Daily candles para bias (en vez de 4H/1H). Corre los mismos detectores SMC en 4H data con params más amplios: OB age 168h (vs 48h), OB distance 10% (vs 5%), FVG age 168h, min risk distance 0.5% (vs 0.2%). Overrides temporales de settings durante evaluación. Retorna `TradeSetup | None`. Gate: `HTF_ENABLED_SETUPS` (default: A, B, F).
+- **`get_htf_swing_levels(pair)`** — retorna `(swing_highs, swing_lows)` de 4H data. Usado por CampaignMonitor para trailing SL.
 - **`ENABLED_SETUPS` gate** — después de detectar un setup, verifica `setup.setup_type in settings.ENABLED_SETUPS`. Si no está habilitado, logea debug y continúa evaluando el siguiente tipo. Default: `["setup_a", "setup_b", "setup_d", "setup_f"]`. D habilitado con 66.7% WR en combinado (+$2,553). C, E, G pendientes de validación. G descartado (6.2% WR).
 - Coordina todos los módulos internos
 - Quick setup cooldown tracking per (pair, setup_type)
@@ -125,6 +127,17 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 - `CASCADE_CVD_REVERSAL_LONG: float = 0.50` — buy dominance para reversal long (Setup E)
 - `CASCADE_CVD_REVERSAL_SHORT: float = 0.50` — buy dominance para reversal short (Setup E)
 - `CASCADE_MAX_AGE_SECONDS: int = 900` — cascade debe ser <15min (Setup E)
+
+**HTF Campaign settings:**
+- `HTF_CAMPAIGN_ENABLED: bool = False` — master switch para HTF campaigns (env var)
+- `HTF_CAMPAIGN_SIGNAL_TF: str = "4h"` — timeframe para detección de setups
+- `HTF_CAMPAIGN_BIAS_TF: str = "1d"` — timeframe para bias (Daily)
+- `HTF_ENABLED_SETUPS: list = ["setup_a", "setup_b", "setup_f"]` — setups habilitados en HTF
+- `HTF_OB_MAX_AGE_HOURS: int = 168` — 7 días (vs 48h intraday)
+- `HTF_OB_MAX_DISTANCE_PCT: float = 0.10` — 10% (vs 5% intraday)
+- `HTF_OB_PROXIMITY_PCT: float = 0.015` — 1.5% (vs 0.3% intraday)
+- `HTF_FVG_MAX_AGE_HOURS: int = 168` — 7 días
+- `HTF_MIN_RISK_DISTANCE_PCT: float = 0.005` — 0.5% (vs 0.2% intraday)
 
 ## Sistema de perfiles (`STRATEGY_PROFILE`)
 

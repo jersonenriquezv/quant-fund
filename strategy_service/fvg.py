@@ -43,7 +43,8 @@ class FVGDetector:
         self._active_fvgs: dict[str, list[FairValueGap]] = {}
 
     def update(self, candles: list[Candle], pair: str, timeframe: str,
-               current_time_ms: int) -> list[FairValueGap]:
+               current_time_ms: int,
+               max_age_hours: int | None = None) -> list[FairValueGap]:
         """Detect new FVGs and update fill status of existing ones.
 
         Args:
@@ -51,6 +52,7 @@ class FVGDetector:
             pair: e.g. "BTC/USDT"
             timeframe: e.g. "15m"
             current_time_ms: Current time in milliseconds for expiration check.
+            max_age_hours: Override for FVG_MAX_AGE_HOURS (used by HTF campaigns).
 
         Returns:
             List of currently active (non-expired, non-filled) FVGs.
@@ -75,7 +77,8 @@ class FVGDetector:
         self._update_fill_status(self._active_fvgs[key], candles)
 
         # Prune expired and fully filled
-        max_age_ms = settings.FVG_MAX_AGE_HOURS * 3600 * 1000
+        age_hours = max_age_hours if max_age_hours is not None else settings.FVG_MAX_AGE_HOURS
+        max_age_ms = age_hours * 3600 * 1000
         self._active_fvgs[key] = [
             fvg for fvg in self._active_fvgs[key]
             if not fvg.fully_filled

@@ -1,7 +1,10 @@
 {
   "uid": "ai-risk-analytics",
   "title": "AI & Risk Analytics",
-  "tags": ["ai", "risk"],
+  "tags": [
+    "ai",
+    "risk"
+  ],
   "timezone": "browser",
   "refresh": "5m",
   "time": {
@@ -13,13 +16,40 @@
       "id": 1,
       "title": "AI Approval Rate Over Time",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
-      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
       "targets": [
         {
           "rawSql": "SELECT DATE_TRUNC('day', created_at) AS time, ROUND(100.0 * SUM(CASE WHEN approved = true THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) AS \"Approval Rate %\" FROM ai_decisions WHERE $__timeFilter(created_at) GROUP BY DATE_TRUNC('day', created_at) ORDER BY time",
           "format": "time_series",
-          "refId": "A"
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ],
       "fieldConfig": {
@@ -34,9 +64,18 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "yellow", "value": 20 },
-              { "color": "green", "value": 30 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 20
+              },
+              {
+                "color": "green",
+                "value": 30
+              }
             ]
           }
         }
@@ -46,17 +85,48 @@
       "id": 2,
       "title": "AI Stats (All Time)",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 0 },
-      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
       "targets": [
         {
           "rawSql": "SELECT COUNT(*) AS \"Total Evaluations\", SUM(CASE WHEN approved = true THEN 1 ELSE 0 END) AS \"Approved\", ROUND(100.0 * SUM(CASE WHEN approved = true THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) AS \"Approval Rate %\", ROUND(AVG(CASE WHEN approved = true THEN confidence ELSE NULL END)::numeric, 2) AS \"Avg Confidence (Approved)\" FROM ai_decisions",
           "format": "table",
-          "refId": "A"
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ],
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
         "colorMode": "background"
       }
     },
@@ -64,13 +134,40 @@
       "id": 3,
       "title": "Confidence Distribution",
       "type": "histogram",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
-      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 4
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
       "targets": [
         {
           "rawSql": "SELECT confidence AS \"Confidence\" FROM ai_decisions WHERE confidence > 0",
           "format": "table",
-          "refId": "A"
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ],
       "options": {
@@ -82,13 +179,40 @@
       "id": 4,
       "title": "AI Approval Rate by Setup Type",
       "type": "bargauge",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
-      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
       "targets": [
         {
           "rawSql": "SELECT setup_type AS metric, ROUND(100.0 * SUM(CASE WHEN approved = true THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) AS value FROM ai_decisions WHERE setup_type IS NOT NULL GROUP BY setup_type ORDER BY setup_type",
           "format": "table",
-          "refId": "A"
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ],
       "fieldConfig": {
@@ -99,8 +223,14 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "blue", "value": null },
-              { "color": "green", "value": 30 }
+              {
+                "color": "blue",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 30
+              }
             ]
           }
         }
@@ -110,20 +240,49 @@
       "id": 5,
       "title": "Risk Events Timeline",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
-      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 12
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
       "targets": [
         {
           "rawSql": "SELECT DATE_TRUNC('day', created_at) AS time, event_type AS metric, COUNT(*) AS value FROM risk_events WHERE $__timeFilter(created_at) GROUP BY DATE_TRUNC('day', created_at), event_type ORDER BY time",
           "format": "time_series",
-          "refId": "A"
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ],
       "fieldConfig": {
         "defaults": {
           "custom": {
             "drawStyle": "bars",
-            "stacking": { "mode": "normal" },
+            "stacking": {
+              "mode": "normal"
+            },
             "fillOpacity": 50
           }
         }
@@ -133,13 +292,40 @@
       "id": 6,
       "title": "Guardrail Trigger Frequency",
       "type": "piechart",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
-      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
       "targets": [
         {
           "rawSql": "SELECT event_type AS metric, COUNT(*) AS value FROM risk_events GROUP BY event_type ORDER BY value DESC",
           "format": "table",
-          "refId": "A"
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ]
     },
@@ -147,13 +333,40 @@
       "id": 7,
       "title": "Recent AI Decisions",
       "type": "table",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
-      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
       "targets": [
         {
           "rawSql": "SELECT created_at AS \"Time\", pair AS \"Pair\", direction AS \"Dir\", setup_type AS \"Setup\", CASE WHEN approved THEN 'YES' ELSE 'NO' END AS \"Approved\", ROUND(confidence::numeric, 2) AS \"Confidence\", LEFT(reasoning, 120) AS \"Reasoning\" FROM ai_decisions ORDER BY created_at DESC LIMIT 50",
           "format": "table",
-          "refId": "A"
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ]
     }

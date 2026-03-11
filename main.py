@@ -24,6 +24,7 @@ from strategy_service import StrategyService
 from ai_service import AIService
 from risk_service import RiskService
 from execution_service import ExecutionService
+from execution_service.campaign_monitor import CampaignMonitor
 from shared.notifier import TelegramNotifier
 from shared.alert_manager import AlertManager
 
@@ -40,6 +41,7 @@ _strategy_service: StrategyService | None = None
 _ai_service: AIService | None = None
 _risk_service: RiskService | None = None
 _execution_service: ExecutionService | None = None
+_campaign_monitor: CampaignMonitor | None = None
 _notifier: TelegramNotifier | None = None
 _alert_manager: AlertManager | None = None
 
@@ -111,9 +113,45 @@ async def on_candle_confirmed(candle: Candle) -> None:
         f"close={candle.close} vol={candle.volume:.4f}"
     )
 
-    # Layer 2: Strategy Service — detect SMC setups
     if _strategy_service is None:
         return
+
+    # ============================================================
+    # HTF Campaign path — 4H candles trigger campaign evaluation
+    # ============================================================
+    if (settings.HTF_CAMPAIGN_ENABLED
+            and candle.timeframe == settings.HTF_CAMPAIGN_SIGNAL_TF
+            and _campaign_monitor is not None):
+
+        if _campaign_monitor.has_active_campaign(candle.pair):
+            # Active campaign on this pair — evaluate pyramid add
+            c = _campaign_monitor.campaign
+            if c is not None and c.phase == "active":
+                await _campaign_monitor.evaluate_add(c, candle)
+        else:
+            # No active campaign — check for new HTF setup
+            await _evaluate_htf_pipeline(candle)
+
+        _emit_metric("pipeline_latency_ms", (time.monotonic() - pipeline_start) * 1000, candle.pair)
+        # Don't return — still publish strategy state below and allow
+        # intraday pipeline to check blocking logic
+
+    # Block intraday when HTF campaign active on this pair
+    if (settings.HTF_CAMPAIGN_ENABLED
+            and _campaign_monitor is not None
+            and _campaign_monitor.has_active_campaign(candle.pair)):
+        logger.debug(
+            f"Intraday blocked: HTF campaign active on {candle.pair}"
+        )
+        _publish_strategy_state(candle.pair)
+        return
+
+    # ============================================================
+    # Intraday path (unchanged)
+    # ============================================================
+
+    # Block new HTF campaign if intraday position active on same pair
+    # (handled in _evaluate_htf_pipeline)
 
     setup = _strategy_service.evaluate(candle.pair, candle)
     _publish_strategy_state(candle.pair)
@@ -128,12 +166,7 @@ async def on_candle_confirmed(candle: Candle) -> None:
         f"confluences={setup.confluences}"
     )
 
-    # Note: setup_detected notification removed — too noisy.
-    # User only wants AI decisions and trade lifecycle events.
-
     # Pre-check: can this pair meet exchange minimum order size?
-    # Saves Claude API tokens on trades that would fail at execution anyway.
-    # Must account for leverage — margin × leverage = notional.
     min_size = settings.MIN_ORDER_SIZES.get(setup.pair, 0)
     if min_size > 0:
         capital = _risk_service._state.get_capital()
@@ -150,7 +183,6 @@ async def on_candle_confirmed(candle: Candle) -> None:
             return
 
     # Layer 3: AI Service — Claude filter
-    # Quick setups (C/D/E) bypass Claude — the data IS the signal
     decision = None
     if setup.setup_type in QUICK_SETUP_TYPES:
         decision = AIDecision(
@@ -164,11 +196,11 @@ async def on_candle_confirmed(candle: Candle) -> None:
     elif _ai_service is not None and _data_service is not None:
         decision = await _evaluate_with_claude(setup, candle)
         if decision is None:
-            return  # pre-filter rejected or Claude failed
+            return
         if not decision.approved:
             return
 
-    # Layer 4: Risk Service — enforce guardrails + position sizing
+    # Layer 4: Risk Service
     approval = None
     if _risk_service is not None:
         approval = _risk_service.check(setup)
@@ -179,14 +211,13 @@ async def on_candle_confirmed(candle: Candle) -> None:
                 "direction": setup.direction,
                 "reason": approval.reason,
             })
-            # Note: risk_rejected notification removed — too noisy.
             return
         logger.info(
             f"Risk approved: size={approval.position_size:.6f} "
             f"leverage={approval.leverage:.2f}x risk={approval.risk_pct*100:.1f}%"
         )
 
-    # Check if this OB already failed (SL hit on same entry/SL combo)
+    # Check if this OB already failed
     if _strategy_service is not None and _strategy_service.is_ob_failed(
         setup.pair, setup.sl_price, setup.entry_price
     ):
@@ -196,12 +227,72 @@ async def on_candle_confirmed(candle: Candle) -> None:
         )
         return
 
-    # Layer 5: Execution Service — place orders on exchange
-    if _execution_service is not None and approval is not None and approval.approved:
-        ai_confidence = decision.confidence if decision else 0.0
-        await _execution_service.execute(setup, approval, ai_confidence)
+    # Layer 5: Execution (or Signal)
+    if approval is not None and approval.approved:
+        if settings.SIGNAL_ONLY:
+            logger.info(f"Signal mode: sending signal for {setup.pair} {setup.direction}")
+            if _alert_manager is not None:
+                await _alert_manager.notify_signal(setup, approval, decision)
+        elif _execution_service is not None:
+            ai_confidence = decision.confidence if decision else 0.0
+            await _execution_service.execute(setup, approval, ai_confidence)
 
     _emit_metric("pipeline_latency_ms", (time.monotonic() - pipeline_start) * 1000, candle.pair)
+
+
+# ================================================================
+# HTF Campaign pipeline
+# ================================================================
+
+async def _evaluate_htf_pipeline(candle: Candle) -> None:
+    """Evaluate a 4H candle for HTF campaign entry.
+
+    Full pipeline: Strategy → AI → Risk → Campaign execution.
+    """
+    if (_strategy_service is None or _campaign_monitor is None
+            or _risk_service is None):
+        return
+
+    # Block if intraday position active on this pair
+    if (_execution_service is not None and _execution_service._monitor is not None
+            and candle.pair in _execution_service._monitor.positions):
+        pos = _execution_service._monitor.positions[candle.pair]
+        if pos.phase != "closed":
+            logger.debug(f"HTF blocked: intraday position active on {candle.pair}")
+            return
+
+    # Block if max campaigns reached
+    if _campaign_monitor.has_active_campaign():
+        return
+
+    setup = _strategy_service.evaluate_htf(candle.pair, candle)
+    if setup is None:
+        return
+
+    logger.info(
+        f"HTF campaign setup found: type={setup.setup_type} pair={setup.pair} "
+        f"direction={setup.direction} entry={setup.entry_price:.2f} "
+        f"sl={setup.sl_price:.2f} confluences={setup.confluences}"
+    )
+
+    # AI filter
+    decision = None
+    if _ai_service is not None and _data_service is not None:
+        decision = await _evaluate_with_claude(setup, candle)
+        if decision is None:
+            return
+        if not decision.approved:
+            return
+
+    # Risk check — uses same guardrails (DD, cooldown, max positions)
+    approval = _risk_service.check(setup)
+    if not approval.approved:
+        logger.info(f"HTF risk rejected: {approval.reason}")
+        return
+
+    # Execute campaign
+    ai_confidence = decision.confidence if decision else 0.0
+    await _campaign_monitor.execute_campaign(setup, ai_confidence)
 
 
 # ================================================================
@@ -395,6 +486,9 @@ def validate_config() -> bool:
     if not settings.ANTHROPIC_API_KEY:
         logger.warning("ANTHROPIC_API_KEY not set — AI filter disabled, trades will be auto-rejected")
 
+    if settings.SIGNAL_ONLY:
+        logger.info("SIGNAL MODE — signals only, no automatic execution")
+
     if settings.OKX_SANDBOX:
         logger.info("Running in DEMO mode (OKX sandbox / simulated trading)")
     else:
@@ -405,6 +499,14 @@ def validate_config() -> bool:
     logger.info(f"Risk per trade: {settings.RISK_PER_TRADE*100:.1f}%")
     logger.info(f"Max leverage: {settings.MAX_LEVERAGE}x")
     logger.info(f"Max daily DD: {settings.MAX_DAILY_DRAWDOWN*100:.1f}%")
+
+    if settings.HTF_CAMPAIGN_ENABLED:
+        logger.info(
+            f"HTF campaigns ENABLED: signal={settings.HTF_CAMPAIGN_SIGNAL_TF} "
+            f"bias={settings.HTF_CAMPAIGN_BIAS_TF} "
+            f"initial_margin=${settings.HTF_INITIAL_MARGIN} "
+            f"max_adds={settings.HTF_MAX_ADDS}"
+        )
 
     return ok
 
@@ -422,7 +524,7 @@ async def main() -> None:
         logger.error("Config validation failed. Exiting.")
         sys.exit(1)
 
-    global _data_service, _strategy_service, _ai_service, _risk_service, _execution_service, _notifier, _alert_manager
+    global _data_service, _strategy_service, _ai_service, _risk_service, _execution_service, _campaign_monitor, _notifier, _alert_manager
 
     # Create Telegram notifier + AlertManager wrapper
     _notifier = TelegramNotifier(settings.TELEGRAM_BOT_TOKEN, settings.TELEGRAM_CHAT_ID)
@@ -460,6 +562,20 @@ async def main() -> None:
     )
     await _execution_service.start()
 
+    # Create CampaignMonitor for HTF position trades (when enabled)
+    if settings.HTF_CAMPAIGN_ENABLED and _execution_service._executor is not None:
+        _campaign_monitor = CampaignMonitor(
+            executor=_execution_service._executor,
+            risk_service=_risk_service,
+            strategy_service=_strategy_service,
+            data_store=_data_service,
+            alert_manager=_alert_manager,
+        )
+        _campaign_monitor.start()
+        logger.info("HTF Campaign Monitor started")
+    elif settings.HTF_CAMPAIGN_ENABLED:
+        logger.warning("HTF campaigns enabled but execution disabled (no OKX key)")
+
     # Handle graceful shutdown
     shutdown_event = asyncio.Event()
 
@@ -484,6 +600,8 @@ async def main() -> None:
 
     # Graceful shutdown
     logger.info("Shutting down...")
+    if _campaign_monitor is not None:
+        await _campaign_monitor.stop()
     if _execution_service is not None:
         await _execution_service.stop()
     if _ai_service is not None:

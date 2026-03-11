@@ -55,7 +55,8 @@ class OrderBlockDetector:
     def update(self, candles: list[Candle],
                structure_breaks: list[StructureBreak],
                pair: str, timeframe: str,
-               current_time_ms: int) -> list[OrderBlock]:
+               current_time_ms: int,
+               max_age_hours: int | None = None) -> list[OrderBlock]:
         """Detect new OBs from structure breaks and update existing ones.
 
         Args:
@@ -64,6 +65,7 @@ class OrderBlockDetector:
             pair: e.g. "BTC/USDT"
             timeframe: e.g. "15m"
             current_time_ms: Current time in milliseconds.
+            max_age_hours: Override for OB_MAX_AGE_HOURS (used by HTF campaigns).
 
         Returns:
             List of currently active (non-mitigated, non-expired) OBs.
@@ -100,7 +102,8 @@ class OrderBlockDetector:
                 existing_bb_ts.add(bb.timestamp)
 
         # Prune mitigated and expired OBs
-        max_age_ms = settings.OB_MAX_AGE_HOURS * 3600 * 1000
+        age_hours = max_age_hours if max_age_hours is not None else settings.OB_MAX_AGE_HOURS
+        max_age_ms = age_hours * 3600 * 1000
         self._active_obs[key] = [
             ob for ob in self._active_obs[key]
             if not ob.mitigated

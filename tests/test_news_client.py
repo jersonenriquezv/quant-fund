@@ -1,9 +1,10 @@
 """
-Tests for data_service.news_client — Fear & Greed + headlines fetching.
+Tests for data_service.news_client — Fear & Greed + CryptoPanic headlines.
 
 Covers:
 - Fear & Greed parsing (valid, error, timeout)
-- Headlines parsing (valid, 403, empty)
+- CryptoPanic headlines parsing (valid, 403, empty, no API key)
+- Sentiment extraction from votes
 - NewsSentiment assembly
 - Pre-filter integration with sentiment data
 """
@@ -15,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from data_service.news_client import NewsClient, _parse_timestamp
+from data_service.news_client import NewsClient, _parse_iso_timestamp, _extract_sentiment
 from shared.models import NewsHeadline, NewsSentiment
 from config.settings import settings
 
@@ -123,43 +124,102 @@ class TestFearGreed:
 
 
 # ================================================================
-# Headlines
+# CryptoPanic Headlines
 # ================================================================
 
 class TestHeadlines:
+    def _cryptopanic_response(self, posts):
+        """Wrap posts in CryptoPanic response format."""
+        return {"results": posts}
+
+    def _make_post(self, title="BTC hits 100K", source="CoinDesk",
+                   published_at="2026-03-11T12:00:00Z", votes=None):
+        post = {
+            "title": title,
+            "source": {"title": source, "domain": "coindesk.com"},
+            "published_at": published_at,
+            "currencies": [{"code": "BTC", "title": "Bitcoin"}],
+            "kind": "news",
+        }
+        if votes is not None:
+            post["votes"] = votes
+        return post
+
     def test_valid_response(self):
         client = NewsClient(redis_store=FakeRedis())
-        resp = _mock_response(200, {
-            "articles": [
-                {"title": "BTC hits 100K", "source": "CoinDesk",
-                 "pubDate": "", "category": "bitcoin"},
-                {"title": "ETH upgrade", "source": "Decrypt",
-                 "pubDate": "", "category": "ethereum"},
-            ]
-        })
+        posts = [
+            self._make_post("BTC hits 100K", "CoinDesk"),
+            self._make_post("ETH upgrade live", "Decrypt"),
+        ]
+        resp = _mock_response(200, self._cryptopanic_response(posts))
 
-        with patch.object(client, '_get_session', return_value=_mock_session(resp)):
+        with patch.object(client, '_get_session', return_value=_mock_session(resp)), \
+             patch.object(settings, 'CRYPTOPANIC_API_KEY', 'test-key'):
             result = asyncio.run(client.fetch_headlines("BTC", limit=5))
 
         assert len(result) == 2
         assert result[0].title == "BTC hits 100K"
         assert result[0].source == "CoinDesk"
+        assert result[0].category == "BTC"
         assert isinstance(result[0], NewsHeadline)
+
+    def test_with_votes_bullish(self):
+        client = NewsClient(redis_store=FakeRedis())
+        posts = [self._make_post(votes={"positive": 10, "negative": 2})]
+        resp = _mock_response(200, self._cryptopanic_response(posts))
+
+        with patch.object(client, '_get_session', return_value=_mock_session(resp)), \
+             patch.object(settings, 'CRYPTOPANIC_API_KEY', 'test-key'):
+            result = asyncio.run(client.fetch_headlines("BTC"))
+
+        assert result[0].sentiment == "bullish"
+
+    def test_with_votes_bearish(self):
+        client = NewsClient(redis_store=FakeRedis())
+        posts = [self._make_post(votes={"positive": 1, "negative": 5})]
+        resp = _mock_response(200, self._cryptopanic_response(posts))
+
+        with patch.object(client, '_get_session', return_value=_mock_session(resp)), \
+             patch.object(settings, 'CRYPTOPANIC_API_KEY', 'test-key'):
+            result = asyncio.run(client.fetch_headlines("BTC"))
+
+        assert result[0].sentiment == "bearish"
+
+    def test_no_votes_returns_none_sentiment(self):
+        client = NewsClient(redis_store=FakeRedis())
+        posts = [self._make_post()]  # No votes key
+        resp = _mock_response(200, self._cryptopanic_response(posts))
+
+        with patch.object(client, '_get_session', return_value=_mock_session(resp)), \
+             patch.object(settings, 'CRYPTOPANIC_API_KEY', 'test-key'):
+            result = asyncio.run(client.fetch_headlines("BTC"))
+
+        assert result[0].sentiment is None
+
+    def test_no_api_key_returns_empty(self):
+        client = NewsClient(redis_store=FakeRedis())
+
+        with patch.object(settings, 'CRYPTOPANIC_API_KEY', ''):
+            result = asyncio.run(client.fetch_headlines("BTC"))
+
+        assert result == []
 
     def test_403_returns_empty(self):
         client = NewsClient(redis_store=FakeRedis())
         resp = _mock_response(403)
 
-        with patch.object(client, '_get_session', return_value=_mock_session(resp)):
+        with patch.object(client, '_get_session', return_value=_mock_session(resp)), \
+             patch.object(settings, 'CRYPTOPANIC_API_KEY', 'test-key'):
             result = asyncio.run(client.fetch_headlines("BTC"))
 
         assert result == []
 
-    def test_empty_articles(self):
+    def test_empty_results(self):
         client = NewsClient(redis_store=FakeRedis())
-        resp = _mock_response(200, {"articles": []})
+        resp = _mock_response(200, {"results": []})
 
-        with patch.object(client, '_get_session', return_value=_mock_session(resp)):
+        with patch.object(client, '_get_session', return_value=_mock_session(resp)), \
+             patch.object(settings, 'CRYPTOPANIC_API_KEY', 'test-key'):
             result = asyncio.run(client.fetch_headlines("ETH"))
 
         assert result == []
@@ -169,7 +229,8 @@ class TestHeadlines:
         session = AsyncMock()
         session.get = MagicMock(side_effect=Exception("timeout"))
 
-        with patch.object(client, '_get_session', return_value=session):
+        with patch.object(client, '_get_session', return_value=session), \
+             patch.object(settings, 'CRYPTOPANIC_API_KEY', 'test-key'):
             result = asyncio.run(client.fetch_headlines("BTC"))
 
         assert result == []
@@ -178,24 +239,25 @@ class TestHeadlines:
         redis = FakeRedis()
         cached = [
             {"title": "Cached headline", "source": "Test",
-             "timestamp": 1000, "category": "bitcoin"}
+             "timestamp": 1000, "category": "BTC", "sentiment": "bullish"}
         ]
         redis.set_bot_state("news:headlines:BTC", json.dumps(cached))
         client = NewsClient(redis_store=redis)
 
-        result = asyncio.run(client.fetch_headlines("BTC"))
+        with patch.object(settings, 'CRYPTOPANIC_API_KEY', 'test-key'):
+            result = asyncio.run(client.fetch_headlines("BTC"))
+
         assert len(result) == 1
         assert result[0].title == "Cached headline"
+        assert result[0].sentiment == "bullish"
 
     def test_respects_limit(self):
         client = NewsClient(redis_store=FakeRedis())
-        articles = [
-            {"title": f"Article {i}", "source": "Src", "pubDate": "", "category": "btc"}
-            for i in range(10)
-        ]
-        resp = _mock_response(200, {"articles": articles})
+        posts = [self._make_post(title=f"Article {i}") for i in range(10)]
+        resp = _mock_response(200, self._cryptopanic_response(posts))
 
-        with patch.object(client, '_get_session', return_value=_mock_session(resp)):
+        with patch.object(client, '_get_session', return_value=_mock_session(resp)), \
+             patch.object(settings, 'CRYPTOPANIC_API_KEY', 'test-key'):
             result = asyncio.run(client.fetch_headlines("BTC", limit=3))
 
         assert len(result) == 3
@@ -214,7 +276,7 @@ class TestFetchSentiment:
 
     def test_returns_sentiment_with_fg_and_headlines(self):
         client = NewsClient(redis_store=FakeRedis())
-        headlines = [NewsHeadline("Test", "Src", 1000, "bitcoin")]
+        headlines = [NewsHeadline("Test", "Src", 1000, "BTC", "bullish")]
 
         with patch.object(client, 'fetch_fear_greed', return_value=(30, "Fear")), \
              patch.object(client, 'fetch_headlines', return_value=headlines):
@@ -292,16 +354,38 @@ class TestPreFilterIntegration:
 
 
 # ================================================================
-# Timestamp parsing
+# Helpers
 # ================================================================
 
-class TestParseTimestamp:
+class TestParseIsoTimestamp:
     def test_empty_returns_fallback(self):
-        assert _parse_timestamp("", 999) == 999
+        assert _parse_iso_timestamp("", 999) == 999
 
-    def test_rfc2822_parses(self):
-        result = _parse_timestamp("Mon, 09 Mar 2026 12:00:00 +0000", 0)
+    def test_iso_format_parses(self):
+        result = _parse_iso_timestamp("2026-03-11T12:00:00Z", 0)
+        assert result > 0
+
+    def test_iso_with_timezone(self):
+        result = _parse_iso_timestamp("2026-03-11T12:00:00+00:00", 0)
         assert result > 0
 
     def test_invalid_returns_fallback(self):
-        assert _parse_timestamp("not-a-date", 42) == 42
+        assert _parse_iso_timestamp("not-a-date", 42) == 42
+
+
+class TestExtractSentiment:
+    def test_no_votes(self):
+        assert _extract_sentiment({}) is None
+        assert _extract_sentiment(None) is None
+
+    def test_bullish(self):
+        assert _extract_sentiment({"positive": 5, "negative": 1}) == "bullish"
+
+    def test_bearish(self):
+        assert _extract_sentiment({"positive": 1, "negative": 5}) == "bearish"
+
+    def test_tied_returns_none(self):
+        assert _extract_sentiment({"positive": 3, "negative": 3}) is None
+
+    def test_zero_votes_returns_none(self):
+        assert _extract_sentiment({"positive": 0, "negative": 0}) is None

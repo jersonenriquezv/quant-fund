@@ -425,12 +425,19 @@ class Settings:
     # ========================
     NEWS_SENTIMENT_ENABLED: bool = True
     NEWS_FEAR_GREED_URL: str = "https://api.alternative.me/fng/"
-    NEWS_HEADLINES_URL: str = "https://cryptocurrency.cv/api/news"
+    NEWS_HEADLINES_URL: str = "https://min-api.cryptocompare.com/data/v2/news/"
     NEWS_POLL_INTERVAL: int = 300                       # 5 minutes
     NEWS_FEAR_GREED_CACHE_TTL: int = 1800               # 30 minutes
     NEWS_HEADLINES_CACHE_TTL: int = 300                  # 5 minutes
     NEWS_EXTREME_FEAR_THRESHOLD: int = 5                # F&G < 5 → reject longs (only systemic crashes)
     NEWS_EXTREME_GREED_THRESHOLD: int = 85              # F&G > 85 → reject shorts
+
+    # ========================
+    # SIGNAL MODE — semi-manual trading
+    # ========================
+    # When True, bot detects setups and sends Telegram signals but does NOT
+    # execute. User opens trades manually; bot monitors via position adoption.
+    SIGNAL_ONLY: bool = os.getenv("SIGNAL_ONLY", "false").lower() == "true"
 
     # ========================
     # EXECUTION SERVICE
@@ -445,11 +452,47 @@ class Settings:
     MARGIN_MODE: str = "isolated"
     # Max seconds a trade can stay open (12 hours)
     MAX_TRADE_DURATION_SECONDS: int = int(os.getenv("MAX_TRADE_DURATION_SECONDS", "43200"))
-    # Percentage of capital to use as notional per trade.
-    # e.g. 0.15 = 15% of $106 balance = $15.90 notional per trade.
+    # Fixed margin per trade in USDT. Notional = margin × leverage.
+    # e.g. $20 margin × 5x = $100 notional per trade.
+    # Set to 0 to disable and use TRADE_CAPITAL_PCT instead.
+    FIXED_TRADE_MARGIN: float = float(os.getenv("FIXED_TRADE_MARGIN", "20"))
+    # Percentage of capital to use as notional per trade (fallback if FIXED_TRADE_MARGIN=0).
     TRADE_CAPITAL_PCT: float = float(os.getenv("TRADE_CAPITAL_PCT", "0.15"))
     # Sandbox: limit order tolerance from mark price (0.05% = fills like a market but with realistic slippage)
     SANDBOX_LIMIT_TOLERANCE_PCT: float = 0.0005
+
+    # ========================
+    # HTF CAMPAIGN TRADING — Position trades on 4H timeframe
+    # ========================
+    # Master switch — disabled by default, enable via env var after testing
+    HTF_CAMPAIGN_ENABLED: bool = os.getenv("HTF_CAMPAIGN_ENABLED", "false").lower() == "true"
+    # Timeframe for setup detection (OB/FVG/sweep detection)
+    HTF_CAMPAIGN_SIGNAL_TF: str = "4h"
+    # Timeframe for trend bias (Daily)
+    HTF_CAMPAIGN_BIAS_TF: str = "1d"
+    # Max concurrent campaigns (1 = one campaign at a time across all pairs)
+    HTF_MAX_CAMPAIGNS: int = 1
+    # Pyramid sizing — decreasing margin per add (total $60 if all fill)
+    HTF_INITIAL_MARGIN: float = float(os.getenv("HTF_INITIAL_MARGIN", "30"))
+    HTF_ADD1_MARGIN: float = float(os.getenv("HTF_ADD1_MARGIN", "15"))
+    HTF_ADD2_MARGIN: float = float(os.getenv("HTF_ADD2_MARGIN", "10"))
+    HTF_ADD3_MARGIN: float = float(os.getenv("HTF_ADD3_MARGIN", "5"))
+    # Max pyramid adds (3 adds + initial = 4 entries total)
+    HTF_MAX_ADDS: int = 3
+    # Campaign must be at this R:R before first add is allowed
+    HTF_ADD_MIN_RR: float = 1.0
+    # Max campaign duration (7 days in seconds)
+    HTF_MAX_CAMPAIGN_DURATION: int = int(os.getenv("HTF_MAX_CAMPAIGN_DURATION", "604800"))
+    # Entry timeout for HTF limit orders (24 hours)
+    HTF_ENTRY_TIMEOUT_SECONDS: int = int(os.getenv("HTF_ENTRY_TIMEOUT_SECONDS", "86400"))
+    # Enabled setup types for HTF campaigns
+    HTF_ENABLED_SETUPS: list = field(default_factory=lambda: ["setup_a", "setup_b", "setup_f"])
+    # Tuned OB/FVG params for 4H (wider age and proximity)
+    HTF_OB_MAX_AGE_HOURS: int = 168       # 7 days (vs 48h intraday)
+    HTF_OB_MAX_DISTANCE_PCT: float = 0.10  # 10% (vs 5% intraday)
+    HTF_OB_PROXIMITY_PCT: float = 0.015    # 1.5% (vs 0.3% intraday)
+    HTF_FVG_MAX_AGE_HOURS: int = 168       # 7 days
+    HTF_MIN_RISK_DISTANCE_PCT: float = 0.005  # 0.5% (vs 0.2% intraday)
     # Exchange minimum order sizes per pair (base currency).
     # Pre-check to avoid wasting Claude API tokens on impossible trades.
     # OKX BTC-USDT-SWAP: min 0.01 contracts × 0.01 BTC/contract = 0.0001 BTC.
