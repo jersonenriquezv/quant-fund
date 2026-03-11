@@ -41,8 +41,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    environment:
-
     volumes:
       - ./config/.env:/app/config/.env:ro
       - ./logs:/app/logs
