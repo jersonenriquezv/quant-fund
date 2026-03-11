@@ -66,17 +66,16 @@ class CVDSnapshot:
 
 
 @dataclass(frozen=True)
-class LiquidationEvent:
-    """Single liquidation event.
-    Primary source: Binance forceOrder WebSocket.
-    Secondary source: OKX OI drop >2% in 5min (proxy).
+class OIFlushEvent:
+    """OI flush event — detected when OI drops >2% in 5min window.
+    Indicates a liquidation cascade via OI proxy.
     """
     timestamp: int
     pair: str
     side: str               # "long" or "short"
     size_usd: float
     price: float
-    source: str             # "binance_forceOrder" or "oi_proxy"
+    source: str             # "oi_proxy"
 
 
 @dataclass(frozen=True)
@@ -129,9 +128,29 @@ class MarketSnapshot:
     funding: Optional[FundingRate] = None
     oi: Optional[OpenInterest] = None
     cvd: Optional[CVDSnapshot] = None
-    recent_liquidations: list[LiquidationEvent] = field(default_factory=list)
+    recent_oi_flushes: list[OIFlushEvent] = field(default_factory=list)
     whale_movements: list[WhaleMovement] = field(default_factory=list)
     news_sentiment: Optional[NewsSentiment] = None
+    health: Optional["SnapshotHealth"] = None
+
+
+@dataclass(frozen=True)
+class SourceFreshness:
+    """Freshness status of a single data source in MarketSnapshot."""
+    name: str
+    priority: str          # "critical", "supporting", "decorative"
+    age_ms: Optional[int]  # None if source unavailable
+    is_stale: bool         # True if age > threshold or unavailable
+
+
+@dataclass(frozen=True)
+class SnapshotHealth:
+    """Aggregate health of a MarketSnapshot — freshness + completeness."""
+    sources: tuple[SourceFreshness, ...]
+    completeness_pct: float          # 0.0-1.0 (fraction of sources available)
+    critical_sources_healthy: bool   # True only if ALL critical sources are fresh
+    stale_sources: tuple[str, ...]   # Names of stale sources
+    missing_sources: tuple[str, ...]  # Names of unavailable sources
 
 
 # ============================================================

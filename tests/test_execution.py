@@ -318,7 +318,7 @@ class TestEntryTimeout:
         monitor = PositionMonitor(executor, risk)
 
         pos = make_position()
-        pos.created_at = int(time.time()) - 22000  # Well past 6h
+        pos.created_at = int(time.time()) - 90000  # Well past 24h
         monitor.register(pos)
 
         executor.cancel_order = AsyncMock(return_value=True)

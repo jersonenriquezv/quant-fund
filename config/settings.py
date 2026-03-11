@@ -258,11 +258,19 @@ class Settings:
     OI_CHECK_INTERVAL: int = 300  # 5 minutos
     # Segundos entre checks de Etherscan
     ETHERSCAN_CHECK_INTERVAL: int = 300  # 5 minutos
-    # OI Liquidation Proxy — detects liquidation cascades via OI drops
-    # Minimum OI drop % in the window to flag as liquidation cascade
+    # OI Flush Detector — detects liquidation cascades via OI drops
+    # Minimum OI drop % in the window to flag as OI flush event
     OI_DROP_THRESHOLD_PCT: float = float(os.getenv("OI_DROP_THRESHOLD_PCT", "0.02"))  # 2%
     # Time window (seconds) to measure OI drops
     OI_DROP_WINDOW_SECONDS: int = int(os.getenv("OI_DROP_WINDOW_SECONDS", "300"))  # 5 min
+
+    # Staleness thresholds — 2× the polling interval.
+    # If a source's age exceeds this, it's marked stale in SnapshotHealth.
+    FUNDING_STALE_MS: int = 28800 * 2 * 1000      # 16h (2× FUNDING_RATE_INTERVAL)
+    OI_STALE_MS: int = 300 * 2 * 1000             # 10min (2× OI_CHECK_INTERVAL)
+    CVD_STALE_MS: int = 30_000                     # 30s (recomputed every 5s)
+    WHALE_STALE_MS: int = 300 * 2 * 1000           # 10min (2× ETHERSCAN_CHECK_INTERVAL)
+    NEWS_STALE_MS: int = 300 * 2 * 1000            # 10min (2× NEWS_POLL_INTERVAL)
 
     # Coinglass — future phase
     # COINGLASS_CHECK_INTERVAL: int = 60
@@ -447,7 +455,7 @@ class Settings:
     # EXECUTION SERVICE
     # ========================
     # Seconds to wait for entry order to fill before cancelling (swing setups)
-    ENTRY_TIMEOUT_SECONDS: int = int(os.getenv("ENTRY_TIMEOUT_SECONDS", "21600"))  # 6 hours
+    ENTRY_TIMEOUT_SECONDS: int = int(os.getenv("ENTRY_TIMEOUT_SECONDS", "86400"))  # 24 hours
     # Shorter timeout for quick setups (C/D/E)
     ENTRY_TIMEOUT_QUICK_SECONDS: int = int(os.getenv("ENTRY_TIMEOUT_QUICK_SECONDS", "3600"))  # 1 hour
     # Seconds between order status polls

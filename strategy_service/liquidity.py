@@ -39,7 +39,7 @@ class LiquiditySweep:
     wick_price: float           # How far the wick went
     close_price: float          # Where the candle closed
     volume_ratio: float         # Candle volume / average volume
-    had_liquidations: bool      # True if liquidation cascade detected
+    had_oi_flush: bool           # True if OI flush event detected
 
 
 @dataclass
@@ -288,10 +288,10 @@ class LiquidityAnalyzer:
         sweeps: list[LiquiditySweep] = []
         min_vol_ratio = settings.SWEEP_MIN_VOLUME_RATIO
 
-        # Check if there were recent liquidations
-        had_liquidations = False
-        if market_snapshot and market_snapshot.recent_liquidations:
-            had_liquidations = len(market_snapshot.recent_liquidations) > 0
+        # Check if there were recent OI flush events
+        had_oi_flush = False
+        if market_snapshot and market_snapshot.recent_oi_flushes:
+            had_oi_flush = len(market_snapshot.recent_oi_flushes) > 0
 
         for level in levels:
             if level.swept:
@@ -321,7 +321,7 @@ class LiquidityAnalyzer:
                                 wick_price=candle.high,
                                 close_price=candle.close,
                                 volume_ratio=vol_ratio,
-                                had_liquidations=had_liquidations,
+                                had_oi_flush=had_oi_flush,
                             ))
                             break
 
@@ -339,7 +339,7 @@ class LiquidityAnalyzer:
                                 wick_price=candle.low,
                                 close_price=candle.close,
                                 volume_ratio=vol_ratio,
-                                had_liquidations=had_liquidations,
+                                had_oi_flush=had_oi_flush,
                             ))
                             break
 

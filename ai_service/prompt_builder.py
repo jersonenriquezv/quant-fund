@@ -8,6 +8,8 @@ The prompt quality determines decision quality — this is the intellectual core
 from config.settings import settings
 from shared.models import TradeSetup, MarketSnapshot
 
+PROMPT_VERSION = "scoring_rubric_v2"
+
 _SYSTEM_PROMPT_TEMPLATE = """You are a trade filter for an automated crypto trading system. You evaluate whether detected setups have sufficient evidence to proceed. You do not predict market direction — you assess whether available data supports or contradicts the trade thesis.
 
 EVALUATION METHOD — Score each dimension 0-5:
@@ -119,7 +121,7 @@ class PromptBuilder:
             self._build_funding_section(snapshot),
             self._build_oi_section(snapshot),
             self._build_cvd_section(snapshot),
-            self._build_liquidation_section(snapshot),
+            self._build_oi_flush_section(snapshot),
             self._build_whale_section(snapshot),
             self._build_news_section(snapshot),
             self._build_price_context_section(candles_context),
@@ -202,7 +204,7 @@ class PromptBuilder:
                                     "CVD 15m positive (buy dominance)"),
             "cvd_aligned_bearish": ("SUPPORTING" if direction == "short" else "CONTEXT",
                                     "CVD 15m negative (sell dominance)"),
-            "liquidation_cascade": ("SUPPORTING", "Liquidation cascade detected (OI proxy)"),
+            "oi_flush": ("SUPPORTING", "OI flush event detected (OI proxy)"),
             "funding_negative_long_opportunity": ("SUPPORTING" if direction == "long" else "CONTEXT",
                                                   "Funding rate negative (short-side crowding)"),
             "funding_extreme_positive": ("SUPPORTING" if direction == "short" else "CONTEXT",
@@ -234,10 +236,10 @@ class PromptBuilder:
                     desc = f"Sweep volume {ratio} average ({'>= 2x' if tag == 'SUPPORTING' else '< 2x'})"
                 except ValueError:
                     tag, desc = "CONTEXT", c
-            elif c.startswith("liquidations_usd_"):
-                usd = c.replace("liquidations_usd_", "")
+            elif c.startswith("oi_flush_usd_"):
+                usd = c.replace("oi_flush_usd_", "")
                 try:
-                    tag, desc = "SUPPORTING", f"${float(usd):,.0f} in estimated liquidations"
+                    tag, desc = "SUPPORTING", f"${float(usd):,.0f} in estimated OI flush"
                 except ValueError:
                     tag, desc = "CONTEXT", c
             elif c in _LABELS:
@@ -304,26 +306,26 @@ class PromptBuilder:
             f"- Buy dominance: {buy_pct:.1f}%"
         )
 
-    def _build_liquidation_section(self, snapshot: MarketSnapshot) -> str:
-        liqs = snapshot.recent_liquidations
-        if not liqs:
+    def _build_oi_flush_section(self, snapshot: MarketSnapshot) -> str:
+        flushes = snapshot.recent_oi_flushes
+        if not flushes:
             return (
-                "## Recent Liquidations\n"
-                "No liquidation cascades detected via OI proxy. "
+                "## Recent OI Flush Events\n"
+                "No OI flush events detected via OI proxy. "
                 "This does NOT mean no liquidations occurred — only that OI did not "
                 "drop >2% in the last 5 minutes. Weigh other factors accordingly."
             )
 
-        total = sum(l.size_usd for l in liqs)
-        long_usd = sum(l.size_usd for l in liqs if l.side == "long")
-        short_usd = sum(l.size_usd for l in liqs if l.side == "short")
+        total = sum(f.size_usd for f in flushes)
+        long_usd = sum(f.size_usd for f in flushes if f.side == "long")
+        short_usd = sum(f.size_usd for f in flushes if f.side == "short")
 
         return (
-            f"## Recent Liquidations (OI Proxy)\n"
+            f"## Recent OI Flush Events (OI Proxy)\n"
             f"- Estimated total: ${total:,.0f}\n"
-            f"- Long liquidations: ${long_usd:,.0f}\n"
-            f"- Short liquidations: ${short_usd:,.0f}\n"
-            f"- Cascade events: {len(liqs)}\n"
+            f"- Long side: ${long_usd:,.0f}\n"
+            f"- Short side: ${short_usd:,.0f}\n"
+            f"- Flush events: {len(flushes)}\n"
             f"- Source: OI drop >2% in 5min (proxy, not individual events)"
         )
 

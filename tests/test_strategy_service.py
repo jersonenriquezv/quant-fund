@@ -33,7 +33,7 @@ def _mock_data_service(
     ds.get_candles = get_candles
     ds.get_market_snapshot.return_value = MagicMock(
         funding=None, oi=None, cvd=None,
-        recent_liquidations=[], whale_movements=[],
+        recent_oi_flushes=[], whale_movements=[],
     )
     return ds
 

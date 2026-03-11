@@ -5,7 +5,7 @@ import pytest
 from ai_service.prompt_builder import PromptBuilder
 from shared.models import (
     TradeSetup, MarketSnapshot, FundingRate, OpenInterest,
-    CVDSnapshot, LiquidationEvent, WhaleMovement,
+    CVDSnapshot, OIFlushEvent, WhaleMovement,
 )
 from config.settings import settings
 
@@ -35,7 +35,7 @@ def _make_snapshot(
     funding_rate=0.0001,
     oi_usd=1_000_000.0,
     cvd_15m=100.0,
-    liquidations=None,
+    oi_flushes=None,
     whales=None,
 ) -> MarketSnapshot:
     ts = int(time.time() * 1000)
@@ -55,7 +55,7 @@ def _make_snapshot(
     return MarketSnapshot(
         pair="BTC/USDT", timestamp=ts,
         funding=funding, oi=oi, cvd=cvd,
-        recent_liquidations=liquidations or [],
+        recent_oi_flushes=oi_flushes or [],
         whale_movements=whales or [],
     )
 
@@ -158,26 +158,26 @@ class TestEvaluationPrompt:
         prompt = builder.build_evaluation_prompt(setup, snapshot, {})
         assert "Not available" in prompt
 
-    def test_includes_liquidations(self, builder):
+    def test_includes_oi_flushes(self, builder):
         ts = int(time.time() * 1000)
         liqs = [
-            LiquidationEvent(
+            OIFlushEvent(
                 timestamp=ts, pair="BTC/USDT", side="long",
                 size_usd=50000, price=49500, source="oi_proxy",
             ),
         ]
         setup = _make_setup()
-        snapshot = _make_snapshot(liquidations=liqs)
+        snapshot = _make_snapshot(oi_flushes=liqs)
         prompt = builder.build_evaluation_prompt(setup, snapshot, {})
 
-        assert "Liquidations" in prompt
+        assert "OI Flush" in prompt
         assert "50,000" in prompt
 
-    def test_no_liquidations(self, builder):
+    def test_no_oi_flushes(self, builder):
         setup = _make_setup()
-        snapshot = _make_snapshot(liquidations=[])
+        snapshot = _make_snapshot(oi_flushes=[])
         prompt = builder.build_evaluation_prompt(setup, snapshot, {})
-        assert "No liquidation cascades detected" in prompt
+        assert "No OI flush events detected" in prompt
 
     def test_includes_whale_movements(self, builder):
         ts = int(time.time() * 1000)
@@ -267,8 +267,8 @@ class TestConfluenceFormatting:
         assert "[SUPPORTING]" in prompt
         assert ">= 2x" in prompt
 
-    def test_liquidations_usd(self, builder):
-        setup = _make_setup(confluences=["liquidations_usd_50000"])
+    def test_oi_flush_usd(self, builder):
+        setup = _make_setup(confluences=["oi_flush_usd_50000"])
         snapshot = _make_snapshot()
         prompt = builder.build_evaluation_prompt(setup, snapshot, {})
         assert "$50,000" in prompt
@@ -285,8 +285,8 @@ class TestConfluenceFormatting:
         prompt = builder.build_evaluation_prompt(setup, snapshot, {})
         assert "[CONTEXT]" in prompt
 
-    def test_malformed_liquidations_no_crash(self, builder):
-        setup = _make_setup(confluences=["liquidations_usd_"])
+    def test_malformed_oi_flush_no_crash(self, builder):
+        setup = _make_setup(confluences=["oi_flush_usd_"])
         snapshot = _make_snapshot()
         prompt = builder.build_evaluation_prompt(setup, snapshot, {})
         assert "[CONTEXT]" in prompt

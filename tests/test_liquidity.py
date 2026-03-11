@@ -6,7 +6,7 @@ from strategy_service.liquidity import (
     LiquidityAnalyzer, LiquidityLevel, LiquiditySweep, PremiumDiscountZone,
 )
 from strategy_service.market_structure import SwingPoint
-from shared.models import LiquidationEvent
+from shared.models import OIFlushEvent
 from config.settings import settings
 
 
@@ -191,8 +191,8 @@ class TestSweepDetection:
         ))
 
         snapshot = make_market_snapshot(
-            liquidations=[
-                LiquidationEvent(
+            oi_flushes=[
+                OIFlushEvent(
                     timestamp=8000, pair="BTC/USDT", side="long",
                     size_usd=50000.0, price=94.5, source="oi_proxy",
                 ),
@@ -203,7 +203,7 @@ class TestSweepDetection:
 
         sweeps = analyzer.get_recent_sweeps("BTC/USDT", "15m")
         if sweeps:
-            assert sweeps[0].had_liquidations is True
+            assert sweeps[0].had_oi_flush is True
 
 
 class TestPremiumDiscountZone:

@@ -8,7 +8,7 @@ returns AIDecision. If anything fails, rejects the trade (fail-safe).
 from config.settings import settings
 from shared.logger import setup_logger
 from shared.models import TradeSetup, MarketSnapshot, AIDecision
-from ai_service.prompt_builder import PromptBuilder
+from ai_service.prompt_builder import PromptBuilder, PROMPT_VERSION
 from ai_service.claude_client import ClaudeClient
 
 logger = setup_logger("ai_service")
@@ -103,9 +103,10 @@ class AIService:
             reasoning_parts.append("Against: " + "; ".join(contradicting))
         reasoning = " | ".join(reasoning_parts) if reasoning_parts else "No factors provided"
 
-        # Store scores alongside SL/TP adjustments
+        # Store scores and prompt version alongside SL/TP adjustments
         adjustments = result.get("adjustments") or {}
         adjustments["scores"] = scores
+        adjustments["prompt_version"] = PROMPT_VERSION
 
         decision = AIDecision(
             confidence=confidence,

@@ -247,8 +247,8 @@ class QuickSetupEvaluator:
         if snapshot is None or not candles or current_price <= 0:
             return None
 
-        # Need recent liquidation cascades
-        if not snapshot.recent_liquidations:
+        # Need recent OI flush events
+        if not snapshot.recent_oi_flushes:
             return None
 
         now_ms = int(time.time() * 1000)
@@ -256,7 +256,7 @@ class QuickSetupEvaluator:
 
         # Filter to recent cascades only
         recent = [
-            liq for liq in snapshot.recent_liquidations
+            liq for liq in snapshot.recent_oi_flushes
             if (now_ms - liq.timestamp) <= max_age_ms
         ]
         if not recent:
@@ -348,7 +348,7 @@ class QuickSetupEvaluator:
         if best_ob is not None:
             confluences.append(f"order_block_{best_ob.timeframe}")
         if total_liq_usd > 0:
-            confluences.append(f"liquidations_usd_{total_liq_usd:.0f}")
+            confluences.append(f"oi_flush_usd_{total_liq_usd:.0f}")
 
         logger.info(
             f"Setup E found: {pair} {direction} cascade={cascade_side} "

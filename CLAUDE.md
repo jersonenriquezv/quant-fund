@@ -135,7 +135,7 @@ quant-fund/
 │   ├── websocket_feeds.py   # OKX WebSocket (candles on /business)
 │   ├── exchange_client.py   # OKX REST via ccxt (backfill, funding, OI)
 │   ├── cvd_calculator.py    # CVD from OKX trade stream (/public)
-│   ├── oi_liquidation_proxy.py # OI-based liquidation cascade detection
+│   ├── oi_flush_detector.py  # OI-based flush event detection (OI drop >2%)
 │   ├── binance_liq.py       # Binance Futures WebSocket (UNUSED — geo-blocked from Canada)
 │   ├── etherscan_client.py  # ETH whale wallet monitoring (Etherscan API)
 │   ├── btc_whale_client.py  # BTC whale wallet monitoring (mempool.space API)
@@ -438,7 +438,7 @@ Instrument format: `"BTC-USDT-SWAP"`, `"ETH-USDT-SWAP"` (OKX convention).
 5. Monitor fill status + progressive SL management
 
 **Order types:**
-* Entry: Limit order. If not filled within 6 hours (swing) / 1 hour (quick) → cancel.
+* Entry: Limit order. If not filled within 24 hours (swing) / 1 hour (quick) → cancel.
 * Stop Loss: Stop-market (not stop-limit — stop-limits can skip during crashes)
 * Take Profit: Single limit order at tp2 (100% of position)
 
@@ -508,9 +508,11 @@ All inter-service communication uses typed frozen dataclasses. No raw dicts betw
 * `FundingRate` — current rate + next estimated rate + next funding time
 * `OpenInterest` — OI in contracts, base currency, and USD
 * `CVDSnapshot` — cumulative volume delta at 5m/15m/1h windows + buy/sell volume
-* `LiquidationEvent` — single liquidation (pair, side, size_usd, source)
+* `OIFlushEvent` — OI flush event (pair, side, size_usd, source) detected via OI proxy
 * `WhaleMovement` — ETH/BTC transfer (wallet, action, amount, exchange, significance, chain). Actions: `exchange_deposit`, `exchange_withdrawal`, `transfer_out`, `transfer_in`
-* `MarketSnapshot` — aggregates all of the above for a single pair at a point in time
+* `SourceFreshness` — per-source freshness (name, priority, age_ms, is_stale)
+* `SnapshotHealth` — aggregate snapshot health (completeness_pct, critical_sources_healthy, stale/missing)
+* `MarketSnapshot` — aggregates all of the above for a single pair at a point in time (includes `health` field)
 
 **Layer 2 (Strategy) outputs:**
 * `TradeSetup` — detected setup with entry/SL/TP1/TP2, confluences list, htf_bias, ob_timeframe

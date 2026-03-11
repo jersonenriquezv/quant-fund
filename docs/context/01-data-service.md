@@ -50,11 +50,13 @@ All 5 layers run in the same Python process. The Data Service exposes methods th
 - **FundingRate** — current rate + next estimated + next funding time
 - **OpenInterest** — in contracts, base currency, and USD
 - **CVDSnapshot** — cumulative volume delta for 5m, 15m, 1h windows + buy/sell volume
-- **LiquidationEvent** — from OI proxy (OI drop >2% = cascade), with side and size_usd
+- **OIFlushEvent** — from OI flush detector (OI drop >2% = cascade), with side and size_usd
 - **WhaleMovement** — Whale transfers (ETH via Etherscan, BTC via mempool.space). 4 action types: `exchange_deposit` (bearish), `exchange_withdrawal` (bullish), `transfer_out` (neutral), `transfer_in` (neutral). Fields: `amount` (ETH or BTC), `chain` ("ETH" or "BTC"), `exchange` (exchange name or truncated address), `wallet_label` (human-readable name from settings, e.g., "Vitalik Buterin"), `amount_usd` (USD value at detection time), `market_price` (asset price in USD when detected). USD fields default to 0.0 if price provider unavailable.
 - **NewsHeadline** — single news headline (title, source, timestamp, category, sentiment). Sentiment is optional ("bullish"/"bearish"/None) derived from CryptoCompare community votes (upvotes vs downvotes).
 - **NewsSentiment** — Fear & Greed score (0-100) + label + recent headlines + fetched_at
-- **MarketSnapshot** — wraps funding, OI, CVD, liquidations, whales, news_sentiment for a pair
+- **SourceFreshness** — per-source freshness status (name, priority, age_ms, is_stale)
+- **SnapshotHealth** — aggregate snapshot health (completeness_pct, critical_sources_healthy, stale/missing sources)
+- **MarketSnapshot** — wraps funding, OI, CVD, oi_flushes, whales, news_sentiment, health for a pair
 - **TradeSetup** — detected setup from Strategy Service
 - **AIDecision** — Claude's evaluation with confidence score
 - **RiskApproval** — final risk check with position size and leverage
@@ -114,12 +116,12 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Auto-prunes trades older than 1 hour
 - Public method: `get_cvd(pair)` → `CVDSnapshot | None`
 
-### `data_service/oi_liquidation_proxy.py` — OI-Based Liquidation Proxy
+### `data_service/oi_flush_detector.py` — OI Flush Detector
 - Detects liquidation cascades from OI drops (>2% in 5 minutes)
 - Fed by DataService's `_oi_loop()` — no separate async task needed
 - Ring buffer of last 12 OI snapshots per pair (1 hour of history)
-- When OI drops ≥ `OI_DROP_THRESHOLD_PCT` in `OI_DROP_WINDOW_SECONDS`, generates `LiquidationEvent(source="oi_proxy")`
-- Same public API as the old Binance feed: `get_recent_liquidations()`, `get_aggregated_stats()`, `is_connected`
+- When OI drops ≥ `OI_DROP_THRESHOLD_PCT` in `OI_DROP_WINDOW_SECONDS`, generates `OIFlushEvent(source="oi_proxy")`
+- Public API: `get_recent_oi_flushes()`, `get_aggregated_stats()`, `is_connected`
 - **Why:** Binance WebSocket is geo-blocked from Canada. OI proxy detects the same cascades indirectly.
 - **Limitation:** Cannot detect individual liquidations — only aggregate cascades. No directional info (defaults to "long").
 - Auto-prunes events older than 1 hour

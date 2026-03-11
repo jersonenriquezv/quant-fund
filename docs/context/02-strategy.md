@@ -20,7 +20,7 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
 ### `strategy_service/order_blocks.py` — Order Blocks + Breaker Blocks
 - Bullish OB: última vela roja antes de impulso alcista + BOS
 - Bearish OB: última vela verde antes de impulso bajista + BOS
-- Entry: 75% del body de la vela (más cerca del precio para mayor fill rate)
+- Entry: 50% del body de la vela (midpoint — balancea fill rate vs risk)
 - Validación: volumen >1.5x promedio, máximo 48h de edad (overrideable via `max_age_hours` param — HTF campaigns use 168h/7 days)
 - Deduplicación por break asociado
 - **`break_timestamp`:** Cada OB almacena el timestamp de la vela que rompió estructura. La mitigación solo evalúa velas posteriores al `break_timestamp`, evitando que la propia vela de ruptura (o anteriores) invalide el OB prematuramente.
@@ -49,10 +49,10 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
   - **Backtest 60d aggressive**: 46 trades, 47.8% WR, +$2,510. El bottleneck principal era `no_aligned_sweep` — gap=20 solo producía 11 trades. Gap=40 captura sweeps más lejanos sin degradar calidad.
 - **Setup B** (secundario): BOS + FVG adyacente a OB — **HABILITADO**
   - Dirección BOS determina dirección del trade (bidireccional como Setup A)
-  - **Entry: FVG midpoint** `(fvg.high + fvg.low) / 2` — NO el OB 75%. Esto aprovecha el FVG (feature único de B) y da SL más ancho desde el OB wick.
+  - **Entry: FVG midpoint** `(fvg.high + fvg.low) / 2` — NO el OB 50%. Esto aprovecha el FVG (feature único de B) y da SL más ancho desde el OB wick.
   - SL: OB wick (igual que A/F)
   - FVG-OB adjacency threshold: `FVG_OB_MAX_GAP_PCT` (0.5%)
-  - **Backtest 60d aggressive**: 55 trades, 52.7% WR, +$5,169. Antes con OB 75% entry: 29.8% WR, -$1,680.
+  - **Backtest 60d aggressive**: 55 trades, 52.7% WR, +$5,169. Antes con OB 75% entry (previo cambio): 29.8% WR, -$1,680.
 - **Setup F** — Pure OB Retest: BOS + OB, sin FVG requerido
   - Igual que Setup B pero sin necesitar FVG adyacente al OB
   - Dispara cuando hay BOS + OB alineados pero no hay FVG nearby
@@ -65,7 +65,7 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
   - Requiere HTF bias alineado con dirección del breaker + PD zone + min 2 confluencias
   - Usa `get_breaker_blocks()` de OrderBlockDetector
 - **Swing setups solo evalúan 15m OBs** — `SWING_SETUP_TIMEFRAMES = ["15m"]`. Los detectores corren en todos los LTF (15m + 5m) para que quick setups (C/D/E) tengan datos de 5m, pero la evaluación de A/B/F/G solo usa 15m. OBs de 5m producen micro-SLs (<0.2%) que las comisiones se comen.
-- **Zone-based orders** — no requiere proximidad al OB. El bot coloca limit orders al 75% del OB body y espera fill. SL siempre en `ob.low` (long) / `ob.high` (short) — wick-to-wick, independiente del entry.
+- **Zone-based orders** — no requiere proximidad al OB. El bot coloca limit orders al 50% del OB body y espera fill. SL siempre en `ob.low` (long) / `ob.high` (short) — wick-to-wick, independiente del entry.
   - `_find_best_ob()` selecciona por calidad: mayor `volume_ratio`, tiebreak por timestamp más reciente
   - `_is_ob_within_range()` filtra OBs más allá de `OB_MAX_DISTANCE_PCT` (5%) del precio actual
   - `_is_price_near_ob()` se mantiene para notificaciones de OB summary, pero no bloquea setups
@@ -80,7 +80,7 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 - **Setup C — Funding Squeeze:** Funding rate extremo + CVD buy dominance alineado + HTF bias. Entry: precio actual. SL: 0.5%. TP1: 1:1 (breakeven trigger), TP2: 2:1 (single TP).
   - Long: funding < -0.03%, buy dominance > 55%
   - Short: funding > +0.03%, buy dominance < 45%
-- **Setup D — LTF Structure Scalp:** CHoCH o BOS en 5m + OB fresco cerca del precio. No requiere sweep ni FVG. HTF bias + PD zone alineados. Entry: 75% del OB. TP1: 1:1 (breakeven trigger), TP2: 2:1 (single TP). — **HABILITADO**
+- **Setup D — LTF Structure Scalp:** CHoCH o BOS en 5m + OB fresco cerca del precio. No requiere sweep ni FVG. HTF bias + PD zone alineados. Entry: 50% del OB. TP1: 1:1 (breakeven trigger), TP2: 2:1 (single TP). — **HABILITADO**
   - **Backtest 60d solo**: 56 trades, 42.9% WR, +$3,596. Sharpe 8.51, PF 2.26, max DD 4.8%.
   - **Backtest 60d combinado A+B+D+F**: 9 trades D, 66.7% WR, +$2,553. Total combinado: 97 trades, 51.5% WR, +$7,558.
   - ETH dominante (47/56 trades solo, 97/97 combinado). BTC 11.1% WR pero solo 9 trades — muestra insuficiente.

@@ -1,12 +1,12 @@
 """
-OI-based liquidation proxy — detects liquidation cascades via OI drops.
+OI flush detector — detects liquidation cascades via OI drops.
 
 Uses OKX Open Interest data (polled every 5 minutes) to infer liquidation
 cascades. If OI drops >2% within a 5-minute window, a significant number of
 positions were forcefully closed — likely a liquidation cascade.
 
-Each detected cascade generates a single LiquidationEvent with the estimated
-total USD liquidated (based on OI delta).
+Each detected event generates a single OIFlushEvent with the estimated
+total USD flushed (based on OI delta).
 """
 
 import time
@@ -14,7 +14,7 @@ from collections import deque
 
 from config.settings import settings
 from shared.logger import setup_logger
-from shared.models import OpenInterest, LiquidationEvent
+from shared.models import OpenInterest, OIFlushEvent
 
 logger = setup_logger("data_service")
 
@@ -22,7 +22,7 @@ logger = setup_logger("data_service")
 _MAX_SNAPSHOTS = 12
 
 
-class OILiquidationProxy:
+class OIFlushDetector:
     """Detects liquidation cascades from OI drops.
 
     Fed new OI data by DataService._oi_loop(). Not an async task —
@@ -33,16 +33,16 @@ class OILiquidationProxy:
         # Ring buffer of OI snapshots per pair: {pair: deque[OpenInterest]}
         self._snapshots: dict[str, deque[OpenInterest]] = {}
 
-        # Detected liquidation events (pruned to last hour)
-        self._events: list[LiquidationEvent] = []
+        # Detected OI flush events (pruned to last hour)
+        self._events: list[OIFlushEvent] = []
 
     # ================================================================
     # Public interface
     # ================================================================
 
-    def get_recent_liquidations(self, pair: str | None = None,
-                                minutes: int = 60) -> list[LiquidationEvent]:
-        """Get proxy liquidation events from the last N minutes."""
+    def get_recent_oi_flushes(self, pair: str | None = None,
+                              minutes: int = 60) -> list[OIFlushEvent]:
+        """Get OI flush events from the last N minutes."""
         self._prune_old_events()
         cutoff = int((time.time() - minutes * 60) * 1000)
         events = [e for e in self._events if e.timestamp >= cutoff]
@@ -52,8 +52,8 @@ class OILiquidationProxy:
 
     def get_aggregated_stats(self, pair: str,
                              minutes: int = 5) -> dict:
-        """Get aggregated liquidation stats for a pair over N minutes."""
-        events = self.get_recent_liquidations(pair, minutes)
+        """Get aggregated OI flush stats for a pair over N minutes."""
+        events = self.get_recent_oi_flushes(pair, minutes)
         long_usd = sum(e.size_usd for e in events if e.side == "long")
         short_usd = sum(e.size_usd for e in events if e.side == "short")
         return {
@@ -132,12 +132,12 @@ class OILiquidationProxy:
     def _generate_event(
         self, oi: OpenInterest, drop_pct: float, estimated_usd: float
     ) -> None:
-        """Create a LiquidationEvent from an OI drop detection."""
+        """Create an OIFlushEvent from an OI drop detection."""
         # OI drop doesn't tell us which side was liquidated.
         # Convention: if price likely dropped, longs were liquidated.
         # Since we don't have price here, mark as "unknown" direction
         # using "long" as the conservative default (the common case in crypto).
-        event = LiquidationEvent(
+        event = OIFlushEvent(
             timestamp=oi.timestamp,
             pair=oi.pair,
             side="long",
@@ -150,7 +150,7 @@ class OILiquidationProxy:
         self._prune_old_events()
 
         logger.info(
-            f"OI proxy: liquidation cascade detected — "
+            f"OI flush event detected — "
             f"pair={oi.pair} drop={drop_pct:.2%} "
             f"estimated=${estimated_usd:,.0f}"
         )

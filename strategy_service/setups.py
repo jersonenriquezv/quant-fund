@@ -626,16 +626,16 @@ class SetupEvaluator:
         if sweep and sweep.volume_ratio >= settings.SWEEP_MIN_VOLUME_RATIO:
             confluences.append(f"sweep_volume_{sweep.volume_ratio:.1f}x")
 
-        # Liquidation cascade
-        if sweep and sweep.had_liquidations:
-            confluences.append("liquidation_cascade")
+        # OI flush event
+        if sweep and sweep.had_oi_flush:
+            confluences.append("oi_flush")
 
-        if market_snapshot and market_snapshot.recent_liquidations:
+        if market_snapshot and market_snapshot.recent_oi_flushes:
             total_liq = sum(
-                l.size_usd for l in market_snapshot.recent_liquidations
+                l.size_usd for l in market_snapshot.recent_oi_flushes
             )
             if total_liq > 0:
-                confluences.append(f"liquidations_usd_{total_liq:.0f}")
+                confluences.append(f"oi_flush_usd_{total_liq:.0f}")
 
         # CVD alignment
         if market_snapshot and market_snapshot.cvd:

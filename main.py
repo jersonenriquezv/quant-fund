@@ -348,6 +348,16 @@ async def _evaluate_with_claude(setup, candle) -> "AIDecision | None":
     decision = await _ai_service.evaluate(setup, snapshot)
     _emit_metric("claude_latency_ms", (time.monotonic() - claude_start) * 1000, setup.pair)
     _setup_dedup_cache[dedup_key] = time.time()
+
+    # Attach snapshot health to adjustments for audit trail
+    if snapshot.health is not None:
+        decision.adjustments["snapshot_health"] = {
+            "completeness_pct": snapshot.health.completeness_pct,
+            "critical_ok": snapshot.health.critical_sources_healthy,
+            "stale": list(snapshot.health.stale_sources),
+            "missing": list(snapshot.health.missing_sources),
+        }
+
     _persist_ai_decision(None, decision, setup)
 
     if not decision.approved:

@@ -13,7 +13,7 @@ import pytest
 
 from shared.models import (
     Candle, MarketSnapshot, FundingRate, OpenInterest,
-    CVDSnapshot, LiquidationEvent,
+    CVDSnapshot, OIFlushEvent,
 )
 
 
@@ -110,7 +110,7 @@ def make_market_snapshot(
     funding_rate: float = 0.0001,
     oi_usd: float = 1_000_000.0,
     cvd_15m: float = 100.0,
-    liquidations: Optional[list[LiquidationEvent]] = None,
+    oi_flushes: Optional[list[OIFlushEvent]] = None,
 ) -> MarketSnapshot:
     """Create a MarketSnapshot with optional market data."""
     ts = int(time.time() * 1000)
@@ -147,6 +147,6 @@ def make_market_snapshot(
         funding=funding,
         oi=oi,
         cvd=cvd,
-        recent_liquidations=liquidations or [],
+        recent_oi_flushes=oi_flushes or [],
         whale_movements=[],
     )

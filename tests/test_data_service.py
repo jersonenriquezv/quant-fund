@@ -21,7 +21,7 @@ import pytest
 
 from shared.models import (
     Candle, FundingRate, OpenInterest, CVDSnapshot,
-    LiquidationEvent, WhaleMovement, MarketSnapshot,
+    OIFlushEvent, WhaleMovement, MarketSnapshot,
 )
 from tests.conftest import make_candle
 
@@ -700,8 +700,8 @@ class TestMarketSnapshotAssembly:
             funding=FundingRate(ts, "BTC/USDT", 0.0001, 0.00012, ts + 28800000),
             oi=OpenInterest(ts, "BTC/USDT", 100000, 1000, 50_000_000),
             cvd=CVDSnapshot(ts, "BTC/USDT", 10.0, 30.0, 100.0, 500.0, 400.0),
-            recent_liquidations=[
-                LiquidationEvent(ts, "BTC/USDT", "long", 50000, 50000, "oi_proxy"),
+            recent_oi_flushes=[
+                OIFlushEvent(ts, "BTC/USDT", "long", 50000, 50000, "oi_proxy"),
             ],
             whale_movements=[
                 WhaleMovement(ts, "0xWhale", "exchange_deposit", 100.0, "Binance", "high", "ETH"),
@@ -711,7 +711,7 @@ class TestMarketSnapshotAssembly:
         assert snapshot.funding.rate == 0.0001
         assert snapshot.oi.oi_usd == 50_000_000
         assert snapshot.cvd.cvd_15m == 30.0
-        assert len(snapshot.recent_liquidations) == 1
+        assert len(snapshot.recent_oi_flushes) == 1
         assert len(snapshot.whale_movements) == 1
 
     def test_snapshot_all_optional_none(self):
@@ -723,7 +723,7 @@ class TestMarketSnapshotAssembly:
         assert snapshot.funding is None
         assert snapshot.oi is None
         assert snapshot.cvd is None
-        assert snapshot.recent_liquidations == []
+        assert snapshot.recent_oi_flushes == []
         assert snapshot.whale_movements == []
 
 

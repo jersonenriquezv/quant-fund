@@ -13,7 +13,7 @@ import pytest
 from config.settings import settings, QUICK_SETUP_TYPES
 from shared.models import (
     Candle, MarketSnapshot, FundingRate, CVDSnapshot, OpenInterest,
-    LiquidationEvent, TradeSetup,
+    OIFlushEvent, TradeSetup,
 )
 from strategy_service.quick_setups import QuickSetupEvaluator
 from strategy_service.market_structure import (
@@ -44,7 +44,7 @@ def _make_snapshot(
     funding_rate=0.0001,
     buy_volume=500.0,
     sell_volume=400.0,
-    liquidations=None,
+    oi_flushes=None,
 ):
     ts = int(time.time() * 1000)
     funding = FundingRate(
@@ -59,7 +59,7 @@ def _make_snapshot(
         pair=pair, timestamp=ts, funding=funding,
         oi=OpenInterest(timestamp=ts, pair=pair, oi_contracts=1000, oi_base=10, oi_usd=1000000),
         cvd=cvd,
-        recent_liquidations=liquidations or [],
+        recent_oi_flushes=oi_flushes or [],
     )
 
 
@@ -318,7 +318,7 @@ class TestSetupE:
     def test_long_cascade_reversal(self, evaluator):
         """Long liquidation cascade + CVD reversal → long entry."""
         ts = int(time.time() * 1000)
-        liq = LiquidationEvent(
+        liq = OIFlushEvent(
             timestamp=ts - 5000,  # 5 sec ago
             pair="BTC/USDT", side="long", size_usd=500000,
             price=99000.0, source="oi_proxy",
@@ -326,7 +326,7 @@ class TestSetupE:
         snapshot = _make_snapshot(
             funding_rate=0.0001,
             buy_volume=550, sell_volume=450,  # 55% buy dom > 50% threshold
-            liquidations=[liq],
+            oi_flushes=[liq],
         )
         candles = make_candle_series(base_price=99.0, count=20, timeframe="5m")
 
@@ -342,7 +342,7 @@ class TestSetupE:
     def test_short_cascade_reversal(self, evaluator):
         """Short liquidation cascade + CVD reversal → short entry."""
         ts = int(time.time() * 1000)
-        liq = LiquidationEvent(
+        liq = OIFlushEvent(
             timestamp=ts - 5000,
             pair="BTC/USDT", side="short", size_usd=500000,
             price=101000.0, source="oi_proxy",
@@ -350,7 +350,7 @@ class TestSetupE:
         snapshot = _make_snapshot(
             funding_rate=0.0001,
             buy_volume=450, sell_volume=550,  # 45% buy dom < 50% threshold
-            liquidations=[liq],
+            oi_flushes=[liq],
         )
         candles = make_candle_series(base_price=101.0, count=20, timeframe="5m")
 
@@ -362,7 +362,7 @@ class TestSetupE:
 
     def test_rejects_no_cascade(self, evaluator):
         """No liquidation events → reject."""
-        snapshot = _make_snapshot(liquidations=[])
+        snapshot = _make_snapshot(oi_flushes=[])
         candles = make_candle_series(count=20, timeframe="5m")
 
         result = evaluator.evaluate_setup_e(
@@ -373,14 +373,14 @@ class TestSetupE:
     def test_rejects_old_cascade(self, evaluator):
         """Cascade older than 15 minutes → reject."""
         ts = int(time.time() * 1000)
-        liq = LiquidationEvent(
+        liq = OIFlushEvent(
             timestamp=ts - 1_200_000,  # 20 min ago
             pair="BTC/USDT", side="long", size_usd=500000,
             price=99000.0, source="oi_proxy",
         )
         snapshot = _make_snapshot(
             buy_volume=550, sell_volume=450,
-            liquidations=[liq],
+            oi_flushes=[liq],
         )
         candles = make_candle_series(count=20, timeframe="5m")
 
@@ -392,14 +392,14 @@ class TestSetupE:
     def test_rejects_wrong_cvd_direction(self, evaluator):
         """Long cascade but buy dominance too low → reject."""
         ts = int(time.time() * 1000)
-        liq = LiquidationEvent(
+        liq = OIFlushEvent(
             timestamp=ts - 5000,
             pair="BTC/USDT", side="long", size_usd=500000,
             price=99000.0, source="oi_proxy",
         )
         snapshot = _make_snapshot(
             buy_volume=400, sell_volume=600,  # 40% — below 50% threshold
-            liquidations=[liq],
+            oi_flushes=[liq],
         )
         candles = make_candle_series(count=20, timeframe="5m")
 
@@ -411,14 +411,14 @@ class TestSetupE:
     def test_uses_ob_as_entry_anchor(self, evaluator):
         """When OB is nearby, use OB entry price instead of current price."""
         ts = int(time.time() * 1000)
-        liq = LiquidationEvent(
+        liq = OIFlushEvent(
             timestamp=ts - 5000,
             pair="BTC/USDT", side="long", size_usd=500000,
             price=99000.0, source="oi_proxy",
         )
         snapshot = _make_snapshot(
             buy_volume=550, sell_volume=450,
-            liquidations=[liq],
+            oi_flushes=[liq],
         )
         ob = _make_ob(direction="bullish", entry_price=99.5)
         candles = make_candle_series(base_price=99.5, count=20, timeframe="5m")
@@ -433,14 +433,14 @@ class TestSetupE:
     def test_rejects_htf_conflict(self, evaluator):
         """Long cascade reversal but bearish HTF → reject."""
         ts = int(time.time() * 1000)
-        liq = LiquidationEvent(
+        liq = OIFlushEvent(
             timestamp=ts - 5000,
             pair="BTC/USDT", side="long", size_usd=500000,
             price=99000.0, source="oi_proxy",
         )
         snapshot = _make_snapshot(
             buy_volume=550, sell_volume=450,
-            liquidations=[liq],
+            oi_flushes=[liq],
         )
         candles = make_candle_series(count=20, timeframe="5m")
 

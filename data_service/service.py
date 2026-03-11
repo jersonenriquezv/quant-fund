@@ -23,13 +23,14 @@ from config.settings import settings
 from shared.logger import setup_logger
 from shared.models import (
     Candle, FundingRate, OpenInterest, CVDSnapshot,
-    LiquidationEvent, WhaleMovement, MarketSnapshot, NewsSentiment,
+    OIFlushEvent, WhaleMovement, MarketSnapshot, NewsSentiment,
+    SourceFreshness, SnapshotHealth,
 )
 
 from data_service.exchange_client import ExchangeClient
 from data_service.websocket_feeds import OKXWebSocketFeed
 from data_service.cvd_calculator import CVDCalculator
-from data_service.oi_liquidation_proxy import OILiquidationProxy
+from data_service.oi_flush_detector import OIFlushDetector
 from data_service.etherscan_client import EtherscanClient
 from data_service.btc_whale_client import BtcWhaleClient
 from data_service.data_store import RedisStore, PostgresStore
@@ -63,7 +64,7 @@ class DataService:
             metrics_callback=self._emit_metric,
         )
         self._cvd = CVDCalculator()
-        self._oi_proxy = OILiquidationProxy()
+        self._oi_proxy = OIFlushDetector()
         self._etherscan = EtherscanClient(price_provider=self._get_eth_price)
         self._btc_whale = BtcWhaleClient(price_provider=self._get_btc_price)
         self._redis = RedisStore()
@@ -107,14 +108,14 @@ class DataService:
         """Get latest CVD snapshot (recalculated every 5 seconds)."""
         return self._cvd.get_cvd(pair)
 
-    def get_recent_liquidations(self, pair: str,
-                                minutes: int = 60) -> list[LiquidationEvent]:
-        """Get recent liquidation events from OI proxy."""
-        return self._oi_proxy.get_recent_liquidations(pair, minutes)
+    def get_recent_oi_flushes(self, pair: str,
+                              minutes: int = 60) -> list[OIFlushEvent]:
+        """Get recent OI flush events from OI flush detector."""
+        return self._oi_proxy.get_recent_oi_flushes(pair, minutes)
 
-    def get_liquidation_stats(self, pair: str,
-                              minutes: int = 5) -> dict:
-        """Get aggregated liquidation stats (total_usd, long_usd, short_usd, count)."""
+    def get_oi_flush_stats(self, pair: str,
+                           minutes: int = 5) -> dict:
+        """Get aggregated OI flush stats (total_usd, long_usd, short_usd, count)."""
         return self._oi_proxy.get_aggregated_stats(pair, minutes)
 
     def get_whale_movements(self, hours: int = 24) -> list[WhaleMovement]:
@@ -145,15 +146,83 @@ class DataService:
         This is the main method the Strategy Service calls.
         It gathers data from all sources into a single object.
         """
+        now_ms = int(time.time() * 1000)
+        funding = self._redis.get_funding_rate(pair)
+        oi = self._redis.get_open_interest(pair)
+        cvd = self._cvd.get_cvd(pair)
+        oi_flushes = self._oi_proxy.get_recent_oi_flushes(pair, minutes=60)
+        whales = self.get_whale_movements(hours=24)
+        news = self._latest_sentiment
+
+        health = self._compute_health(now_ms, funding, oi, cvd, whales, news)
+
+        if not health.critical_sources_healthy:
+            logger.warning(
+                f"Snapshot degraded: pair={pair} "
+                f"stale={list(health.stale_sources)} missing={list(health.missing_sources)}"
+            )
+        elif health.completeness_pct < 0.5:
+            logger.warning(
+                f"Snapshot heavily degraded: pair={pair} "
+                f"completeness={health.completeness_pct:.0%}"
+            )
+
         return MarketSnapshot(
             pair=pair,
-            timestamp=int(time.time() * 1000),
-            funding=self._redis.get_funding_rate(pair),
-            oi=self._redis.get_open_interest(pair),
-            cvd=self._cvd.get_cvd(pair),
-            recent_liquidations=self._oi_proxy.get_recent_liquidations(pair, minutes=60),
-            whale_movements=self.get_whale_movements(hours=24),
-            news_sentiment=self._latest_sentiment,
+            timestamp=now_ms,
+            funding=funding,
+            oi=oi,
+            cvd=cvd,
+            recent_oi_flushes=oi_flushes,
+            whale_movements=whales,
+            news_sentiment=news,
+            health=health,
+        )
+
+    # ================================================================
+    # Snapshot health computation
+    # ================================================================
+
+    def _compute_health(
+        self, now_ms: int,
+        funding: FundingRate | None,
+        oi: OpenInterest | None,
+        cvd: CVDSnapshot | None,
+        whales: list[WhaleMovement],
+        news: NewsSentiment | None,
+    ) -> SnapshotHealth:
+        """Compute freshness and completeness of a snapshot's data sources."""
+        sources = []
+
+        def _add(name: str, priority: str, ts: int | None, stale_ms: int):
+            if ts is None:
+                sources.append(SourceFreshness(name=name, priority=priority, age_ms=None, is_stale=True))
+            else:
+                age = now_ms - ts
+                sources.append(SourceFreshness(name=name, priority=priority, age_ms=age, is_stale=age > stale_ms))
+
+        # Critical sources
+        _add("funding", "critical", funding.timestamp if funding else None, settings.FUNDING_STALE_MS)
+        _add("oi", "critical", oi.timestamp if oi else None, settings.OI_STALE_MS)
+        _add("cvd", "critical", cvd.timestamp if cvd else None, settings.CVD_STALE_MS)
+
+        # Decorative sources
+        latest_whale_ts = max((w.timestamp for w in whales), default=None) if whales else None
+        _add("whales", "decorative", latest_whale_ts, settings.WHALE_STALE_MS)
+        _add("news", "decorative", news.fetched_at if news else None, settings.NEWS_STALE_MS)
+
+        available = sum(1 for s in sources if s.age_ms is not None)
+        completeness = available / len(sources) if sources else 0.0
+        stale = tuple(s.name for s in sources if s.is_stale and s.age_ms is not None)
+        missing = tuple(s.name for s in sources if s.age_ms is None)
+        critical_ok = all(not s.is_stale for s in sources if s.priority == "critical")
+
+        return SnapshotHealth(
+            sources=tuple(sources),
+            completeness_pct=round(completeness, 2),
+            critical_sources_healthy=critical_ok,
+            stale_sources=stale,
+            missing_sources=missing,
         )
 
     # ================================================================

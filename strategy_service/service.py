@@ -486,7 +486,7 @@ class StrategyService:
         """Mark an OB range as failed (trade hit SL). Prevents re-entry.
 
         Uses (pair, sl_price, entry_price) as the key — these uniquely
-        identify the OB that was traded (SL = OB edge, entry = 75% body).
+        identify the OB that was traded (SL = OB edge, entry = 50% body).
         """
         key = (pair, round(sl_price, 2), round(entry_price, 2))
         self._failed_obs.add(key)

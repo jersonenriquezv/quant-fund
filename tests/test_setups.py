@@ -12,7 +12,7 @@ from strategy_service.fvg import FairValueGap
 from strategy_service.liquidity import (
     LiquiditySweep, PremiumDiscountZone,
 )
-from shared.models import LiquidationEvent
+from shared.models import OIFlushEvent
 from config.settings import settings
 
 
@@ -80,7 +80,7 @@ def _make_ob(
 def _make_sweep(
     direction="bullish",
     volume_ratio=2.5,
-    had_liquidations=True,
+    had_oi_flush=True,
 ) -> LiquiditySweep:
     return LiquiditySweep(
         timestamp=9000,
@@ -91,7 +91,7 @@ def _make_sweep(
         wick_price=94.0 if direction == "bullish" else 106.0,
         close_price=96.0 if direction == "bullish" else 104.0,
         volume_ratio=volume_ratio,
-        had_liquidations=had_liquidations,
+        had_oi_flush=had_oi_flush,
     )
 
 
@@ -153,8 +153,8 @@ class TestSetupA:
         pd = _make_pd_zone("discount")
         snapshot = make_market_snapshot(
             cvd_15m=100.0,
-            liquidations=[
-                LiquidationEvent(
+            oi_flushes=[
+                OIFlushEvent(
                     timestamp=9000, pair="BTC/USDT", side="long",
                     size_usd=50000, price=94.5, source="oi_proxy",
                 ),
@@ -548,8 +548,8 @@ class TestZoneBasedOB:
         pd = _make_pd_zone("discount")
         snapshot = make_market_snapshot(
             cvd_15m=100.0,
-            liquidations=[
-                LiquidationEvent(
+            oi_flushes=[
+                OIFlushEvent(
                     timestamp=9000, pair="BTC/USDT", side="long",
                     size_usd=50000, price=94.5, source="oi_proxy",
                 ),
@@ -606,8 +606,8 @@ class TestBidirectionalTrading:
         pd = _make_pd_zone("discount")
         snapshot = make_market_snapshot(
             cvd_15m=100.0,
-            liquidations=[
-                LiquidationEvent(
+            oi_flushes=[
+                OIFlushEvent(
                     timestamp=9000, pair="BTC/USDT", side="long",
                     size_usd=50000, price=94.5, source="oi_proxy",
                 ),
@@ -677,7 +677,7 @@ class TestTemporalOrdering:
         sweep = LiquiditySweep(
             timestamp=9000, pair="BTC/USDT", timeframe="15m",
             direction="bullish", swept_level=95.0, wick_price=94.0,
-            close_price=96.0, volume_ratio=2.5, had_liquidations=True,
+            close_price=96.0, volume_ratio=2.5, had_oi_flush=True,
         )
 
         obs = [_make_ob(direction="bullish", entry_price=101.0)]
@@ -712,7 +712,7 @@ class TestTemporalOrdering:
         sweep = LiquiditySweep(
             timestamp=8000, pair="BTC/USDT", timeframe="15m",
             direction="bullish", swept_level=95.0, wick_price=94.0,
-            close_price=96.0, volume_ratio=2.5, had_liquidations=True,
+            close_price=96.0, volume_ratio=2.5, had_oi_flush=True,
         )
 
         obs = [_make_ob(direction="bullish", entry_price=101.0)]
@@ -720,8 +720,8 @@ class TestTemporalOrdering:
         candles = _make_candles_near_ob(101.0)
         snapshot = make_market_snapshot(
             cvd_15m=100.0,
-            liquidations=[
-                LiquidationEvent(
+            oi_flushes=[
+                OIFlushEvent(
                     timestamp=8000, pair="BTC/USDT", side="long",
                     size_usd=50000, price=94.5, source="oi_proxy",
                 ),

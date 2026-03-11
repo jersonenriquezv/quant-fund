@@ -1,5 +1,5 @@
 # Execution Service (Layer 5)
-> Última actualización: 2026-03-11 (PnL fix: fee deduction + actual_exit_price + all exit paths compute PnL. Single mode. ENTRY_TIMEOUT 4h→6h.)
+> Última actualización: 2026-03-11 (PnL fix: fee deduction + actual_exit_price + all exit paths compute PnL. Single mode. ENTRY_TIMEOUT swing 6h→24h.)
 > Estado: **Fase 1 — COMPLETADA**. Entry + SL + TP atómicos (attached). Breakeven + trailing SL via price polling. CampaignMonitor para HTF position trades. PnL tracking con fee deduction (TRADING_FEE_RATE 0.05% per side).
 
 El brazo ejecutor del bot. Recibe trades aprobados por Risk Service y los ejecuta en OKX via ccxt.
@@ -22,7 +22,7 @@ ExecutionService (facade)
 2. **Valida precio ordering** — Long: `sl < entry < tp2`. Short: inverso.
 3. **Chequea posición existente** — Si hay pending_entry → reemplaza. Si hay adoptada → permite coexistencia. Si hay activa del bot → rechaza.
 4. Configura el par (margin mode isolated + leverage). `defaultMarginMode` seteado a nivel de exchange en ccxt para evitar fallback a `cross`.
-5. Coloca limit entry order al precio calculado (75% OB/FVG) **con SL+TP attached** — OKX crea SL/TP atómicamente cuando el entry se llena.
+5. Coloca limit entry order al precio calculado (50% OB/FVG) **con SL+TP attached** — OKX crea SL/TP atómicamente cuando el entry se llena.
    - **Contracts conversion**: `amount` en base currency (ETH/BTC) se convierte a contratos OKX internamente via `_to_contracts()`. OKX SWAP `ctVal`: BTC=0.01, ETH=0.1.
 6. Notifica Risk Service inmediatamente (en PLACE, no en fill)
 7. **Telegram: ORDER PLACED** — envía notificación con par, dirección, entry, SL, TP, size, leverage
@@ -186,7 +186,7 @@ active ──[timeout 7d]─────────> closed        (max duratio
 
 | Setting | Default | Descripción |
 |---------|---------|-------------|
-| `ENTRY_TIMEOUT_SECONDS` | 21600 (6h) | Tiempo máximo de espera para fill (swing) |
+| `ENTRY_TIMEOUT_SECONDS` | 86400 (24h) | Tiempo máximo de espera para fill (swing) |
 | `ENTRY_TIMEOUT_QUICK_SECONDS` | 3600 (1h) | Tiempo máximo de espera para fill (quick) |
 | `ORDER_POLL_INTERVAL` | 5.0s | Intervalo de polling del monitor |
 | `MARGIN_MODE` | "isolated" | Modo de margen |
