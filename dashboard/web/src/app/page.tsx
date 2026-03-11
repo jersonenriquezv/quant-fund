@@ -11,6 +11,7 @@ import { TradeLog } from "@/components/TradeLog";
 import { AILog } from "@/components/AILog";
 import { OrderBlockPanel } from "@/components/OrderBlockPanel";
 import { WhaleLog } from "@/components/WhaleLog";
+import { RecentTrades } from "@/components/RecentTrades";
 import { NewsPanel } from "@/components/NewsPanel";
 import { HealthGrid } from "@/components/HealthGrid";
 import { useWebSocket } from "@/lib/hooks";
@@ -47,6 +48,10 @@ export default function Dashboard() {
       </div>
       <div className="card ai-log">
         <AILog />
+      </div>
+
+      <div className="card recent-trades">
+        <RecentTrades />
       </div>
 
       <div className="card ob-panel">
