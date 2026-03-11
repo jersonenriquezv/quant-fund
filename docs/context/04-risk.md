@@ -1,6 +1,6 @@
 # Risk Service
-> Última actualización: 2026-03-09
-> Estado: implementado (completo, integrado en main.py). FIXED_TRADE_MARGIN sizing ($20 margin × leverage = notional).
+> Última actualización: 2026-03-11
+> Estado: implementado (completo, integrado en main.py). Dual-mode position sizing: FIXED_TRADE_MARGIN ($20 default) o TRADE_CAPITAL_PCT (15% fallback).
 
 ## Qué hace (30 segundos)
 El Risk Service es el guardián del capital. Antes de que cualquier trade se ejecute, pasa por 6 checks obligatorios (guardrails) y un cálculo de tamaño de posición. Si cualquier check falla, el trade NO se ejecuta. Sin excepciones.
@@ -74,12 +74,16 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 - `_check_date_reset()` — auto-reset al cambiar día/semana UTC. Usa `date()` objects (no `tm_yday`) para correcto reset en frontera de año.
 
 ### `risk_service/service.py` — Facade (RiskService)
-- Clase: `RiskService(capital: float)`
+- Clase: `RiskService(capital: float, data_service=None)`
 - Compone: PositionSizer + Guardrails + RiskStateTracker
 - **Método principal:** `check(setup: TradeSetup) -> RiskApproval`
-  1. Corre los 6 guardrails en orden (fail fast)
-  2. **Position sizing:** Si `FIXED_TRADE_MARGIN > 0`: `margin = $20`, `notional = margin × leverage`, `position_size = notional / entry_price`. Ejemplo: $20 × 5x = $100 notional. Fallback: `notional = capital × TRADE_CAPITAL_PCT`.
-  3. Retorna RiskApproval (approved/rejected con razón)
+  1. Corre los 7 guardrails en orden (fail fast): min risk distance, R:R ratio, cooldown, max trades/day, max positions, daily DD, weekly DD
+  2. **Position sizing (dual-mode):**
+     - **Modo fijo (default):** Si `FIXED_TRADE_MARGIN > 0`: `margin = $20`, `notional = margin × leverage`, `position_size = notional / entry_price`. Ejemplo: $20 × 7x = $140 notional. `risk_pct = margin / capital`.
+     - **Modo porcentaje (fallback):** Si `FIXED_TRADE_MARGIN == 0`: `notional = capital × TRADE_CAPITAL_PCT`, `margin = notional / leverage`, `risk_pct = TRADE_CAPITAL_PCT`.
+  3. Leverage siempre = `MAX_LEVERAGE` (7x). No se calcula dinámicamente.
+  4. Verifica min order size contra `MIN_ORDER_SIZES` por par
+  5. Retorna RiskApproval (approved/rejected con razón)
 - **Para Execution Service (implementado):**
   - `on_trade_opened(pair, direction, entry_price, timestamp)` — llamado al colocar entry order
   - `on_trade_closed(pair, direction, pnl_pct, timestamp)` — llamado al cerrar posición (SL, TP, timeout, emergency). Matchea por `(pair, direction)` para cerrar la posición correcta.
@@ -109,13 +113,13 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 
 ## Tests
 
-75 tests en 4 archivos:
+73 tests en 4 archivos:
 - `test_position_sizer.py` — fórmula, leverage cap, edge cases
 - `test_guardrails.py` (23) — cada regla pass/fail/boundary/edge
 - `test_state_tracker.py` (27) — lifecycle, DD, cooldown, date reset, year boundary, direction matching, trade cancelled (4 tests)
-- `test_risk_service.py` (13) — check() integración: approvals, rejections, lifecycle, entry==SL
+- `test_risk_service.py` (14) — check() integración: approvals, rejections, lifecycle, entry==SL, leverage capped
 
-Última corrida: 75 passed, 0 failed
+Última corrida: 73 passed, 0 failed
 
 ## FAQ
 
