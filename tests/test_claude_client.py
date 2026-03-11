@@ -23,7 +23,14 @@ def valid_json():
     return json.dumps({
         "confidence": 0.75,
         "approved": True,
-        "reasoning": "Strong setup with HTF confluence",
+        "scores": {
+            "setup_quality": 4,
+            "market_support": 3,
+            "contradiction": 1,
+            "data_sufficiency": 3,
+        },
+        "supporting_factors": ["Strong OB volume 2.1x", "Bullish CHoCH confirmed"],
+        "contradicting_factors": ["Mild CVD divergence"],
         "adjustments": {},
         "warnings": [],
     })
@@ -111,7 +118,7 @@ class TestEvaluate:
         mock_settings.AI_MAX_TOKENS = 500
         mock_settings.AI_TEMPERATURE = 0.3
 
-        incomplete = json.dumps({"confidence": 0.5})  # missing approved, reasoning
+        incomplete = json.dumps({"confidence": 0.5})  # missing approved, scores
         client = ClaudeClient()
         client._client = AsyncMock()
         client._client.messages.create = AsyncMock(
@@ -192,7 +199,7 @@ class TestEvaluate:
         bad_json = json.dumps({
             "confidence": 0.75,
             "approved": "true",  # string, not bool
-            "reasoning": "Looks good",
+            "scores": {"setup_quality": 4, "market_support": 3, "contradiction": 1, "data_sufficiency": 3},
         })
         client = ClaudeClient()
         client._client = AsyncMock()

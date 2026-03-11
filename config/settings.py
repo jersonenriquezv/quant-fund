@@ -87,22 +87,22 @@ class Settings:
     MAX_LEVERAGE: int = int(os.getenv("MAX_LEVERAGE", "7"))
 
     # Drawdown diario máximo antes de apagar el bot
-    MAX_DAILY_DRAWDOWN: float = float(os.getenv("MAX_DAILY_DRAWDOWN", "0.03"))  # 3%
+    MAX_DAILY_DRAWDOWN: float = float(os.getenv("MAX_DAILY_DRAWDOWN", "0.05"))  # 5%
 
     # Drawdown semanal máximo antes de pausar hasta el lunes
-    MAX_WEEKLY_DRAWDOWN: float = float(os.getenv("MAX_WEEKLY_DRAWDOWN", "0.05"))  # 5%
+    MAX_WEEKLY_DRAWDOWN: float = float(os.getenv("MAX_WEEKLY_DRAWDOWN", "0.10"))  # 10%
 
     # Máximo de posiciones abiertas simultáneamente
     MAX_OPEN_POSITIONS: int = int(os.getenv("MAX_OPEN_POSITIONS", "5"))
 
     # Máximo de trades por día
-    MAX_TRADES_PER_DAY: int = int(os.getenv("MAX_TRADES_PER_DAY", "5"))
+    MAX_TRADES_PER_DAY: int = int(os.getenv("MAX_TRADES_PER_DAY", "10"))
 
     # Minutos de espera después de una pérdida antes de operar otra vez
-    COOLDOWN_MINUTES: int = int(os.getenv("COOLDOWN_MINUTES", "30"))
+    COOLDOWN_MINUTES: int = int(os.getenv("COOLDOWN_MINUTES", "15"))
 
     # Mínimo Risk/Reward ratio para aceptar un trade
-    MIN_RISK_REWARD: float = 1.5
+    MIN_RISK_REWARD: float = 1.2
 
     # Minimum SL distance as fraction of entry price.
     # Rejects noise trades where commissions eat the profit.
@@ -110,6 +110,10 @@ class Settings:
     # Backtest: 0.2% was optimal (54.5% WR, -$588). Lower lets micro-SL
     # noise trades through. Higher filters good trades too aggressively.
     MIN_RISK_DISTANCE_PCT: float = 0.002
+
+    # Trading fee rate per side (OKX taker: 0.05%)
+    # Deducted from PnL: total_fees = (entry_notional + exit_notional) * rate
+    TRADING_FEE_RATE: float = float(os.getenv("TRADING_FEE_RATE", "0.0005"))
 
     # Maximum entry slippage before closing position immediately.
     # 0.003 = 0.3% → ETH@$2000: max $6 slippage. BTC@$70K: max $210.
@@ -131,21 +135,21 @@ class Settings:
 
     # --- Order Blocks ---
     # Volumen mínimo relativo (vs promedio) para validar un OB
-    OB_MIN_VOLUME_RATIO: float = 1.5  # 1.5x el promedio
+    OB_MIN_VOLUME_RATIO: float = 1.2  # 1.2x el promedio
     # Horas máximas de vida de un OB antes de considerarlo viejo
-    OB_MAX_AGE_HOURS: int = 48
+    OB_MAX_AGE_HOURS: int = 72
 
     # --- Fair Value Gaps ---
     # Tamaño mínimo del FVG como % del precio
     FVG_MIN_SIZE_PCT: float = 0.001  # 0.1%
     # Horas máximas de vida de un FVG
-    FVG_MAX_AGE_HOURS: int = 48
+    FVG_MAX_AGE_HOURS: int = 72
 
     # --- Liquidity ---
     # Tolerancia para detectar equal highs/lows (% de diferencia máxima)
     EQUAL_LEVEL_TOLERANCE_PCT: float = 0.002  # 0.2% (~$146 for BTC, ~$4.3 for ETH)
     # Volumen mínimo relativo para confirmar un sweep como institucional
-    SWEEP_MIN_VOLUME_RATIO: float = 2.0  # 2x el promedio
+    SWEEP_MIN_VOLUME_RATIO: float = 1.5  # 1.5x el promedio
 
     # --- Volume Analysis ---
     # Periodos para calcular volumen promedio
@@ -156,15 +160,15 @@ class Settings:
     PD_RECALC_HOURS: int = 4
     # Band around 50% that counts as equilibrium (±this value)
     # e.g. 0.02 means 48%-52% of range = equilibrium (no trading)
-    PD_EQUILIBRIUM_BAND: float = 0.02
+    PD_EQUILIBRIUM_BAND: float = 0.01
 
     # --- Setup proximity ---
     # Max % of price that current price can be from OB entry to trigger setup
-    OB_PROXIMITY_PCT: float = 0.003  # 0.3%
+    OB_PROXIMITY_PCT: float = 0.008  # 0.8%
 
     # Max distance (% of price) from current price to consider an OB for zone-based orders.
     # OBs beyond this distance are ignored to avoid absurdly distant limit orders.
-    OB_MAX_DISTANCE_PCT: float = 0.05  # 5%
+    OB_MAX_DISTANCE_PCT: float = 0.08  # 8%
 
     # --- Setup B: FVG-OB adjacency ---
     # Max gap between FVG and OB as fraction of price to count as "adjacent".
@@ -198,8 +202,8 @@ class Settings:
 
     # Setup C — Funding Squeeze
     MOMENTUM_FUNDING_THRESHOLD: float = 0.0003  # Same as FUNDING_EXTREME_THRESHOLD
-    MOMENTUM_CVD_LONG_MIN: float = 0.55          # Buy dominance > 55% for long
-    MOMENTUM_CVD_SHORT_MAX: float = 0.45          # Buy dominance < 45% for short
+    MOMENTUM_CVD_LONG_MIN: float = 0.52          # Buy dominance > 52% for long
+    MOMENTUM_CVD_SHORT_MAX: float = 0.48          # Buy dominance < 48% for short
     MOMENTUM_SL_PCT: float = 0.005                # 0.5% SL distance
 
     # Setup E — Cascade Reversal
@@ -211,9 +215,9 @@ class Settings:
     # If True, LTF structure (CHoCH/BOS) must align with HTF bias direction.
     REQUIRE_HTF_LTF_ALIGNMENT: bool = False
     # If True, trades in the equilibrium zone (around 50% of range) are blocked.
-    ALLOW_EQUILIBRIUM_TRADES: bool = False
+    ALLOW_EQUILIBRIUM_TRADES: bool = True
     # If True, 4H trend must be defined for HTF bias. If False, 1H alone is enough.
-    HTF_BIAS_REQUIRE_4H: bool = True
+    HTF_BIAS_REQUIRE_4H: bool = False
     # PD alignment is non-negotiable — core SMC principle (long=discount, short=premium).
     REQUIRE_PD_ALIGNMENT: bool = True
 
@@ -223,7 +227,7 @@ class Settings:
     # Modelo de Claude a usar
     CLAUDE_MODEL: str = "claude-sonnet-4-20250514"
     # Confianza mínima para aprobar un trade
-    AI_MIN_CONFIDENCE: float = 0.60
+    AI_MIN_CONFIDENCE: float = 0.50
     # Maximum seconds to wait for Claude API response
     AI_TIMEOUT_SECONDS: float = 30.0
     # Temperature for Claude responses (lower = more consistent)
@@ -443,7 +447,7 @@ class Settings:
     # EXECUTION SERVICE
     # ========================
     # Seconds to wait for entry order to fill before cancelling (swing setups)
-    ENTRY_TIMEOUT_SECONDS: int = int(os.getenv("ENTRY_TIMEOUT_SECONDS", "14400"))  # 4 hours
+    ENTRY_TIMEOUT_SECONDS: int = int(os.getenv("ENTRY_TIMEOUT_SECONDS", "21600"))  # 6 hours
     # Shorter timeout for quick setups (C/D/E)
     ENTRY_TIMEOUT_QUICK_SECONDS: int = int(os.getenv("ENTRY_TIMEOUT_QUICK_SECONDS", "3600"))  # 1 hour
     # Seconds between order status polls
@@ -537,88 +541,11 @@ class Settings:
     RECONNECT_BACKOFF_FACTOR: float = 2.0
 
 
-    # ========================
-    # STRATEGY PROFILE
-    # ========================
-    # Active profile name — set via env, Redis, or dashboard
-    STRATEGY_PROFILE: str = os.getenv("STRATEGY_PROFILE", "default")
 
 
 # Quick setup type identifiers
 QUICK_SETUP_TYPES = ("setup_c", "setup_d", "setup_e")
 
 
-# ================================================================
-# Profile definitions — parameter overrides per profile
-# ================================================================
-# Only strategy-related settings are overridden. Risk guardrails
-# (MAX_DAILY_DRAWDOWN, MAX_OPEN_POSITIONS, etc.) are NEVER changed.
-
-STRATEGY_PROFILES: dict[str, dict] = {
-    "default": {
-        # No overrides — uses Settings() defaults
-    },
-    "aggressive": {
-        # More opportunities, same core SMC rules.
-        # PD alignment and HTF alignment stay ON — disabling them
-        # violates SMC fundamentals (longs in premium = suicide trades).
-        # AI filter ALWAYS runs — no auto-approve bypass.
-        "HTF_BIAS_REQUIRE_4H": False,        # 1H alone is sufficient
-        "AI_MIN_CONFIDENCE": 0.50,            # Lower threshold (default 0.60)
-        "MAX_DAILY_DRAWDOWN": 0.05,           # 5% (default 3%)
-        "MAX_WEEKLY_DRAWDOWN": 0.10,          # 10% (default 5%)
-        "COOLDOWN_MINUTES": 15,               # 15 min (default 30)
-        "MAX_TRADES_PER_DAY": 10,             # 10 (default 5)
-        "OB_PROXIMITY_PCT": 0.008,            # 0.8% (default 0.3%)
-        "OB_MIN_VOLUME_RATIO": 1.2,           # 1.2x (default 1.5x)
-        "OB_MAX_AGE_HOURS": 72,               # 72h (default 48)
-        "FVG_MAX_AGE_HOURS": 72,              # 72h (default 48)
-        "MIN_RISK_REWARD": 1.2,               # 1:1.2 (default 1:1.5)
-        "SWEEP_MIN_VOLUME_RATIO": 1.5,        # 1.5x (default 2.0x)
-        "PD_EQUILIBRIUM_BAND": 0.01,          # 1% (default 2%)
-        # Allow trades in the equilibrium zone (48-52% of range)
-        "ALLOW_EQUILIBRIUM_TRADES": True,
-        # Zone-based orders — wider range in aggressive mode
-        "OB_MAX_DISTANCE_PCT": 0.08,          # 8% (default 5%)
-        "ENTRY_TIMEOUT_SECONDS": 21600,       # 6 hours (default 4h)
-        # Quick setups — more lenient in aggressive mode
-        "QUICK_SETUP_COOLDOWN": 3600,         # 1h (same as default)
-        "MOMENTUM_CVD_LONG_MIN": 0.52,        # 52% (default 55%)
-        "MOMENTUM_CVD_SHORT_MAX": 0.48,       # 48% (default 45%)
-    },
-}
-
-
-def apply_profile(settings_obj: Settings, profile_name: str) -> str:
-    """Apply a strategy profile to the settings object.
-
-    Returns the applied profile name, or "default" if profile not found.
-    Only overrides keys defined in the profile — everything else stays.
-    """
-    if profile_name not in STRATEGY_PROFILES:
-        return "default"
-
-    overrides = STRATEGY_PROFILES[profile_name]
-    for key, value in overrides.items():
-        if hasattr(settings_obj, key):
-            setattr(settings_obj, key, value)
-    settings_obj.STRATEGY_PROFILE = profile_name
-    return profile_name
-
-
-def reset_profile(settings_obj: Settings) -> None:
-    """Reset all profile-overridable settings to defaults."""
-    defaults = Settings()
-    for profile_overrides in STRATEGY_PROFILES.values():
-        for key in profile_overrides:
-            if hasattr(defaults, key):
-                setattr(settings_obj, key, getattr(defaults, key))
-    settings_obj.STRATEGY_PROFILE = "default"
-
-
 # Instancia global — importar esta en todo el proyecto
 settings = Settings()
-
-# Apply profile from env var at startup
-if settings.STRATEGY_PROFILE != "default":
-    apply_profile(settings, settings.STRATEGY_PROFILE)

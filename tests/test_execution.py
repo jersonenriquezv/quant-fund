@@ -318,7 +318,7 @@ class TestEntryTimeout:
         monitor = PositionMonitor(executor, risk)
 
         pos = make_position()
-        pos.created_at = int(time.time()) - 15000  # Well past 4h
+        pos.created_at = int(time.time()) - 22000  # Well past 6h
         monitor.register(pos)
 
         executor.cancel_order = AsyncMock(return_value=True)
@@ -401,8 +401,8 @@ class TestTPHit:
         # SL should be cancelled since position is fully closed
         executor.cancel_order.assert_called_once_with("ord-sl", "ETH/USDT")
         risk.on_trade_closed.assert_called_once()
-        # PnL: (2080 - 2000) / 2000 = 4%
-        assert abs(pos.pnl_pct - 0.04) < 0.001
+        # PnL: (2080-2000)*0.05=4.00, fees=(100+104)*0.0005=0.102, net≈3.898%
+        assert abs(pos.pnl_pct - 0.03898) < 0.001
 
 
 class TestSLHit:
@@ -431,8 +431,8 @@ class TestSLHit:
         assert pos.close_reason == "sl"
         executor.cancel_order.assert_called_once_with("ord-tp", "ETH/USDT")
         risk.on_trade_closed.assert_called_once()
-        # PnL: (1960 - 2000) / 2000 = -2%
-        assert abs(pos.pnl_pct - (-0.02)) < 0.001
+        # PnL: (1960-2000)*0.05=-2.00, fees=(100+98)*0.0005=0.099, net≈-2.099%
+        assert abs(pos.pnl_pct - (-0.02099)) < 0.001
 
 
 class TestBreakevenTrigger:
@@ -653,6 +653,30 @@ class TestTimeoutClose:
         # SL + TP = 2 cancels
         assert executor.cancel_order.call_count == 2
 
+    def test_timeout_calculates_pnl(self):
+        """Timeout market close should compute PnL from fill price."""
+        executor = _mock_executor()
+        risk = MagicMock()
+        monitor = PositionMonitor(executor, risk)
+
+        pos = make_position(phase="active", size=0.05)
+        pos.actual_entry_price = 2000.0
+        pos.filled_at = int(time.time()) - 50000
+        pos.sl_order_id = "ord-sl"
+        pos.tp_order_id = "ord-tp"
+        monitor.register(pos)
+
+        executor.cancel_order = AsyncMock(return_value=True)
+        executor.close_position_market = AsyncMock(
+            return_value={"id": "ord-mkt", "average": 2020.0}
+        )
+
+        asyncio.run(monitor._check_all_positions())
+
+        assert pos.phase == "closed"
+        assert pos.actual_exit_price == 2020.0
+        assert pos.pnl_pct != 0.0  # Should have computed PnL
+
 
 class TestEmergencyClose:
     """SL placement fails after entry fill → emergency market close."""
@@ -781,35 +805,56 @@ class TestSlippage:
 
 
 class TestPnlCalculation:
-    """PnL is calculated correctly for longs and shorts."""
+    """PnL is calculated correctly for longs and shorts, net of fees."""
 
     def test_long_profit(self):
         monitor = PositionMonitor(MagicMock(), MagicMock())
         pos = make_position(direction="long", phase="active")
         pos.actual_entry_price = 2000.0
         monitor._calculate_pnl(pos, 2080.0)
-        assert abs(pos.pnl_pct - 0.04) < 0.0001
+        # Raw: (2080-2000)*0.05=4.00, fees: (100+104)*0.0005=0.102, net=3.898
+        assert abs(pos.pnl_pct - 0.03898) < 0.001
 
     def test_long_loss(self):
         monitor = PositionMonitor(MagicMock(), MagicMock())
         pos = make_position(direction="long", phase="active")
         pos.actual_entry_price = 2000.0
         monitor._calculate_pnl(pos, 1960.0)
-        assert abs(pos.pnl_pct - (-0.02)) < 0.0001
+        # Raw: -2.00, fees: (100+98)*0.0005=0.099, net=-2.099
+        assert abs(pos.pnl_pct - (-0.02099)) < 0.001
 
     def test_short_profit(self):
         monitor = PositionMonitor(MagicMock(), MagicMock())
         pos = make_position(direction="short", phase="active")
         pos.actual_entry_price = 2000.0
         monitor._calculate_pnl(pos, 1920.0)
-        assert abs(pos.pnl_pct - 0.04) < 0.0001
+        # Raw: 4.00, fees: (100+96)*0.0005=0.098, net=3.902
+        assert abs(pos.pnl_pct - 0.03902) < 0.001
 
     def test_short_loss(self):
         monitor = PositionMonitor(MagicMock(), MagicMock())
         pos = make_position(direction="short", phase="active")
         pos.actual_entry_price = 2000.0
         monitor._calculate_pnl(pos, 2040.0)
-        assert abs(pos.pnl_pct - (-0.02)) < 0.0001
+        # Raw: -2.00, fees: (100+102)*0.0005=0.101, net=-2.101
+        assert abs(pos.pnl_pct - (-0.02101)) < 0.001
+
+    def test_pnl_includes_fees(self):
+        """Verify fees are deducted: net PnL < raw PnL."""
+        monitor = PositionMonitor(MagicMock(), MagicMock())
+        pos = make_position(direction="long", phase="active")
+        pos.actual_entry_price = 2000.0
+        monitor._calculate_pnl(pos, 2080.0)
+        # Without fees: 0.04. With fees: ~0.039. Must be strictly less.
+        assert pos.pnl_pct < 0.04
+
+    def test_actual_exit_price_set(self):
+        """_calculate_pnl stores exit price on the position."""
+        monitor = PositionMonitor(MagicMock(), MagicMock())
+        pos = make_position(direction="long", phase="active")
+        pos.actual_entry_price = 2000.0
+        monitor._calculate_pnl(pos, 2080.0)
+        assert pos.actual_exit_price == 2080.0
 
 
 class TestAdjustSLFailure:

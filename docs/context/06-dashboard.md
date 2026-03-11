@@ -22,8 +22,6 @@ Si el dashboard crashea, el bot sigue operando normalmente.
 | `GET /api/stats` | PG trades (closed) | Win rate, P&L, profit factor |
 | `GET /api/whales?hours=24` | Redis (whale_movements) | Whale movements last N hours |
 | `WS /api/ws` | Redis poll cada 2s | Precio live + posiciones |
-| `GET /api/profile` | Redis + definiciones locales | Perfil activo + perfiles disponibles |
-| `POST /api/profile` | Redis write | Cambiar perfil de estrategia |
 | `GET /api/strategy/order-blocks` | Redis (`qf:bot:order_blocks`) | OBs activos (ambos pares, LTF) |
 | `GET /api/strategy/htf-bias` | Redis (`qf:bot:htf_bias`) | HTF bias por par |
 | `GET /api/sentiment` | Redis (`qf:bot:news:fear_greed`) | Fear & Greed score + label |
@@ -33,7 +31,7 @@ Si el dashboard crashea, el bot sigue operando normalmente.
 ## Frontend — Layout
 
 ```
-HEADER: Status dot + "QF" + LIVE/DEMO pill + F&G pill (colored) + Profile Selector + UTC clock (time only)
+HEADER: Status dot + "QF" + LIVE/DEMO pill + F&G pill (colored) + UTC clock (time only)
 ├── BTC/USDT panel (gradient bg, HTF bias badge) | ETH/USDT panel (gradient bg) | Risk gauges (arcos con glow)
 ├── Open Positions (rich cards: TP2/TP3/leverage/AI confidence/time open/cancel) | Equity curve
 ├── Trade Log (tabla, hover rows) | AI Decision Log (mini-cards con confidence ring)
@@ -104,7 +102,6 @@ dashboard/
 │   │   ├── candles.py   # GET /api/candles/{pair}/{tf}
 │   │   ├── stats.py     # GET /api/stats
 │   │   ├── whales.py    # GET /api/whales
-│   │   ├── profile.py   # GET/POST /api/profile
 │   │   ├── strategy.py  # GET /api/strategy/order-blocks, /api/strategy/htf-bias
 │   │   └── sentiment.py # GET /api/sentiment
 │   ├── ws.py            # WS /api/ws
@@ -113,7 +110,7 @@ dashboard/
 └── web/
     ├── src/
     │   ├── app/          # Next.js app router
-    │   ├── components/   # 13 componentes UI (incl. ProfileSelector, OrderBlockPanel, FearGreedPill)
+    │   ├── components/   # 12 componentes UI (incl. OrderBlockPanel, FearGreedPill)
     │   └── lib/          # API client, hooks
     ├── package.json
     ├── Dockerfile
@@ -130,16 +127,6 @@ CSS-first approach con 2 breakpoints en `globals.css`:
 Clases CSS añadidas a componentes para permitir override de inline styles via `!important`:
 - `header-inner` (Header), `price-value` (PricePanel), `position-grid` (PositionCard), `health-inner` (HealthGrid)
 - `col-type`, `col-pnl-usd`, `col-exit` (TradeLog), `col-sig`, `wallet-addr` (WhaleLog), `col-range`, `col-vol` (OrderBlockPanel)
-
-## Profile Selector
-
-El dashboard incluye un dropdown para cambiar el perfil de estrategia del bot en tiempo real:
-- **GET /api/profile** — devuelve perfil activo + lista de perfiles disponibles con label, description, color
-- **POST /api/profile** — escribe nuevo perfil a Redis (`qf:bot:strategy_profile`)
-- El bot lee el perfil desde Redis al inicio de cada pipeline cycle (`main.py: _sync_profile_from_redis()`)
-- **CORS** actualizado a `GET + POST + DELETE`
-- Color indicators: verde (default), amarillo (aggressive)
-- Warning badge pulsa cuando no está en default
 
 ## Cancel desde Dashboard
 

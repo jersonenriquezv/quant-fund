@@ -310,6 +310,9 @@ class PositionMonitor:
                     pos.phase = "emergency_pending"
                     pos.emergency_retries = 1
                     return
+                close_price = self._extract_close_price(result, pos)
+                if close_price is not None:
+                    self._calculate_pnl(pos, close_price)
                 self._close_position(pos, "emergency")
                 return
 
@@ -354,6 +357,9 @@ class PositionMonitor:
                     pos.phase = "emergency_pending"
                     pos.emergency_retries = 1
                     return
+                close_price = self._extract_close_price(result, pos)
+                if close_price is not None:
+                    self._calculate_pnl(pos, close_price)
                 self._close_position(pos, "excessive_slippage")
                 return
 
@@ -383,6 +389,9 @@ class PositionMonitor:
                     pos.phase = "emergency_pending"
                     pos.emergency_retries = 1
                     return
+                close_price = self._extract_close_price(result, pos)
+                if close_price is not None:
+                    self._calculate_pnl(pos, close_price)
                 self._close_position(pos, "sl_too_close")
                 return
 
@@ -592,6 +601,9 @@ class PositionMonitor:
         )
         if result is not None:
             logger.info(f"Emergency close succeeded on retry {pos.emergency_retries}: {pos.pair}")
+            close_price = self._extract_close_price(result, pos)
+            if close_price is not None:
+                self._calculate_pnl(pos, close_price)
             self._close_position(pos, "emergency")
             return
 
@@ -744,7 +756,11 @@ class PositionMonitor:
         # Market close remaining
         close_side = "sell" if pos.direction == "long" else "buy"
         if pos.filled_size > 0:
-            await self._executor.close_position_market(pos.pair, close_side, pos.filled_size)
+            result = await self._executor.close_position_market(pos.pair, close_side, pos.filled_size)
+            if result:
+                close_price = self._extract_close_price(result, pos)
+                if close_price is not None:
+                    self._calculate_pnl(pos, close_price)
 
         self._close_position(pos, "timeout")
 
@@ -772,19 +788,34 @@ class PositionMonitor:
                 f"actual={actual_price:.2f} diff={slippage_pct:.4f}%"
             )
 
+    def _extract_close_price(self, result, pos: ManagedPosition) -> float | None:
+        """Extract close price from market close result, with fallback to entry."""
+        if not pos.actual_entry_price:
+            return None
+        if isinstance(result, dict):
+            return float(result.get("average", 0) or pos.actual_entry_price)
+        return pos.actual_entry_price
+
     def _calculate_pnl(self, pos: ManagedPosition, exit_price: float) -> None:
-        """Calculate PnL for the full position at exit_price."""
+        """Calculate PnL for the full position at exit_price, net of fees."""
         if not pos.actual_entry_price or pos.actual_entry_price == 0:
             return
+
+        pos.actual_exit_price = exit_price
 
         if pos.direction == "long":
             pnl_usd = (exit_price - pos.actual_entry_price) * pos.filled_size
         else:
             pnl_usd = (pos.actual_entry_price - exit_price) * pos.filled_size
 
-        notional = pos.actual_entry_price * pos.filled_size
-        if notional > 0:
-            pos.pnl_pct = pnl_usd / notional
+        # Deduct entry + exit fees
+        entry_notional = pos.actual_entry_price * pos.filled_size
+        exit_notional = exit_price * pos.filled_size
+        total_fees = (entry_notional + exit_notional) * settings.TRADING_FEE_RATE
+        pnl_usd -= total_fees
+
+        if entry_notional > 0:
+            pos.pnl_pct = pnl_usd / entry_notional
         else:
             pos.pnl_pct = 0.0
 
@@ -865,7 +896,7 @@ class PositionMonitor:
 
             self._data_store.postgres.update_trade(
                 trade_id=trade_id,
-                actual_exit=None,  # We don't track exact exit price
+                actual_exit=pos.actual_exit_price,
                 exit_reason=pos.close_reason,
                 pnl_usd=pnl_usd,
                 pnl_pct=pos.pnl_pct,

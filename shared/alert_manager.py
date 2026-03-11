@@ -385,7 +385,6 @@ class AlertManager:
     async def notify_daily_summary(
         self,
         uptime_str: str,
-        profile: str,
         trades_today: int,
         wins: int,
         losses: int,
@@ -407,7 +406,7 @@ class AlertManager:
 
         msg = (
             f"\U0001f4ca <b>DAILY SUMMARY</b>\n"
-            f"Uptime: {uptime_str} | Profile: <b>{profile}</b>\n"
+            f"Uptime: {uptime_str}\n"
             f"\n"
             f"Trades: {trades_today} ({wl_str})\n"
             f"Open positions: {open_positions}\n"
@@ -423,8 +422,7 @@ class AlertManager:
         msg = (
             f"\U0001f680 <b>BOT STARTED</b>\n"
             f"Mode: <b>{mode}</b>\n"
-            f"Capital: ${capital:,.2f}\n"
-            f"Profile: {settings.STRATEGY_PROFILE}"
+            f"Capital: ${capital:,.2f}"
         )
         await self.alert(AlertPriority.CRITICAL, "trade_lifecycle", msg)
 

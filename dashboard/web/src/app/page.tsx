@@ -1,7 +1,6 @@
 "use client";
 
 import { Header } from "@/components/Header";
-import { ProfileSelector } from "@/components/ProfileSelector";
 import { FearGreedPill } from "@/components/FearGreedPill";
 import { PricePanel } from "@/components/PricePanel";
 import { RiskGauge } from "@/components/RiskGauge";
@@ -23,7 +22,6 @@ export default function Dashboard() {
     <div className="dashboard">
       <Header>
         <FearGreedPill />
-        <ProfileSelector />
       </Header>
 
       <div className="card price-panel">

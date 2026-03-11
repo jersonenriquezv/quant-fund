@@ -8,56 +8,88 @@ The prompt quality determines decision quality — this is the intellectual core
 from config.settings import settings
 from shared.models import TradeSetup, MarketSnapshot
 
-_SYSTEM_PROMPT_TEMPLATE = """You are a senior crypto trading analyst at a quantitative fund. Your job is to evaluate trade setups detected by an automated SMC (Smart Money Concepts) system and decide whether the current market context supports the trade.
+_SYSTEM_PROMPT_TEMPLATE = """You are a trade filter for an automated crypto trading system. You evaluate whether detected setups have sufficient evidence to proceed. You do not predict market direction — you assess whether available data supports or contradicts the trade thesis.
 
-You are a FILTER — you do NOT generate trades. The system has already detected a valid SMC pattern with confirmed LTF structure (CHoCH or BOS). Your job is to evaluate whether market conditions (funding, volume, flow, HTF context) support executing it NOW.
+EVALUATION METHOD — Score each dimension 0-5:
 
-You must respond ONLY with valid JSON in this exact format:
+1. setup_quality: Strength of technical confluences
+   - 0-1: Weak (few confluences, low OB volume)
+   - 2-3: Moderate (2-3 confluences, adequate volume)
+   - 4-5: Strong (4+ confluences, OB volume >2x average)
+
+2. market_support: Available data supporting the trade
+   - 0: No supporting data present
+   - 1-2: Weak or partial support
+   - 3-4: Multiple supporting signals
+   - 5: Strong multi-factor alignment
+
+3. contradiction: Evidence AGAINST the trade
+   - 0: No contradictions detected
+   - 1-2: Minor or single contradiction
+   - 3-4: Multiple contradicting signals
+   - 5: Strong multi-factor contradiction
+
+4. data_sufficiency: How much relevant data is available
+   - 0-1: Most data fields absent
+   - 2-3: Partial data available
+   - 4-5: Comprehensive data present
+
+DECISION RULES:
+- APPROVE: setup_quality >= 3 AND contradiction <= 2 AND confidence >= {min_confidence}
+- REJECT if: contradiction >= 3, OR setup_quality <= 1, OR insufficient supporting evidence
+- "Insufficient edge" is a VALID rejection — not every setup deserves approval
+- Approval REQUIRES positive evidence, not just absence of contradiction
+- Absent data ("Not available") is neutral — do not penalize, do not reward
+
+CONFIDENCE CALIBRATION:
+- 0.80+: Strong setup + supporting data + no contradictions
+- 0.60-0.79: Good setup + partial support or minor contradictions
+- 0.50-0.59: Marginal — setup quality carries it despite limited or mixed data
+- Below 0.50: Contradictions outweigh support, or insufficient edge
+
+FACTOR READING GUIDE:
+
+FUNDING RATE: Extreme values (>±0.03%) indicate directional crowding. The crowded side is vulnerable to forced exits on adverse moves. Normal range: no signal.
+
+CVD: Context-dependent. For reversal setups (Setup A, after sweep + CHoCH): counter-directional CVD is expected post-sweep — not a contradiction. For continuation setups (Setup B/F, after BOS): aligned CVD = support, diverging CVD = mild contradiction. Never sufficient alone to reject.
+
+LIQUIDATIONS: Recent cascade in trade direction: directional fuel may be spent (mild negative). Cascade against trade direction: opposing positions cleared (mild positive). Absent: neutral.
+
+WHALES: Net exchange withdrawals reduce available sell-side supply (mild positive for longs). Net exchange deposits increase supply (mild positive for shorts). Single movements = noise, patterns of 3+ = weak signal. Absent: neutral.
+
+NEWS (Fear & Greed): Extreme readings (<20 or >80) provide contrarian context. Normal range (25-75): no signal. Absent: neutral.
+
+OPEN INTEREST: Snapshot only — no trend inference possible. Market size context only.
+
+HTF BIAS: Aligned with trade = contextual support. Counter-trend = note as risk factor, but not automatic rejection — LTF structure breaks can lead HTF turns.
+
+R:R: Below 1.5 = tight, needs stronger supporting evidence. Above 2.0 = favorable error margin.
+
+OUTPUT — respond ONLY with valid JSON:
 {{
-    "confidence": <float 0.0-1.0>,
     "approved": <bool>,
-    "reasoning": "<2-4 sentences. State the decisive factor first, then supporting evidence.>",
+    "confidence": <float 0.0-1.0>,
+    "scores": {{
+        "setup_quality": <int 0-5>,
+        "market_support": <int 0-5>,
+        "contradiction": <int 0-5>,
+        "data_sufficiency": <int 0-5>
+    }},
+    "supporting_factors": ["<concise factor>", ...],
+    "contradicting_factors": ["<concise factor>", ...],
     "adjustments": {{
         "sl_price": <float or null>,
         "tp2_price": <float or null>
     }},
-    "warnings": ["<warning 1>", "<warning 2>"]
+    "warnings": ["<warning>", ...]
 }}
 
-Decision guidelines:
-- confidence >= {min_confidence} AND approved=true: Trade proceeds to risk check
-- confidence < {min_confidence} OR approved=false: Trade is discarded
-- Approve only when the evidence is clearly supportive. No quota — reject all 10 if all 10 are bad.
-
-CRITICAL — DATA AVAILABILITY:
-- When any field says "Not available", treat it as NEUTRAL — absent data is NOT evidence against the trade.
-- Only data that is PRESENT and CONTRADICTS the trade should reduce confidence.
-- Do NOT penalize setups for missing CVD, liquidation, whale, or news data. Many valid trades occur without all data fields populated.
-- Base your decision primarily on the data that IS available: setup quality, confluences, funding rate, HTF context, and price action.
-
-Factors to evaluate (when data is present):
-1. FUNDING RATE: Extreme positive = overcrowded longs (caution for longs). Extreme negative = overcrowded shorts (opportunity for longs). Normal range = neutral factor.
-2. CVD (Cumulative Volume Delta): When available — CVD aligned with trade direction = confirmation. CVD diverging = warning sign. When NOT available — treat as neutral, do not reduce confidence.
-3. LIQUIDATIONS: When available — recent cascade in the direction of the trade = exhaustion risk. Cascade against the trade direction = fuel for the move. When NOT available — treat as neutral.
-4. WHALE MOVEMENTS: Exchange deposits = potential selling pressure. Withdrawals = accumulation signal. Non-exchange transfers = neutral/informational. When absent = neutral.
-5. OPEN INTEREST: Provided as a snapshot (no trend). Use as context for market size only — do NOT try to infer OI direction from a single data point.
-6. SETUP QUALITY: This is the PRIMARY factor. Evaluate the confluences listed. Each confluence is labeled as SUPPORTING (confirms the trade) or CONTEXT (informational). 4+ supporting confluences with strong OB volume (>2x) = high quality. 2-3 confluences = moderate quality.
-7. RISK/REWARD: The blended R:R is provided. Below 1.5 = tighter, needs strong conviction. Above 2.0 = favorable risk profile.
-8. NEWS SENTIMENT: Fear & Greed Index (0-100) and recent headlines. Extreme Fear (<15) or Extreme Greed (>85) = relevant context. Otherwise neutral.
-
-CRITICAL RULES:
-- HTF BIAS is provided as CONTEXT, not a gate. The trade direction is driven by LTF structure (CHoCH/BOS).
-  - If HTF aligns with trade direction: high-conviction trend trade — approve if setup quality is decent.
-  - If HTF opposes trade direction (COUNTER-TREND): these are VALID setups. LTF reversals often lead HTF turns. Approve if the LTF structure is clear (CHoCH/BOS confirmed) and confluences are sufficient. Reject ONLY if present data actively contradicts (e.g., CVD strongly diverging AND extreme adverse funding).
-  - Do NOT auto-reject counter-trend setups — they are often the most profitable.
-- If funding rate is extreme (>0.03% or <-0.03%), increase skepticism for trades in the crowded direction.
-- If major liquidation cascade just happened in the trade direction, the move may be exhausted — reduce confidence.
-- CVD INTERPRETATION DEPENDS ON SETUP TYPE:
-  - Setup A (reversal after liquidity sweep + CHoCH): CVD AGAINST trade direction is EXPECTED and NORMAL. The sweep just happened — CVD still reflects the old move. Do NOT reduce confidence for this. Only reduce if CVD is extreme (buy dominance <35% for longs or >65% for shorts).
-  - Setup B/F (continuation after BOS): CVD aligned with trade direction = strong confirmation. CVD diverging = moderate warning, reduce confidence slightly but do NOT auto-reject if setup quality is high.
-  - In ALL cases: CVD alone should NEVER be the sole reason to reject. It is ONE factor among many. A 0.25 confidence rejection requires multiple data points contradicting the trade, not just CVD.
-- A strong technical setup (4+ confluences, high OB volume, clear structure) should be approved even without CVD/liquidation/whale data.
-- Reject only when present data creates a clear case AGAINST the trade, not when data is simply absent."""
+RULES:
+- confidence >= {min_confidence} AND approved=true → proceeds to risk check
+- No quota — reject all if all are bad
+- Be consistent: similar setups with similar data should get similar scores
+- Do not rationalize — if evidence is mixed, reflect that in scores and confidence
+- Each factor is a weak signal. Only combinations of multiple factors should drive decisions"""
 
 
 class PromptBuilder:
@@ -156,25 +188,25 @@ class PromptBuilder:
         or CONTEXT (informational, does not directly confirm direction).
         """
         _LABELS = {
-            "liquidity_sweep_bullish": ("SUPPORTING", "Bullish liquidity sweep — stops below lows were hunted"),
-            "liquidity_sweep_bearish": ("SUPPORTING", "Bearish liquidity sweep — stops above highs were hunted"),
-            "choch_bullish": ("SUPPORTING", "Bullish CHoCH — LTF trend reversal confirmed up"),
-            "choch_bearish": ("SUPPORTING", "Bearish CHoCH — LTF trend reversal confirmed down"),
-            "bos_bullish": ("SUPPORTING", "Bullish BOS — LTF structure continuation up"),
-            "bos_bearish": ("SUPPORTING", "Bearish BOS — LTF structure continuation down"),
+            "liquidity_sweep_bullish": ("SUPPORTING", "Bullish liquidity sweep detected (lows taken)"),
+            "liquidity_sweep_bearish": ("SUPPORTING", "Bearish liquidity sweep detected (highs taken)"),
+            "choch_bullish": ("SUPPORTING", "Bullish CHoCH confirmed on LTF"),
+            "choch_bearish": ("SUPPORTING", "Bearish CHoCH confirmed on LTF"),
+            "bos_bullish": ("SUPPORTING", "Bullish BOS confirmed on LTF"),
+            "bos_bearish": ("SUPPORTING", "Bearish BOS confirmed on LTF"),
             "pd_zone_discount": ("SUPPORTING" if direction == "long" else "CONTEXT",
                                  "Price in discount zone (below 50% of range)"),
             "pd_zone_premium": ("SUPPORTING" if direction == "short" else "CONTEXT",
                                 "Price in premium zone (above 50% of range)"),
             "cvd_aligned_bullish": ("SUPPORTING" if direction == "long" else "CONTEXT",
-                                    "CVD 15m positive — buyers dominating"),
+                                    "CVD 15m positive (buy dominance)"),
             "cvd_aligned_bearish": ("SUPPORTING" if direction == "short" else "CONTEXT",
-                                    "CVD 15m negative — sellers dominating"),
-            "liquidation_cascade": ("SUPPORTING", "Liquidation cascade detected — institutional flow"),
+                                    "CVD 15m negative (sell dominance)"),
+            "liquidation_cascade": ("SUPPORTING", "Liquidation cascade detected (OI proxy)"),
             "funding_negative_long_opportunity": ("SUPPORTING" if direction == "long" else "CONTEXT",
-                                                  "Funding rate negative — shorts overcrowded"),
+                                                  "Funding rate negative (short-side crowding)"),
             "funding_extreme_positive": ("SUPPORTING" if direction == "short" else "CONTEXT",
-                                         "Funding rate extreme positive — longs overcrowded"),
+                                         "Funding rate extreme positive (long-side crowding)"),
             "oi_data_available": ("CONTEXT", "Open interest data present"),
         }
         lines = []
@@ -199,7 +231,7 @@ class PromptBuilder:
                 try:
                     val = float(ratio.rstrip("x"))
                     tag = "SUPPORTING" if val >= 2.0 else "CONTEXT"
-                    desc = f"Sweep volume {ratio} average ({'>= 2x institutional' if tag == 'SUPPORTING' else '< 2x moderate'})"
+                    desc = f"Sweep volume {ratio} average ({'>= 2x' if tag == 'SUPPORTING' else '< 2x'})"
                 except ValueError:
                     tag, desc = "CONTEXT", c
             elif c.startswith("liquidations_usd_"):
@@ -233,15 +265,16 @@ class PromptBuilder:
 
     def _interpret_funding(self, rate: float) -> str:
         threshold = settings.FUNDING_EXTREME_THRESHOLD
+        pct = abs(rate * 100)
         if rate > threshold:
-            return "EXTREME positive — overcrowded longs, caution for long trades"
+            return f"Extreme positive ({pct:.3f}%): directional crowding on long side"
         elif rate < -threshold:
-            return "EXTREME negative — overcrowded shorts, opportunity for longs"
+            return f"Extreme negative ({pct:.3f}%): directional crowding on short side"
         elif rate > 0:
-            return "Mildly positive — slight long bias, normal range"
+            return f"Mildly positive ({pct:.4f}%): normal range, no signal"
         elif rate < 0:
-            return "Mildly negative — slight short bias, normal range"
-        return "Neutral"
+            return f"Mildly negative ({pct:.4f}%): normal range, no signal"
+        return "Neutral (0%)"
 
     def _build_oi_section(self, snapshot: MarketSnapshot) -> str:
         if snapshot.oi is None:
@@ -313,8 +346,8 @@ class PromptBuilder:
         withdrawal_usd = sum(w.amount_usd for w in whales if w.action == "exchange_withdrawal")
         if deposit_usd > 0 or withdrawal_usd > 0:
             net = withdrawal_usd - deposit_usd
-            direction = "net withdrawal (bullish — accumulation)" if net > 0 else "net deposit (bearish — selling pressure)"
-            lines.append(f"- Net exchange flow: ${abs(net):,.0f} {direction}")
+            flow_dir = "net withdrawal" if net > 0 else "net deposit"
+            lines.append(f"- Net exchange flow: ${abs(net):,.0f} {flow_dir}")
             lines.append(f"  Deposited: ${deposit_usd:,.0f} | Withdrawn: ${withdrawal_usd:,.0f}")
 
         # Count by type

@@ -485,17 +485,17 @@ class TestQuickRR:
         assert passed, f"Quick setup should pass with R:R 1.2: {reason}"
 
     def test_swing_setup_rejects_low_rr(self, guardrails):
-        """Swing setup with 1.2 R:R fails (min 1.5)."""
+        """Swing setup with 1.1 R:R fails (min 1.2)."""
         setup_swing = TradeSetup(
             timestamp=int(time.time() * 1000),
             pair="BTC/USDT", direction="long", setup_type="setup_a",
             entry_price=100.0, sl_price=99.0,
             tp1_price=101.0,
-            tp2_price=101.2,  # R:R = 1.2
+            tp2_price=101.1,  # R:R = 1.1
             confluences=["a", "b"], htf_bias="bullish", ob_timeframe="5m",
         )
         passed, reason = guardrails.check_rr_ratio(setup_swing)
-        assert not passed, f"Swing setup should fail with R:R 1.2: {reason}"
+        assert not passed, f"Swing setup should fail with R:R 1.1: {reason}"
 
 
 # ================================================================

@@ -42,7 +42,7 @@ services:
       redis:
         condition: service_healthy
     environment:
-      STRATEGY_PROFILE: aggressive
+
     volumes:
       - ./config/.env:/app/config/.env:ro
       - ./logs:/app/logs

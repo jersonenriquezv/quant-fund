@@ -63,6 +63,7 @@ class ManagedPosition:
     # Exit info
     close_reason: Optional[str] = None  # "tp", "sl", "timeout", "emergency", "cancelled"
     pnl_pct: float = 0.0
+    actual_exit_price: Optional[float] = None
 
     # Breakeven + trailing tracking
     breakeven_hit: bool = False   # True after SL moved to breakeven

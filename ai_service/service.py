@@ -91,18 +91,36 @@ class AIService:
             and confidence >= settings.AI_MIN_CONFIDENCE
         )
 
+        # Construct reasoning from structured factors
+        supporting = result.get("supporting_factors") or []
+        contradicting = result.get("contradicting_factors") or []
+        scores = result.get("scores") or {}
+
+        reasoning_parts = []
+        if supporting:
+            reasoning_parts.append("Supporting: " + "; ".join(supporting))
+        if contradicting:
+            reasoning_parts.append("Against: " + "; ".join(contradicting))
+        reasoning = " | ".join(reasoning_parts) if reasoning_parts else "No factors provided"
+
+        # Store scores alongside SL/TP adjustments
+        adjustments = result.get("adjustments") or {}
+        adjustments["scores"] = scores
+
         decision = AIDecision(
             confidence=confidence,
             approved=approved,
-            reasoning=result.get("reasoning", "No reasoning provided"),
-            adjustments=result.get("adjustments") or {},
+            reasoning=reasoning,
+            adjustments=adjustments,
             warnings=result.get("warnings") or [],
         )
 
         status = "APPROVED" if decision.approved else "REJECTED"
+        scores_str = " ".join(f"{k}={v}" for k, v in scores.items())
         logger.info(
             f"AI {status}: pair={setup.pair} direction={setup.direction} "
             f"confidence={decision.confidence:.2f} "
+            f"scores=[{scores_str}] "
             f"reasoning={decision.reasoning}"
         )
 

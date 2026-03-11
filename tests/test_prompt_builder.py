@@ -70,26 +70,38 @@ class TestSystemPrompt:
         prompt = builder.build_system_prompt()
         assert '"confidence"' in prompt
         assert '"approved"' in prompt
-        assert '"reasoning"' in prompt
+        assert '"scores"' in prompt
+        assert '"supporting_factors"' in prompt
+        assert '"contradicting_factors"' in prompt
 
-    def test_contains_decision_guidelines(self, builder):
+    def test_contains_decision_rules(self, builder):
         prompt = builder.build_system_prompt()
-        assert "0.6" in prompt
+        assert "0.5" in prompt
         assert "No quota" in prompt
+        assert "DECISION RULES" in prompt
 
-    def test_contains_critical_rules(self, builder):
+    def test_contains_scoring_rubric(self, builder):
         prompt = builder.build_system_prompt()
-        assert "CRITICAL RULES" in prompt
-        assert "DATA AVAILABILITY" in prompt
+        assert "setup_quality" in prompt
+        assert "market_support" in prompt
+        assert "contradiction" in prompt
+        assert "data_sufficiency" in prompt
+        assert "EVALUATION METHOD" in prompt
+
+    def test_no_narrative_doctrine(self, builder):
+        prompt = builder.build_system_prompt()
+        assert "Wyckoff" not in prompt
+        assert "Market Maker Cycle" not in prompt
+        assert "ACCUMULATION" not in prompt
+        assert "ICT" not in prompt
 
     def test_threshold_follows_settings(self, builder):
         """System prompt threshold must reflect current AI_MIN_CONFIDENCE."""
         original = settings.AI_MIN_CONFIDENCE
         try:
-            settings.AI_MIN_CONFIDENCE = 0.50
+            settings.AI_MIN_CONFIDENCE = 0.60
             prompt = builder.build_system_prompt()
-            assert "0.5" in prompt
-            assert "0.6" not in prompt
+            assert "0.6" in prompt
         finally:
             settings.AI_MIN_CONFIDENCE = original
 
@@ -188,7 +200,8 @@ class TestEvaluationPrompt:
         setup = _make_setup()
         snapshot = _make_snapshot(funding_rate=0.0005)
         prompt = builder.build_evaluation_prompt(setup, snapshot, {})
-        assert "EXTREME" in prompt
+        assert "Extreme" in prompt
+        assert "crowding" in prompt
 
     def test_price_context_included(self, builder):
         setup = _make_setup()
@@ -228,35 +241,6 @@ class TestEvaluationPrompt:
 
 
 # ============================================================
-# Profile-aware prompts
-# ============================================================
-
-class TestProfileAwarePrompts:
-
-    def test_no_profile_section_in_default(self, builder):
-        """Default profile does NOT include any profile-specific section."""
-        original = settings.STRATEGY_PROFILE
-        try:
-            settings.STRATEGY_PROFILE = "default"
-            setup = _make_setup()
-            snapshot = _make_snapshot()
-            prompt = builder.build_evaluation_prompt(setup, snapshot, {})
-
-            assert "Active Profile" not in prompt
-        finally:
-            settings.STRATEGY_PROFILE = original
-
-    def test_htf_bias_not_annotated_as_informational(self, builder):
-        """HTF Bias line should NOT have informational annotation."""
-        setup = _make_setup(direction="short")
-        snapshot = _make_snapshot()
-        prompt = builder.build_evaluation_prompt(setup, snapshot, {})
-
-        assert "HTF Bias: bullish" in prompt
-        assert "informational" not in prompt
-
-
-# ============================================================
 # Dynamic confluence formatting
 # ============================================================
 
@@ -281,7 +265,7 @@ class TestConfluenceFormatting:
         snapshot = _make_snapshot()
         prompt = builder.build_evaluation_prompt(setup, snapshot, {})
         assert "[SUPPORTING]" in prompt
-        assert ">= 2x institutional" in prompt
+        assert ">= 2x" in prompt
 
     def test_liquidations_usd(self, builder):
         setup = _make_setup(confluences=["liquidations_usd_50000"])

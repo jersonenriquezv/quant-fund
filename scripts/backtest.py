@@ -568,11 +568,15 @@ class TradeSimulator:
         trade.close_time_ms = timestamp_ms
         trade.exit_reason = reason
 
-        # Compute PnL
+        # Compute PnL (net of fees)
         if trade.direction == "long":
             trade.pnl_usd = (price - trade.entry_price) * trade.position_size
         else:
             trade.pnl_usd = (trade.entry_price - price) * trade.position_size
+        entry_notional = trade.entry_price * trade.position_size
+        exit_notional = price * trade.position_size
+        total_fees = (entry_notional + exit_notional) * settings.TRADING_FEE_RATE
+        trade.pnl_usd -= total_fees
 
         # Update equity
         self.equity += trade.pnl_usd
@@ -756,7 +760,7 @@ def _ts_to_date(ts_ms: int) -> str:
 # ================================================================
 
 def print_report(m: BacktestMetrics, simulator: TradeSimulator,
-                 profile: str, period_days: float,
+                 period_days: float,
                  setups_found: int, total_evaluated: int,
                  tracker: RejectTracker,
                  setups_deduped: int = 0,
@@ -764,7 +768,7 @@ def print_report(m: BacktestMetrics, simulator: TradeSimulator,
     """Print full backtest report to console."""
     print()
     print("=" * 70)
-    print(f"BACKTEST RESULTS — profile: {profile}")
+    print("BACKTEST RESULTS")
     print("=" * 70)
 
     # -- Setup detection --
@@ -949,7 +953,7 @@ def export_csv(trades: list[SimulatedTrade], filename: str) -> None:
 # JSON result persistence
 # ================================================================
 
-def save_results_json(m: BacktestMetrics, profile: str, period_days: float,
+def save_results_json(m: BacktestMetrics, period_days: float,
                       capital: float, pairs: list[str],
                       setups_found: int, setups_deduped: int,
                       ai_stats: dict | None = None) -> str:
@@ -960,11 +964,10 @@ def save_results_json(m: BacktestMetrics, profile: str, period_days: float,
 
     ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
     ai_suffix = "_ai" if ai_stats is not None else ""
-    filename = os.path.join(results_dir, f"{ts}_{profile}_{int(period_days)}d{ai_suffix}.json")
+    filename = os.path.join(results_dir, f"{ts}_{int(period_days)}d{ai_suffix}.json")
 
     result = {
         "timestamp": datetime.now(tz=timezone.utc).isoformat(),
-        "profile": profile,
         "period_days": round(period_days, 1),
         "capital": capital,
         "pairs": pairs,
@@ -1031,34 +1034,13 @@ def save_results_json(m: BacktestMetrics, profile: str, period_days: float,
 # ================================================================
 
 def run_backtest(pairs: list[str] | None = None, verbose: bool = False,
-                 warmup: int = 50, profile: str = "default",
+                 warmup: int = 50,
                  capital: float = 10000.0, export: bool = False,
                  days: int | None = None, ai_enabled: bool = False):
-    from config.settings import Settings, settings, STRATEGY_PROFILES, apply_profile, reset_profile
+    from config.settings import settings
 
     if pairs is None:
         pairs = settings.TRADING_PAIRS
-
-    # Apply profile
-    if profile != "default":
-        if profile not in STRATEGY_PROFILES:
-            print(f"Unknown profile: {profile}")
-            print(f"Available: {', '.join(STRATEGY_PROFILES.keys())}")
-            sys.exit(1)
-
-        reset_profile(settings)
-        apply_profile(settings, profile)
-
-        overrides = STRATEGY_PROFILES[profile]
-        print("=" * 70)
-        print(f"PROFILE: {profile.upper()}")
-        print("=" * 70)
-        for key, value in overrides.items():
-            default_val = getattr(Settings(), key)
-            print(f"  {key}: {default_val} -> {value}")
-        print()
-    else:
-        reset_profile(settings)
 
     all_timeframes = settings.HTF_TIMEFRAMES + settings.LTF_TIMEFRAMES
 
@@ -1284,12 +1266,12 @@ def run_backtest(pairs: list[str] | None = None, verbose: bool = False,
     # Compute metrics and print report
     metrics = compute_metrics(simulator, period_days)
     ai_report = ai_stats if ai_enabled else None
-    print_report(metrics, simulator, profile, period_days,
+    print_report(metrics, simulator, period_days,
                  setups_count, total_evaluated, tracker,
                  setups_deduped=setups_deduped, ai_stats=ai_report)
 
     # Always save JSON summary
-    save_results_json(metrics, profile, period_days, capital, pairs,
+    save_results_json(metrics, period_days, capital, pairs,
                       setups_count, setups_deduped, ai_stats=ai_report)
 
     # CSV export
@@ -1300,14 +1282,8 @@ def run_backtest(pairs: list[str] | None = None, verbose: bool = False,
             filename = f"backtest_results_{ts}.csv"
             export_csv(trades, filename)
 
-    # Restore default settings
-    reset_profile(settings)
-
 
 def main():
-    from config.settings import STRATEGY_PROFILES
-
-    available = ", ".join(STRATEGY_PROFILES.keys())
     parser = argparse.ArgumentParser(
         description="Backtest: replay candles + simulate trades")
     parser.add_argument("--verbose", "-v", action="store_true",
@@ -1316,8 +1292,6 @@ def main():
                         help="Single pair to test (e.g. BTC/USDT)")
     parser.add_argument("--warmup", type=int, default=50,
                         help="Number of warmup candles to skip (default: 50)")
-    parser.add_argument("--profile", type=str, default="default",
-                        help=f"Strategy profile ({available})")
     parser.add_argument("--capital", type=float, default=10000.0,
                         help="Initial capital in USDT (default: 10000)")
     parser.add_argument("--days", type=int, default=None,
@@ -1333,7 +1307,6 @@ def main():
         pairs=pairs,
         verbose=args.verbose,
         warmup=args.warmup,
-        profile=args.profile,
         capital=args.capital,
         days=args.days,
         export=args.csv,

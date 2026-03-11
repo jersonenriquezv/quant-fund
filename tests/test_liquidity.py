@@ -297,8 +297,8 @@ class TestPremiumDiscountZone:
 
         htf_candles = [make_candle(timestamp=i * 1000) for i in range(20)]
         # Range = 90-110, equilibrium = 100
-        # PD_EQUILIBRIUM_BAND = 0.02 → equilibrium zone: 48%-52% → 99.6-100.4
-        current_price = 100.3  # 51.5% of range — inside band
+        # PD_EQUILIBRIUM_BAND = 0.01 → equilibrium zone: 49%-51% → 99.8-100.2
+        current_price = 100.1  # 50.5% of range — inside band
 
         pd = analyzer.update_premium_discount(
             htf_candles, htf_highs, htf_lows,

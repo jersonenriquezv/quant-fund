@@ -1,6 +1,6 @@
 # Execution Service (Layer 5)
-> Última actualización: 2026-03-11 (Bugfix: _on_sl_hit callback protection, _handle_sl_vanished marks OB failed, per-position error isolation, POSITION_EMPTY sentinel.)
-> Estado: **Fase 1 — COMPLETADA**. Entry + SL + TP atómicos (attached). Breakeven + trailing SL via price polling. CampaignMonitor para HTF position trades.
+> Última actualización: 2026-03-11 (PnL fix: fee deduction + actual_exit_price + all exit paths compute PnL. Single mode. ENTRY_TIMEOUT 4h→6h.)
+> Estado: **Fase 1 — COMPLETADA**. Entry + SL + TP atómicos (attached). Breakeven + trailing SL via price polling. CampaignMonitor para HTF position trades. PnL tracking con fee deduction (TRADING_FEE_RATE 0.05% per side).
 
 El brazo ejecutor del bot. Recibe trades aprobados por Risk Service y los ejecuta en OKX via ccxt.
 
@@ -186,13 +186,14 @@ active ──[timeout 7d]─────────> closed        (max duratio
 
 | Setting | Default | Descripción |
 |---------|---------|-------------|
-| `ENTRY_TIMEOUT_SECONDS` | 14400 (4h) | Tiempo máximo de espera para fill (swing) |
+| `ENTRY_TIMEOUT_SECONDS` | 21600 (6h) | Tiempo máximo de espera para fill (swing) |
 | `ENTRY_TIMEOUT_QUICK_SECONDS` | 3600 (1h) | Tiempo máximo de espera para fill (quick) |
 | `ORDER_POLL_INTERVAL` | 5.0s | Intervalo de polling del monitor |
 | `MARGIN_MODE` | "isolated" | Modo de margen |
 | `MAX_TRADE_DURATION_SECONDS` | 43200 (12h) | Duración máxima trade swing |
 | `MAX_TRADE_DURATION_QUICK` | 14400 (4h) | Duración máxima quick |
 | `MAX_SLIPPAGE_PCT` | 0.003 (0.3%) | Slippage máximo antes de cerrar (live only) |
+| `TRADING_FEE_RATE` | 0.0005 (0.05%) | Fee per side (OKX taker). Deducted from PnL on all exit paths |
 | `HTF_CAMPAIGN_ENABLED` | false | Master switch para HTF campaigns (env var) |
 | `HTF_INITIAL_MARGIN` | $30 | Margen de la entry inicial |
 | `HTF_ADD1_MARGIN` / `ADD2` / `ADD3` | $15 / $10 / $5 | Margen decreciente por pyramid add |
@@ -219,6 +220,17 @@ Fill price mismatch: ETH/USDT expected=1937.22 actual=1990.24 diff=2.74%
   raw={status, average, price, filled, type, side, info_avgPx, info_px, info_state}
 ```
 `info_avgPx` e `info_px` son los campos nativos de OKX antes de la transformación ccxt. Esto ayuda a diagnosticar si OKX reporta mal el precio o ccxt lo transforma incorrectamente.
+
+## PnL Tracking
+
+`_calculate_pnl(pos, exit_price)` computes net PnL after fees on every exit:
+- `pnl_usd = raw_pnl - (entry_notional + exit_notional) × TRADING_FEE_RATE`
+- Stores `actual_exit_price` on ManagedPosition
+- `_persist_trade_close()` writes `actual_exit=pos.actual_exit_price` to PostgreSQL
+
+All exit paths now compute PnL before closing:
+- TP hit, SL hit, breakeven SL, trailing SL (via `_close_position` which calls `_calculate_pnl`)
+- Emergency close, excessive slippage, SL too close, emergency retry, timeout — all extract close price from market close result and call `_calculate_pnl` before `_close_position`
 
 ## Limitaciones conocidas
 

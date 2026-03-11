@@ -45,16 +45,16 @@ The bot looks for 2 types of setup:
 
 Claude receives the setup + market data (funding, CVD, liquidations, whales, OI) and decides if the context supports the trade. It does not see the chart pattern — it evaluates whether conditions are favorable to execute now.
 
-Requires: confidence >= 0.50 (aggressive) or 0.60 (default) + approved=true
+Requires: confidence >= 0.50 + approved=true
 
 ### 4. Risk Service checks guardrails
 
-- No more than 3 open positions
+- No more than 5 open positions
 - Daily drawdown < 5%
 - Weekly drawdown < 10%
 - 15min cooldown after a loss
 - Minimum R:R 1.2:1
-- Calculates size: (capital x 2%) / distance to SL
+- Calculates size: fixed $20 margin × leverage
 
 ### 5. Execution places orders
 
@@ -75,7 +75,7 @@ A perfect long looks like this:
 5. Funding rate is negative (shorts overcrowded = fuel to go up)
 6. CVD is positive (buyers dominating)
 7. Whales withdrawing from exchanges (accumulating)
-8. Claude says "yes, everything aligns" with 70%+ confidence
+8. Claude says "yes, everything aligns" with 50%+ confidence
 9. Risk approves: there is capital, no drawdown, R:R is good
 10. Limit order at 50% of OB, SL below OB, scaled TPs above
 
@@ -127,7 +127,8 @@ quant-fund/
 ├── shared/
 │   ├── models.py            # Dataclasses shared between all services
 │   ├── logger.py            # Loguru setup (stdout + daily rotated files)
-│   └── notifier.py          # Telegram push notifications (fire-and-forget)
+│   ├── notifier.py          # Telegram push notifications (fire-and-forget)
+│   └── alert_manager.py     # Priority-based Telegram alerts (trade lifecycle, errors, daily summary)
 ├── data_service/
 │   ├── __init__.py
 │   ├── service.py           # DataService facade (only public interface)
@@ -180,7 +181,10 @@ quant-fund/
 │   ├── test_claude_client.py
 │   ├── test_prompt_builder.py
 │   ├── test_data_service.py
-│   └── test_execution.py
+│   ├── test_execution.py
+│   └── test_quick_setups.py
+├── scripts/
+│   └── backtest.py          # Offline backtester (historical candle replay)
 ├── dashboard/
 │   ├── api/                 # FastAPI backend (read-only, port 8000)
 │   └── web/                 # Next.js frontend (port 3000)
@@ -285,7 +289,7 @@ Deterministic Python engine that detects SMC patterns. No AI. Pure rules.
 
 * Premium (>50% of range): Shorts only.
 * Discount (<50% of range): Long only.
-* Equilibrium (50%): Do not trade.
+* Equilibrium (49-51%): Allowed by default (`ALLOW_EQUILIBRIUM_TRADES=True`).
 * Crypto note: Recalculate every 4–6 hours using 4H swing high/low.
 
 **6. Volume & Institutional Indicators**
@@ -309,7 +313,7 @@ Deterministic Python engine that detects SMC patterns. No AI. Pure rules.
 6. OB in discount (long) or premium (short)
 7. Retrace to OB — entry at 50%
 8. Volume spike >2x + liquidations visible
-9. Claude approval (confidence ≥ 0.60)
+9. Claude approval (confidence ≥ 0.50)
 10. Risk check passes
 
 ---
@@ -351,27 +355,36 @@ Deterministic Python engine that detects SMC patterns. No AI. Pure rules.
 
 Claude API (Sonnet) as filter. Does not originate trades. **Claude has NO internet access** — all data must be provided as structured context.
 
+**Prompt approach (Scoring Rubric v2):**
+No narrative doctrine. Claude scores 4 dimensions (0-5): setup_quality, market_support, contradiction, data_sufficiency. Decision rules are mechanical: approve if setup_quality >= 3 AND contradiction <= 2 AND confidence >= threshold. "Insufficient edge" is a valid rejection — approval requires positive evidence, not just absence of contradiction.
+
 **What Claude receives (built by `prompt_builder.py`):**
-* The detected setup (type, pair, direction, entry, SL, TP levels, confluences)
-* HTF market structure (4H/1H trend direction, recent BOS/CHoCH)
-* Current funding rate + context (extreme or normal? threshold: ±0.03%)
-* Open Interest trend (rising/falling + price correlation)
-* CVD snapshot (divergence with price?)
+* The detected setup (type, pair, direction, entry, SL, TP levels, confluences with [SUPPORTING]/[CONTEXT] tags)
+* HTF bias (labeled as "aligned" or "COUNTER-TREND")
+* Current funding rate + neutral interpretation (directional crowding, not narrative)
+* Open Interest (snapshot only — no trend inference)
+* CVD snapshot (buy dominance %)
 * Recent liquidation cascades (OI proxy — estimated USD from OI drops)
-* Whale movements (last 24h significant transfers)
+* Whale movements (net exchange flow, individual movements — no bullish/bearish labels)
+* News sentiment (Fear & Greed + headlines)
 * Recent price action (1H and 4H candle % change)
 
+**Data availability rule:** Absent data = neutral. Neither penalize nor reward.
+
 **What Claude does NOT have access to:**
-* News, Twitter/X, Reddit, or any real-time internet data
-* Fear & Greed Index (future phase)
+* Twitter/X, Reddit, or any real-time social media data
 * Macro economic data (Fed rates, CPI)
 
 **Claude's output:** Structured JSON with:
-* `confidence`: float 0.0–1.0 (minimum 0.60 to proceed)
-* `approved`: bool (must be true AND confidence ≥ 0.60)
-* `reasoning`: string explaining the decision
+* `confidence`: float 0.0–1.0 (minimum 0.50 to proceed)
+* `approved`: bool (must be true AND confidence ≥ 0.50)
+* `scores`: dict with setup_quality, market_support, contradiction, data_sufficiency (0-5 each)
+* `supporting_factors`: list of concise factors supporting the trade
+* `contradicting_factors`: list of concise factors against the trade
 * `adjustments`: optional SL/TP modifications
 * `warnings`: list of risk factors detected
+
+Service constructs `reasoning` from factors ("Supporting: X; Y | Against: Z") and stores `scores` in `adjustments["scores"]`.
 
 **Fail-safe behavior:**
 * If Claude API call fails → trade is REJECTED (never execute without filter)
@@ -388,20 +401,20 @@ Claude API (Sonnet) as filter. Does not originate trades. **Claude has NO intern
 Non-negotiable guardrails:
 
 * Risk per trade: 1–2%
-* Max daily DD: 3%
-* Max weekly DD: 5%
-* Max open positions: 3
-* Minimum R/R: 1:1.5
-* Max leverage: 5x
-* Cooldown after loss: 30 min
-* Max trades/day: 5
+* Max daily DD: 5%
+* Max weekly DD: 10%
+* Max open positions: 5
+* Minimum R/R: 1:1.2
+* Max leverage: 7x
+* Cooldown after loss: 15 min
+* Max trades/day: 10
 
 Position size formula:
 
 ```
 # Fixed margin mode (default, FIXED_TRADE_MARGIN=20):
 Margin = $20 (fixed)
-Notional = Margin × Leverage = $20 × 5x = $100
+Notional = Margin × Leverage = $20 × 7x = $140
 Position Size = Notional / Entry Price
 
 # Percentage mode (fallback, FIXED_TRADE_MARGIN=0):
@@ -425,7 +438,7 @@ Instrument format: `"BTC-USDT-SWAP"`, `"ETH-USDT-SWAP"` (OKX convention).
 5. Monitor fill status + progressive SL management
 
 **Order types:**
-* Entry: Limit order. If not filled within 15 minutes → cancel.
+* Entry: Limit order. If not filled within 6 hours (swing) / 1 hour (quick) → cancel.
 * Stop Loss: Stop-market (not stop-limit — stop-limits can skip during crashes)
 * Take Profit: Single limit order at tp2 (100% of position)
 
@@ -434,6 +447,11 @@ Instrument format: `"BTC-USDT-SWAP"`, `"ETH-USDT-SWAP"` (OKX convention).
 * Entry fails (insufficient margin, API error) → log ERROR, do NOT retry automatically
 * SL/TP placement fails after entry fills → EMERGENCY close at market immediately
 * Slippage tracking: log expected vs actual fill price on every order
+
+**PnL tracking:**
+* All exits (TP, SL, emergency, timeout, excessive slippage) calculate PnL net of trading fees
+* Trading fee: `TRADING_FEE_RATE=0.0005` (0.05% per side, OKX taker). Total fees = (entry_notional + exit_notional) × rate
+* `actual_exit_price` tracked on every close and persisted to PostgreSQL `trades.actual_exit`
 
 **Position management after entry:**
 * Breakeven: price crosses tp1 (1:1 R:R) → SL moves to entry price

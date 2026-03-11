@@ -112,6 +112,7 @@ class TestEntryFill:
         mock_settings.MAX_TRADES_PER_DAY = 100
         mock_settings.MAX_DAILY_DRAWDOWN = 0.10
         mock_settings.MAX_WEEKLY_DRAWDOWN = 0.20
+        mock_settings.TRADING_FEE_RATE = 0.0005
 
         sim = TradeSimulator(initial_capital=10000)
         setup = _setup(direction="long", entry=49500, timestamp=1000000)
@@ -222,7 +223,7 @@ class TestTakeProfit:
         assert trade.current_sl == trade.entry_price  # Breakeven
 
     def test_breakeven_sl_closes_at_entry(self):
-        """After breakeven, SL at entry → PnL ~= 0."""
+        """After breakeven, SL at entry → PnL ~= -fees only."""
         sim = TradeSimulator(initial_capital=10000)
         setup = _setup(direction="long", entry=49500, sl=49000,
                        tp1=50000, tp2=50500)
@@ -244,7 +245,8 @@ class TestTakeProfit:
         assert len(trades) == 1
         trade = trades[0]
         assert trade.exit_reason == "breakeven_sl"
-        assert trade.pnl_usd == pytest.approx(0.0, abs=0.01)
+        # Raw PnL=0, but fees ~$19.80 are deducted
+        assert trade.pnl_usd == pytest.approx(-19.8, abs=1.0)
 
     def test_trailing_sl_moves_to_tp1(self):
         """Price crosses midpoint(tp1,tp2) → SL moves to tp1."""
@@ -368,6 +370,7 @@ class TestTimeout:
         mock_settings.MAX_TRADES_PER_DAY = 100
         mock_settings.MAX_DAILY_DRAWDOWN = 0.10
         mock_settings.MAX_WEEKLY_DRAWDOWN = 0.20
+        mock_settings.TRADING_FEE_RATE = 0.0005
 
         sim = TradeSimulator(initial_capital=10000)
         setup = _setup(direction="long", entry=49500, sl=49000,
@@ -449,11 +452,13 @@ class TestPositionSizing:
 
 class TestPnLComputation:
     def test_sl_loss_pnl(self):
-        """SL hit produces expected loss amount."""
+        """SL hit produces expected loss amount (net of fees)."""
         sim = TradeSimulator(initial_capital=10000)
         # entry=50000, sl=49500, distance=$500
         # risk = 10000 * 0.02 = $200, size = 0.4 BTC
-        # SL loss = (49500 - 50000) * 0.4 = -$200
+        # Raw SL loss = (49500 - 50000) * 0.4 = -$200
+        # Fees = (20000+19800)*0.0005 = $19.90
+        # Net = -$219.90
         setup = _setup(direction="long", entry=50000, sl=49500,
                        tp1=50500, tp2=51000)
         candle0 = _candle(timestamp=1000000)
@@ -465,7 +470,7 @@ class TestPnLComputation:
         sim.on_candle(candle2)
 
         trade = sim.get_closed_trades()[0]
-        expected_loss = -200.0  # 2% of 10000
+        expected_loss = -219.9  # raw -$200 + $19.90 fees
         assert trade.pnl_usd == pytest.approx(expected_loss, rel=0.01)
 
     def test_equity_updates_after_trades(self):
@@ -480,7 +485,7 @@ class TestPnLComputation:
         sim.on_candle(_candle(timestamp=2000000, low=49900))  # Fill
         sim.on_candle(_candle(timestamp=3000000, low=49400))  # SL
 
-        assert sim.equity == pytest.approx(9800, rel=0.01)
+        assert sim.equity == pytest.approx(9780.1, rel=0.01)
 
 
 # ================================================================
@@ -568,4 +573,5 @@ class TestShortTrades:
         trades = sim.get_closed_trades()
         assert len(trades) == 1
         assert trades[0].exit_reason == "breakeven_sl"
-        assert trades[0].pnl_usd == pytest.approx(0.0, abs=0.01)
+        # Raw PnL=0, but fees ~$20.20 are deducted
+        assert trades[0].pnl_usd == pytest.approx(-20.2, abs=1.0)

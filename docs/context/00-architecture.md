@@ -1,6 +1,6 @@
 # Arquitectura del Sistema
 > Última actualización: 2026-03-11
-> Estado: **5/5 capas implementadas** — pipeline completo Data → Strategy → AI → Risk → Execution. HTF Campaign Trading (4H position trades con pyramid adds y trailing SL en swing levels). AlertManager con prioridades, rate limiting, silenciamiento. Telegram: ORDER PLACED + TRADE CLOSED + CAMPAIGN CLOSED + EMERGENCY + SIGNAL (en signal mode). 2 perfiles (default/aggressive). AI filter obligatorio en todas las profiles. Signal mode disponible (`SIGNAL_ONLY=true`).
+> Estado: **5/5 capas implementadas** — pipeline completo Data → Strategy → AI → Risk → Execution. HTF Campaign Trading (4H position trades con pyramid adds y trailing SL en swing levels). AlertManager con prioridades, rate limiting, silenciamiento. Telegram: ORDER PLACED + TRADE CLOSED + CAMPAIGN CLOSED + EMERGENCY + SIGNAL (en signal mode). Single mode (aggressive values merged as defaults). AI filter obligatorio. PnL tracking con fee deduction (0.05% per side). Signal mode disponible (`SIGNAL_ONLY=true`).
 
 ## Qué hace (para entenderlo rápido)
 El sistema es un bot de trading que funciona como una línea de ensamblaje. Los datos entran por un lado, pasan por 5 filtros en orden, y si todos dicen "sí", se ejecuta el trade. Si cualquier filtro dice "no", el trade se descarta.
@@ -67,7 +67,7 @@ Sin esta arquitectura, tendríamos un solo programa gigante donde todo está mez
 2. Cuando hay una vela nueva (cada 5m/15m), manda los datos al Strategy Service
 3. Strategy Service analiza los datos buscando patrones SMC
 4. Si encuentra un setup completo (Setup A/B swing, o C/D/E quick si no hay swing), lo pasa al siguiente filtro
-5. **Swing setups (A/B):** Pre-filter determinístico (funding extreme, Fear & Greed extreme, CVD divergencia) → Claude evalúa → confianza ≥ 0.60 (0.50 aggressive)
+5. **Swing setups (A/B):** Pre-filter determinístico (funding extreme, Fear & Greed extreme, CVD divergencia) → Claude evalúa → confianza ≥ 0.50
 6. **Quick setups (C/D/E):** Skip Claude AI filter (los datos SON la señal). Setup C también skipea funding pre-filter. Se genera `AIDecision` sintético con confidence=1.0
 7. **AI filter obligatorio para swing setups** — quick setups lo bypasean por diseño (data-driven).
 8. Risk Service verifica TODOS los guardrails y calcula el position size
@@ -216,7 +216,7 @@ bot_metrics (metric_name VARCHAR(50), value FLOAT, pair VARCHAR(20), labels JSON
 | 5. Execution Service | Implementado + auditoría | 32 | `execution_service/service.py` |
 | Backtester | Implementado (fase 1) | 21 | `scripts/backtest.py` |
 | Alert Manager | Implementado | 26 | `shared/alert_manager.py` |
-| **Total** | **5/5 completas + backtester + alerts** | **450** | `main.py` (pipeline completo) |
+| **Total** | **5/5 completas + backtester + alerts** | **478** | `main.py` (pipeline completo) |
 
 ## Backtesting (`scripts/`)
 
@@ -238,10 +238,10 @@ Backtester completo con simulación de fills:
 - **Métricas**: win rate, avg R:R, PnL, max drawdown, Sharpe, profit factor, trades/week
 - **Breakdowns**: por setup type, par, dirección, exit reasons, risk rejections
 - **Export CSV**: `--csv` genera archivo con todas las trades
-- **JSON persistence**: cada run guarda automáticamente un resumen JSON en `backtest_results/` con métricas, breakdowns y metadata. Filename: `{timestamp}_{profile}_{days}d.json`. No requiere flag — siempre se guarda.
+- **JSON persistence**: cada run guarda automáticamente un resumen JSON en `backtest_results/` con métricas, breakdowns y metadata. Filename: `{timestamp}_{days}d.json`. No requiere flag — siempre se guarda.
 
 ```bash
-python scripts/backtest.py --days 60 --profile aggressive --capital 10000 --csv
+python scripts/backtest.py --days 60 --capital 10000 --csv
 ```
 
 **Tests:** 21 tests en `tests/test_backtest.py` (SL, single TP, breakeven, trailing SL, timeout, sizing, métricas).
@@ -256,6 +256,7 @@ python scripts/backtest.py --days 60 --profile aggressive --capital 10000 --csv
 - Ver `docs/to-fix.md` para backlog completo (~30 IMPORTANT + 29 MINOR issues)
 
 ## Cambios recientes
+- 2026-03-11: **Single mode + PnL fix + Institutional AI** — Removed dual profile system (default/aggressive). Aggressive values merged as new defaults: AI_MIN_CONFIDENCE 0.50, MAX_DAILY_DRAWDOWN 5%, MAX_WEEKLY_DRAWDOWN 10%, COOLDOWN_MINUTES 15, MAX_TRADES_PER_DAY 10, MIN_RISK_REWARD 1.2, OB_PROXIMITY_PCT 0.008, PD_EQUILIBRIUM_BAND 0.01, ALLOW_EQUILIBRIUM_TRADES True, HTF_BIAS_REQUIRE_4H False, ENTRY_TIMEOUT_SECONDS 21600. PnL tracking now deducts trading fees (TRADING_FEE_RATE 0.05% per side) and stores actual_exit_price. All exit paths compute PnL before closing. AI prompt rewritten with scoring rubric (4 dimensions: setup_quality, market_support, contradiction, data_sufficiency). Deleted: ProfileSelector component, profile API route, profile sync in main.py. 478 tests pass.
 - 2026-03-11: **HTF Campaign Trading** — Position trades en 4H con Daily bias. CampaignMonitor gestiona ciclo de vida: initial entry → pyramid adds (hasta 3, margen decreciente: $30/$15/$10/$5) → trailing SL en 4H swing levels → timeout 7 días. Sin TP — sale solo via trailing SL. Intraday bloqueado en par con campaña activa. Nuevos modelos: `CampaignAdd`, `PositionCampaign`. Nuevo archivo: `execution_service/campaign_monitor.py`. Nueva tabla PostgreSQL: `campaigns`. Daily candles (1D) backfill + WebSocket. Settings: `HTF_CAMPAIGN_*`. Pipeline HTF wired en `main.py`. Alert: `notify_campaign_closed()`.
 - 2026-03-11: **Signal Mode** — Nuevo modo semi-manual (`SIGNAL_ONLY=true`). Bot detecta setups y pasa todos los filtros pero NO ejecuta — manda señal por Telegram con entry/SL/TP/R:R/size/confluences/AI reasoning. Para validar calidad de señales antes de confiar en ejecución automática. `config/settings.py` (SIGNAL_ONLY flag), `shared/alert_manager.py` (notify_signal), `main.py` (pipeline conditional). 5 tests nuevos.
 - 2026-03-10: **Telegram minimalista** — Solo 3 notificaciones activas: ORDER PLACED (nueva, al enviar limit order), TRADE CLOSED (SL/TP), EMERGENCY. Removidos: OB summary, AI decisions, whale movements, daily summary, bot started, breakeven/trailing SL, entry expired, DD warning, health down/recovered. Métodos siguen existiendo en AlertManager para re-enable futuro. Datos de whale/health siguen colectándose para AI context, dashboard y logs.

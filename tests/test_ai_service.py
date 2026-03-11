@@ -38,12 +38,17 @@ def _mock_settings():
     return {
         "ANTHROPIC_API_KEY": "test-key",
         "CLAUDE_MODEL": "claude-sonnet-4-20250514",
-        "AI_MIN_CONFIDENCE": 0.60,
+        "AI_MIN_CONFIDENCE": 0.50,
         "AI_TIMEOUT_SECONDS": 30.0,
         "AI_MAX_TOKENS": 500,
         "AI_TEMPERATURE": 0.3,
         "FUNDING_EXTREME_THRESHOLD": 0.0003,
     }
+
+
+_SCORES_STRONG = {"setup_quality": 4, "market_support": 3, "contradiction": 1, "data_sufficiency": 3}
+_SCORES_WEAK = {"setup_quality": 2, "market_support": 1, "contradiction": 3, "data_sufficiency": 2}
+_SCORES_MARGINAL = {"setup_quality": 3, "market_support": 2, "contradiction": 2, "data_sufficiency": 2}
 
 
 def _make_ai_service_with_mock(claude_result: dict | None) -> AIService:
@@ -73,7 +78,9 @@ class TestApproval:
         service = _make_ai_service_with_mock({
             "confidence": 0.75,
             "approved": True,
-            "reasoning": "Strong setup",
+            "scores": _SCORES_STRONG,
+            "supporting_factors": ["Strong OB volume", "CHoCH confirmed"],
+            "contradicting_factors": ["Mild CVD divergence"],
             "adjustments": {},
             "warnings": [],
         })
@@ -83,11 +90,13 @@ class TestApproval:
         assert decision.approved is True
         assert decision.confidence == 0.75
 
-    def test_boundary_confidence_060_approved(self):
+    def test_boundary_confidence_050_approved(self):
         service = _make_ai_service_with_mock({
-            "confidence": 0.60,
+            "confidence": 0.50,
             "approved": True,
-            "reasoning": "Marginal but acceptable",
+            "scores": _SCORES_MARGINAL,
+            "supporting_factors": ["Adequate setup"],
+            "contradicting_factors": [],
             "adjustments": {},
             "warnings": [],
         })
@@ -100,20 +109,26 @@ class TestApproval:
         service = _make_ai_service_with_mock({
             "confidence": 0.70,
             "approved": True,
-            "reasoning": "Good with tighter SL",
+            "scores": _SCORES_STRONG,
+            "supporting_factors": ["Good setup"],
+            "contradicting_factors": [],
             "adjustments": {"sl_price": 49200.0},
             "warnings": [],
         })
         decision = asyncio.run(
             service.evaluate(_make_setup(), _make_snapshot())
         )
-        assert decision.adjustments == {"sl_price": 49200.0}
+        # adjustments now also contain scores
+        assert decision.adjustments["sl_price"] == 49200.0
+        assert "scores" in decision.adjustments
 
     def test_warnings_passed_through(self):
         service = _make_ai_service_with_mock({
             "confidence": 0.65,
             "approved": True,
-            "reasoning": "OK but risky",
+            "scores": _SCORES_STRONG,
+            "supporting_factors": ["OK setup"],
+            "contradicting_factors": [],
             "adjustments": {},
             "warnings": ["High funding rate", "Low volume"],
         })
@@ -121,6 +136,39 @@ class TestApproval:
             service.evaluate(_make_setup(), _make_snapshot())
         )
         assert len(decision.warnings) == 2
+
+    def test_reasoning_constructed_from_factors(self):
+        service = _make_ai_service_with_mock({
+            "confidence": 0.70,
+            "approved": True,
+            "scores": _SCORES_STRONG,
+            "supporting_factors": ["Strong OB volume 2.1x", "Bullish CHoCH"],
+            "contradicting_factors": ["Mild CVD divergence"],
+            "adjustments": {},
+            "warnings": [],
+        })
+        decision = asyncio.run(
+            service.evaluate(_make_setup(), _make_snapshot())
+        )
+        assert "Supporting:" in decision.reasoning
+        assert "Strong OB volume 2.1x" in decision.reasoning
+        assert "Against:" in decision.reasoning
+        assert "Mild CVD divergence" in decision.reasoning
+
+    def test_scores_stored_in_adjustments(self):
+        service = _make_ai_service_with_mock({
+            "confidence": 0.70,
+            "approved": True,
+            "scores": _SCORES_STRONG,
+            "supporting_factors": [],
+            "contradicting_factors": [],
+            "adjustments": {},
+            "warnings": [],
+        })
+        decision = asyncio.run(
+            service.evaluate(_make_setup(), _make_snapshot())
+        )
+        assert decision.adjustments["scores"] == _SCORES_STRONG
 
 
 # ============================================================
@@ -133,7 +181,9 @@ class TestRejection:
         service = _make_ai_service_with_mock({
             "confidence": 0.40,
             "approved": True,  # Claude says yes but confidence too low
-            "reasoning": "Weak setup",
+            "scores": _SCORES_WEAK,
+            "supporting_factors": ["Weak setup"],
+            "contradicting_factors": [],
             "adjustments": {},
             "warnings": [],
         })
@@ -146,7 +196,9 @@ class TestRejection:
         service = _make_ai_service_with_mock({
             "confidence": 0.70,
             "approved": False,
-            "reasoning": "Macro conditions unfavorable",
+            "scores": _SCORES_WEAK,
+            "supporting_factors": [],
+            "contradicting_factors": ["Multiple contradictions"],
             "adjustments": {},
             "warnings": [],
         })
@@ -155,11 +207,13 @@ class TestRejection:
         )
         assert decision.approved is False
 
-    def test_boundary_confidence_059_rejected(self):
+    def test_boundary_confidence_049_rejected(self):
         service = _make_ai_service_with_mock({
-            "confidence": 0.59,
+            "confidence": 0.49,
             "approved": True,
-            "reasoning": "Almost there",
+            "scores": _SCORES_MARGINAL,
+            "supporting_factors": ["Almost there"],
+            "contradicting_factors": [],
             "adjustments": {},
             "warnings": [],
         })
@@ -198,7 +252,9 @@ class TestConfidenceClamping:
         service = _make_ai_service_with_mock({
             "confidence": 1.5,
             "approved": True,
-            "reasoning": "Over-confident",
+            "scores": _SCORES_STRONG,
+            "supporting_factors": ["Over-confident"],
+            "contradicting_factors": [],
             "adjustments": {},
             "warnings": [],
         })
@@ -211,7 +267,9 @@ class TestConfidenceClamping:
         service = _make_ai_service_with_mock({
             "confidence": -0.3,
             "approved": False,
-            "reasoning": "Negative",
+            "scores": _SCORES_WEAK,
+            "supporting_factors": [],
+            "contradicting_factors": ["Negative"],
             "adjustments": {},
             "warnings": [],
         })
@@ -222,53 +280,43 @@ class TestConfidenceClamping:
 
 
 # ============================================================
-# Data service integration
+# Confidence thresholds
 # ============================================================
 
-# ============================================================
-# Profile-aware confidence thresholds
-# ============================================================
+class TestConfidenceThresholds:
 
-class TestProfileConfidence:
-
-    def test_aggressive_min_confidence_050_approved(self):
-        """Aggressive profile approves at confidence 0.50."""
+    def test_default_min_confidence_050_approved(self):
+        """Default threshold (0.50) approves at confidence 0.50."""
         service = _make_ai_service_with_mock({
             "confidence": 0.50,
             "approved": True,
-            "reasoning": "Setup has strong confluence",
+            "scores": _SCORES_MARGINAL,
+            "supporting_factors": ["Setup has strong confluence"],
+            "contradicting_factors": [],
             "adjustments": {},
             "warnings": [],
         })
-        original = settings.AI_MIN_CONFIDENCE
-        try:
-            settings.AI_MIN_CONFIDENCE = 0.50  # aggressive threshold
-            decision = asyncio.run(
-                service.evaluate(_make_setup(direction="short"), _make_snapshot())
-            )
-            assert decision.approved is True
-            assert decision.confidence == 0.50
-        finally:
-            settings.AI_MIN_CONFIDENCE = original
+        decision = asyncio.run(
+            service.evaluate(_make_setup(direction="short"), _make_snapshot())
+        )
+        assert decision.approved is True
+        assert decision.confidence == 0.50
 
-    def test_default_min_confidence_rejects_050(self):
-        """Default profile rejects confidence 0.50 (below 0.60 threshold)."""
+    def test_rejects_049(self):
+        """Confidence 0.49 is below 0.50 threshold — rejected."""
         service = _make_ai_service_with_mock({
-            "confidence": 0.50,
+            "confidence": 0.49,
             "approved": True,
-            "reasoning": "Marginal setup",
+            "scores": _SCORES_MARGINAL,
+            "supporting_factors": ["Marginal setup"],
+            "contradicting_factors": [],
             "adjustments": {},
             "warnings": [],
         })
-        original = settings.AI_MIN_CONFIDENCE
-        try:
-            settings.AI_MIN_CONFIDENCE = 0.60  # default threshold
-            decision = asyncio.run(
-                service.evaluate(_make_setup(), _make_snapshot())
-            )
-            assert decision.approved is False
-        finally:
-            settings.AI_MIN_CONFIDENCE = original
+        decision = asyncio.run(
+            service.evaluate(_make_setup(), _make_snapshot())
+        )
+        assert decision.approved is False
 
 
 # ============================================================
@@ -282,7 +330,9 @@ class TestDataServiceIntegration:
         service = _make_ai_service_with_mock({
             "confidence": 0.70,
             "approved": True,
-            "reasoning": "OK",
+            "scores": _SCORES_STRONG,
+            "supporting_factors": ["OK"],
+            "contradicting_factors": [],
             "adjustments": {},
             "warnings": [],
         })

@@ -1,12 +1,12 @@
 # AI Service
 > Última actualización: 2026-03-11
-> Estado: implementado (completo, integrado en main.py). Pre-filter determinístico (funding + F&G + CVD). HTF bias es contexto para Claude, no hard gate. AI obligatorio en todas las profiles. Setup dedup cache. News sentiment (F&G + headlines) como nuevo factor. CVD interpretation differentiated by setup type (reversal vs continuation). HTF position trade note en prompt.
+> Estado: implementado (completo, integrado en main.py). Pre-filter determinístico (funding + F&G + CVD). HTF bias es contexto para Claude, no hard gate. AI obligatorio. Setup dedup cache. News sentiment (F&G + headlines) como nuevo factor. Scoring-based rubric prompt (v2). Single mode — AI_MIN_CONFIDENCE 0.50. PnL includes fee deduction.
 
 ## Qué hace (30 segundos)
-El AI Service es el consultor senior del sistema. Recibe cada trade setup del Strategy Service y lo pasa por Claude (Sonnet) para que evalúe si el contexto de mercado apoya ejecutarlo. Claude analiza funding rate, open interest, CVD, liquidaciones, whale movements y precio reciente. Si confidence >= 0.60 y approved=true, el trade pasa al Risk Service. Si no, se descarta.
+El AI Service es el filtro del sistema. Recibe cada trade setup del Strategy Service y lo pasa por Claude (Sonnet) para que evalúe si el contexto de mercado apoya ejecutarlo. Claude evalúa scoring dimensions (setup quality, market support, contradiction, data sufficiency) usando datos de funding rate, open interest, CVD, liquidaciones, whale movements y precio reciente. Si confidence >= 0.50 y approved=true, el trade pasa al Risk Service. Si no, se descarta.
 
 ## Por qué existe
-El Strategy Service es determinístico — detecta patrones SMC con reglas fijas. Pero las reglas no capturan contexto macro, anomalías en funding/OI, ni correlaciones de mercado. Un CHoCH+OB válido durante un crash no debería ejecutarse. Claude actúa como el trader senior que revisa cada setup antes de aprobar. Target: aprobar 30-60% de los setups.
+El Strategy Service es determinístico — detecta patrones SMC con reglas fijas. Pero las reglas no capturan contexto macro, anomalías en funding/OI, ni correlaciones de mercado. Un CHoCH+OB válido durante un crash no debería ejecutarse. Claude actúa como filtro que revisa cada setup antes de aprobar. Target: aprobar 30-60% de los setups.
 
 ## Cómo funciona (5 minutos)
 
@@ -19,40 +19,74 @@ AIService.evaluate(setup, snapshot)
   │
   ├── PromptBuilder construye prompt con datos de mercado
   ├── ClaudeClient envía a Claude API (Sonnet)
-  ├── Claude responde con JSON: confidence, approved, reasoning, adjustments, warnings
-  ├── Double check: approved=true AND confidence >= 0.60
+  ├── Claude responde con JSON: scores, supporting_factors, contradicting_factors, adjustments, warnings
+  ├── Service construye reasoning desde factors, almacena scores en adjustments
+  ├── Double check: approved=true AND confidence >= 0.50
   └── Si API falla → rechaza (fail-safe)
   │
   ▼
-AIDecision { confidence, approved, reasoning, adjustments, warnings }
+AIDecision { confidence, approved, reasoning (from factors), adjustments (+ scores), warnings }
 ```
 
 ### Fail-Safe
 - API key no configurada → rechaza todos los trades, log warning
 - API timeout/error → rechaza el trade, no crashea
 - JSON inválido de Claude → rechaza el trade
+- Campos requeridos faltantes (confidence, approved, scores) → rechaza
+- scores no es dict → rechaza
 - Confidence > 1.0 o < 0.0 → clamped a [0, 1]
-- Claude dice approved=true pero confidence < 0.60 → rechazado
+- Claude dice approved=true pero confidence < 0.50 → rechazado
 
-### El Prompt
+### El Prompt — Scoring Rubric (v2)
 **System prompt** (se reconstruye por evaluación con threshold actual):
-- Rol: senior crypto trading analyst en fondo cuantitativo
-- Instrucción: responder SOLO con JSON válido
-- HTF bias es CONTEXTO, no garantía. Claude evalúa counter-trend setups con criterio propio
-- Si HTF alineado → high-conviction trend trade. Si HTF opuesto → counter-trend, puede ser válido si LTF structure + CVD + funding apoyan
-- 8 factores a evaluar: funding, CVD (peso diferenciado por tipo de setup), liquidaciones, whales, OI (snapshot-only), calidad del setup con confluences etiquetadas, R:R, news sentiment (F&G + headlines)
-- Reglas críticas: no aprobar solo por patrón, funding extremo = escepticismo, CVD interpretation per setup type (reversal: counter-CVD expected; continuation: CVD aligned = confirmation), CVD alone never a veto, no auto-rechazar counter-trend
-- Sin cuota de aprobación — aprobar solo cuando evidencia claramente apoya
+- Rol: trade filter (sin narrativa doctrinal — no Wyckoff/ICT/VSA)
+- Método: scoring rubric con 4 dimensiones (0-5 cada una):
+  1. **setup_quality** — fuerza de confluencias técnicas (0-1 weak, 2-3 moderate, 4-5 strong con OB volume >2x)
+  2. **market_support** — datos disponibles que apoyan el trade (0 ninguno, 3-4 múltiples señales, 5 fuerte alineación)
+  3. **contradiction** — evidencia CONTRA el trade (0 ninguna, 3-4 múltiples contradicciones, 5 fuerte contradicción)
+  4. **data_sufficiency** — cuántos datos relevantes están disponibles (0-1 mayoría ausente, 4-5 comprensivos)
+- Decision rules:
+  - APPROVE: setup_quality >= 3 AND contradiction <= 2 AND confidence >= threshold
+  - REJECT: contradiction >= 3, OR setup_quality <= 1, OR insufficient supporting evidence
+  - "Insufficient edge" es rechazo VÁLIDO — no todo setup merece aprobación
+  - Aprobación REQUIERE evidencia positiva, no solo ausencia de contradicción
+- Confidence calibration: 0.80+ (strong), 0.60-0.79 (good), 0.50-0.59 (marginal), <0.50 (reject)
+- Factor reading guide: neutral language, no interpretive framing
+  - Funding: "directional crowding" (no "liquidation fuel")
+  - CVD: context-dependent (reversal vs continuation)
+  - Liquidations: "directional fuel spent" / "opposing positions cleared"
+  - Whales: "net exchange withdrawals reduce sell-side supply" (no "bullish accumulation")
+  - News: "contrarian context at extremes" (no "institutional accumulation narrative")
+- Absent data = neutral, neither penalize nor reward
+- Cada factor es weak signal — solo combinaciones importan
+
+**Output JSON de Claude:**
+```json
+{
+    "approved": bool,
+    "confidence": float,
+    "scores": {
+        "setup_quality": int 0-5,
+        "market_support": int 0-5,
+        "contradiction": int 0-5,
+        "data_sufficiency": int 0-5
+    },
+    "supporting_factors": ["concise factor", ...],
+    "contradicting_factors": ["concise factor", ...],
+    "adjustments": {"sl_price": float|null, "tp2_price": float|null},
+    "warnings": ["warning", ...]
+}
+```
 
 **User prompt** (por cada evaluación):
 - Setup completo: pair, direction, entry, SL, TP1 (breakeven trigger), TP2 (single TP), R:R to TP2, HTF bias labeled as "aligned" or "COUNTER-TREND"
-- Confluences etiquetadas: cada una marcada como [SUPPORTING] o [CONTEXT] con descripción humana
-- Funding rate con interpretación (normal/extreme)
+- Confluences etiquetadas: cada una marcada como [SUPPORTING] o [CONTEXT] con descripción factual (sin narrativa)
+- Funding rate con interpretación neutral ("directional crowding on long/short side")
 - Open interest (snapshot sin tendencia — solo contexto de tamaño de mercado)
 - CVD con buy dominance %
 - Liquidaciones recientes (long vs short)
-- Whale activity with USD values, net exchange flow summary (deposits vs withdrawals with bullish/bearish interpretation), individual movements grouped by type (exchange first, then transfers), wallet labels prominent
-- News sentiment: Fear & Greed Index (score/100 + label) + recent headlines (title, source, category). Only included if `snapshot.news_sentiment` exists.
+- Whale activity: net exchange flow (deposits vs withdrawals, sin labels "bullish/bearish"), individual movements grouped by type
+- News sentiment: Fear & Greed Index (score/100 + label) + recent headlines
 - Price context (cambio 1h, 4h)
 
 ## Archivos implementados
@@ -61,12 +95,13 @@ AIDecision { confidence, approved, reasoning, adjustments, warnings }
 - Clase: `PromptBuilder`
 - `build_system_prompt()` → system prompt con threshold dinámico de `settings.AI_MIN_CONFIDENCE`
 - `build_evaluation_prompt(setup, snapshot, candles_context)` → user prompt con datos concretos
-- `_format_confluences(confluences, direction)` → convierte labels internos a descripción humana con tags [SUPPORTING]/[CONTEXT]
+- `_format_confluences(confluences, direction)` → convierte labels internos a descripción factual con tags [SUPPORTING]/[CONTEXT]
 - Computa R:R simple (reward to tp2 / risk) en el setup section
-- Interpreta funding rate: normal/extreme basado en `FUNDING_EXTREME_THRESHOLD` (0.03%)
+- Interpreta funding rate: normal/extreme basado en `FUNDING_EXTREME_THRESHOLD` (0.03%) — neutral language ("directional crowding")
 - OI marcado como snapshot-only (sin tendencia)
+- Whale section: net exchange flow sin labels "bullish/bearish", solo "net withdrawal" / "net deposit"
 - Maneja datos faltantes gracefully ("Not available")
-- **HTF position trade note:** Cuando `setup.ob_timeframe` es "4h" o "1h", agrega nota al prompt indicando "MODE: HIGHER TIMEFRAME POSITION TRADE" — instruye a Claude a pesar setup quality y macro structure por encima de ruido de corto plazo
+- **HTF position trade note:** Cuando `setup.ob_timeframe` es "4h" o "1h", agrega nota al prompt
 
 ### `ai_service/claude_client.py` — Wrapper del API
 - Clase: `ClaudeClient`
@@ -77,7 +112,8 @@ AIDecision { confidence, approved, reasoning, adjustments, warnings }
 - Timeout configurable (`AI_TIMEOUT_SECONDS`)
 - `max_retries=2` con backoff del SDK
 - Strip de markdown code fences si Claude wrappea el JSON
-- Validación de campos requeridos (confidence, approved, reasoning)
+- Validación de campos requeridos: `confidence`, `approved`, `scores` (dict)
+- Type checks: confidence = numeric, approved = bool, scores = dict
 - Logs token usage on every successful call: `Claude tokens: input=X output=Y total=Z`
 - Todo error → retorna None (fail-safe)
 
@@ -85,8 +121,11 @@ AIDecision { confidence, approved, reasoning, adjustments, warnings }
 - Clase: `AIService(data_service=None)`
 - `evaluate(setup, snapshot)` → `AIDecision`
 - Obtiene candles context del DataService para price change
-- Double check: `approved=True` AND `confidence >= AI_MIN_CONFIDENCE`
+- Construye `reasoning` desde `supporting_factors` + `contradicting_factors` (formato: "Supporting: X; Y | Against: Z")
+- Almacena `scores` dentro de `adjustments["scores"]` (junto con SL/TP adjustments)
+- Double check: `approved=True` AND `confidence >= AI_MIN_CONFIDENCE` (0.50)
 - Clamp confidence a [0, 1]
+- Log incluye scores: `AI APPROVED/REJECTED: pair=X confidence=Y scores=[setup_quality=4 ...]`
 - Sin API key → disabled, rechaza todo
 - API failure → rechaza con razón clara en logs
 
@@ -99,7 +138,7 @@ AIDecision { confidence, approved, reasoning, adjustments, warnings }
 |---|---|---|
 | `ANTHROPIC_API_KEY` | `""` | API key de Anthropic |
 | `CLAUDE_MODEL` | `claude-sonnet-4-20250514` | Modelo a usar |
-| `AI_MIN_CONFIDENCE` | `0.60` | Confianza mínima para aprobar |
+| `AI_MIN_CONFIDENCE` | `0.50` | Confianza mínima para aprobar |
 | `AI_TIMEOUT_SECONDS` | `30.0` | Timeout por request |
 | `AI_TEMPERATURE` | `0.3` | Temperatura (menor = más consistente) |
 | `AI_MAX_TOKENS` | `500` | Tokens máximos de respuesta |
@@ -107,22 +146,22 @@ AIDecision { confidence, approved, reasoning, adjustments, warnings }
 
 ## Tests
 
-41 tests en 3 archivos:
-- `test_prompt_builder.py` — system prompt, evaluation prompt, datos faltantes, funding extremo, non-exchange whale labels, profile-aware prompts, dynamic threshold, confluence formatting (dynamic patterns, malformed strings)
-- `test_claude_client.py` — JSON válido/inválido, code fences, API errors, timeout, rate limit, approved string type validation
-- `test_ai_service.py` — approval/rejection, confidence clamping, double check, API failure, disabled mode, profile-specific confidence thresholds, data service integration
+52 tests en 3 archivos:
+- `test_prompt_builder.py` — system prompt (scoring rubric, no narrative doctrine, JSON format), evaluation prompt, datos faltantes, funding extremo, non-exchange whale labels, dynamic threshold, confluence formatting (dynamic patterns, malformed strings)
+- `test_claude_client.py` — JSON válido/inválido, code fences, API errors, timeout, rate limit, approved string type validation, scores dict validation
+- `test_ai_service.py` — approval/rejection, confidence clamping, double check, API failure, disabled mode, confidence thresholds (0.50 default), reasoning constructed from factors, scores stored in adjustments, data service integration
 
 ## Persistence
 
 Every AI decision (approved or rejected) is persisted to PostgreSQL `ai_decisions` table via `main.py:_persist_ai_decision()`. The record includes:
 - `pair`, `direction`, `setup_type` — from the TradeSetup being evaluated
 - `approved` — boolean result of the decision
-- `confidence`, `reasoning`, `adjustments`, `warnings` — from the AIDecision
+- `confidence`, `reasoning` (constructed from factors), `adjustments` (includes scores), `warnings` — from the AIDecision
 - `trade_id` — linked to trades table if the trade was ultimately executed (None for rejections)
 
 The dashboard AILog component shows pair, direction badge, and approved/rejected status for each decision.
 
-## Pre-Filter (todas las profiles)
+## Pre-Filter
 
 Antes de llamar a Claude API, `main.py:_pre_filter_for_claude()` ejecuta 3 checks determinísticos que rechazan setups obvios sin gastar tokens. Los checks son conservadores — si los datos no están disponibles, el check se salta (no genera falsos rechazos).
 
@@ -158,21 +197,21 @@ Antes de llamar a Claude API, `main.py:_pre_filter_for_claude()` ejecuta 3 check
 - Si el setup ya fue evaluado dentro del TTL → skip (log debug, return None)
 - El cache se actualiza DESPUÉS de la evaluación exitosa de Claude
 
-## Pipeline AI (todas las profiles)
+## Pipeline AI
 
 ```
-Setup detected (default o aggressive)
+Setup detected
   |
   +-- Dedup cache hit? --> skip (ya evaluado)
   |
   +-- pre-filter (funding, F&G, CVD) --> rechaza sin Claude
   |
-  +-- Claude evalúa --> AIDecision
+  +-- Claude evalúa --> AIDecision (scores + factors)
   |
-  +-- approved + confidence >= threshold? --> Risk Service
+  +-- approved + confidence >= 0.50? --> Risk Service
 ```
 
-**AI filter es OBLIGATORIO en todas las profiles.** No hay bypass. No hay auto-approve.
+**AI filter es OBLIGATORIO para swing setups (A/B/F/G).** No hay bypass. No hay auto-approve. Quick setups (C/D/E) skip AI by design.
 
 ## FAQ
 
@@ -180,7 +219,10 @@ Setup detected (default o aggressive)
 Temperature 0 puede hacer que Claude sea demasiado repetitivo con las mismas razones. 0.3 da decisiones consistentes pero permite variación en el razonamiento. En fondos cuantitativos, el modelo no debe ser creativo — debe ser consistente.
 
 **¿Cuánto cuesta por evaluación?**
-~1,100 tokens input + ~200 tokens output ≈ $0.006/evaluación con Sonnet ($3/MTok input, $15/MTok output). Con 5-15 setups/semana ≈ $0.12-0.36/mes. El uso exacto se loguea en cada llamada (`Claude tokens: input=X output=Y total=Z`).
+~1,600 tokens input + ~200 tokens output ≈ $0.008/evaluación con Sonnet ($3/MTok input, $15/MTok output). Con 5-15 setups/semana ≈ $0.16-0.48/mes. El uso exacto se loguea en cada llamada (`Claude tokens: input=X output=Y total=Z`).
+
+**¿Por qué scoring rubric en vez de narrativa?**
+La v1 usaba un framework narrativo (ICT/Wyckoff) que permitía a Claude racionalizar aprobaciones con pseudo-lógica. El scoring rubric (v2) fuerza evaluación dimensional explícita — cada dimensión tiene escala 0-5, las reglas de decisión son mecánicas, y el output separa factores en supporting/contradicting en vez de free-form reasoning. Esto permite análisis posterior por confidence buckets y correlación scores vs outcomes.
 
 **¿Por qué no streaming?**
 La respuesta completa es ~200-400 tokens. No hay beneficio en recibir token por token. Un `await` simple es suficiente.
@@ -189,4 +231,4 @@ La respuesta completa es ~200-400 tokens. No hay beneficio en recibir token por 
 Si Claude no está disponible, rechazamos. Un fallback a otro modelo necesita otro prompt y testing separado. Con 99.9% uptime de Anthropic, no vale la complejidad.
 
 **¿Qué pasa con los "adjustments"?**
-Claude puede sugerir modificar SL/TP. El campo se pasa en `AIDecision.adjustments`, pero ni Risk ni Execution lo leen todavía. Planeado para v2 — aplicar ajustes de SL/TP antes de pasar al Execution Service.
+Claude puede sugerir modificar SL/TP. El campo se pasa en `AIDecision.adjustments` (junto con `scores`), pero ni Risk ni Execution leen los ajustes de SL/TP todavía. Planeado para futuro — aplicar ajustes de SL/TP antes de pasar al Execution Service.

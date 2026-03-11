@@ -172,17 +172,6 @@ export interface HeadlinesData {
   headlines: HeadlineData[];
 }
 
-export interface ProfileInfo {
-  label: string;
-  description: string;
-  color: string;
-}
-
-export interface ProfileResponse {
-  active: string;
-  profiles: Record<string, ProfileInfo>;
-}
-
 export async function postApi<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${getApiBase()}/api${path}`, {
     method: "POST",

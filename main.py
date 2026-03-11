@@ -16,7 +16,7 @@ import signal
 import sys
 import time
 
-from config.settings import settings, STRATEGY_PROFILES, QUICK_SETUP_TYPES, apply_profile, reset_profile
+from config.settings import settings, QUICK_SETUP_TYPES
 from shared.logger import setup_logger
 from shared.models import Candle, AIDecision
 from data_service.service import DataService
@@ -49,21 +49,6 @@ _alert_manager: AlertManager | None = None
 # ================================================================
 # Pipeline callback — triggered on every confirmed candle
 # ================================================================
-
-async def _sync_profile_from_redis() -> None:
-    """Check Redis for a profile change from dashboard and apply it."""
-    if _data_service is None:
-        return
-    try:
-        stored = _data_service.redis.get_bot_state("strategy_profile")
-        if stored and stored in STRATEGY_PROFILES:
-            if stored != settings.STRATEGY_PROFILE:
-                reset_profile(settings)
-                apply_profile(settings, stored)
-                logger.info(f"Strategy profile switched to: {stored}")
-    except Exception:
-        pass  # Redis down — keep current profile
-
 
 def _publish_strategy_state(pair: str) -> None:
     """Publish active OBs and HTF bias to Redis for the dashboard."""
@@ -104,9 +89,6 @@ async def on_candle_confirmed(candle: Candle) -> None:
     AI/Risk/Execution layers are stubs — will be wired as they're built.
     """
     pipeline_start = time.monotonic()
-
-    # Check for profile changes from dashboard
-    await _sync_profile_from_redis()
 
     logger.info(
         f"Pipeline triggered: pair={candle.pair} tf={candle.timeframe} "

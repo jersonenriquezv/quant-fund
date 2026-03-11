@@ -72,7 +72,7 @@ class ClaudeClient:
             parsed = json.loads(cleaned)
 
             # Validate required fields
-            required = {"confidence", "approved", "reasoning"}
+            required = {"confidence", "approved", "scores"}
             missing = required - set(parsed.keys())
             if missing:
                 logger.error(f"Claude response missing fields: {missing}")
@@ -83,6 +83,9 @@ class ClaudeClient:
                 return None
             if not isinstance(parsed["approved"], bool):
                 logger.error(f"approved is not bool: {type(parsed['approved'])}")
+                return None
+            if not isinstance(parsed["scores"], dict):
+                logger.error(f"scores is not dict: {type(parsed['scores'])}")
                 return None
 
             return parsed

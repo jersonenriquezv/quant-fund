@@ -396,11 +396,12 @@ class TestPDAlignment:
         pd = _make_pd_zone("discount")
         assert evaluator._check_pd_alignment(pd, "bearish") is False
 
-    def test_equilibrium_blocked(self):
+    def test_equilibrium_allowed(self):
+        """Equilibrium trades are allowed (ALLOW_EQUILIBRIUM_TRADES=True)."""
         evaluator = SetupEvaluator()
         pd = _make_pd_zone("equilibrium")
-        assert evaluator._check_pd_alignment(pd, "bullish") is False
-        assert evaluator._check_pd_alignment(pd, "bearish") is False
+        assert evaluator._check_pd_alignment(pd, "bullish") is True
+        assert evaluator._check_pd_alignment(pd, "bearish") is True
 
     def test_no_pd_data_allowed(self):
         """Missing PD data should not block the trade."""

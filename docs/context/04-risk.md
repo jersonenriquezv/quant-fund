@@ -6,7 +6,7 @@
 El Risk Service es el guardián del capital. Antes de que cualquier trade se ejecute, pasa por 6 checks obligatorios (guardrails) y un cálculo de tamaño de posición. Si cualquier check falla, el trade NO se ejecuta. Sin excepciones.
 
 ## Por qué existe
-Sin control de riesgo, un solo trade malo puede destruir la cuenta. El Risk Service implementa las reglas de CLAUDE.md: máximo 2% riesgo por trade, 3% drawdown diario, 5% semanal, 5x apalancamiento, y cooldown de 30 min después de pérdida.
+Sin control de riesgo, un solo trade malo puede destruir la cuenta. El Risk Service implementa las reglas de CLAUDE.md: máximo 2% riesgo por trade, 5% drawdown diario, 10% semanal, 7x apalancamiento, y cooldown de 15 min después de pérdida.
 
 ## Cómo funciona (5 minutos)
 
@@ -18,14 +18,14 @@ TradeSetup (del Strategy Service)
 RiskService.check(setup)
   │
   ├── check min risk distance >= 0.1% (SL no demasiado cerca de entry)
-  ├── check R:R ratio >= 1.5 (usa TP2 vs entry/SL)
-  ├── check cooldown (30 min post-loss)
-  ├── check max trades/día (5)
-  ├── check max posiciones abiertas (3)
-  ├── check drawdown diario < 3%
-  ├── check drawdown semanal < 5%
+  ├── check R:R ratio >= 1.2 (usa TP2 vs entry/SL)
+  ├── check cooldown (15 min post-loss)
+  ├── check max trades/día (10)
+  ├── check max posiciones abiertas (5)
+  ├── check drawdown diario < 5%
+  ├── check drawdown semanal < 10%
   ├── calcular tamaño posición: (Capital × Risk%) / |Entry - SL|
-  └── enforce max leverage (5x)
+  └── enforce max leverage (7x)
   │
   ▼
 RiskApproval { approved, position_size, leverage, risk_pct, reason }
@@ -57,12 +57,12 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 - **Sin estado** — funciones puras, reciben valores y retornan veredicto
 - Checks:
   - `check_min_risk_distance(setup)` — SL distance >= MIN_RISK_DISTANCE_PCT (0.1%) del entry price. Rechaza noise trades donde comisiones comen el profit.
-  - `check_rr_ratio(setup)` — R:R de TP2 >= MIN_RISK_REWARD (1.5 swing) o MIN_RISK_REWARD_QUICK (1.0 quick setups C/D/E)
-  - `check_cooldown(last_loss_time, current_time)` — COOLDOWN_MINUTES (30) elapsed?
-  - `check_max_trades_today(count)` — < MAX_TRADES_PER_DAY (5)?
+  - `check_rr_ratio(setup)` — R:R de TP2 >= MIN_RISK_REWARD (1.2 swing) o MIN_RISK_REWARD_QUICK (1.0 quick setups C/D/E)
+  - `check_cooldown(last_loss_time, current_time)` — COOLDOWN_MINUTES (15) elapsed?
+  - `check_max_trades_today(count)` — < MAX_TRADES_PER_DAY (10)?
   - `check_max_open_positions(count)` — < MAX_OPEN_POSITIONS (5)?
-  - `check_daily_drawdown(dd_pct)` — < MAX_DAILY_DRAWDOWN (3%)?
-  - `check_weekly_drawdown(dd_pct)` — < MAX_WEEKLY_DRAWDOWN (5%)?
+  - `check_daily_drawdown(dd_pct)` — < MAX_DAILY_DRAWDOWN (5%)?
+  - `check_weekly_drawdown(dd_pct)` — < MAX_WEEKLY_DRAWDOWN (10%)?
 
 ### `risk_service/state_tracker.py` — Estado con persistencia Redis
 - Clase: `RiskStateTracker(capital, redis_store=None)`
@@ -106,12 +106,12 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 | `FIXED_TRADE_MARGIN` | `20` ($20) | Margin fijo por trade en USDT. Notional = margin × leverage. $20 × 5x = $100. Si 0, usa TRADE_CAPITAL_PCT. |
 | `TRADE_CAPITAL_PCT` | `0.15` (15%) | Fallback: % del capital como notional por trade (solo si FIXED_TRADE_MARGIN=0) |
 | `MAX_LEVERAGE` | `7` | Apalancamiento máximo permitido |
-| `MAX_DAILY_DRAWDOWN` | `0.03` (3%) | DD diario máximo antes de pausar |
-| `MAX_WEEKLY_DRAWDOWN` | `0.05` (5%) | DD semanal máximo antes de pausar |
+| `MAX_DAILY_DRAWDOWN` | `0.05` (5%) | DD diario máximo antes de pausar |
+| `MAX_WEEKLY_DRAWDOWN` | `0.10` (10%) | DD semanal máximo antes de pausar |
 | `MAX_OPEN_POSITIONS` | `5` | Posiciones simultáneas máximas |
-| `MAX_TRADES_PER_DAY` | `5` | Trades por día máximo |
-| `COOLDOWN_MINUTES` | `30` | Minutos de espera post-pérdida |
-| `MIN_RISK_REWARD` | `1.5` | R:R mínimo para swing setups A/B (TP2 vs SL) |
+| `MAX_TRADES_PER_DAY` | `10` | Trades por día máximo |
+| `COOLDOWN_MINUTES` | `15` | Minutos de espera post-pérdida |
+| `MIN_RISK_REWARD` | `1.2` | R:R mínimo para swing setups A/B (TP2 vs SL) |
 | `MIN_RISK_REWARD_QUICK` | `1.0` | R:R mínimo para quick setups C/D/E |
 | `MIN_RISK_DISTANCE_PCT` | `0.001` (0.1%) | Distancia mínima SL-entry como fracción del precio. Rechaza noise trades. Para ETH@$2000, SL debe estar al menos $2 away. |
 | `MIN_ORDER_SIZES` | `{"BTC/USDT": 0.0001, "ETH/USDT": 0.001}` | Mínimo de tamaño de orden por par (OKX contract-based: BTC min 0.01 contracts × 0.01 ctVal, ETH min 0.01 × 0.1 ctVal). Pre-check en main.py filtra antes de Claude. |
