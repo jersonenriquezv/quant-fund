@@ -170,6 +170,7 @@ class SetupEvaluator:
                          f"({rr:.2f} < {settings.MIN_RISK_REWARD})")
             return None
 
+        entry2_price = self._compute_entry2(best_ob, direction)
         return TradeSetup(
             timestamp=int(time.time() * 1000),
             pair=pair,
@@ -182,6 +183,7 @@ class SetupEvaluator:
             confluences=confluences,
             htf_bias=htf_bias,
             ob_timeframe=best_ob.timeframe,
+            entry2_price=entry2_price,
         )
 
     def evaluate_setup_b(
@@ -340,6 +342,7 @@ class SetupEvaluator:
         if rr < settings.MIN_RISK_REWARD:
             return None
 
+        entry2_price = self._compute_entry2(best_ob, direction)
         return TradeSetup(
             timestamp=int(time.time() * 1000),
             pair=pair,
@@ -352,6 +355,7 @@ class SetupEvaluator:
             confluences=confluences,
             htf_bias=htf_bias,
             ob_timeframe=best_ob.timeframe,
+            entry2_price=entry2_price,
         )
 
     def evaluate_setup_f(
@@ -461,6 +465,7 @@ class SetupEvaluator:
             logger.debug(f"Setup F [{pair}]: R:R too low ({rr:.2f} < {settings.MIN_RISK_REWARD})")
             return None
 
+        entry2_price = self._compute_entry2(best_ob, direction)
         return TradeSetup(
             timestamp=int(time.time() * 1000),
             pair=pair,
@@ -473,6 +478,7 @@ class SetupEvaluator:
             confluences=confluences,
             htf_bias=htf_bias,
             ob_timeframe=best_ob.timeframe,
+            entry2_price=entry2_price,
         )
 
     def evaluate_setup_g(
@@ -789,6 +795,16 @@ class SetupEvaluator:
                 best_idx = i
 
         return best_idx
+
+    def _compute_entry2(self, ob: OrderBlock, direction: str) -> float:
+        """Compute deeper split-entry price at OB 75% body level."""
+        body_range = ob.body_high - ob.body_low
+        if body_range <= 0:
+            return ob.entry_price
+        if direction == "bullish":
+            return ob.body_low + body_range * 0.25
+        else:
+            return ob.body_high - body_range * 0.25
 
     def _calculate_sl(self, ob: OrderBlock, direction: str) -> float:
         """Calculate stop loss — below/above entire OB (wick-to-wick)."""

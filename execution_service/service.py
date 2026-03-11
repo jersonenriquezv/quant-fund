@@ -12,7 +12,7 @@ Follows same facade pattern as AIService:
 
 import time
 
-from config.settings import settings
+from config.settings import settings, QUICK_SETUP_TYPES
 from shared.logger import setup_logger
 from shared.models import TradeSetup, RiskApproval
 from execution_service.executor import OrderExecutor
@@ -283,6 +283,25 @@ class ExecutionService:
                         )
                         return False
 
+        # Determine if this is a split entry (two limit orders at OB 50% + 75%)
+        is_split = (
+            setup.entry2_price > 0
+            and setup.setup_type not in QUICK_SETUP_TYPES
+            and not settings.OKX_SANDBOX
+        )
+        order2 = None
+
+        # Check minimum order size for split entries
+        if is_split:
+            half_size = approval.position_size / 2
+            min_size = settings.MIN_ORDER_SIZES.get(setup.pair, 0)
+            if half_size < min_size:
+                logger.info(
+                    f"Split entry half size {half_size:.6f} < min {min_size} "
+                    f"for {setup.pair} — falling back to single entry"
+                )
+                is_split = False
+
         if settings.OKX_SANDBOX:
             # Sandbox: OB entry price may be stale, so use current market price
             # with 0.05% tolerance to get immediate fill without crazy slippage
@@ -309,6 +328,26 @@ class ExecutionService:
                 setup.pair, side, approval.position_size, entry_price,
                 sl_trigger_price=sl_price, tp_price=tp_price,
             )
+        elif is_split:
+            half_size = approval.position_size / 2
+            # Entry 1 — OB 50% level
+            order = await self._executor.place_limit_order(
+                setup.pair, side, half_size, setup.entry_price,
+                sl_trigger_price=sl_price, tp_price=tp_price,
+            )
+            if order is None:
+                logger.error(f"Split entry1 placement failed: {setup.pair}")
+                return False
+            # Entry 2 — OB 75% level (deeper)
+            order2 = await self._executor.place_limit_order(
+                setup.pair, side, half_size, setup.entry2_price,
+                sl_trigger_price=sl_price, tp_price=tp_price,
+            )
+            if order2 is None:
+                logger.warning(
+                    f"Split entry2 placement failed: {setup.pair} — "
+                    f"proceeding with entry1 at half size"
+                )
         else:
             order = await self._executor.place_limit_order(
                 setup.pair, side, approval.position_size, setup.entry_price,
@@ -342,6 +381,13 @@ class ExecutionService:
             created_at=int(time.time()),
         )
 
+        if is_split:
+            pos.is_split_entry = True
+            pos.entry2_price = setup.entry2_price
+            pos.entry2_order_id = order2.get("id") if order2 else None
+            pos.entry1_fill_size = half_size
+            pos.entry2_fill_size = half_size if order2 else 0.0
+
         self._monitor.register(pos)
 
         # Telegram: order placed
@@ -350,11 +396,19 @@ class ExecutionService:
                 self._alert_manager.notify_order_placed(setup, approval)
             )
 
-        logger.info(
-            f"Trade submitted: {setup.pair} {setup.direction} "
-            f"entry={setup.entry_price:.2f} size={approval.position_size:.6f} "
-            f"leverage={leverage}x ai_conf={ai_confidence:.2f}"
-        )
+        if is_split:
+            logger.info(
+                f"Split trade submitted: {setup.pair} {setup.direction} "
+                f"entry1={setup.entry_price:.2f} entry2={setup.entry2_price:.2f} "
+                f"half_size={half_size:.6f} leverage={leverage}x "
+                f"ai_conf={ai_confidence:.2f}"
+            )
+        else:
+            logger.info(
+                f"Trade submitted: {setup.pair} {setup.direction} "
+                f"entry={setup.entry_price:.2f} size={approval.position_size:.6f} "
+                f"leverage={leverage}x ai_conf={ai_confidence:.2f}"
+            )
         return True
 
     def health(self) -> dict:

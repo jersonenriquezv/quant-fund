@@ -25,8 +25,8 @@ ExecutionService (facade)
 5. **Split entry check**: si `setup.entry2_price > 0` y es swing setup y live mode:
    - Divide `position_size` 50/50 entre entry1 (OB 50%) y entry2 (OB 75%)
    - **Min order size guard**: si la mitad < `MIN_ORDER_SIZES[pair]`, fallback a single entry
-   - Entry1: limit con SL+TP attached (cubre la mitad del tamaño)
-   - Entry2: limit SIN attached (se consolida después)
+   - Entry1: limit con SL+TP attached (half size)
+   - Entry2: limit con SL+TP attached (half size)
    - Si entry2 falla al colocar → continúa con entry1 sola (half size)
    - Si ambas fallan → sin ejecución
 6. **Single entry** (original): coloca limit entry order al precio calculado (50% OB / 75% FVG) **con SL+TP attached** — OKX crea SL/TP atómicamente cuando el entry se llena.
@@ -64,7 +64,7 @@ Cuando `is_split_entry == True`, el monitor usa `_check_split_pending()` en vez 
 4. **Ambas filled** → consolida:
    - `actual_entry_price = VWAP(fill1, fill2)`
    - `filled_size = sum`
-   - `_cancel_attached_orders()` → cancela SL/TP de entry1 (que cubría solo la mitad)
+   - `_cancel_attached_orders()` → cancela TODOS los SL/TP attached de ambas entries
    - `_on_entry_filled()` → coloca SL/TP consolidados para el tamaño total
 5. **Entry1 filled + entry2 cancelled** (antes del timeout) → activa con entry1 only
 

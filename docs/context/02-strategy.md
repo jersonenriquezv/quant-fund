@@ -1,5 +1,5 @@
 # Strategy Service
-> Última actualización: 2026-03-11 (Expectancy filters ATR+target space, FVG_ENTRY_PCT configurable, backtester execution fidelity: pending replacement, fill modes, execution funnel.)
+> Última actualización: 2026-03-11 (Split entries entry2_price, expectancy filters ATR+target space, FVG_ENTRY_PCT configurable.)
 > Estado: implementado (completo, integrado en main.py). Audited — 3 CRITICAL fixes applied. Quick Setups C/D/E added. Setups F/G added. HTF campaign setup detection.
 
 ## Qué hace (30 segundos)
@@ -73,6 +73,15 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
 - Cálculo de TP1 (1:1 R:R, breakeven trigger) y TP2 (2:1 R:R, single TP)
 - **R:R simple** — `abs(tp2 - entry) / abs(entry - sl)` ≥ `MIN_RISK_REWARD`
 - **Validación premium/discount** — equilibrium zone permite trades por defecto (`ALLOW_EQUILIBRIUM_TRADES = True`)
+### Split Entry (`entry2_price`)
+Setups A/B/F calculan `entry2_price` via `_compute_entry2()` en `setups.py`:
+- Bullish: `body_low + 0.25 × body_range` (25% from bottom = deeper into OB)
+- Bearish: `body_high - 0.25 × body_range` (25% from top = deeper into OB)
+- Si `body_range == 0`, fallback a `ob.entry_price`
+- `entry2_price` se almacena en `TradeSetup` (default 0.0 = single entry)
+- El execution service usa `entry2_price > 0` para decidir si colocar split entries (50/50 size)
+- Solo para swing setups (A/B/F) en live mode (no quick setups, no sandbox)
+
 ### Expectancy Filters (`_apply_expectancy_filters`)
 
 Post-detection filters aplicados a cada swing setup (A/B/F/G) antes de retornar:

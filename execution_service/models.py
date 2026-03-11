@@ -48,6 +48,17 @@ class ManagedPosition:
     sl_order_id: Optional[str] = None
     tp_order_id: Optional[str] = None   # Single TP at tp2_price
 
+    # Split entry tracking (swing setups with entry2_price > 0)
+    is_split_entry: bool = False
+    entry2_price: float = 0.0            # OB 75% level
+    entry2_order_id: Optional[str] = None
+    entry1_filled: bool = False
+    entry2_filled: bool = False
+    entry1_fill_price: float = 0.0
+    entry2_fill_price: float = 0.0
+    entry1_fill_size: float = 0.0
+    entry2_fill_size: float = 0.0
+
     # Actual fills
     actual_entry_price: Optional[float] = None
     filled_size: float = 0.0    # How much of entry actually filled

@@ -92,6 +92,8 @@ class PositionMonitor:
         for pair, pos in list(self._positions.items()):
             if pos.phase == "pending_entry" and pos.entry_order_id:
                 await self._executor.cancel_order(pos.entry_order_id, pair)
+                if pos.is_split_entry and pos.entry2_order_id:
+                    await self._executor.cancel_order(pos.entry2_order_id, pair)
                 self._close_position(pos, "cancelled")
 
         logger.info("Position monitor stopped")
@@ -114,6 +116,8 @@ class PositionMonitor:
 
         if pos.entry_order_id:
             await self._executor.cancel_order(pos.entry_order_id, pair)
+        if pos.is_split_entry and pos.entry2_order_id:
+            await self._executor.cancel_order(pos.entry2_order_id, pair)
 
         old_pos = pos
         self._positions.pop(pair, None)
@@ -177,6 +181,8 @@ class PositionMonitor:
         if pos.phase == "pending_entry":
             if pos.entry_order_id:
                 await self._executor.cancel_order(pos.entry_order_id, pos.pair)
+            if pos.is_split_entry and pos.entry2_order_id:
+                await self._executor.cancel_order(pos.entry2_order_id, pos.pair)
             self._close_position(pos, "cancelled")
         else:
             await self._close_all_orders_and_market_close(pos)
@@ -187,6 +193,10 @@ class PositionMonitor:
 
     async def _check_pending_entry(self, pos: ManagedPosition) -> None:
         """Check if entry order filled or timed out."""
+        if pos.is_split_entry:
+            await self._check_split_pending(pos)
+            return
+
         now = int(time.time())
 
         # Timeout check — quick setups get shorter timeout

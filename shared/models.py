@@ -171,6 +171,7 @@ class TradeSetup:
     confluences: list       # List of confirmation strings found
     htf_bias: str           # "bullish" or "bearish"
     ob_timeframe: str       # Timeframe of the order block used
+    entry2_price: float = 0.0  # OB 75% level for split entries (0 = single entry)
 
 
 # ============================================================
