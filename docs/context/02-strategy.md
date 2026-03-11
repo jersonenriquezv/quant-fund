@@ -1,5 +1,5 @@
 # Strategy Service
-> Última actualización: 2026-03-11 (HTF Campaign evaluation: evaluate_htf() con Daily bias y params 4H más amplios.)
+> Última actualización: 2026-03-11 (Bugfix: `_failed_obs` inicializado como `set()` en vez de `{}` — dict no tiene `.add()`, causaba crash en `mark_ob_failed()` y loop infinito de SL hit en el monitor.)
 > Estado: implementado (completo, integrado en main.py). Audited — 3 CRITICAL fixes applied. Quick Setups C/D/E added. Setups F/G added. HTF campaign setup detection.
 
 ## Qué hace (30 segundos)

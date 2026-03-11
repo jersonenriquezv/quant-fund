@@ -638,6 +638,11 @@ class PositionMonitor:
             )
             await self._cancel_tp(pos)
             self._calculate_pnl(pos, sl_price)
+            if self._on_sl_hit and pos.pnl_pct < 0:
+                try:
+                    self._on_sl_hit(pos.pair, pos.sl_price, pos.entry_price)
+                except Exception as e:
+                    logger.error(f"on_sl_hit callback error: {pos.pair} {e}")
             self._close_position(pos, "sl")
         else:
             # Position still open but SL order disappeared — re-place SL

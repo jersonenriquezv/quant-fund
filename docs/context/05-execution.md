@@ -1,5 +1,5 @@
 # Execution Service (Layer 5)
-> Última actualización: 2026-03-11 (HTF Campaign Trading: CampaignMonitor con pyramid adds y trailing SL en 4H swing levels.)
+> Última actualización: 2026-03-11 (Bugfix: _on_sl_hit callback protection, _handle_sl_vanished marks OB failed, per-position error isolation, POSITION_EMPTY sentinel.)
 > Estado: **Fase 1 — COMPLETADA**. Entry + SL + TP atómicos (attached). Breakeven + trailing SL via price polling. CampaignMonitor para HTF position trades.
 
 El brazo ejecutor del bot. Recibe trades aprobados por Risk Service y los ejecuta en OKX via ccxt.
@@ -75,7 +75,7 @@ emergency_pending ──[3 fails]──> emergency_failed  (intervención manual
 7. **Cancelled entries no cuentan como trades.**
 8. **Shutdown: cancela entries pendientes, NO cierra posiciones activas.**
 9. **Post-fill SL distance validation** — Después de que la entry se llena, el monitor compara el fill price real con el SL. Si `abs(fill - sl) / fill < MIN_RISK_DISTANCE_PCT`, el SL efectivo es demasiado pequeño (slippage comió el margen). La posición se cierra inmediatamente con `exit_reason = "sl_too_close"` para evitar trades donde las comisiones consumen toda la ganancia potencial.
-10. **Failed OB check pre-execute** — En `main.py:on_candle_confirmed`, antes de llamar a `execute()`, se consulta `strategy_service.is_ob_failed(pair, sl_price, entry_price)`. Si el OB ya resultó en pérdida en esta sesión, el trade se descarta. El callback `on_sl_hit` en el monitor notifica a `StrategyService.mark_ob_failed()` cuando un trade cierra con PnL negativo.
+10. **Failed OB check pre-execute** — En `main.py:on_candle_confirmed`, antes de llamar a `execute()`, se consulta `strategy_service.is_ob_failed(pair, sl_price, entry_price)`. Si el OB ya resultó en pérdida en esta sesión, el trade se descarta. El callback `on_sl_hit` en el monitor notifica a `StrategyService.mark_ob_failed()` cuando un trade cierra con PnL negativo. El callback está protegido con try/catch — si falla, `_close_position()` siempre se ejecuta (bugfix: antes una excepción en `mark_ob_failed()` impedía cerrar la posición, causando un loop infinito de "SL hit").
 11. **Max slippage guard** — Después del fill, si `abs(actual_entry - entry) / entry > MAX_SLIPPAGE_PCT` (0.3%), la posición se cierra inmediatamente con `exit_reason = "excessive_slippage"`. Cancela SL/TP, market close. Skipped en sandbox mode (fills sintéticos). Configurable en `settings.MAX_SLIPPAGE_PCT`.
 
 ## Breakeven Logic
@@ -101,9 +101,10 @@ emergency_pending ──[3 fails]──> emergency_failed  (intervención manual
 ## SL vanished fallback
 
 Cuando el SL algo order no se encuentra por 12 polls consecutivos (~60s):
-- **Position gone** → SL triggered, close in monitor
+- **Position gone** → SL triggered, mark OB as failed (via `_on_sl_hit` callback), close in monitor
 - **Position exists** → re-place SL at `current_sl_price`
-- **Network error** → skip, retry next cycle
+- **Network error** (`fetch_position` returns `None`) → skip, retry next cycle
+- **No position** (`fetch_position` returns `POSITION_EMPTY`) → SL triggered, close
 - **Re-place fails** → `emergency_pending`
 
 Also handles SL cancelled externally: re-places SL immediately.
