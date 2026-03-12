@@ -237,6 +237,9 @@ class Settings:
     HTF_BIAS_REQUIRE_4H: bool = False
     # PD alignment is non-negotiable — core SMC principle (long=discount, short=premium).
     REQUIRE_PD_ALIGNMENT: bool = True
+    # Allow PD override for setups with this many+ confluences (0 = disabled).
+    # High-confluence setups can trade against PD zone to avoid total lockouts.
+    PD_OVERRIDE_MIN_CONFLUENCES: int = int(os.getenv("PD_OVERRIDE_MIN_CONFLUENCES", "5"))
 
     # ========================
     # AI SERVICE — Claude Filter

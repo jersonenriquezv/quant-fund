@@ -193,6 +193,14 @@ async def on_candle_confirmed(candle: Candle) -> None:
                 "direction": setup.direction,
                 "reason": approval.reason,
             })
+            # Cache structural risk rejections (SL too close, R:R too low) so the
+            # same broken setup doesn't re-trigger Claude after dedup TTL expires.
+            reason_lower = (approval.reason or "").lower()
+            if "sl too close" in reason_lower or "risk distance" in reason_lower:
+                dedup_key = (setup.pair, setup.direction, setup.setup_type,
+                             round(setup.entry_price, 2))
+                _setup_dedup_cache[dedup_key] = time.time()
+                logger.debug(f"Dedup: cached risk-rejected setup {dedup_key}")
             return
         logger.info(
             f"Risk approved: size={approval.position_size:.6f} "

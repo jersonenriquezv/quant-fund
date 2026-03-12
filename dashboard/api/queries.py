@@ -6,7 +6,7 @@ from dashboard.api import database as db
 
 
 async def get_trades(status: str | None = None, limit: int = 50, offset: int = 0) -> list[dict]:
-    async with db.db.pg_pool.acquire() as conn:
+    async with db.pg_pool.acquire() as conn:
         if status:
             rows = await conn.fetch(
                 """SELECT * FROM trades WHERE status = $1

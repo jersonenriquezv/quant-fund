@@ -1,5 +1,5 @@
 # Strategy Service
-> Última actualización: 2026-03-11 (Split entries entry2_price, expectancy filters ATR+target space, FVG_ENTRY_PCT configurable.)
+> Última actualización: 2026-03-12 (SL direction validation, PD override for high-confluence, risk rejection dedup caching.)
 > Estado: implementado (completo, integrado en main.py). Audited — 3 CRITICAL fixes applied. Quick Setups C/D/E added. Setups F/G added. HTF campaign setup detection.
 
 ## Qué hace (30 segundos)
@@ -69,10 +69,12 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
   - `_find_best_ob()` selecciona por calidad: mayor `volume_ratio`, tiebreak por timestamp más reciente
   - `_is_ob_within_range()` filtra OBs más allá de `OB_MAX_DISTANCE_PCT` (5%) del precio actual
   - `_is_price_near_ob()` se mantiene para notificaciones de OB summary, pero no bloquea setups
+- **SL direction validation** — `_validate_sl_direction()` en todos los setup types (A/B/F/G). Rechaza si SL está del lado incorrecto del entry (bearish: sl debe ser > entry, bullish: sl debe ser < entry). Fix para bug donde Setup B con FVG encima del OB producía entry > ob.high = SL invertido.
 - Mínimo 2 confluencias obligatorio (no configurable — hardcoded)
 - Cálculo de TP1 (1:1 R:R, breakeven trigger) y TP2 (2:1 R:R, single TP)
 - **R:R simple** — `abs(tp2 - entry) / abs(entry - sl)` ≥ `MIN_RISK_REWARD`
 - **Validación premium/discount** — equilibrium zone permite trades por defecto (`ALLOW_EQUILIBRIUM_TRADES = True`)
+- **PD override diferido** — el check de PD alignment se difiere hasta después de contar confluencias. Si un setup tiene ≥ `PD_OVERRIDE_MIN_CONFLUENCES` (5) confluencias, puede operar contra la zona PD. Evita lockout total cuando bearish bias + discount zone bloquea todo. Log INFO cuando se activa override.
 ### Split Entry (`entry2_price`)
 Setups A/B/F calculan `entry2_price` via `_compute_entry2()` en `setups.py`:
 - Bullish: `body_low + 0.25 × body_range` (25% from bottom = deeper into OB)
@@ -129,7 +131,8 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 - `SETUP_A_MAX_SWEEP_CHOCH_GAP: int = 40` — máximo candles entre sweep y CHoCH (was 20, increased after backtest validation)
 - `FVG_OB_MAX_GAP_PCT: float = 0.005` — 0.5% gap máximo entre FVG y OB para Setup B adjacency
 - `REQUIRE_HTF_LTF_ALIGNMENT: bool = False` — si True, LTF debe alinearse con HTF; default False para bidireccional
-- `REQUIRE_PD_ALIGNMENT: bool = True` — premium/discount zone debe alinear con dirección (nunca se desactiva — core SMC)
+- `REQUIRE_PD_ALIGNMENT: bool = True` — premium/discount zone debe alinear con dirección (core SMC)
+- `PD_OVERRIDE_MIN_CONFLUENCES: int = 5` — setups con 5+ confluencias pueden override PD misalignment (evita lockouts totales en bearish+discount)
 - `ALLOW_EQUILIBRIUM_TRADES: bool = True` — permitir trades en zona equilibrium
 - `HTF_BIAS_REQUIRE_4H: bool = False` — si 4H debe definir trend o 1H solo basta
 - `MIN_RISK_REWARD_QUICK: float = 1.0` — R:R mínimo para quick setups (C/D/E)
@@ -196,5 +199,5 @@ El backtester soporta `--ai` flag para evaluar swing setups con Claude sobre dat
 - `test_order_blocks.py` — detección, volumen, expiración, mitigación
 - `test_fvg.py` — detección, fill, expiración
 - `test_liquidity.py` — clustering, sweeps, premium/discount, equilibrium band, swept persistence
-- `test_setups.py` — Setup A/B, confluencia, TPs, PD alignment, simple R:R, OB proximity, temporal ordering
+- `test_setups.py` — Setup A/B, confluencia, TPs, PD alignment, PD override, SL direction validation, simple R:R, OB proximity, temporal ordering
 - `test_quick_setups.py` — Setup C/D/E, cooldowns, R:R quick vs swing, AI bypass, data validation

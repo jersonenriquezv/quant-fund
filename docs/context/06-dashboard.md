@@ -171,6 +171,10 @@ Pill en el Header que muestra el Fear & Greed Index en tiempo real:
 - **Graceful:** Si no hay datos en Redis → no renderiza (returns null)
 - **Mobile:** Pill compacto, no wrap
 
+## Bugs Conocidos (resueltos)
+
+- **`queries.py` — `db.db.pg_pool`**: La función `get_trades()` usaba `db.db.pg_pool` en vez de `db.pg_pool`, causando `AttributeError` en cada request a `/api/trades`. Las demás queries (`get_trade_by_id`, `get_ai_decisions`, etc.) usaban `db.pg_pool` correctamente. Corregido.
+
 ## Limitaciones v1
 
 - Sin charting library (TradingView, etc.) — sparklines SVG

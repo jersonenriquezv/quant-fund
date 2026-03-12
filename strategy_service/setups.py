@@ -108,8 +108,11 @@ class SetupEvaluator:
                          f"(sweeps={len(recent_sweeps)} dir={direction})")
             return None
 
-        # PD zone alignment
-        if not self._check_pd_alignment(pd_zone, direction):
+        # PD zone alignment — deferred if high-confluence override enabled
+        pd_aligned = self._check_pd_alignment(pd_zone, direction)
+        pd_override_threshold = settings.PD_OVERRIDE_MIN_CONFLUENCES
+
+        if not pd_aligned and pd_override_threshold <= 0:
             zone = pd_zone.zone if pd_zone else "none"
             logger.debug(f"Setup A [{pair}]: PD misaligned (zone={zone} dir={direction})")
             return None
@@ -153,9 +156,26 @@ class SetupEvaluator:
                          f"({len(confluences)}<2 confluences={confluences})")
             return None
 
+        # Deferred PD check with confluence override
+        if not pd_aligned:
+            if len(confluences) < pd_override_threshold:
+                zone = pd_zone.zone if pd_zone else "none"
+                logger.debug(f"Setup A [{pair}]: PD misaligned (zone={zone} dir={direction})")
+                return None
+            zone = pd_zone.zone if pd_zone else "none"
+            logger.info(f"Setup A [{pair}]: PD override — {len(confluences)} confluences "
+                        f"(zone={zone} dir={direction})")
+
         # Calculate TP levels
         sl_price = self._calculate_sl(best_ob, direction)
         entry_price = best_ob.entry_price
+
+        # Validate SL is on correct side of entry
+        if not self._validate_sl_direction(entry_price, sl_price, direction):
+            logger.debug(f"Setup A [{pair}]: SL inverted — entry={entry_price:.2f} "
+                         f"sl={sl_price:.2f} dir={direction}")
+            return None
+
         tp1, tp2 = self._calculate_tp_levels(
             entry_price, sl_price, direction, liquidity_levels
         )
@@ -233,8 +253,11 @@ class SetupEvaluator:
             logger.debug(f"Setup B [{pair}]: BOS {direction} != HTF {htf_bias}")
             return None
 
-        # PD zone alignment
-        if not self._check_pd_alignment(pd_zone, direction):
+        # PD zone alignment — deferred if high-confluence override enabled
+        pd_aligned = self._check_pd_alignment(pd_zone, direction)
+        pd_override_threshold = settings.PD_OVERRIDE_MIN_CONFLUENCES
+
+        if not pd_aligned and pd_override_threshold <= 0:
             zone = pd_zone.zone if pd_zone else "none"
             logger.debug(f"Setup B [{pair}]: PD misaligned (zone={zone} dir={direction})")
             return None
@@ -321,6 +344,16 @@ class SetupEvaluator:
         if not self._check_confluence_minimum(confluences):
             return None
 
+        # Deferred PD check with confluence override
+        if not pd_aligned:
+            if len(confluences) < pd_override_threshold:
+                zone = pd_zone.zone if pd_zone else "none"
+                logger.debug(f"Setup B [{pair}]: PD misaligned (zone={zone} dir={direction})")
+                return None
+            zone = pd_zone.zone if pd_zone else "none"
+            logger.info(f"Setup B [{pair}]: PD override — {len(confluences)} confluences "
+                        f"(zone={zone} dir={direction})")
+
         # Calculate SL/TP
         # Setup B entry at FVG_ENTRY_PCT of the gap (0.75 = shallower, easier fill).
         # SL stays at OB wick for wider distance.
@@ -330,6 +363,13 @@ class SetupEvaluator:
             entry_price = best_fvg.low + fvg_range * settings.FVG_ENTRY_PCT
         else:
             entry_price = best_fvg.high - fvg_range * settings.FVG_ENTRY_PCT
+
+        # Validate SL is on correct side of entry
+        if not self._validate_sl_direction(entry_price, sl_price, direction):
+            logger.debug(f"Setup B [{pair}]: SL inverted — entry={entry_price:.2f} "
+                         f"sl={sl_price:.2f} dir={direction}")
+            return None
+
         tp1, tp2 = self._calculate_tp_levels(
             entry_price, sl_price, direction, liquidity_levels
         )
@@ -402,7 +442,11 @@ class SetupEvaluator:
             logger.debug(f"Setup F [{pair}]: BOS {direction} != HTF {htf_bias}")
             return None
 
-        if not self._check_pd_alignment(pd_zone, direction):
+        # PD zone alignment — deferred if high-confluence override enabled
+        pd_aligned = self._check_pd_alignment(pd_zone, direction)
+        pd_override_threshold = settings.PD_OVERRIDE_MIN_CONFLUENCES
+
+        if not pd_aligned and pd_override_threshold <= 0:
             zone = pd_zone.zone if pd_zone else "none"
             logger.debug(f"Setup F [{pair}]: PD misaligned (zone={zone} dir={direction})")
             return None
@@ -451,8 +495,25 @@ class SetupEvaluator:
             logger.debug(f"Setup F [{pair}]: insufficient confluences ({len(confluences)}<2: {confluences})")
             return None
 
+        # Deferred PD check with confluence override
+        if not pd_aligned:
+            if len(confluences) < pd_override_threshold:
+                zone = pd_zone.zone if pd_zone else "none"
+                logger.debug(f"Setup F [{pair}]: PD misaligned (zone={zone} dir={direction})")
+                return None
+            zone = pd_zone.zone if pd_zone else "none"
+            logger.info(f"Setup F [{pair}]: PD override — {len(confluences)} confluences "
+                        f"(zone={zone} dir={direction})")
+
         sl_price = self._calculate_sl(best_ob, direction)
         entry_price = best_ob.entry_price
+
+        # Validate SL is on correct side of entry
+        if not self._validate_sl_direction(entry_price, sl_price, direction):
+            logger.debug(f"Setup F [{pair}]: SL inverted — entry={entry_price:.2f} "
+                         f"sl={sl_price:.2f} dir={direction}")
+            return None
+
         tp1, tp2 = self._calculate_tp_levels(
             entry_price, sl_price, direction, liquidity_levels
         )
@@ -522,7 +583,11 @@ class SetupEvaluator:
             logger.debug(f"Setup G [{pair}]: no aligned breakers (total={len(breaker_blocks)} bias={htf_bias})")
             return None
 
-        if not self._check_pd_alignment(pd_zone, htf_bias):
+        # PD zone alignment — deferred if high-confluence override enabled
+        pd_aligned = self._check_pd_alignment(pd_zone, htf_bias)
+        pd_override_threshold = settings.PD_OVERRIDE_MIN_CONFLUENCES
+
+        if not pd_aligned and pd_override_threshold <= 0:
             zone = pd_zone.zone if pd_zone else "none"
             logger.debug(f"Setup G [{pair}]: PD misaligned (zone={zone} dir={htf_bias})")
             return None
@@ -564,8 +629,25 @@ class SetupEvaluator:
             logger.debug(f"Setup G [{pair}]: insufficient confluences ({len(confluences)}<2: {confluences})")
             return None
 
+        # Deferred PD check with confluence override
+        if not pd_aligned:
+            if len(confluences) < pd_override_threshold:
+                zone = pd_zone.zone if pd_zone else "none"
+                logger.debug(f"Setup G [{pair}]: PD misaligned (zone={zone} dir={direction})")
+                return None
+            zone = pd_zone.zone if pd_zone else "none"
+            logger.info(f"Setup G [{pair}]: PD override — {len(confluences)} confluences "
+                        f"(zone={zone} dir={direction})")
+
         sl_price = self._calculate_sl(best_bb, direction)
         entry_price = best_bb.entry_price
+
+        # Validate SL is on correct side of entry
+        if not self._validate_sl_direction(entry_price, sl_price, direction):
+            logger.debug(f"Setup G [{pair}]: SL inverted — entry={entry_price:.2f} "
+                         f"sl={sl_price:.2f} dir={direction}")
+            return None
+
         tp1, tp2 = self._calculate_tp_levels(
             entry_price, sl_price, direction, liquidity_levels
         )
@@ -695,6 +777,18 @@ class SetupEvaluator:
             return False
 
         return True
+
+    @staticmethod
+    def _validate_sl_direction(entry: float, sl: float, direction: str) -> bool:
+        """Validate SL is on the correct side of entry.
+
+        Bearish/short: SL must be ABOVE entry (price going up = loss).
+        Bullish/long: SL must be BELOW entry (price going down = loss).
+        """
+        if direction == "bullish":
+            return sl < entry
+        else:
+            return sl > entry
 
     def _is_price_near_ob(self, current_price: float,
                           ob: OrderBlock) -> bool:

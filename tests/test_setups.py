@@ -222,18 +222,46 @@ class TestSetupA:
         assert setup is None
 
     def test_setup_a_wrong_pd_zone(self):
-        """Long in premium → no setup."""
+        """Long in premium → no setup (when confluences < override threshold)."""
         evaluator = SetupEvaluator()
 
         state = _make_structure_state(break_type="choch", break_direction="bullish")
-        setup = evaluator.evaluate_setup_a(
-            structure_state=state, active_obs=[_make_ob()],
-            recent_sweeps=[_make_sweep()],
-            pd_zone=_make_pd_zone("premium"),  # Wrong for long
-            market_snapshot=None, candles=_make_candles_near_ob(),
-            pair="BTC/USDT", htf_bias="bullish", liquidity_levels=[],
-        )
-        assert setup is None
+        # Disable PD override so PD misalignment blocks the trade
+        original = settings.PD_OVERRIDE_MIN_CONFLUENCES
+        settings.PD_OVERRIDE_MIN_CONFLUENCES = 0
+        try:
+            setup = evaluator.evaluate_setup_a(
+                structure_state=state, active_obs=[_make_ob()],
+                recent_sweeps=[_make_sweep()],
+                pd_zone=_make_pd_zone("premium"),  # Wrong for long
+                market_snapshot=None, candles=_make_candles_near_ob(),
+                pair="BTC/USDT", htf_bias="bullish", liquidity_levels=[],
+            )
+            assert setup is None
+        finally:
+            settings.PD_OVERRIDE_MIN_CONFLUENCES = original
+
+    def test_setup_a_pd_override_with_high_confluence(self):
+        """Long in premium allowed when confluences >= PD_OVERRIDE_MIN_CONFLUENCES."""
+        evaluator = SetupEvaluator()
+
+        state = _make_structure_state(break_type="choch", break_direction="bullish")
+        original = settings.PD_OVERRIDE_MIN_CONFLUENCES
+        settings.PD_OVERRIDE_MIN_CONFLUENCES = 5
+        try:
+            setup = evaluator.evaluate_setup_a(
+                structure_state=state, active_obs=[_make_ob()],
+                recent_sweeps=[_make_sweep()],
+                pd_zone=_make_pd_zone("premium"),  # Wrong for long
+                market_snapshot=None, candles=_make_candles_near_ob(),
+                pair="BTC/USDT", htf_bias="bullish", liquidity_levels=[],
+            )
+            # With 7 confluences (sweep, choch, ob, pd, volume, sweep_vol, oi_flush),
+            # the PD override kicks in and the setup is allowed
+            assert setup is not None
+            assert setup.direction == "long"
+        finally:
+            settings.PD_OVERRIDE_MIN_CONFLUENCES = original
 
 
 # ============================================================
@@ -317,6 +345,26 @@ class TestSetupB:
             htf_bias="bullish", liquidity_levels=[],
         )
         assert setup is None
+
+
+# ============================================================
+# SL Direction Validation tests
+# ============================================================
+
+class TestSLValidation:
+    """Test SL direction check catches inverted SL."""
+
+    def test_bearish_sl_must_be_above_entry(self):
+        assert SetupEvaluator._validate_sl_direction(100.0, 105.0, "bearish") is True
+        assert SetupEvaluator._validate_sl_direction(100.0, 95.0, "bearish") is False
+
+    def test_bullish_sl_must_be_below_entry(self):
+        assert SetupEvaluator._validate_sl_direction(100.0, 95.0, "bullish") is True
+        assert SetupEvaluator._validate_sl_direction(100.0, 105.0, "bullish") is False
+
+    def test_sl_equal_to_entry_rejected(self):
+        assert SetupEvaluator._validate_sl_direction(100.0, 100.0, "bearish") is False
+        assert SetupEvaluator._validate_sl_direction(100.0, 100.0, "bullish") is False
 
 
 # ============================================================
