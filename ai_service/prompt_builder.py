@@ -133,6 +133,8 @@ class PromptBuilder:
         setup_names = {
             "setup_a": "Setup A (Liquidity Sweep + CHoCH + OB)",
             "setup_d": "Setup D (LTF Structure Scalp)",
+            "setup_d_bos": "Setup D-BOS (LTF BOS Scalp)",
+            "setup_d_choch": "Setup D-CHoCH (LTF CHoCH Scalp)",
         }
 
         # Compute R:R

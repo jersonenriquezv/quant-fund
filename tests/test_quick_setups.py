@@ -233,7 +233,7 @@ class TestSetupD:
             "BTC/USDT", "bullish", state, [ob], pd, candles,
         )
         assert result is not None
-        assert result.setup_type == "setup_d"
+        assert result.setup_type == "setup_d_choch"
         assert result.direction == "long"
         assert "choch_5m" in result.confluences
         assert any("order_block" in c for c in result.confluences)
@@ -255,6 +255,7 @@ class TestSetupD:
             "BTC/USDT", "bearish", state, [ob], pd, candles,
         )
         assert result is not None
+        assert result.setup_type == "setup_d_bos"
         assert result.direction == "short"
         assert "bos_5m" in result.confluences
 
@@ -459,6 +460,8 @@ class TestQuickSetupTypes:
     def test_quick_setup_types(self):
         assert "setup_c" in QUICK_SETUP_TYPES
         assert "setup_d" in QUICK_SETUP_TYPES
+        assert "setup_d_bos" in QUICK_SETUP_TYPES
+        assert "setup_d_choch" in QUICK_SETUP_TYPES
         assert "setup_e" in QUICK_SETUP_TYPES
         assert "setup_a" not in QUICK_SETUP_TYPES
         assert "setup_b" not in QUICK_SETUP_TYPES

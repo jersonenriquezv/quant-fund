@@ -1,6 +1,6 @@
 # Strategy Service
-> Última actualización: 2026-03-12 (SL direction validation, PD override for high-confluence, risk rejection dedup caching.)
-> Estado: implementado (completo, integrado en main.py). Audited — 3 CRITICAL fixes applied. Quick Setups C/D/E added. Setups F/G added. HTF campaign setup detection.
+> Última actualización: 2026-03-12
+> Estado: implementado (completo, integrado en main.py). ENABLED_SETUPS: setup_a, setup_d_bos, setup_d_choch. Setup B (0% WR) and F (34.8% WR) disabled. OB selector upgraded with composite scoring. SL-too-close filter in strategy layer. Setup D split into BOS/CHoCH variants. AI bypassed for all active setups.
 
 ## Qué hace (30 segundos)
 El Strategy Service es el detective del sistema. Analiza los datos del Data Service buscando patrones de Smart Money Concepts (SMC): rupturas de estructura (BOS/CHoCH), order blocks, fair value gaps, sweeps de liquidez, y zonas premium/discount. Cuando encuentra un setup con suficiente confluencia, genera un `TradeSetup` para evaluación.
@@ -42,18 +42,21 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
 
 ### `strategy_service/setups.py` — Swing Setups A/B/F/G + Confluencia
 - **Setup A** (primario): Sweep + CHoCH + OB en discount/premium — **HABILITADO**
-  - **Bidireccional**: LTF CHoCH/BOS determina dirección del trade. HTF bias es contexto para Claude, no un gate.
+  - **Bidireccional**: LTF CHoCH/BOS determina dirección del trade. HTF bias es contexto, no un gate.
   - `REQUIRE_HTF_LTF_ALIGNMENT` default `False` — permite counter-trend setups con estructura LTF clara.
   - **Orden temporal obligatorio**: sweep ANTES del CHoCH
   - **Proximidad temporal**: sweep dentro de `SETUP_A_MAX_SWEEP_CHOCH_GAP` candles del CHoCH (40 candles = ~200min en 5m, ~10h en 15m)
+  - **Entry depth configurable**: `SETUP_A_ENTRY_PCT` (default 0.50 = midpoint of OB body, env var override). Allows tuning fill rate vs R:R.
+  - **SL-too-close early filter**: `MIN_RISK_DISTANCE_PCT` check runs in strategy layer (before building TradeSetup), not just in Risk guardrails.
+  - **AI bypass**: In `AI_BYPASS_SETUP_TYPES` — AI filter skipped, synthetic AIDecision(confidence=1.0) generated. AI v2 had 89.6% approval rate = no value added.
   - **Backtest 60d aggressive**: 46 trades, 47.8% WR, +$2,510. El bottleneck principal era `no_aligned_sweep` — gap=20 solo producía 11 trades. Gap=40 captura sweeps más lejanos sin degradar calidad.
-- **Setup B** (secundario): BOS + FVG adyacente a OB — **HABILITADO**
+- **Setup B** (secundario): BOS + FVG adyacente a OB — **DESHABILITADO** (0% WR live, removed from ENABLED_SETUPS)
   - Dirección BOS determina dirección del trade (bidireccional como Setup A)
   - **Entry: FVG 75%** `fvg.low + FVG_ENTRY_PCT * range` (bullish) — shallower que midpoint para mayor fill rate. Configurable via `FVG_ENTRY_PCT` (default 0.75). SL ancho desde el OB wick.
   - SL: OB wick (igual que A/F)
   - FVG-OB adjacency threshold: `FVG_OB_MAX_GAP_PCT` (0.5%)
   - **Backtest 60d aggressive**: 55 trades, 52.7% WR, +$5,169. Antes con OB 75% entry (previo cambio): 29.8% WR, -$1,680.
-- **Setup F** — Pure OB Retest: BOS + OB, sin FVG requerido
+- **Setup F** — Pure OB Retest: BOS + OB, sin FVG requerido — **DESHABILITADO** (34.8% WR, removed from ENABLED_SETUPS)
   - Igual que Setup B pero sin necesitar FVG adyacente al OB
   - Dispara cuando hay BOS + OB alineados pero no hay FVG nearby
   - Evaluado después de B — si B matchea primero, F no se evalúa
@@ -65,9 +68,11 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
   - Requiere HTF bias alineado con dirección del breaker + PD zone + min 2 confluencias
   - Usa `get_breaker_blocks()` de OrderBlockDetector
 - **Swing setups solo evalúan 15m OBs** — `SWING_SETUP_TIMEFRAMES = ["15m"]`. Los detectores corren en todos los LTF (15m + 5m) para que quick setups (C/D/E) tengan datos de 5m, pero la evaluación de A/B/F/G solo usa 15m. OBs de 5m producen micro-SLs (<0.2%) que las comisiones se comen.
-- **Zone-based orders** — no requiere proximidad al OB. El bot coloca limit orders al 50% del OB body y espera fill. SL siempre en `ob.low` (long) / `ob.high` (short) — wick-to-wick, independiente del entry.
-  - `_find_best_ob()` selecciona por calidad: mayor `volume_ratio`, tiebreak por timestamp más reciente
-  - `_is_ob_within_range()` filtra OBs más allá de `OB_MAX_DISTANCE_PCT` (5%) del precio actual
+- **Zone-based orders** — no requiere proximidad al OB. El bot coloca limit orders al 50% del OB body (configurable via `SETUP_A_ENTRY_PCT`) y espera fill. SL siempre en `ob.low` (long) / `ob.high` (short) — wick-to-wick, independiente del entry.
+  - `_find_best_ob()` selecciona by composite scoring via `_score_ob()`: volume (35%), freshness (30%), proximity (20%), body size (15%). Replaces old "highest volume_ratio + tiebreak by timestamp" selector.
+  - `_score_ob()` returns -1 (filtered) for OBs below `OB_MIN_BODY_PCT` (0.1%) or beyond `OB_MAX_DISTANCE_PCT` (8%). Otherwise returns 0-1 composite score.
+  - `OB_MIN_BODY_PCT` (0.1%) filters micro-OBs that produce tiny SLs eaten by commissions
+  - `_is_ob_within_range()` filtra OBs más allá de `OB_MAX_DISTANCE_PCT` (8%) del precio actual
   - `_is_price_near_ob()` se mantiene para notificaciones de OB summary, pero no bloquea setups
 - **SL direction validation** — `_validate_sl_direction()` en todos los setup types (A/B/F/G). Rechaza si SL está del lado incorrecto del entry (bearish: sl debe ser > entry, bullish: sl debe ser < entry). Fix para bug donde Setup B con FVG encima del OB producía entry > ob.high = SL invertido.
 - Mínimo 2 confluencias obligatorio (no configurable — hardcoded)
@@ -98,6 +103,8 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
   - Long: funding < -0.03%, buy dominance > 55%
   - Short: funding > +0.03%, buy dominance < 45%
 - **Setup D — LTF Structure Scalp:** CHoCH o BOS en 5m + OB fresco cerca del precio. No requiere sweep ni FVG. HTF bias + PD zone alineados. Entry: 50% del OB. TP1: 1:1 (breakeven trigger), TP2: 2:1 (single TP). — **HABILITADO**
+  - **Split into variants**: `setup_d_bos` and `setup_d_choch` for per-variant performance measurement. Variant determined by `latest_break.break_type`.
+  - Both variants are in `QUICK_SETUP_TYPES` — skip AI filter, use short entry timeout (1h).
   - **Backtest 60d solo**: 56 trades, 42.9% WR, +$3,596. Sharpe 8.51, PF 2.26, max DD 4.8%.
   - **Backtest 60d combinado A+B+D+F**: 9 trades D, 66.7% WR, +$2,553. Total combinado: 97 trades, 51.5% WR, +$7,558.
   - ETH dominante (47/56 trades solo, 97/97 combinado). BTC 11.1% WR pero solo 9 trades — muestra insuficiente.
@@ -115,7 +122,7 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 - `evaluate(pair, candle)` — evalúa LTF candles: A → B → F → G → C → D → E, retorna `TradeSetup | None`
 - **`evaluate_htf(pair, candle)`** — evalúa 4H candles para HTF campaigns. Usa Daily candles para bias (en vez de 4H/1H). Corre los mismos detectores SMC en 4H data con params más amplios: OB age 168h (vs 48h), OB distance 10% (vs 5%), FVG age 168h, min risk distance 0.5% (vs 0.2%). Overrides temporales de settings durante evaluación. Retorna `TradeSetup | None`. Gate: `HTF_ENABLED_SETUPS` (default: A, B, F).
 - **`get_htf_swing_levels(pair)`** — retorna `(swing_highs, swing_lows)` de 4H data. Usado por CampaignMonitor para trailing SL.
-- **`ENABLED_SETUPS` gate** — después de detectar un setup, verifica `setup.setup_type in settings.ENABLED_SETUPS`. Si no está habilitado, logea debug y continúa evaluando el siguiente tipo. Default: `["setup_a", "setup_b", "setup_d", "setup_f"]`. D habilitado con 66.7% WR en combinado (+$2,553). C, E, G pendientes de validación. G descartado (6.2% WR).
+- **`ENABLED_SETUPS` gate** — después de detectar un setup, verifica `setup.setup_type in settings.ENABLED_SETUPS`. Si no está habilitado, logea debug y continúa evaluando el siguiente tipo. Default: `["setup_a", "setup_d_bos", "setup_d_choch"]`. Setup B disabled (0% WR live), F disabled (34.8% WR). C, E, G pendientes de validación. G descartado (6.2% WR).
 - Coordina todos los módulos internos
 - Quick setup cooldown tracking per (pair, setup_type)
 - **Failed OB tracking** — `mark_ob_failed(pair, sl_price, entry_price)` registra en memoria OBs que resultaron en pérdida (PnL < 0). `is_ob_failed(pair, sl_price, entry_price)` consulta el registro antes de ejecutar un nuevo trade: si el OB ya perdió, el setup se descarta. El tracking usa la clave `(pair, sl_price, entry_price)`. Breakeven (PnL = 0%) NO marca el OB como fallido porque el setup parcialmente funcionó. Se resetea en restart.
@@ -128,6 +135,9 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 - `PD_EQUILIBRIUM_BAND: float = 0.01` — banda ±1% alrededor del 50% para zona equilibrium
 - `OB_PROXIMITY_PCT: float = 0.008` — 0.8% del precio como margen de proximidad al OB (solo para notificaciones)
 - `OB_MAX_DISTANCE_PCT: float = 0.08` — 8% máximo de distancia del precio al OB para zone-based orders
+- `OB_MIN_BODY_PCT: float = 0.001` — 0.1% minimum OB body size as fraction of price (filters micro-OBs)
+- `OB_SCORE_VOLUME_W / FRESHNESS_W / PROXIMITY_W / SIZE_W` — composite OB scoring weights (0.35 / 0.30 / 0.20 / 0.15, must sum to 1.0)
+- `SETUP_A_ENTRY_PCT: float = 0.50` — fraction of OB body for Setup A entry placement (env var override)
 - `SETUP_A_MAX_SWEEP_CHOCH_GAP: int = 40` — máximo candles entre sweep y CHoCH (was 20, increased after backtest validation)
 - `FVG_OB_MAX_GAP_PCT: float = 0.005` — 0.5% gap máximo entre FVG y OB para Setup B adjacency
 - `REQUIRE_HTF_LTF_ALIGNMENT: bool = False` — si True, LTF debe alinearse con HTF; default False para bidireccional

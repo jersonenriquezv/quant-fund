@@ -567,21 +567,29 @@ class TestZoneBasedOB:
         ob = _make_ob(entry_price=95.0)
         assert evaluator._is_ob_within_range(100.0, ob) is True
 
-    def test_find_best_ob_selects_highest_volume(self):
-        """_find_best_ob returns OB with highest volume ratio."""
+    def test_find_best_ob_uses_composite_score(self):
+        """_find_best_ob uses composite scoring (volume + freshness + proximity + size)."""
         evaluator = SetupEvaluator()
-        ob_low_vol = _make_ob(entry_price=99.0, volume_ratio=1.5, timestamp=9000)
-        ob_high_vol = _make_ob(entry_price=98.0, volume_ratio=3.0, timestamp=8000)
-        best = evaluator._find_best_ob([ob_low_vol, ob_high_vol], 100.0, "bullish")
-        assert best is ob_high_vol
+        now_ms = int(time.time() * 1000)
+        # OB with high volume but far from price
+        ob_far = _make_ob(entry_price=92.0, volume_ratio=3.0, timestamp=now_ms - 3600000,
+                          body_high=93.0, body_low=91.0, high=94.0, low=90.0)
+        # OB with moderate volume but close to price and fresh
+        ob_close = _make_ob(entry_price=99.0, volume_ratio=2.0, timestamp=now_ms - 60000,
+                            body_high=100.0, body_low=98.0, high=101.0, low=97.0)
+        best = evaluator._find_best_ob([ob_far, ob_close], 100.0, "bullish")
+        # Close + fresh OB should win despite lower volume
+        assert best is ob_close
 
-    def test_find_best_ob_tiebreak_by_recency(self):
-        """_find_best_ob tiebreaks by most recent timestamp."""
+    def test_find_best_ob_rejects_micro_body(self):
+        """OBs with body < OB_MIN_BODY_PCT are filtered out."""
         evaluator = SetupEvaluator()
-        ob_old = _make_ob(entry_price=99.0, volume_ratio=2.0, timestamp=7000)
-        ob_new = _make_ob(entry_price=98.0, volume_ratio=2.0, timestamp=9000)
-        best = evaluator._find_best_ob([ob_old, ob_new], 100.0, "bullish")
-        assert best is ob_new
+        now_ms = int(time.time() * 1000)
+        # Micro-OB: body = 0.01 / 100 = 0.01% (below 0.1% threshold)
+        ob_micro = _make_ob(entry_price=100.005, volume_ratio=3.0, timestamp=now_ms,
+                            body_high=100.01, body_low=100.0, high=100.5, low=99.5)
+        best = evaluator._find_best_ob([ob_micro], 100.0, "bullish")
+        assert best is None
 
     def test_setup_a_creates_without_proximity(self):
         """Setup A created when OB is within range but price not adjacent."""

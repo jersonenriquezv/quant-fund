@@ -99,6 +99,7 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Stores last 600 candles per pair/timeframe in memory
 - Public methods: `get_latest_candle(pair, tf)`, `get_candles(pair, tf, count)`
 - `store_candles()` accepts backfilled candles with deduplication
+- **Candle dedup:** `_last_confirmed_ts` dict tracks last confirmed candle timestamp per (pair, timeframe). Prevents duplicate pipeline runs if OKX sends the same candle twice.
 - **Pipeline serialization:** Per-pair `asyncio.Lock` prevents concurrent pipeline runs on the same pair. Exception logging via `task.add_done_callback()`.
 - Callback `on_candle_confirmed` triggers the main pipeline
 - Handles OKX text "pong" keepalive messages
@@ -214,9 +215,9 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Single process, handles SIGINT/SIGTERM for graceful shutdown
 - Creates DataService with pipeline callback
 - **Capital at startup:** Fetches USDT balance from exchange via `data_service.fetch_usdt_balance()`. Falls back to `INITIAL_CAPITAL` setting if fetch fails or returns 0.
-- Pipeline completo: Data → Strategy → Pre-filter → AI → Risk → Execution (5 capas wired)
-- Pre-filter determinístico antes de Claude: funding extreme + F&G extreme + CVD divergencia
-- AI filter obligatorio en todas las profiles (sin bypass)
+- Pipeline completo: Data → Strategy → AI (bypass/filter) → Risk → Execution (5 capas wired)
+- AI filter currently bypassed for all active setups (setup_a in AI_BYPASS_SETUP_TYPES, setup_d variants in QUICK_SETUP_TYPES)
+- Pipeline dedup cache at entry covers ALL setup types. Risk rejections for structural reasons also cached.
 - **Pipeline metrics:** `_emit_metric()` helper writes to `bot_metrics`. Emits `pipeline_latency_ms` (per candle) and `claude_latency_ms` (per AI evaluation).
 
 ## Configuration (`config/settings.py`)

@@ -166,14 +166,27 @@ class SetupEvaluator:
             logger.info(f"Setup A [{pair}]: PD override — {len(confluences)} confluences "
                         f"(zone={zone} dir={direction})")
 
-        # Calculate TP levels
+        # Calculate entry at configurable depth into OB body
         sl_price = self._calculate_sl(best_ob, direction)
-        entry_price = best_ob.entry_price
+        body_range = best_ob.body_high - best_ob.body_low
+        if body_range <= 0:
+            return None
+        if direction == "bullish":
+            entry_price = best_ob.body_low + body_range * settings.SETUP_A_ENTRY_PCT
+        else:
+            entry_price = best_ob.body_high - body_range * settings.SETUP_A_ENTRY_PCT
 
         # Validate SL is on correct side of entry
         if not self._validate_sl_direction(entry_price, sl_price, direction):
             logger.debug(f"Setup A [{pair}]: SL inverted — entry={entry_price:.2f} "
                          f"sl={sl_price:.2f} dir={direction}")
+            return None
+
+        # Early SL-too-close filter (avoid pipeline overhead for junk setups)
+        risk_pct = abs(entry_price - sl_price) / entry_price if entry_price > 0 else 0
+        if risk_pct < settings.MIN_RISK_DISTANCE_PCT:
+            logger.debug(f"Setup A [{pair}]: SL too close "
+                         f"({risk_pct*100:.2f}% < {settings.MIN_RISK_DISTANCE_PCT*100:.1f}%)")
             return None
 
         tp1, tp2 = self._calculate_tp_levels(
@@ -837,22 +850,70 @@ class SetupEvaluator:
         distance = abs(current_price - ob.entry_price) / current_price
         return distance <= settings.OB_MAX_DISTANCE_PCT
 
+    def _score_ob(
+        self,
+        ob: OrderBlock,
+        current_price: float,
+    ) -> float:
+        """Score an OB by volume, freshness, proximity, and body size.
+
+        Returns -1 if OB should be filtered out (too small, too far).
+        Otherwise returns a 0-1 composite score.
+        """
+        if current_price <= 0 or ob.body_low <= 0:
+            return -1
+
+        # Body size filter — reject micro-OBs that produce tiny SLs
+        body_pct = (ob.body_high - ob.body_low) / ob.body_low
+        if body_pct < settings.OB_MIN_BODY_PCT:
+            return -1
+
+        # Distance filter — reject OBs beyond max range
+        dist = abs(current_price - ob.entry_price) / current_price
+        if dist > settings.OB_MAX_DISTANCE_PCT:
+            return -1
+
+        # Volume score (0-1): normalize to 0-5x range
+        vol_score = min(ob.volume_ratio / 5.0, 1.0)
+
+        # Freshness score (0-1): newer = better
+        now_ms = int(time.time() * 1000)
+        max_age_ms = settings.OB_MAX_AGE_HOURS * 3600 * 1000
+        age_ms = now_ms - ob.timestamp
+        fresh_score = max(0.0, 1.0 - (age_ms / max_age_ms)) if max_age_ms > 0 else 0.0
+
+        # Proximity score (0-1): closer to price = more likely to fill
+        max_dist = settings.OB_MAX_DISTANCE_PCT
+        prox_score = max(0.0, 1.0 - (dist / max_dist)) if max_dist > 0 else 0.0
+
+        # Body size score (0-1): bigger body = more meaningful
+        size_score = min((body_pct - settings.OB_MIN_BODY_PCT) / 0.02, 1.0)
+        size_score = max(0.0, size_score)
+
+        return (
+            vol_score * settings.OB_SCORE_VOLUME_W
+            + fresh_score * settings.OB_SCORE_FRESHNESS_W
+            + prox_score * settings.OB_SCORE_PROXIMITY_W
+            + size_score * settings.OB_SCORE_SIZE_W
+        )
+
     def _find_best_ob(
         self,
         obs: list[OrderBlock],
         current_price: float,
         direction: str,
     ) -> Optional[OrderBlock]:
-        """Find the best OB within max distance — highest volume ratio, tiebreak by recency."""
-        candidates = [
-            ob for ob in obs
-            if self._is_ob_within_range(current_price, ob)
-        ]
+        """Find the best OB using composite scoring (volume, freshness, proximity, size)."""
+        best_ob = None
+        best_score = -1.0
 
-        if not candidates:
-            return None
+        for ob in obs:
+            score = self._score_ob(ob, current_price)
+            if score > best_score:
+                best_score = score
+                best_ob = ob
 
-        return max(candidates, key=lambda ob: (ob.volume_ratio, ob.timestamp))
+        return best_ob
 
     def _compute_rr(
         self,

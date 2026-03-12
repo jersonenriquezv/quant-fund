@@ -4,8 +4,9 @@
 
 A personal automated trading system that uses Smart Money Concepts (SMC) to detect setups in crypto and execute trades 24/7. It is a micro-scale version of how institutional hedge funds like Citadel or Two Sigma operate.
 
-**Core principle:** Deterministic bot detects → Claude filters → Risk approves → Execution executes.
+**Core principle:** Deterministic bot detects → Risk approves → Execution executes.
 If any layer says NO, the trade does NOT execute.
+**Note:** Claude AI filter is currently bypassed for all active setups (setup_a in AI_BYPASS_SETUP_TYPES, setup_d variants in QUICK_SETUP_TYPES). Code remains for re-enable when recalibrated.
 
 ---
 
@@ -15,37 +16,37 @@ The bot watches 5m and 15m candles on BTC and ETH. When a candle closes, it pass
 
 ### 1. Strategy detects an SMC pattern
 
-The bot looks for 2 types of setup:
+The bot looks for 3 active setup types (others exist but are disabled):
 
-**Setup A (primary) — Liquidity Sweep + CHoCH + Order Block:**
+**Setup A (primary) — Liquidity Sweep + CHoCH + Order Block:** (ENABLED, AI bypassed)
 - Price sweeps retail stops (liquidity sweep)
 - Then reverses direction (CHoCH)
 - And retraces to a fresh Order Block (zone where institutions bought/sold)
-- Entry: 50% of the OB body
+- Entry: configurable depth into OB body (`SETUP_A_ENTRY_PCT`, default 50%)
+- AI filter bypassed (89.6% approval rate = no value added)
 
-**Setup B — BOS + FVG + Order Block:**
-- Price breaks structure (BOS) confirming the trend
-- Leaves a gap (FVG) inside or near an OB
-- Entry: 50% of the FVG or OB
+**Setup D_bos / D_choch — LTF Structure Scalp:** (ENABLED, quick setup)
+- CHoCH or BOS on 5m + fresh OB near price
+- No sweep or FVG required. HTF bias + PD zone aligned.
+- Entry: 50% of OB. Quick setup (1h entry timeout, 4h max duration).
+- Split into `setup_d_bos` and `setup_d_choch` variants for per-variant measurement.
+
+**Disabled setups:** Setup B (0% WR live), Setup F (34.8% WR). Setup C, E, G pending validation.
 
 **Mandatory rules:**
 - Minimum 2 confluences (OB alone = no trade)
-- Long only in discount (below 50% of the range)
-- Short only in premium (above 50%)
-- 4H/1H trend must align with trade direction
+- Long only in discount (below 50% of the range), short only in premium (above 50%)
+- PD override: setups with 5+ confluences can trade against PD zone
+- OB selection: composite scoring (volume 35%, freshness 30%, proximity 20%, body size 15%). OB_MIN_BODY_PCT (0.1%) filters micro-OBs.
+- SL-too-close filter in Strategy layer (MIN_RISK_DISTANCE_PCT 0.2%) before building TradeSetup
 
-### 2. Pre-filter (free, no Claude)
+### 2. AI filter (currently bypassed)
 
-3 instant checks that catch ~90% of bad trades:
-- HTF bias against direction → reject (long + bearish trend = no)
-- Extreme funding rate against direction → reject
-- Strong CVD (volume) divergence → reject
-
-### 3. Claude evaluates the context
-
-Claude receives the setup + market data (funding, CVD, liquidations, whales, OI) and decides if the context supports the trade. It does not see the chart pattern — it evaluates whether conditions are favorable to execute now.
-
-Requires: confidence >= 0.50 + approved=true
+All active setups bypass Claude:
+- **Setup A**: in `AI_BYPASS_SETUP_TYPES` — synthetic AIDecision(confidence=1.0). AI v2 had 89.6% approval = no value.
+- **Setup D variants**: in `QUICK_SETUP_TYPES` — data-driven, skip AI by design.
+- Pre-filter (funding extreme, F&G extreme, CVD divergence) and Claude evaluation code remain for future re-enable.
+- Pipeline dedup cache at entry prevents re-evaluating identical setups (1h TTL).
 
 ### 4. Risk Service checks guardrails
 
@@ -75,11 +76,11 @@ A perfect long looks like this:
 5. Funding rate is negative (shorts overcrowded = fuel to go up)
 6. CVD is positive (buyers dominating)
 7. Whales withdrawing from exchanges (accumulating)
-8. Claude says "yes, everything aligns" with 50%+ confidence
+8. AI filter bypassed (currently all active setups skip Claude)
 9. Risk approves: there is capital, no drawdown, R:R is good
-10. Limit order at 50% of OB, SL below OB, scaled TPs above
+10. Limit order at 50% of OB, SL below OB, TP at 2:1 R:R
 
-**In short:** institutions hunt stops → confirmed reversal → bot enters where institutions entered → Claude validates macro is not against it → risk controls the size.
+**In short:** institutions hunt stops → confirmed reversal → bot enters where institutions entered → risk controls the size.
 
 ---
 ## Language Rule
@@ -147,7 +148,8 @@ quant-fund/
 │   ├── order_blocks.py      # OB detection + mitigation tracking
 │   ├── fvg.py               # FVG detection + fill tracking
 │   ├── liquidity.py         # Liquidity pools, sweeps, premium/discount
-│   └── setups.py            # Setup A & B assembly + confluence counting
+│   ├── setups.py            # Setup A/B/F/G assembly + confluence counting + OB scoring
+│   └── quick_setups.py      # Setup C/D/E (data-driven, quick duration)
 ├── ai_service/
 │   ├── __init__.py
 │   ├── service.py           # AIService facade
@@ -202,7 +204,8 @@ quant-fund/
 All 5 layers run in the **same Python process**. Communication is via direct function calls — no message queues, no pub/sub, no IPC.
 
 ```
-Market Data → [1. Data Service] → [2. Strategy Service] → [3. AI Service] → [4. Risk Service] → [5. Execution Service] → Exchange
+Market Data → [1. Data Service] → [2. Strategy Service] → [3. AI Service*] → [4. Risk Service] → [5. Execution Service] → Exchange
+* AI currently bypassed for all active setups
 ```
 
 ### Inter-layer Communication
@@ -214,8 +217,12 @@ Direct Python calls. The pipeline is triggered on every confirmed candle:
 candle = ...  # from OKX WebSocket (confirmed=True)
 setup = strategy_service.evaluate(candle.pair, candle)
 if setup:
-    snapshot = data_service.get_market_snapshot(candle.pair)
-    decision = await ai_service.evaluate(setup, snapshot)
+    # Dedup check (all setup types)
+    # AI: currently all active setups bypass Claude (synthetic AIDecision)
+    if setup.setup_type in QUICK_SETUP_TYPES or setup.setup_type in AI_BYPASS_SETUP_TYPES:
+        decision = AIDecision(confidence=1.0, approved=True, ...)
+    else:
+        decision = await ai_service.evaluate(setup, snapshot)
     if decision.approved:
         approval = risk_service.check(setup)
         if approval.approved:
@@ -267,9 +274,10 @@ Deterministic Python engine that detects SMC patterns. No AI. Pure rules.
 
 * Bullish OB: Last red candle before bullish impulse + BOS.
 * Bearish OB: Last green candle before bearish impulse + BOS.
-* Entry: 50% of candle body.
+* Entry: configurable depth into OB body (`SETUP_A_ENTRY_PCT`, default 50%).
 * SL: Below/above entire OB.
-* Crypto note: Only use fresh OBs (< 24–48 hours). Older OBs invalidate faster than in forex.
+* OB selection: composite scoring via `_score_ob()` — volume (35%), freshness (30%), proximity (20%), body size (15%). `OB_MIN_BODY_PCT` (0.1%) filters micro-OBs.
+* Crypto note: Only use fresh OBs (< 72 hours, `OB_MAX_AGE_HOURS`). Older OBs invalidate faster than in forex.
 
 **3. Fair Value Gaps (FVG)**
 
@@ -303,31 +311,35 @@ Deterministic Python engine that detects SMC patterns. No AI. Pure rules.
 
 ---
 
-### Setup A (Primary) — Liquidity Sweep + CHoCH + Order Block
+### Setup A (Primary) — Liquidity Sweep + CHoCH + Order Block (ENABLED, AI bypassed)
 
 1. Confirm HTF trend (4H or 1H)
 2. Identify liquidity buildup (equal highs/lows)
 3. Liquidity sweep occurs
 4. CHoCH confirms direction change
-5. Fresh OB forms (<24–48h)
-6. OB in discount (long) or premium (short)
-7. Retrace to OB — entry at 50%
+5. Fresh OB forms (<72h)
+6. OB in discount (long) or premium (short) — or 5+ confluences override PD
+7. Retrace to OB — entry at `SETUP_A_ENTRY_PCT` (default 50%)
 8. Volume spike >2x + liquidations visible
-9. Claude approval (confidence ≥ 0.50)
-10. Risk check passes
+9. SL-too-close filter (`MIN_RISK_DISTANCE_PCT` 0.2%) in strategy layer
+10. AI bypassed (synthetic approval) + Risk check passes
 
 ---
 
-### Setup B (Secondary) — BOS + FVG + Order Block
+### Setup B (Secondary) — BOS + FVG + Order Block (DISABLED — 0% WR live)
 
-1. HTF trend confirmed
-2. BOS on LTF (5m/15m) with 0.1%+ close
-3. Fresh OB
-4. FVG inside or adjacent to OB
-5. Premium/Discount aligned
-6. Entry at 50% FVG or OB
-7. Volume >1.5x average + CVD aligned
-8. Claude + Risk approval
+Disabled from ENABLED_SETUPS. Code remains for future re-enable.
+
+---
+
+### Setup D (Quick) — LTF Structure Scalp (ENABLED — setup_d_bos, setup_d_choch)
+
+1. CHoCH or BOS on 5m
+2. Fresh OB near price
+3. HTF bias + PD zone aligned
+4. Entry at 50% of OB
+5. AI bypassed (QUICK_SETUP_TYPES) + Risk check passes
+6. 1h entry timeout, 4h max duration
 
 ---
 
@@ -354,6 +366,10 @@ Deterministic Python engine that detects SMC patterns. No AI. Pure rules.
 ### Layer 3: AI Service (`ai_service/`)
 
 Claude API (Sonnet) as filter. Does not originate trades. **Claude has NO internet access** — all data must be provided as structured context.
+
+**Current status (2026-03-12):** AI filter is **bypassed for all active setups**. Setup A is in `AI_BYPASS_SETUP_TYPES` (89.6% approval rate = no filtering value). Setup D variants are in `QUICK_SETUP_TYPES` (skip AI by design). Setup B and F are disabled. Zero Claude API calls in the pipeline currently. All code and infrastructure remain for re-enable when recalibrated.
+
+**Bypass mechanism:** `config/settings.py` defines `QUICK_SETUP_TYPES` (setup_c, setup_d, setup_d_bos, setup_d_choch, setup_e) and `AI_BYPASS_SETUP_TYPES` (setup_a). Both generate synthetic `AIDecision(confidence=1.0, approved=True)` instead of calling Claude.
 
 **Prompt approach (Scoring Rubric v2):**
 No narrative doctrine. Claude scores 4 dimensions (0-5): setup_quality, market_support, contradiction, data_sufficiency. Decision rules are mechanical: approve if setup_quality >= 3 AND contradiction <= 2 AND confidence >= threshold. "Insufficient edge" is a valid rejection — approval requires positive evidence, not just absence of contradiction.
@@ -414,13 +430,17 @@ Position size formula:
 ```
 # Fixed margin mode (default, FIXED_TRADE_MARGIN=20):
 Margin = $20 (fixed)
+Leverage = MAX_LEVERAGE (7x)
 Notional = Margin × Leverage = $20 × 7x = $140
 Position Size = Notional / Entry Price
 
 # Percentage mode (fallback, FIXED_TRADE_MARGIN=0):
 Notional = Capital × TRADE_CAPITAL_PCT
+Leverage = MAX_LEVERAGE (7x)
 Position Size = Notional / Entry Price
 ```
+
+Note: `PositionSizer` (in `position_sizer.py`) computes dynamic leverage from risk%, capped at MAX_LEVERAGE. However, `RiskService.check()` uses fixed `MAX_LEVERAGE` directly for position sizing. The dynamic sizer is only used by the backtester.
 
 ---
 

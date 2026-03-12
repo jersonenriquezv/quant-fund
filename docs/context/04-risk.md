@@ -1,6 +1,6 @@
 # Risk Service
-> Última actualización: 2026-03-11
-> Estado: implementado (completo, integrado en main.py). Dual-mode position sizing: FIXED_TRADE_MARGIN ($20 default) o TRADE_CAPITAL_PCT (15% fallback).
+> Última actualización: 2026-03-12
+> Estado: implementado (completo, integrado en main.py). Dual-mode position sizing: FIXED_TRADE_MARGIN ($20 default) o TRADE_CAPITAL_PCT (15% fallback). MIN_RISK_DISTANCE_PCT (0.2%) also checked in Strategy layer as early filter. Leverage always MAX_LEVERAGE (7x), not dynamic.
 
 ## Qué hace (30 segundos)
 El Risk Service es el guardián del capital. Antes de que cualquier trade se ejecute, pasa por 6 checks obligatorios (guardrails) y un cálculo de tamaño de posición. Si cualquier check falla, el trade NO se ejecuta. Sin excepciones.
@@ -48,7 +48,7 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 
 ### `risk_service/position_sizer.py` — Calculadora de posición
 - Clase: `PositionSizer`
-- **Risk-based sizing (siempre):** `position_size = (capital × risk_pct) / abs(entry - sl)`. Leverage: `(position_size × entry) / capital`. Si leverage > MAX_LEVERAGE (5x), recorta la posición.
+- **Risk-based sizing (PositionSizer):** `position_size = (capital × risk_pct) / abs(entry - sl)`. Leverage: `(position_size × entry) / capital`. Si leverage > MAX_LEVERAGE (7x), recorta la posición. Note: PositionSizer computes dynamic leverage from risk%, but RiskService.check() uses fixed `MAX_LEVERAGE` directly (see below).
 - Validaciones: entry == sl → error, capital ≤ 0 → error, risk ≤ 0 → error
 
 ### `risk_service/guardrails.py` — 6 checks puros
@@ -86,7 +86,7 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
   2. **Position sizing (dual-mode):**
      - **Modo fijo (default):** Si `FIXED_TRADE_MARGIN > 0`: `margin = $20`, `notional = margin × leverage`, `position_size = notional / entry_price`. Ejemplo: $20 × 7x = $140 notional. `risk_pct = margin / capital`.
      - **Modo porcentaje (fallback):** Si `FIXED_TRADE_MARGIN == 0`: `notional = capital × TRADE_CAPITAL_PCT`, `margin = notional / leverage`, `risk_pct = TRADE_CAPITAL_PCT`.
-  3. Leverage siempre = `MAX_LEVERAGE` (7x). No se calcula dinámicamente.
+  3. Leverage siempre = `MAX_LEVERAGE` (7x). Not dynamically computed from risk% — PositionSizer is only used by backtester.
   4. Verifica min order size contra `MIN_ORDER_SIZES` por par
   5. Retorna RiskApproval (approved/rejected con razón)
 - **Para Execution Service (implementado):**
@@ -113,7 +113,7 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 | `COOLDOWN_MINUTES` | `15` | Minutos de espera post-pérdida |
 | `MIN_RISK_REWARD` | `1.2` | R:R mínimo para swing setups A/B (TP2 vs SL) |
 | `MIN_RISK_REWARD_QUICK` | `1.0` | R:R mínimo para quick setups C/D/E |
-| `MIN_RISK_DISTANCE_PCT` | `0.001` (0.1%) | Distancia mínima SL-entry como fracción del precio. Rechaza noise trades. Para ETH@$2000, SL debe estar al menos $2 away. |
+| `MIN_RISK_DISTANCE_PCT` | `0.002` (0.2%) | Distancia mínima SL-entry como fracción del precio. Rechaza noise trades. Para ETH@$2000, SL >= $4. Now also checked in Strategy layer (early filter in evaluate_setup_a/evaluate_setup_d) before building TradeSetup. |
 | `MIN_ORDER_SIZES` | `{"BTC/USDT": 0.0001, "ETH/USDT": 0.001}` | Mínimo de tamaño de orden por par (OKX contract-based: BTC min 0.01 contracts × 0.01 ctVal, ETH min 0.01 × 0.1 ctVal). Pre-check en main.py filtra antes de Claude. |
 
 ## Tests

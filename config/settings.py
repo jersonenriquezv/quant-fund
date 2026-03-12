@@ -144,6 +144,13 @@ class Settings:
     OB_MIN_VOLUME_RATIO: float = 1.2  # 1.2x el promedio
     # Horas máximas de vida de un OB antes de considerarlo viejo
     OB_MAX_AGE_HOURS: int = 72
+    # Minimum OB body size as % of price — reject micro-OBs that produce tiny SLs
+    OB_MIN_BODY_PCT: float = 0.001  # 0.1%
+    # OB scoring weights (must sum to 1.0)
+    OB_SCORE_VOLUME_W: float = 0.35
+    OB_SCORE_FRESHNESS_W: float = 0.30
+    OB_SCORE_PROXIMITY_W: float = 0.20
+    OB_SCORE_SIZE_W: float = 0.15
 
     # --- Fair Value Gaps ---
     # Tamaño mínimo del FVG como % del precio
@@ -192,8 +199,13 @@ class Settings:
     # D added: 66.7% WR in combined (9 trades, +$2,553). Quick setup — skips AI.
     # C, E, G pending validation.
     ENABLED_SETUPS: list = field(default_factory=lambda: [
-        "setup_a", "setup_d",
+        "setup_a", "setup_d_bos", "setup_d_choch",
     ])
+
+    # Setup A entry depth — fraction of OB body for entry placement.
+    # 0.50 = midpoint (deeper, better R:R but lower fill rate ~18%).
+    # 0.65 = shallower (easier fill, slightly worse R:R).
+    SETUP_A_ENTRY_PCT: float = float(os.getenv("SETUP_A_ENTRY_PCT", "0.50"))
 
     # --- Setup A temporal ---
     # Max candles between sweep and CHoCH for Setup A validity.
@@ -572,7 +584,7 @@ class Settings:
 
 
 # Quick setup type identifiers (bypass AI + use short entry timeout)
-QUICK_SETUP_TYPES = ("setup_c", "setup_d", "setup_e")
+QUICK_SETUP_TYPES = ("setup_c", "setup_d", "setup_d_bos", "setup_d_choch", "setup_e")
 
 # Setup types that bypass AI filter but keep normal (swing) entry timeout.
 # setup_a: AI v2 approval rate 89.6% = no value added. Bypass until recalibrated.

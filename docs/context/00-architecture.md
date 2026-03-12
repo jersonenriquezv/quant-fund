@@ -1,6 +1,6 @@
 # Arquitectura del Sistema
-> Última actualización: 2026-03-11
-> Estado: **5/5 capas implementadas** — pipeline completo Data → Strategy → AI → Risk → Execution. HTF Campaign Trading (4H position trades con pyramid adds y trailing SL en swing levels). AlertManager con prioridades, rate limiting, silenciamiento. Telegram: ORDER PLACED + TRADE CLOSED + CAMPAIGN CLOSED + EMERGENCY + SIGNAL (en signal mode). Single mode (aggressive values merged as defaults). AI filter obligatorio. PnL tracking con fee deduction (0.05% per side). Signal mode disponible (`SIGNAL_ONLY=true`).
+> Última actualización: 2026-03-12
+> Estado: **5/5 capas implementadas** — pipeline completo Data → Strategy → Risk → Execution. AI filter currently bypassed for all active setups (setup_a in AI_BYPASS_SETUP_TYPES, setup_d variants in QUICK_SETUP_TYPES). ENABLED_SETUPS: setup_a, setup_d_bos, setup_d_choch. Setup B (0% WR) and F (34.8% WR) disabled. OB selector upgraded with composite scoring. PnL tracking con fee deduction (0.05% per side). Signal mode disponible (`SIGNAL_ONLY=true`).
 
 ## Qué hace (para entenderlo rápido)
 El sistema es un bot de trading que funciona como una línea de ensamblaje. Los datos entran por un lado, pasan por 5 filtros en orden, y si todos dicen "sí", se ejecuta el trade. Si cualquier filtro dice "no", el trade se descarta.
@@ -66,10 +66,13 @@ Sin esta arquitectura, tendríamos un solo programa gigante donde todo está mez
 1. Data Service recoge datos de OKX, Etherscan (liquidaciones via OI proxy, no Binance)
 2. Cuando hay una vela nueva (cada 5m/15m), manda los datos al Strategy Service
 3. Strategy Service analiza los datos buscando patrones SMC
-4. Si encuentra un setup completo (Setup A/B swing, o C/D/E quick si no hay swing), lo pasa al siguiente filtro
-5. **Swing setups (A/B):** Pre-filter determinístico (funding extreme, Fear & Greed extreme, CVD divergencia) → Claude evalúa → confianza ≥ 0.50
-6. **Quick setups (C/D/E):** Skip Claude AI filter (los datos SON la señal). Setup C también skipea funding pre-filter. Se genera `AIDecision` sintético con confidence=1.0
-7. **AI filter obligatorio para swing setups** — quick setups lo bypasean por diseño (data-driven).
+4. Si encuentra un setup completo (Setup A swing, o D_bos/D_choch quick), lo pasa al siguiente filtro
+5. **Pipeline dedup**: cache at pipeline entry covers ALL setup types (key: pair+direction+setup_type+entry_price, TTL 1h). Risk rejections for structural reasons ("SL too close") also cached.
+6. **AI filter currently bypassed for ALL active setups:**
+   - Setup A: in `AI_BYPASS_SETUP_TYPES` (89.6% approval = no value). Synthetic AIDecision(confidence=1.0).
+   - Setup D variants: in `QUICK_SETUP_TYPES`. Synthetic AIDecision(confidence=1.0).
+   - Setup B, F: disabled entirely (not in ENABLED_SETUPS).
+7. **WebSocket candle dedup**: `_last_confirmed_ts` dict in websocket_feeds.py prevents duplicate pipeline runs if OKX sends same candle twice.
 8. Risk Service verifica TODOS los guardrails y calcula el position size
 9. Execution Service coloca la orden limit en OKX, con SL (stop-market) y TP (limit al tp2, 100% close). **En sandbox**: limit al ask/bid actual + 0.05% tolerancia (evita slippage de market orders).
 10. PositionMonitor gestiona el ciclo de vida: entry fill → breakeven (SL→entry al cruzar tp1) → trailing SL (SL→tp1 al cruzar midpoint) → TP/SL
@@ -275,6 +278,7 @@ python scripts/backtest.py --days 60 --capital 10000 --csv
 - 2026-03-09: **Test log isolation** — `shared/logger.py` detecta pytest y skipea file sinks. Previene que Mock objects contaminen logs de producción.
 - 2026-03-09: **5 BTC whale wallets removidos** — mempool.space retorna HTTP 400 "Invalid Bitcoin address" para 1LQoWist8K, 32ixEdpwzG, 1HeKStJGY, 1AsHPP7Wc, 3MfN5to5K. Eliminaba 1130+ warnings/día.
 - 2026-03-09: **Etherscan timeout 10s→15s** — Reduce timeouts transitorios (14/día). Alineado con btc_whale_client.
+- 2026-03-12: **AI disabled + ENABLED_SETUPS trimmed + OB scoring + Setup D split** — AI filter bypassed for ALL active setups: setup_a added to `AI_BYPASS_SETUP_TYPES` (89.6% approval = no value), setup_d variants already in `QUICK_SETUP_TYPES`. Zero Claude API calls in pipeline. ENABLED_SETUPS changed from [A, B, D, F] to [A, D_bos, D_choch] — Setup B (0% WR live) and F (34.8% WR) disabled. Setup D split into `setup_d_bos` and `setup_d_choch` variants for per-variant measurement. OB selector upgraded: composite `_score_ob()` using volume (35%), freshness (30%), proximity (20%), body size (15%); `OB_MIN_BODY_PCT` (0.1%) filters micro-OBs. `MIN_RISK_DISTANCE_PCT` check moved to Strategy layer (evaluate_setup_a/d) as early filter. `SETUP_A_ENTRY_PCT` (0.50, env override) makes entry depth configurable. WebSocket `_last_confirmed_ts` dict deduplicates candles. Pipeline dedup cache moved to pipeline entry covering ALL setup types. Dashboard /api/risk filters `pending_entry` from open position count.
 - 2026-03-12: **SL validation + PD override + risk dedup** — `_validate_sl_direction()` en setups A/B/F/G rechaza si SL está del lado incorrecto del entry (bug: Setup B con FVG encima del OB generaba SL invertido). PD alignment ahora diferido: setups con 5+ confluencias (`PD_OVERRIDE_MIN_CONFLUENCES`) pueden operar contra zona PD, evitando lockout total en bearish+discount. main.py cachea risk rejections estructurales ("SL too close") en dedup para no re-evaluar con Claude. 507 tests.
 - 2026-03-09: **News Sentiment Analysis** — Fear & Greed Index (alternative.me) + crypto headlines (cryptocurrency.cv) como nuevo data layer. Pre-filter rechaza longs en Extreme Fear (F&G<15) y shorts en Extreme Greed (F&G>85). Claude recibe F&G score + headlines como factor 8. `data_service/news_client.py` nuevo con Redis caching. 26 tests nuevos. 420 tests totales.
 - 2026-03-09: **SL vs market validation** — Execution Service ahora verifica que el SL no esté ya "adentro" del mercado antes de colocar la orden. Short con SL < market → skip (OKX 51053). Previene fallos en Setup G cuando precio se movió más allá del breaker block.

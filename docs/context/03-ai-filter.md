@@ -1,6 +1,6 @@
 # AI Service
-> Última actualización: 2026-03-11
-> Estado: implementado (completo, integrado en main.py). Pre-filter determinístico (funding + F&G + CVD). HTF bias es contexto para Claude, no hard gate. AI obligatorio. Setup dedup cache. News sentiment (F&G + headlines) como nuevo factor. Scoring-based rubric prompt (v2). Single mode — AI_MIN_CONFIDENCE 0.50. PnL includes fee deduction.
+> Última actualización: 2026-03-12
+> Estado: implementado but **currently bypassed for all active setups**. setup_a is in `AI_BYPASS_SETUP_TYPES` (89.6% approval = no value). setup_d_bos/setup_d_choch are in `QUICK_SETUP_TYPES` (skip AI by design). Setup B and F are disabled. No Claude API calls in the trading pipeline currently. Code and infrastructure remain for re-enable when recalibrated.
 
 ## Qué hace (30 segundos)
 El AI Service es el filtro del sistema. Recibe cada trade setup del Strategy Service y lo pasa por Claude (Sonnet) para que evalúe si el contexto de mercado apoya ejecutarlo. Claude evalúa scoring dimensions (setup quality, market support, contradiction, data sufficiency) usando datos de funding rate, open interest, CVD, liquidaciones, whale movements y precio reciente. Si confidence >= 0.50 y approved=true, el trade pasa al Risk Service. Si no, se descarta.
@@ -202,7 +202,11 @@ Antes de llamar a Claude API, `main.py:_pre_filter_for_claude()` ejecuta 3 check
 ```
 Setup detected
   |
-  +-- Dedup cache hit? --> skip (ya evaluado)
+  +-- Dedup cache hit? --> skip (ya evaluado, covers ALL setup types)
+  |
+  +-- QUICK_SETUP_TYPES? --> synthetic AIDecision(confidence=1.0), skip to Risk
+  |
+  +-- AI_BYPASS_SETUP_TYPES? --> synthetic AIDecision(confidence=1.0), skip to Risk
   |
   +-- pre-filter (funding, F&G, CVD) --> rechaza sin Claude
   |
@@ -211,7 +215,13 @@ Setup detected
   +-- approved + confidence >= 0.50? --> Risk Service
 ```
 
-**AI filter es OBLIGATORIO para swing setups (A/B/F/G).** No hay bypass. No hay auto-approve. Quick setups (C/D/E) skip AI by design.
+**Note (2026-03-12):** Currently ALL active setups (setup_a, setup_d_bos, setup_d_choch) hit the first two bypass branches. The Claude evaluation path is not reached.
+
+**AI filter currently bypassed for ALL active setups:**
+- **Setup A**: In `AI_BYPASS_SETUP_TYPES` — synthetic AIDecision(confidence=1.0, reasoning="AI bypass (pending recalibration)"). AI v2 had 89.6% approval rate, adding latency without filtering value. Will re-enable when recalibrated.
+- **Setup D variants** (setup_d_bos, setup_d_choch): In `QUICK_SETUP_TYPES` — skip AI by design (data-driven quick setups).
+- **Setup B, F**: Disabled entirely (not in ENABLED_SETUPS).
+- **Net effect**: Zero Claude API calls in the current pipeline. Pre-filter, prompt builder, and Claude client code remain intact for future re-enable.
 
 ## FAQ
 

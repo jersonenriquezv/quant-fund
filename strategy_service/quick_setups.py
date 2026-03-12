@@ -18,12 +18,15 @@ from shared.models import Candle, MarketSnapshot, TradeSetup
 from strategy_service.market_structure import MarketStructureState
 from strategy_service.order_blocks import OrderBlock
 from strategy_service.liquidity import PremiumDiscountZone
+from strategy_service.setups import SetupEvaluator
 
 logger = setup_logger("strategy_quick_setups")
 
 
 class QuickSetupEvaluator:
     """Evaluates quick trade setups (C, D, E) from market data signals."""
+
+    _ob_scorer = SetupEvaluator()
 
     def evaluate_setup_c(
         self,
@@ -166,17 +169,17 @@ class QuickSetupEvaluator:
 
         trade_dir = "long" if direction == "bullish" else "short"
 
-        # Find fresh OB aligned with direction, near current price
+        # Find fresh OB aligned with direction — scored by composite metric
         aligned_obs = [ob for ob in active_obs if ob.direction == direction]
         if not aligned_obs:
             logger.debug(f"Setup D [{pair}]: no aligned OBs (dir={direction})")
             return None
 
-        # Find nearest OB to current price
-        best_ob = self._find_nearest_ob(aligned_obs, current_price)
+        # Use composite OB scoring (volume, freshness, proximity, body size)
+        best_ob = self._ob_scorer._find_best_ob(aligned_obs, current_price, direction)
         if best_ob is None:
             logger.debug(
-                f"Setup D [{pair}]: no OB near price "
+                f"Setup D [{pair}]: no OB passes scoring "
                 f"(price={current_price:.2f})"
             )
             return None
@@ -192,6 +195,13 @@ class QuickSetupEvaluator:
         if risk <= 0:
             return None
 
+        # Early SL-too-close filter
+        risk_pct = risk / entry_price if entry_price > 0 else 0
+        if risk_pct < settings.MIN_RISK_DISTANCE_PCT:
+            logger.debug(f"Setup D [{pair}]: SL too close "
+                         f"({risk_pct*100:.2f}% < {settings.MIN_RISK_DISTANCE_PCT*100:.1f}%)")
+            return None
+
         # TPs at 1:1 (breakeven trigger), 2:1 (single TP)
         if direction == "bullish":
             tp1 = entry_price + risk * 1.0
@@ -199,6 +209,9 @@ class QuickSetupEvaluator:
         else:
             tp1 = entry_price - risk * 1.0
             tp2 = entry_price - risk * 2.0
+
+        # Variant split: setup_d_bos or setup_d_choch for per-variant measurement
+        variant = f"setup_d_{latest_break.break_type}"
 
         confluences = [
             f"{latest_break.break_type}_5m",
@@ -208,8 +221,7 @@ class QuickSetupEvaluator:
             confluences.append(f"pd_zone_{pd_zone.zone}")
 
         logger.info(
-            f"Setup D found: {pair} {trade_dir} "
-            f"{latest_break.break_type} + OB "
+            f"Setup D ({latest_break.break_type}) found: {pair} {trade_dir} "
             f"entry={entry_price:.2f} sl={sl_price:.2f}"
         )
 
@@ -217,7 +229,7 @@ class QuickSetupEvaluator:
             timestamp=int(time.time() * 1000),
             pair=pair,
             direction=trade_dir,
-            setup_type="setup_d",
+            setup_type=variant,
             entry_price=entry_price,
             sl_price=sl_price,
             tp1_price=tp1,

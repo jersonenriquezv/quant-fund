@@ -17,7 +17,7 @@ Si el dashboard crashea, el bot sigue operando normalmente.
 | `GET /api/trades?status=&limit=50` | PostgreSQL trades | Lista de trades paginada |
 | `GET /api/trades/{id}` | PG trades + ai_decisions | Detalle de trade con AI reasoning |
 | `GET /api/ai/decisions?limit=20` | PG ai_decisions | Evaluaciones recientes de Claude |
-| `GET /api/risk` | Redis + PG risk_events | DD, cooldown, eventos recientes |
+| `GET /api/risk` | Redis + PG risk_events | DD, cooldown, eventos recientes. Filters `pending_entry` from open position count (only counts filled positions). |
 | `GET /api/candles/{pair}/{tf}?count=100` | PG candles | OHLCV para sparklines |
 | `GET /api/stats` | PG trades (closed) | Win rate, P&L, profit factor |
 | `GET /api/whales?hours=24` | Redis (whale_movements) | Whale movements last N hours |
