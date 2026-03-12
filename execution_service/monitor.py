@@ -595,7 +595,26 @@ class PositionMonitor:
                 self._close_position(pos, "sl")
                 return
             if sl_status and sl_status.get("status") == "canceled":
-                # SL was cancelled (user action or OKX) — re-place it
+                # SL was cancelled — check if position still exists on exchange
+                exchange_pos = await self._executor.fetch_position(pos.pair)
+                pos_contracts = float(exchange_pos.get("contracts", 0)) if exchange_pos else 0
+
+                if exchange_pos is not None and pos_contracts <= 0:
+                    # Position closed manually on exchange — clean up
+                    logger.info(
+                        f"SL cancelled + position gone on exchange: {pos.pair} "
+                        f"— user closed manually"
+                    )
+                    await self._cancel_tp(pos)
+                    # Use current market price for PnL estimate
+                    ticker = await self._executor.fetch_ticker(pos.pair)
+                    exit_price = float(ticker.get("last", 0)) if ticker else 0
+                    if exit_price > 0:
+                        self._calculate_pnl(pos, exit_price)
+                    self._close_position(pos, "manual_close")
+                    return
+
+                # Position still open — re-place SL as before
                 logger.warning(f"SL order cancelled externally: {pos.pair} — re-placing")
                 close_side = "sell" if pos.direction == "long" else "buy"
                 sl_price = pos.current_sl_price or pos.sl_price

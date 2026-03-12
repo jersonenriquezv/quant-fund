@@ -85,6 +85,10 @@ class OKXWebSocketFeed:
         # Per-pair locks to serialize pipeline execution
         self._pipeline_locks: dict[str, asyncio.Lock] = {}
 
+        # Dedup: track last confirmed candle timestamp per (pair, timeframe)
+        # Prevents duplicate pipeline runs if OKX sends the same candle twice
+        self._last_confirmed_ts: dict[tuple[str, str], int] = {}
+
         # Reconnection backoff state
         self._reconnect_delay = settings.RECONNECT_INITIAL_DELAY
         self._last_message_time = 0.0
@@ -305,8 +309,14 @@ class OKXWebSocketFeed:
                 confirmed=True,
             )
 
-            # Store in memory
+            # Deduplicate: skip if we already processed this exact timestamp
             key = (pair, timeframe)
+            if self._last_confirmed_ts.get(key) == ts:
+                logger.debug(f"Duplicate candle skipped: pair={pair} tf={timeframe} ts={ts}")
+                continue
+            self._last_confirmed_ts[key] = ts
+
+            # Store in memory
             self._candles[key].append(candle)
 
             # Trim to max size

@@ -34,7 +34,10 @@ async def get_risk_state(limit: int = Query(20, ge=1, le=100)):
         pos_raw = await db.redis_client.get("qf:bot:positions")
         if pos_raw:
             positions = json.loads(pos_raw)
-            open_positions = len(positions)
+            # Count only filled positions, not pending unfilled limit orders
+            open_positions = sum(
+                1 for p in positions if p.get("phase") != "pending_entry"
+            )
 
     events = await queries.get_recent_risk_events(limit=limit)
 

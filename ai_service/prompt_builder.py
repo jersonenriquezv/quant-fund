@@ -132,8 +132,7 @@ class PromptBuilder:
     def _build_setup_section(self, setup: TradeSetup) -> str:
         setup_names = {
             "setup_a": "Setup A (Liquidity Sweep + CHoCH + OB)",
-            "setup_b": "Setup B (BOS + FVG + OB)",
-            "setup_f": "Setup F (Pure OB Retest after BOS)",
+            "setup_d": "Setup D (LTF Structure Scalp)",
         }
 
         # Compute R:R

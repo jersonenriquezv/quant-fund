@@ -192,7 +192,7 @@ class Settings:
     # D added: 66.7% WR in combined (9 trades, +$2,553). Quick setup — skips AI.
     # C, E, G pending validation.
     ENABLED_SETUPS: list = field(default_factory=lambda: [
-        "setup_a", "setup_b", "setup_d", "setup_f",
+        "setup_a", "setup_d",
     ])
 
     # --- Setup A temporal ---
@@ -571,8 +571,12 @@ class Settings:
 
 
 
-# Quick setup type identifiers
+# Quick setup type identifiers (bypass AI + use short entry timeout)
 QUICK_SETUP_TYPES = ("setup_c", "setup_d", "setup_e")
+
+# Setup types that bypass AI filter but keep normal (swing) entry timeout.
+# setup_a: AI v2 approval rate 89.6% = no value added. Bypass until recalibrated.
+AI_BYPASS_SETUP_TYPES = ("setup_a",)
 
 
 # Instancia global — importar esta en todo el proyecto

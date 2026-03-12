@@ -49,12 +49,12 @@ def _make_candle(pair="ETH/USDT", close=2000.0, timeframe="5m") -> Candle:
     )
 
 
-def _make_setup(pair="ETH/USDT", direction="long") -> TradeSetup:
+def _make_setup(pair="ETH/USDT", direction="long", setup_type="setup_a") -> TradeSetup:
     entry = 2000.0
     sl = 1960.0 if direction == "long" else 2040.0
     return TradeSetup(
         timestamp=int(time.time() * 1000),
-        pair=pair, direction=direction, setup_type="setup_a",
+        pair=pair, direction=direction, setup_type=setup_type,
         entry_price=entry, sl_price=sl,
         tp1_price=2040.0 if direction == "long" else 1960.0,
         tp2_price=2080.0 if direction == "long" else 1920.0,
@@ -156,7 +156,7 @@ def _wire_services(
 class TestPipelineHappyPath:
 
     def test_setup_approved_and_executed(self):
-        """Full pipeline: setup → AI approves → risk approves → executed."""
+        """Full pipeline: setup → AI bypass (setup_a) → risk approves → executed."""
         import asyncio
         setup = _make_setup()
         decision = AIDecision(
@@ -173,7 +173,8 @@ class TestPipelineHappyPath:
 
         asyncio.run(main.on_candle_confirmed(_make_candle()))
 
-        ai.evaluate.assert_called_once()
+        # setup_a is in AI_BYPASS_SETUP_TYPES — Claude not called
+        ai.evaluate.assert_not_called()
         risk.check.assert_called_once_with(setup)
         execution.execute.assert_called_once()
 
@@ -196,9 +197,12 @@ class TestPipelineHappyPath:
 class TestAIRejection:
 
     def test_ai_rejects_stops_pipeline(self):
-        """AI rejects setup → risk and execution never called."""
+        """AI rejects setup → risk and execution never called.
+
+        Uses setup_b (not in QUICK or AI_BYPASS) so it goes through Claude.
+        """
         import asyncio
-        setup = _make_setup()
+        setup = _make_setup(setup_type="setup_b")
         decision = AIDecision(
             confidence=0.40, approved=False,
             reasoning="CVD divergence", adjustments={}, warnings=[],
@@ -318,7 +322,7 @@ class TestPreFilter:
 class TestDedupCache:
 
     def test_dedup_blocks_duplicate_setup(self):
-        """Same setup within TTL should not be sent to Claude twice."""
+        """Same setup within TTL should not be executed twice."""
         import asyncio
         setup = _make_setup()
         decision = AIDecision(
@@ -329,7 +333,7 @@ class TestDedupCache:
             approved=True, position_size=0.02, leverage=1.0,
             risk_pct=0.02, reason="",
         )
-        _, _, ai, _, _, _ = _wire_services(
+        _, _, _, _, execution, _ = _wire_services(
             setup=setup, decision=decision, approval=approval,
         )
 
@@ -337,5 +341,5 @@ class TestDedupCache:
         asyncio.run(main.on_candle_confirmed(candle))
         asyncio.run(main.on_candle_confirmed(candle))
 
-        # Claude should only be called once — second call is deduped
-        assert ai.evaluate.call_count == 1
+        # Execution should only happen once — second call is deduped
+        assert execution.execute.call_count == 1

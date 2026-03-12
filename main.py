@@ -16,7 +16,7 @@ import signal
 import sys
 import time
 
-from config.settings import settings, QUICK_SETUP_TYPES
+from config.settings import settings, QUICK_SETUP_TYPES, AI_BYPASS_SETUP_TYPES
 from shared.logger import setup_logger
 from shared.models import Candle, AIDecision
 from data_service.service import DataService
@@ -148,6 +148,19 @@ async def on_candle_confirmed(candle: Candle) -> None:
         f"confluences={setup.confluences}"
     )
 
+    # Dedup: block identical setups within TTL (covers ALL setup types, not just Claude)
+    dedup_key = (setup.pair, setup.direction, setup.setup_type,
+                 round(setup.entry_price, 2))
+    now = time.time()
+    last_eval = _setup_dedup_cache.get(dedup_key)
+    if last_eval and (now - last_eval) < _SETUP_DEDUP_TTL_SECONDS:
+        logger.debug(
+            f"Setup dedup (pipeline): {setup.pair} {setup.direction} "
+            f"{setup.setup_type} entry={setup.entry_price:.2f} — "
+            f"already processed {int(now - last_eval)}s ago, skipping"
+        )
+        return
+
     # Pre-check: can this pair meet exchange minimum order size?
     min_size = settings.MIN_ORDER_SIZES.get(setup.pair, 0)
     if min_size > 0:
@@ -166,15 +179,17 @@ async def on_candle_confirmed(candle: Candle) -> None:
 
     # Layer 3: AI Service — Claude filter
     decision = None
-    if setup.setup_type in QUICK_SETUP_TYPES:
+    if setup.setup_type in QUICK_SETUP_TYPES or setup.setup_type in AI_BYPASS_SETUP_TYPES:
+        reason = ("data-driven quick setup" if setup.setup_type in QUICK_SETUP_TYPES
+                  else "AI bypass (pending recalibration)")
         decision = AIDecision(
             confidence=1.0,
             approved=True,
-            reasoning=f"Data-driven quick setup ({setup.setup_type}) — AI bypass",
+            reasoning=f"{reason} ({setup.setup_type})",
             adjustments={},
             warnings=[],
         )
-        logger.info(f"AI bypass: {setup.setup_type} — data-driven quick setup")
+        logger.info(f"AI bypass: {setup.setup_type} — {reason}")
     elif _ai_service is not None and _data_service is not None:
         decision = await _evaluate_with_claude(setup, candle)
         if decision is None:
@@ -223,9 +238,12 @@ async def on_candle_confirmed(candle: Candle) -> None:
             logger.info(f"Signal mode: sending signal for {setup.pair} {setup.direction}")
             if _alert_manager is not None:
                 await _alert_manager.notify_signal(setup, approval, decision)
+            _setup_dedup_cache[dedup_key] = time.time()
         elif _execution_service is not None:
             ai_confidence = decision.confidence if decision else 0.0
-            await _execution_service.execute(setup, approval, ai_confidence)
+            placed = await _execution_service.execute(setup, approval, ai_confidence)
+            if placed:
+                _setup_dedup_cache[dedup_key] = time.time()
 
     _emit_metric("pipeline_latency_ms", (time.monotonic() - pipeline_start) * 1000, candle.pair)
 
@@ -328,19 +346,6 @@ async def _evaluate_with_claude(setup, candle) -> "AIDecision | None":
     if _ai_service is None or _data_service is None:
         return None
 
-    # Dedup: don't re-send the same setup to Claude within TTL
-    dedup_key = (setup.pair, setup.direction, setup.setup_type,
-                 round(setup.entry_price, 2))
-    now = time.time()
-    last_eval = _setup_dedup_cache.get(dedup_key)
-    if last_eval and (now - last_eval) < _SETUP_DEDUP_TTL_SECONDS:
-        logger.debug(
-            f"Setup dedup: {setup.pair} {setup.direction} {setup.setup_type} "
-            f"entry={setup.entry_price:.2f} — already evaluated "
-            f"{int(now - last_eval)}s ago, skipping Claude"
-        )
-        return None
-
     snapshot = _data_service.get_market_snapshot(candle.pair)
 
     # Pre-filter: reject obvious losers before calling Claude
@@ -355,7 +360,6 @@ async def _evaluate_with_claude(setup, candle) -> "AIDecision | None":
     claude_start = time.monotonic()
     decision = await _ai_service.evaluate(setup, snapshot)
     _emit_metric("claude_latency_ms", (time.monotonic() - claude_start) * 1000, setup.pair)
-    _setup_dedup_cache[dedup_key] = time.time()
 
     # Attach snapshot health to adjustments for audit trail
     if snapshot.health is not None:
