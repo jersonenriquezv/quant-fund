@@ -553,3 +553,121 @@ class TestQuickCooldown:
         assert not svc._is_quick_cooldown_active("ETH/USDT", "setup_c", now + 10)
         # Same pair, different type — not blocked
         assert not svc._is_quick_cooldown_active("BTC/USDT", "setup_d", now + 10)
+
+
+# ================================================================
+# Phase 2: Setup D minimum break displacement
+# ================================================================
+
+class TestSetupDDisplacement:
+    """Test SETUP_D_MIN_DISPLACEMENT_PCT filter."""
+
+    def test_displacement_zero_allows_all(self, evaluator):
+        """Default (0.0) allows any break displacement."""
+        original = settings.SETUP_D_MIN_DISPLACEMENT_PCT
+        settings.SETUP_D_MIN_DISPLACEMENT_PCT = 0.0
+        try:
+            state = _make_structure_state("choch", "bullish")
+            ob = _make_ob(direction="bullish", entry_price=100.0)
+            pd = _make_pd_zone("discount")
+            candles = make_candle_series(base_price=100.0, count=50, timeframe="5m",
+                                        price_changes=[0.0] * 50)
+            result = evaluator.evaluate_setup_d(
+                "BTC/USDT", "bullish", state, [ob], pd, candles,
+            )
+            assert result is not None
+        finally:
+            settings.SETUP_D_MIN_DISPLACEMENT_PCT = original
+
+    def test_displacement_filters_weak_break(self, evaluator):
+        """Break with displacement below threshold → rejected."""
+        original = settings.SETUP_D_MIN_DISPLACEMENT_PCT
+        settings.SETUP_D_MIN_DISPLACEMENT_PCT = 0.05  # 5% — very high
+        try:
+            # Default break: break_price=101, broken_level=100 → 1% displacement
+            state = _make_structure_state("choch", "bullish")
+            ob = _make_ob(direction="bullish", entry_price=100.0)
+            pd = _make_pd_zone("discount")
+            candles = make_candle_series(base_price=100.0, count=50, timeframe="5m",
+                                        price_changes=[0.0] * 50)
+            result = evaluator.evaluate_setup_d(
+                "BTC/USDT", "bullish", state, [ob], pd, candles,
+            )
+            assert result is None
+        finally:
+            settings.SETUP_D_MIN_DISPLACEMENT_PCT = original
+
+    def test_displacement_allows_strong_break(self, evaluator):
+        """Break with displacement above threshold → allowed."""
+        original = settings.SETUP_D_MIN_DISPLACEMENT_PCT
+        settings.SETUP_D_MIN_DISPLACEMENT_PCT = 0.005  # 0.5%
+        try:
+            # break_price=101, broken_level=100 → 1% displacement > 0.5%
+            state = _make_structure_state("choch", "bullish")
+            ob = _make_ob(direction="bullish", entry_price=100.0)
+            pd = _make_pd_zone("discount")
+            candles = make_candle_series(base_price=100.0, count=50, timeframe="5m",
+                                        price_changes=[0.0] * 50)
+            result = evaluator.evaluate_setup_d(
+                "BTC/USDT", "bullish", state, [ob], pd, candles,
+            )
+            assert result is not None
+        finally:
+            settings.SETUP_D_MIN_DISPLACEMENT_PCT = original
+
+
+# ================================================================
+# Phase 2: PD_AS_CONFLUENCE on Setup D
+# ================================================================
+
+class TestSetupDPDAsConfluence:
+    """Test PD_AS_CONFLUENCE flag on Setup D."""
+
+    def test_pd_misaligned_blocks_by_default(self, evaluator):
+        """Default: PD misalignment blocks Setup D."""
+        state = _make_structure_state("choch", "bullish")
+        ob = _make_ob(direction="bullish", entry_price=100.0)
+        pd = _make_pd_zone("premium")  # Wrong for long
+        candles = make_candle_series(base_price=100.0, count=50, timeframe="5m",
+                                    price_changes=[0.0] * 50)
+        result = evaluator.evaluate_setup_d(
+            "BTC/USDT", "bullish", state, [ob], pd, candles,
+        )
+        assert result is None
+
+    def test_pd_as_confluence_allows_misaligned(self, evaluator):
+        """PD_AS_CONFLUENCE=True: PD misalignment does NOT block Setup D."""
+        original = settings.PD_AS_CONFLUENCE
+        settings.PD_AS_CONFLUENCE = True
+        try:
+            state = _make_structure_state("choch", "bullish")
+            ob = _make_ob(direction="bullish", entry_price=100.0)
+            pd = _make_pd_zone("premium")  # Wrong for long
+            candles = make_candle_series(base_price=100.0, count=50, timeframe="5m",
+                                        price_changes=[0.0] * 50)
+            result = evaluator.evaluate_setup_d(
+                "BTC/USDT", "bullish", state, [ob], pd, candles,
+            )
+            assert result is not None
+            # PD zone should NOT be in confluences (misaligned)
+            assert not any("pd_zone" in c for c in result.confluences)
+        finally:
+            settings.PD_AS_CONFLUENCE = original
+
+    def test_pd_as_confluence_adds_aligned_zone(self, evaluator):
+        """PD_AS_CONFLUENCE=True: aligned PD zone IS added as confluence."""
+        original = settings.PD_AS_CONFLUENCE
+        settings.PD_AS_CONFLUENCE = True
+        try:
+            state = _make_structure_state("choch", "bullish")
+            ob = _make_ob(direction="bullish", entry_price=100.0)
+            pd = _make_pd_zone("discount")  # Correct for long
+            candles = make_candle_series(base_price=100.0, count=50, timeframe="5m",
+                                        price_changes=[0.0] * 50)
+            result = evaluator.evaluate_setup_d(
+                "BTC/USDT", "bullish", state, [ob], pd, candles,
+            )
+            assert result is not None
+            assert "pd_zone_discount" in result.confluences
+        finally:
+            settings.PD_AS_CONFLUENCE = original

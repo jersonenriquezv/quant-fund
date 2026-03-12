@@ -164,10 +164,23 @@ class QuickSetupEvaluator:
             return None
 
         # PD zone alignment
-        if not self._check_pd_alignment(pd_zone, direction):
+        pd_aligned = self._check_pd_alignment(pd_zone, direction)
+        if not settings.PD_AS_CONFLUENCE and not pd_aligned:
             return None
 
         trade_dir = "long" if direction == "bullish" else "short"
+
+        # Minimum break displacement filter
+        if settings.SETUP_D_MIN_DISPLACEMENT_PCT > 0:
+            displacement = abs(latest_break.break_price - latest_break.broken_level)
+            if latest_break.broken_level > 0:
+                disp_pct = displacement / latest_break.broken_level
+                if disp_pct < settings.SETUP_D_MIN_DISPLACEMENT_PCT:
+                    logger.debug(
+                        f"Setup D [{pair}]: break displacement too small "
+                        f"({disp_pct*100:.3f}% < {settings.SETUP_D_MIN_DISPLACEMENT_PCT*100:.1f}%)"
+                    )
+                    return None
 
         # Find fresh OB aligned with direction — scored by composite metric
         aligned_obs = [ob for ob in active_obs if ob.direction == direction]
@@ -217,7 +230,11 @@ class QuickSetupEvaluator:
             f"{latest_break.break_type}_5m",
             f"order_block_{best_ob.timeframe}",
         ]
-        if pd_zone and pd_zone.zone != "undefined":
+        # PD zone: add as confluence only if aligned (confluence mode) or always (hard gate mode)
+        if settings.PD_AS_CONFLUENCE:
+            if pd_aligned and pd_zone and pd_zone.zone not in ("undefined",):
+                confluences.append(f"pd_zone_{pd_zone.zone}")
+        elif pd_zone and pd_zone.zone != "undefined":
             confluences.append(f"pd_zone_{pd_zone.zone}")
 
         logger.info(

@@ -207,6 +207,12 @@ class Settings:
     # 0.65 = shallower (easier fill, slightly worse R:R).
     SETUP_A_ENTRY_PCT: float = float(os.getenv("SETUP_A_ENTRY_PCT", "0.50"))
 
+    # Setup A mode: "both" (default), "continuation", or "reversal".
+    # "continuation": CHoCH must align with HTF bias (safe, lower volume).
+    # "reversal": CHoCH must oppose HTF bias (counter-trend, higher risk).
+    # "both": no alignment check (current behavior).
+    SETUP_A_MODE: str = os.getenv("SETUP_A_MODE", "both")
+
     # --- Setup A temporal ---
     # Max candles between sweep and CHoCH for Setup A validity.
     # 40 candles = ~200min on 5m, ~10h on 15m. Backtest showed gap=40
@@ -222,6 +228,11 @@ class Settings:
     MAX_TRADE_DURATION_QUICK: int = 14400
     # Cooldown per (pair, setup_type) for quick setups (1 hour)
     QUICK_SETUP_COOLDOWN: int = 3600
+
+    # Setup D — minimum break displacement (% of price).
+    # Filters weak BOS/CHoCH where price barely crossed the level.
+    # 0.0 = disabled (default). 0.002 = 0.2% minimum displacement.
+    SETUP_D_MIN_DISPLACEMENT_PCT: float = float(os.getenv("SETUP_D_MIN_DISPLACEMENT_PCT", "0.0"))
 
     # Setup C — Funding Squeeze
     MOMENTUM_FUNDING_THRESHOLD: float = 0.0003  # Same as FUNDING_EXTREME_THRESHOLD
@@ -252,6 +263,10 @@ class Settings:
     # Allow PD override for setups with this many+ confluences (0 = disabled).
     # High-confluence setups can trade against PD zone to avoid total lockouts.
     PD_OVERRIDE_MIN_CONFLUENCES: int = int(os.getenv("PD_OVERRIDE_MIN_CONFLUENCES", "5"))
+    # When True, PD zone becomes a confluence factor instead of a hard gate.
+    # Aligned PD adds a confluence; misaligned PD omits it but does NOT reject.
+    # Default False = current behavior (hard gate).
+    PD_AS_CONFLUENCE: bool = os.getenv("PD_AS_CONFLUENCE", "false").lower() == "true"
 
     # ========================
     # AI SERVICE — Claude Filter

@@ -792,3 +792,188 @@ class TestTemporalOrdering:
         )
         assert setup is not None
         assert setup.setup_type == "setup_a"
+
+
+# ============================================================
+# Phase 2: PD_AS_CONFLUENCE tests
+# ============================================================
+
+class TestPDAsConfluence:
+    """Test PD_AS_CONFLUENCE flag — PD zone as confluence instead of hard gate."""
+
+    def test_pd_misaligned_blocks_by_default(self):
+        """Default: PD misalignment blocks the trade."""
+        evaluator = SetupEvaluator()
+        state = _make_structure_state(break_type="choch", break_direction="bullish")
+        original_override = settings.PD_OVERRIDE_MIN_CONFLUENCES
+        settings.PD_OVERRIDE_MIN_CONFLUENCES = 0
+        try:
+            setup = evaluator.evaluate_setup_a(
+                structure_state=state, active_obs=[_make_ob()],
+                recent_sweeps=[_make_sweep()],
+                pd_zone=_make_pd_zone("premium"),
+                market_snapshot=None, candles=_make_candles_near_ob(),
+                pair="BTC/USDT", htf_bias="bullish", liquidity_levels=[],
+            )
+            assert setup is None
+        finally:
+            settings.PD_OVERRIDE_MIN_CONFLUENCES = original_override
+
+    def test_pd_as_confluence_allows_misaligned(self):
+        """PD_AS_CONFLUENCE=True: PD misalignment does NOT block trade."""
+        evaluator = SetupEvaluator()
+        state = _make_structure_state(break_type="choch", break_direction="bullish")
+        original = settings.PD_AS_CONFLUENCE
+        settings.PD_AS_CONFLUENCE = True
+        try:
+            setup = evaluator.evaluate_setup_a(
+                structure_state=state, active_obs=[_make_ob()],
+                recent_sweeps=[_make_sweep()],
+                pd_zone=_make_pd_zone("premium"),
+                market_snapshot=make_market_snapshot(
+                    cvd_15m=100.0,
+                    oi_flushes=[
+                        OIFlushEvent(
+                            timestamp=9000, pair="BTC/USDT", side="long",
+                            size_usd=50000, price=94.5, source="oi_proxy",
+                        ),
+                    ],
+                ),
+                candles=_make_candles_near_ob(),
+                pair="BTC/USDT", htf_bias="bullish", liquidity_levels=[],
+            )
+            assert setup is not None
+            # PD zone should NOT be in confluences (misaligned)
+            assert not any("pd_zone" in c for c in setup.confluences)
+        finally:
+            settings.PD_AS_CONFLUENCE = original
+
+    def test_pd_as_confluence_adds_aligned_zone(self):
+        """PD_AS_CONFLUENCE=True: aligned PD zone IS added as confluence."""
+        evaluator = SetupEvaluator()
+        state = _make_structure_state(break_type="choch", break_direction="bullish")
+        original = settings.PD_AS_CONFLUENCE
+        settings.PD_AS_CONFLUENCE = True
+        try:
+            setup = evaluator.evaluate_setup_a(
+                structure_state=state, active_obs=[_make_ob()],
+                recent_sweeps=[_make_sweep()],
+                pd_zone=_make_pd_zone("discount"),
+                market_snapshot=make_market_snapshot(
+                    cvd_15m=100.0,
+                    oi_flushes=[
+                        OIFlushEvent(
+                            timestamp=9000, pair="BTC/USDT", side="long",
+                            size_usd=50000, price=94.5, source="oi_proxy",
+                        ),
+                    ],
+                ),
+                candles=_make_candles_near_ob(),
+                pair="BTC/USDT", htf_bias="bullish", liquidity_levels=[],
+            )
+            assert setup is not None
+            assert "pd_zone_discount" in setup.confluences
+        finally:
+            settings.PD_AS_CONFLUENCE = original
+
+
+# ============================================================
+# Phase 2: SETUP_A_MODE tests
+# ============================================================
+
+class TestSetupAMode:
+    """Test SETUP_A_MODE — continuation, reversal, or both."""
+
+    def _make_valid_setup_a_args(self, choch_direction, htf_bias):
+        """Build args for evaluate_setup_a with given choch direction and htf_bias."""
+        state = _make_structure_state(break_type="choch", break_direction=choch_direction)
+        sweep_dir = choch_direction
+        pd_zone_type = "discount" if choch_direction == "bullish" else "premium"
+        return dict(
+            structure_state=state,
+            active_obs=[_make_ob(direction=choch_direction)],
+            recent_sweeps=[_make_sweep(direction=sweep_dir)],
+            pd_zone=_make_pd_zone(pd_zone_type),
+            market_snapshot=make_market_snapshot(
+                cvd_15m=100.0 if choch_direction == "bullish" else -100.0,
+                oi_flushes=[
+                    OIFlushEvent(
+                        timestamp=9000, pair="BTC/USDT", side="long",
+                        size_usd=50000, price=94.5, source="oi_proxy",
+                    ),
+                ],
+            ),
+            candles=_make_candles_near_ob(),
+            pair="BTC/USDT",
+            htf_bias=htf_bias,
+            liquidity_levels=[],
+        )
+
+    def test_continuation_mode_allows_aligned(self):
+        """continuation: CHoCH bullish + HTF bullish → allowed."""
+        evaluator = SetupEvaluator()
+        original = settings.SETUP_A_MODE
+        settings.SETUP_A_MODE = "continuation"
+        try:
+            setup = evaluator.evaluate_setup_a(
+                **self._make_valid_setup_a_args("bullish", "bullish")
+            )
+            assert setup is not None
+        finally:
+            settings.SETUP_A_MODE = original
+
+    def test_continuation_mode_blocks_counter(self):
+        """continuation: CHoCH bullish + HTF bearish → blocked."""
+        evaluator = SetupEvaluator()
+        original = settings.SETUP_A_MODE
+        settings.SETUP_A_MODE = "continuation"
+        try:
+            setup = evaluator.evaluate_setup_a(
+                **self._make_valid_setup_a_args("bullish", "bearish")
+            )
+            assert setup is None
+        finally:
+            settings.SETUP_A_MODE = original
+
+    def test_reversal_mode_allows_counter(self):
+        """reversal: CHoCH bullish + HTF bearish → allowed."""
+        evaluator = SetupEvaluator()
+        original = settings.SETUP_A_MODE
+        settings.SETUP_A_MODE = "reversal"
+        try:
+            setup = evaluator.evaluate_setup_a(
+                **self._make_valid_setup_a_args("bullish", "bearish")
+            )
+            assert setup is not None
+        finally:
+            settings.SETUP_A_MODE = original
+
+    def test_reversal_mode_blocks_aligned(self):
+        """reversal: CHoCH bullish + HTF bullish → blocked."""
+        evaluator = SetupEvaluator()
+        original = settings.SETUP_A_MODE
+        settings.SETUP_A_MODE = "reversal"
+        try:
+            setup = evaluator.evaluate_setup_a(
+                **self._make_valid_setup_a_args("bullish", "bullish")
+            )
+            assert setup is None
+        finally:
+            settings.SETUP_A_MODE = original
+
+    def test_both_mode_allows_all(self):
+        """both (default): allows aligned and counter-trend."""
+        evaluator = SetupEvaluator()
+        original = settings.SETUP_A_MODE
+        settings.SETUP_A_MODE = "both"
+        try:
+            aligned = evaluator.evaluate_setup_a(
+                **self._make_valid_setup_a_args("bullish", "bullish")
+            )
+            counter = evaluator.evaluate_setup_a(
+                **self._make_valid_setup_a_args("bullish", "bearish")
+            )
+            assert aligned is not None
+            assert counter is not None
+        finally:
+            settings.SETUP_A_MODE = original

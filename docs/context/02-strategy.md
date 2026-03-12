@@ -1,6 +1,6 @@
 # Strategy Service
 > Última actualización: 2026-03-12
-> Estado: implementado (completo, integrado en main.py). ENABLED_SETUPS: setup_a, setup_d_bos, setup_d_choch. Setup B (0% WR) and F (34.8% WR) disabled. OB selector upgraded with composite scoring. SL-too-close filter in strategy layer. Setup D split into BOS/CHoCH variants. AI bypassed for all active setups.
+> Estado: implementado (completo, integrado en main.py). ENABLED_SETUPS: setup_a, setup_d_bos, setup_d_choch. Setup B (0% WR) and F (34.8% WR) disabled. OB selector upgraded with composite scoring. SL-too-close filter in strategy layer. Setup D split into BOS/CHoCH variants. AI bypassed for all active setups. Phase 2 config flags: PD_AS_CONFLUENCE, SETUP_A_MODE, SETUP_D_MIN_DISPLACEMENT_PCT (all behind env vars, defaults preserve current behavior).
 
 ## Qué hace (30 segundos)
 El Strategy Service es el detective del sistema. Analiza los datos del Data Service buscando patrones de Smart Money Concepts (SMC): rupturas de estructura (BOS/CHoCH), order blocks, fair value gaps, sweeps de liquidez, y zonas premium/discount. Cuando encuentra un setup con suficiente confluencia, genera un `TradeSetup` para evaluación.
@@ -44,6 +44,7 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
 - **Setup A** (primario): Sweep + CHoCH + OB en discount/premium — **HABILITADO**
   - **Bidireccional**: LTF CHoCH/BOS determina dirección del trade. HTF bias es contexto, no un gate.
   - `REQUIRE_HTF_LTF_ALIGNMENT` default `False` — permite counter-trend setups con estructura LTF clara.
+  - **`SETUP_A_MODE`** (env var, default `"both"`): Controls CHoCH vs HTF alignment. `"continuation"` = CHoCH must align with HTF. `"reversal"` = CHoCH must oppose HTF. `"both"` = no alignment check. Legacy `REQUIRE_HTF_LTF_ALIGNMENT` still respected in "both" mode.
   - **Orden temporal obligatorio**: sweep ANTES del CHoCH
   - **Proximidad temporal**: sweep dentro de `SETUP_A_MAX_SWEEP_CHOCH_GAP` candles del CHoCH (40 candles = ~200min en 5m, ~10h en 15m)
   - **Entry depth configurable**: `SETUP_A_ENTRY_PCT` (default 0.50 = midpoint of OB body, env var override). Allows tuning fill rate vs R:R.
@@ -80,6 +81,7 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
 - **R:R simple** — `abs(tp2 - entry) / abs(entry - sl)` ≥ `MIN_RISK_REWARD`
 - **Validación premium/discount** — equilibrium zone permite trades por defecto (`ALLOW_EQUILIBRIUM_TRADES = True`)
 - **PD override diferido** — el check de PD alignment se difiere hasta después de contar confluencias. Si un setup tiene ≥ `PD_OVERRIDE_MIN_CONFLUENCES` (5) confluencias, puede operar contra la zona PD. Evita lockout total cuando bearish bias + discount zone bloquea todo. Log INFO cuando se activa override.
+- **`PD_AS_CONFLUENCE`** (env var, default `false`): When true, PD zone becomes a confluence factor instead of a hard gate. Aligned PD adds `pd_zone_X` confluence; misaligned PD omits it but does NOT reject. Applied to all setups (A/B/D/F/G). Overrides both `REQUIRE_PD_ALIGNMENT` and `PD_OVERRIDE_MIN_CONFLUENCES` behavior when enabled.
 ### Split Entry (`entry2_price`)
 Setups A/B/F calculan `entry2_price` via `_compute_entry2()` en `setups.py`:
 - Bullish: `body_low + 0.25 × body_range` (25% from bottom = deeper into OB)
@@ -105,6 +107,7 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 - **Setup D — LTF Structure Scalp:** CHoCH o BOS en 5m + OB fresco cerca del precio. No requiere sweep ni FVG. HTF bias + PD zone alineados. Entry: 50% del OB. TP1: 1:1 (breakeven trigger), TP2: 2:1 (single TP). — **HABILITADO**
   - **Split into variants**: `setup_d_bos` and `setup_d_choch` for per-variant performance measurement. Variant determined by `latest_break.break_type`.
   - Both variants are in `QUICK_SETUP_TYPES` — skip AI filter, use short entry timeout (1h).
+  - **`SETUP_D_MIN_DISPLACEMENT_PCT`** (env var, default `0.0` = disabled): Filters weak BOS/CHoCH where `abs(break_price - broken_level) / broken_level` is below threshold. E.g. `0.002` = 0.2% minimum displacement to qualify.
   - **Backtest 60d solo**: 56 trades, 42.9% WR, +$3,596. Sharpe 8.51, PF 2.26, max DD 4.8%.
   - **Backtest 60d combinado A+B+D+F**: 9 trades D, 66.7% WR, +$2,553. Total combinado: 97 trades, 51.5% WR, +$7,558.
   - ETH dominante (47/56 trades solo, 97/97 combinado). BTC 11.1% WR pero solo 9 trades — muestra insuficiente.
@@ -138,16 +141,19 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 - `OB_MIN_BODY_PCT: float = 0.001` — 0.1% minimum OB body size as fraction of price (filters micro-OBs)
 - `OB_SCORE_VOLUME_W / FRESHNESS_W / PROXIMITY_W / SIZE_W` — composite OB scoring weights (0.35 / 0.30 / 0.20 / 0.15, must sum to 1.0)
 - `SETUP_A_ENTRY_PCT: float = 0.50` — fraction of OB body for Setup A entry placement (env var override)
+- `SETUP_A_MODE: str = "both"` — Setup A CHoCH/HTF alignment mode: "continuation", "reversal", or "both" (env var)
 - `SETUP_A_MAX_SWEEP_CHOCH_GAP: int = 40` — máximo candles entre sweep y CHoCH (was 20, increased after backtest validation)
 - `FVG_OB_MAX_GAP_PCT: float = 0.005` — 0.5% gap máximo entre FVG y OB para Setup B adjacency
 - `REQUIRE_HTF_LTF_ALIGNMENT: bool = False` — si True, LTF debe alinearse con HTF; default False para bidireccional
 - `REQUIRE_PD_ALIGNMENT: bool = True` — premium/discount zone debe alinear con dirección (core SMC)
 - `PD_OVERRIDE_MIN_CONFLUENCES: int = 5` — setups con 5+ confluencias pueden override PD misalignment (evita lockouts totales en bearish+discount)
+- `PD_AS_CONFLUENCE: bool = false` — PD zone as confluence instead of hard gate (env var). Overrides PD_OVERRIDE behavior when true.
 - `ALLOW_EQUILIBRIUM_TRADES: bool = True` — permitir trades en zona equilibrium
 - `HTF_BIAS_REQUIRE_4H: bool = False` — si 4H debe definir trend o 1H solo basta
 - `MIN_RISK_REWARD_QUICK: float = 1.0` — R:R mínimo para quick setups (C/D/E)
 - `MAX_TRADE_DURATION_QUICK: int = 14400` — timeout 4h para quick setups
 - `QUICK_SETUP_COOLDOWN: int = 3600` — cooldown 1h por (pair, setup_type). Mismo valor en default y aggressive — el perfil aggressive ya no reduce el cooldown.
+- `SETUP_D_MIN_DISPLACEMENT_PCT: float = 0.0` — minimum BOS/CHoCH displacement for Setup D (0.0 = disabled, env var)
 - `MOMENTUM_FUNDING_THRESHOLD: float = 0.0003` — umbral funding rate para Setup C
 - `MOMENTUM_CVD_LONG_MIN: float = 0.52` — buy dominance mínimo para long (Setup C)
 - `MOMENTUM_CVD_SHORT_MAX: float = 0.48` — buy dominance máximo para short (Setup C)
@@ -209,5 +215,5 @@ El backtester soporta `--ai` flag para evaluar swing setups con Claude sobre dat
 - `test_order_blocks.py` — detección, volumen, expiración, mitigación
 - `test_fvg.py` — detección, fill, expiración
 - `test_liquidity.py` — clustering, sweeps, premium/discount, equilibrium band, swept persistence
-- `test_setups.py` — Setup A/B, confluencia, TPs, PD alignment, PD override, SL direction validation, simple R:R, OB proximity, temporal ordering
-- `test_quick_setups.py` — Setup C/D/E, cooldowns, R:R quick vs swing, AI bypass, data validation
+- `test_setups.py` — Setup A/B, confluencia, TPs, PD alignment, PD override, PD_AS_CONFLUENCE, SETUP_A_MODE, SL direction validation, simple R:R, OB proximity, temporal ordering
+- `test_quick_setups.py` — Setup C/D/E, cooldowns, R:R quick vs swing, AI bypass, data validation, SETUP_D_MIN_DISPLACEMENT_PCT, PD_AS_CONFLUENCE on Setup D

@@ -77,11 +77,19 @@ class SetupEvaluator:
         latest_choch = choch_breaks[-1]
         direction = latest_choch.direction  # "bullish" or "bearish"
 
-        # Setup A is CONTINUATION: CHoCH must align with HTF bias.
-        # This means we only trade when LTF structure confirms HTF direction.
-        # Reversal setups (CHoCH opposing HTF) are intentionally excluded
-        # because they have lower win rates without additional confirmation.
-        if settings.REQUIRE_HTF_LTF_ALIGNMENT and direction != htf_bias:
+        # Setup A mode: "continuation", "reversal", or "both".
+        # continuation: CHoCH must align with HTF bias (LTF confirms HTF).
+        # reversal: CHoCH must oppose HTF bias (counter-trend entry).
+        # both: no alignment check (default).
+        mode = settings.SETUP_A_MODE
+        if mode == "continuation" and direction != htf_bias:
+            logger.debug(f"Setup A [{pair}]: continuation mode — CHoCH {direction} != HTF {htf_bias}")
+            return None
+        elif mode == "reversal" and direction == htf_bias:
+            logger.debug(f"Setup A [{pair}]: reversal mode — CHoCH {direction} == HTF {htf_bias}")
+            return None
+        # Legacy setting — still respected if SETUP_A_MODE is "both"
+        elif mode == "both" and settings.REQUIRE_HTF_LTF_ALIGNMENT and direction != htf_bias:
             logger.debug(f"Setup A [{pair}]: CHoCH {direction} != HTF {htf_bias}")
             return None
 
@@ -108,14 +116,16 @@ class SetupEvaluator:
                          f"(sweeps={len(recent_sweeps)} dir={direction})")
             return None
 
-        # PD zone alignment — deferred if high-confluence override enabled
+        # PD zone alignment
         pd_aligned = self._check_pd_alignment(pd_zone, direction)
-        pd_override_threshold = settings.PD_OVERRIDE_MIN_CONFLUENCES
 
-        if not pd_aligned and pd_override_threshold <= 0:
-            zone = pd_zone.zone if pd_zone else "none"
-            logger.debug(f"Setup A [{pair}]: PD misaligned (zone={zone} dir={direction})")
-            return None
+        if not settings.PD_AS_CONFLUENCE:
+            # Hard gate mode (default) — deferred if high-confluence override enabled
+            pd_override_threshold = settings.PD_OVERRIDE_MIN_CONFLUENCES
+            if not pd_aligned and pd_override_threshold <= 0:
+                zone = pd_zone.zone if pd_zone else "none"
+                logger.debug(f"Setup A [{pair}]: PD misaligned (zone={zone} dir={direction})")
+                return None
 
         # Find a fresh OB aligned with direction
         aligned_obs = [
@@ -145,8 +155,13 @@ class SetupEvaluator:
         confluences.append(f"choch_{latest_choch.direction}")
         confluences.append(f"order_block_{best_ob.timeframe}")
 
-        if pd_zone:
-            confluences.append(f"pd_zone_{pd_zone.zone}")
+        # PD zone: add as confluence only if aligned (or always add zone label in hard-gate mode)
+        if settings.PD_AS_CONFLUENCE:
+            if pd_aligned and pd_zone and pd_zone.zone not in ("undefined",):
+                confluences.append(f"pd_zone_{pd_zone.zone}")
+        else:
+            if pd_zone:
+                confluences.append(f"pd_zone_{pd_zone.zone}")
 
         confluences.extend(vol_confluences)
 
@@ -156,8 +171,9 @@ class SetupEvaluator:
                          f"({len(confluences)}<2 confluences={confluences})")
             return None
 
-        # Deferred PD check with confluence override
-        if not pd_aligned:
+        # Deferred PD check with confluence override (hard gate mode only)
+        if not settings.PD_AS_CONFLUENCE and not pd_aligned:
+            pd_override_threshold = settings.PD_OVERRIDE_MIN_CONFLUENCES
             if len(confluences) < pd_override_threshold:
                 zone = pd_zone.zone if pd_zone else "none"
                 logger.debug(f"Setup A [{pair}]: PD misaligned (zone={zone} dir={direction})")
@@ -266,14 +282,15 @@ class SetupEvaluator:
             logger.debug(f"Setup B [{pair}]: BOS {direction} != HTF {htf_bias}")
             return None
 
-        # PD zone alignment — deferred if high-confluence override enabled
+        # PD zone alignment
         pd_aligned = self._check_pd_alignment(pd_zone, direction)
-        pd_override_threshold = settings.PD_OVERRIDE_MIN_CONFLUENCES
 
-        if not pd_aligned and pd_override_threshold <= 0:
-            zone = pd_zone.zone if pd_zone else "none"
-            logger.debug(f"Setup B [{pair}]: PD misaligned (zone={zone} dir={direction})")
-            return None
+        if not settings.PD_AS_CONFLUENCE:
+            pd_override_threshold = settings.PD_OVERRIDE_MIN_CONFLUENCES
+            if not pd_aligned and pd_override_threshold <= 0:
+                zone = pd_zone.zone if pd_zone else "none"
+                logger.debug(f"Setup B [{pair}]: PD misaligned (zone={zone} dir={direction})")
+                return None
 
         # Find fresh OB aligned with direction
         aligned_obs = [
@@ -348,8 +365,12 @@ class SetupEvaluator:
         confluences.append(f"order_block_{best_ob.timeframe}")
         confluences.append(f"fvg_{best_fvg.timeframe}")
 
-        if pd_zone:
-            confluences.append(f"pd_zone_{pd_zone.zone}")
+        if settings.PD_AS_CONFLUENCE:
+            if pd_aligned and pd_zone and pd_zone.zone not in ("undefined",):
+                confluences.append(f"pd_zone_{pd_zone.zone}")
+        else:
+            if pd_zone:
+                confluences.append(f"pd_zone_{pd_zone.zone}")
 
         confluences.extend(vol_confluences)
 
@@ -357,8 +378,9 @@ class SetupEvaluator:
         if not self._check_confluence_minimum(confluences):
             return None
 
-        # Deferred PD check with confluence override
-        if not pd_aligned:
+        # Deferred PD check with confluence override (hard gate mode only)
+        if not settings.PD_AS_CONFLUENCE and not pd_aligned:
+            pd_override_threshold = settings.PD_OVERRIDE_MIN_CONFLUENCES
             if len(confluences) < pd_override_threshold:
                 zone = pd_zone.zone if pd_zone else "none"
                 logger.debug(f"Setup B [{pair}]: PD misaligned (zone={zone} dir={direction})")
@@ -455,14 +477,15 @@ class SetupEvaluator:
             logger.debug(f"Setup F [{pair}]: BOS {direction} != HTF {htf_bias}")
             return None
 
-        # PD zone alignment — deferred if high-confluence override enabled
+        # PD zone alignment
         pd_aligned = self._check_pd_alignment(pd_zone, direction)
-        pd_override_threshold = settings.PD_OVERRIDE_MIN_CONFLUENCES
 
-        if not pd_aligned and pd_override_threshold <= 0:
-            zone = pd_zone.zone if pd_zone else "none"
-            logger.debug(f"Setup F [{pair}]: PD misaligned (zone={zone} dir={direction})")
-            return None
+        if not settings.PD_AS_CONFLUENCE:
+            pd_override_threshold = settings.PD_OVERRIDE_MIN_CONFLUENCES
+            if not pd_aligned and pd_override_threshold <= 0:
+                zone = pd_zone.zone if pd_zone else "none"
+                logger.debug(f"Setup F [{pair}]: PD misaligned (zone={zone} dir={direction})")
+                return None
 
         aligned_obs = [
             ob for ob in active_obs
@@ -500,16 +523,21 @@ class SetupEvaluator:
         confluences = []
         confluences.append(f"bos_{latest_bos.direction}")
         confluences.append(f"order_block_{best_ob.timeframe}")
-        if pd_zone:
-            confluences.append(f"pd_zone_{pd_zone.zone}")
+        if settings.PD_AS_CONFLUENCE:
+            if pd_aligned and pd_zone and pd_zone.zone not in ("undefined",):
+                confluences.append(f"pd_zone_{pd_zone.zone}")
+        else:
+            if pd_zone:
+                confluences.append(f"pd_zone_{pd_zone.zone}")
         confluences.extend(vol_confluences)
 
         if not self._check_confluence_minimum(confluences):
             logger.debug(f"Setup F [{pair}]: insufficient confluences ({len(confluences)}<2: {confluences})")
             return None
 
-        # Deferred PD check with confluence override
-        if not pd_aligned:
+        # Deferred PD check with confluence override (hard gate mode only)
+        if not settings.PD_AS_CONFLUENCE and not pd_aligned:
+            pd_override_threshold = settings.PD_OVERRIDE_MIN_CONFLUENCES
             if len(confluences) < pd_override_threshold:
                 zone = pd_zone.zone if pd_zone else "none"
                 logger.debug(f"Setup F [{pair}]: PD misaligned (zone={zone} dir={direction})")
@@ -596,14 +624,15 @@ class SetupEvaluator:
             logger.debug(f"Setup G [{pair}]: no aligned breakers (total={len(breaker_blocks)} bias={htf_bias})")
             return None
 
-        # PD zone alignment — deferred if high-confluence override enabled
+        # PD zone alignment
         pd_aligned = self._check_pd_alignment(pd_zone, htf_bias)
-        pd_override_threshold = settings.PD_OVERRIDE_MIN_CONFLUENCES
 
-        if not pd_aligned and pd_override_threshold <= 0:
-            zone = pd_zone.zone if pd_zone else "none"
-            logger.debug(f"Setup G [{pair}]: PD misaligned (zone={zone} dir={htf_bias})")
-            return None
+        if not settings.PD_AS_CONFLUENCE:
+            pd_override_threshold = settings.PD_OVERRIDE_MIN_CONFLUENCES
+            if not pd_aligned and pd_override_threshold <= 0:
+                zone = pd_zone.zone if pd_zone else "none"
+                logger.debug(f"Setup G [{pair}]: PD misaligned (zone={zone} dir={htf_bias})")
+                return None
 
         current_price = candles[-1].close if candles else 0
         best_bb = self._find_best_ob(aligned_breakers, current_price, htf_bias)
@@ -634,16 +663,21 @@ class SetupEvaluator:
 
         confluences = []
         confluences.append(f"breaker_block_{best_bb.timeframe}")
-        if pd_zone:
-            confluences.append(f"pd_zone_{pd_zone.zone}")
+        if settings.PD_AS_CONFLUENCE:
+            if pd_aligned and pd_zone and pd_zone.zone not in ("undefined",):
+                confluences.append(f"pd_zone_{pd_zone.zone}")
+        else:
+            if pd_zone:
+                confluences.append(f"pd_zone_{pd_zone.zone}")
         confluences.extend(vol_confluences)
 
         if not self._check_confluence_minimum(confluences):
             logger.debug(f"Setup G [{pair}]: insufficient confluences ({len(confluences)}<2: {confluences})")
             return None
 
-        # Deferred PD check with confluence override
-        if not pd_aligned:
+        # Deferred PD check with confluence override (hard gate mode only)
+        if not settings.PD_AS_CONFLUENCE and not pd_aligned:
+            pd_override_threshold = settings.PD_OVERRIDE_MIN_CONFLUENCES
             if len(confluences) < pd_override_threshold:
                 zone = pd_zone.zone if pd_zone else "none"
                 logger.debug(f"Setup G [{pair}]: PD misaligned (zone={zone} dir={direction})")
