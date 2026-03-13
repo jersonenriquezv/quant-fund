@@ -25,13 +25,19 @@ The bot looks for 3 active setup types (others exist but are disabled):
 - Entry: configurable depth into OB body (`SETUP_A_ENTRY_PCT`, default 50%)
 - AI filter bypassed (89.6% approval rate = no value added)
 
+**Setup B (secondary) — BOS + FVG + Order Block:** (ENABLED, AI bypassed)
+- BOS confirms trend continuation on LTF
+- FVG inside or adjacent to OB (max 0.5% gap)
+- Entry: 75% of FVG gap (shallower fill than Setup A)
+- AI filter bypassed (AI v1 destroyed it: 49% WR → 21.4% WR)
+
 **Setup D_bos / D_choch — LTF Structure Scalp:** (ENABLED, quick setup)
 - CHoCH or BOS on 5m + fresh OB near price
 - No sweep or FVG required. HTF bias + PD zone aligned.
 - Entry: 50% of OB. Quick setup (1h entry timeout, 4h max duration).
 - Split into `setup_d_bos` and `setup_d_choch` variants for per-variant measurement.
 
-**Disabled setups:** Setup B (0% WR live), Setup F (34.8% WR). Setup C, E, G pending validation.
+**Disabled setups:** Setup F (only profitable 90d+). Setup C, E, G pending validation.
 
 **Mandatory rules:**
 - Minimum 2 confluences (OB alone = no trade)
@@ -44,6 +50,7 @@ The bot looks for 3 active setup types (others exist but are disabled):
 
 All active setups bypass Claude:
 - **Setup A**: in `AI_BYPASS_SETUP_TYPES` — synthetic AIDecision(confidence=1.0). AI v2 had 89.6% approval = no value.
+- **Setup B**: in `AI_BYPASS_SETUP_TYPES` — AI v1 destroyed it (49% WR → 21.4% WR). Bypass until recalibrated.
 - **Setup D variants**: in `QUICK_SETUP_TYPES` — data-driven, skip AI by design.
 - Pre-filter (funding extreme, F&G extreme, CVD divergence) and Claude evaluation code remain for future re-enable.
 - Pipeline dedup cache at entry prevents re-evaluating identical setups (1h TTL).
@@ -371,7 +378,7 @@ Claude API (Sonnet) as filter. Does not originate trades. **Claude has NO intern
 
 **Current status (2026-03-12):** AI filter is **bypassed for all active setups**. Setup A is in `AI_BYPASS_SETUP_TYPES` (89.6% approval rate = no filtering value). Setup D variants are in `QUICK_SETUP_TYPES` (skip AI by design). Setup B and F are disabled. Zero Claude API calls in the pipeline currently. All code and infrastructure remain for re-enable when recalibrated.
 
-**Bypass mechanism:** `config/settings.py` defines `QUICK_SETUP_TYPES` (setup_c, setup_d, setup_d_bos, setup_d_choch, setup_e) and `AI_BYPASS_SETUP_TYPES` (setup_a). Both generate synthetic `AIDecision(confidence=1.0, approved=True)` instead of calling Claude.
+**Bypass mechanism:** `config/settings.py` defines `QUICK_SETUP_TYPES` (setup_c, setup_d, setup_d_bos, setup_d_choch, setup_e) and `AI_BYPASS_SETUP_TYPES` (setup_a, setup_b). Both generate synthetic `AIDecision(confidence=1.0, approved=True)` instead of calling Claude.
 
 **Prompt approach (Scoring Rubric v2):**
 No narrative doctrine. Claude scores 4 dimensions (0-5): setup_quality, market_support, contradiction, data_sufficiency. Decision rules are mechanical: approve if setup_quality >= 3 AND contradiction <= 2 AND confidence >= threshold. "Insufficient edge" is a valid rejection — approval requires positive evidence, not just absence of contradiction.
