@@ -149,12 +149,11 @@ async def on_candle_confirmed(candle: Candle) -> None:
         f"confluences={setup.confluences}"
     )
 
-    # --- ML: capture feature snapshot BEFORE dedup/risk checks ---
-    _ml_log_setup(setup, candle)
-
     # Dedup: block identical setups within TTL (covers ALL setup types, not just Claude)
-    dedup_key = (setup.pair, setup.direction, setup.setup_type,
-                 round(setup.entry_price, 2))
+    # NOTE: entry_price intentionally excluded — same pair/direction/type within TTL
+    # is the same trade idea even if the OB recalculates to a slightly different price.
+    # Including price caused duplicate orders (e.g. 73038 vs 72937 = different keys).
+    dedup_key = (setup.pair, setup.direction, setup.setup_type)
     now = time.time()
     last_eval = _setup_dedup_cache.get(dedup_key)
     if last_eval and (now - last_eval) < _SETUP_DEDUP_TTL_SECONDS:
@@ -163,8 +162,10 @@ async def on_candle_confirmed(candle: Candle) -> None:
             f"{setup.setup_type} entry={setup.entry_price:.2f} — "
             f"already processed {int(now - last_eval)}s ago, skipping"
         )
-        _ml_resolve_outcome(setup.setup_id, "deduped")
         return
+
+    # --- ML: capture feature snapshot AFTER dedup (dedup adds no ML value) ---
+    _ml_log_setup(setup, candle)
 
     # Pre-check: can this pair meet exchange minimum order size?
     min_size = settings.MIN_ORDER_SIZES.get(setup.pair, 0)
@@ -223,8 +224,6 @@ async def on_candle_confirmed(candle: Candle) -> None:
             # same broken setup doesn't re-trigger Claude after dedup TTL expires.
             reason_lower = (approval.reason or "").lower()
             if "sl too close" in reason_lower or "risk distance" in reason_lower:
-                dedup_key = (setup.pair, setup.direction, setup.setup_type,
-                             round(setup.entry_price, 2))
                 _setup_dedup_cache[dedup_key] = time.time()
                 logger.debug(f"Dedup: cached risk-rejected setup {dedup_key}")
             return

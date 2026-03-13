@@ -264,9 +264,13 @@ class SimulatedTrade:
 
     Exit management (matches live execution):
     - SL at sl_price for 100% of position
-    - Single TP at tp2_price (2:1 R:R) for 100% close
-    - Breakeven: price crosses tp1_price (1:1) → SL moves to entry
-    - Trailing: price crosses midpoint(tp1,tp2) (1.5:1) → SL moves to tp1
+    - Legacy mode (TRAILING_TP_ENABLED=False):
+        - Single TP at tp2_price (2:1 R:R) for 100% close
+        - Breakeven: price crosses tp1_price (1:1) → SL moves to entry
+        - Trailing: price crosses midpoint(tp1,tp2) (1.5:1) → SL moves to tp1
+    - Progressive trail mode (TRAILING_TP_ENABLED=True):
+        - Ceiling TP at TRAIL_CEILING_RR (5:1) as safety net
+        - SL trails in TRAIL_STEP_RR (0.5) R:R steps, one step behind
     """
 
     # Setup identity
@@ -289,6 +293,7 @@ class SimulatedTrade:
     current_sl: float = 0.0     # Tracks SL moves (breakeven, trailing)
     breakeven_hit: bool = False
     trailing_sl_moved: bool = False
+    trail_level: int = 0        # Progressive trail step (0=no trail)
 
     # Timing (ms)
     setup_time_ms: int = 0
@@ -603,9 +608,8 @@ class TradeSimulator:
 
         Exit management (matches live execution):
         1. SL check first (always priority)
-        2. TP hit = price reaches tp2 → close 100% (reason="tp")
-        3. Breakeven: price crosses tp1 → SL moves to entry
-        4. Trailing: price crosses midpoint(tp1,tp2) → SL moves to tp1
+        2. TP hit → close 100%
+        3. SL management: progressive trail or legacy breakeven+trailing
         """
         still_active = []
         for trade in self.active:
@@ -633,7 +637,9 @@ class TradeSimulator:
                 sl_hit = candle.high >= trade.current_sl
 
             if sl_hit:
-                if trade.trailing_sl_moved:
+                if trade.trail_level > 0 and settings.TRAILING_TP_ENABLED:
+                    reason = "trailing_sl"
+                elif trade.trailing_sl_moved:
                     reason = "trailing_sl"
                 elif trade.breakeven_hit:
                     reason = "breakeven_sl"
@@ -643,30 +649,73 @@ class TradeSimulator:
                 self.closed.append(trade)
                 continue
 
-            # TP check — single TP at tp2 (100% close)
-            tp_hit = self._price_reached(trade, candle, trade.tp2_price)
+            # TP check — tp2 (legacy) or ceiling TP (progressive trail)
+            tp_target = trade.tp2_price
+            if settings.TRAILING_TP_ENABLED:
+                risk = abs(trade.entry_price - trade.sl_price)
+                if trade.direction == "long":
+                    tp_target = trade.entry_price + (risk * settings.TRAIL_CEILING_RR)
+                else:
+                    tp_target = trade.entry_price - (risk * settings.TRAIL_CEILING_RR)
+
+            tp_hit = self._price_reached(trade, candle, tp_target)
             if tp_hit:
-                self._close_trade(trade, trade.tp2_price, "tp", candle.timestamp)
+                self._close_trade(trade, tp_target, "tp", candle.timestamp)
                 self.closed.append(trade)
                 continue
 
-            # Breakeven: price crosses tp1 → SL moves to entry
-            if not trade.breakeven_hit:
-                if self._price_reached(trade, candle, trade.tp1_price):
-                    trade.current_sl = trade.entry_price
-                    trade.breakeven_hit = True
+            # SL management
+            if settings.TRAILING_TP_ENABLED:
+                self._progressive_trail(trade, candle)
+            else:
+                # Legacy: breakeven + trailing
+                if not trade.breakeven_hit:
+                    if self._price_reached(trade, candle, trade.tp1_price):
+                        trade.current_sl = trade.entry_price
+                        trade.breakeven_hit = True
 
-            # Trailing: price crosses midpoint(tp1,tp2) → SL moves to tp1
-            if trade.breakeven_hit and not trade.trailing_sl_moved:
-                midpoint = (trade.tp1_price + trade.tp2_price) / 2.0
-                if self._price_reached(trade, candle, midpoint):
-                    trade.current_sl = trade.tp1_price
-                    trade.trailing_sl_moved = True
+                if trade.breakeven_hit and not trade.trailing_sl_moved:
+                    midpoint = (trade.tp1_price + trade.tp2_price) / 2.0
+                    if self._price_reached(trade, candle, midpoint):
+                        trade.current_sl = trade.tp1_price
+                        trade.trailing_sl_moved = True
 
             # Still active
             still_active.append(trade)
 
         self.active = still_active
+
+    def _progressive_trail(self, trade: SimulatedTrade, candle: Candle) -> None:
+        """Advance SL in TRAIL_STEP_RR increments, one step behind."""
+        risk = abs(trade.entry_price - trade.sl_price)
+        if risk <= 0:
+            return
+
+        # Use candle high (long) or low (short) as best price in candle
+        if trade.direction == "long":
+            best_price = candle.high
+            current_rr = (best_price - trade.entry_price) / risk
+        else:
+            best_price = candle.low
+            current_rr = (trade.entry_price - best_price) / risk
+
+        if current_rr < settings.TRAIL_ACTIVATION_RR:
+            return
+
+        level = int(current_rr / settings.TRAIL_STEP_RR)
+        if level <= trade.trail_level:
+            return
+
+        # New SL: one step behind
+        sl_rr = (level - 1) * settings.TRAIL_STEP_RR
+        if trade.direction == "long":
+            trade.current_sl = trade.entry_price + (risk * sl_rr)
+        else:
+            trade.current_sl = trade.entry_price - (risk * sl_rr)
+
+        trade.trail_level = level
+        if not trade.breakeven_hit:
+            trade.breakeven_hit = True
 
     def _price_reached(self, trade: SimulatedTrade, candle: Candle,
                        target: float) -> bool:

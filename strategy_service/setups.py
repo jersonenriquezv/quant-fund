@@ -277,6 +277,14 @@ class SetupEvaluator:
         latest_bos = bos_breaks[-1]
         direction = latest_bos.direction
 
+        # BOS recency filter — reject stale BOS (mirrors Setup F)
+        if candles:
+            candles_since_bos = len(candles) - 1 - latest_bos.candle_index
+            if candles_since_bos > settings.SETUP_B_MAX_BOS_AGE_CANDLES:
+                logger.debug(f"Setup B [{pair}]: BOS too old ({candles_since_bos} candles "
+                             f"> {settings.SETUP_B_MAX_BOS_AGE_CANDLES})")
+                return None
+
         # Direction must align with HTF bias (unless profile disables it)
         if settings.REQUIRE_HTF_LTF_ALIGNMENT and direction != htf_bias:
             logger.debug(f"Setup B [{pair}]: BOS {direction} != HTF {htf_bias}")
@@ -394,10 +402,18 @@ class SetupEvaluator:
         # SL stays at OB wick for wider distance.
         sl_price = self._calculate_sl(best_ob, direction)
         fvg_range = best_fvg.high - best_fvg.low
-        if direction == "long":
+        if direction == "bullish":
             entry_price = best_fvg.low + fvg_range * settings.FVG_ENTRY_PCT
         else:
             entry_price = best_fvg.high - fvg_range * settings.FVG_ENTRY_PCT
+
+        # Entry distance filter — reject zombie entries too far from current price
+        if current_price > 0:
+            entry_dist = abs(entry_price - current_price) / current_price
+            if entry_dist > settings.SETUP_B_MAX_ENTRY_DISTANCE_PCT:
+                logger.debug(f"Setup B [{pair}]: entry too far from price "
+                             f"({entry_dist:.4f} > {settings.SETUP_B_MAX_ENTRY_DISTANCE_PCT})")
+                return None
 
         # Validate SL is on correct side of entry
         if not self._validate_sl_direction(entry_price, sl_price, direction):

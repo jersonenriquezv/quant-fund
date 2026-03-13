@@ -1,6 +1,6 @@
 # Strategy Service
-> Última actualización: 2026-03-12
-> Estado: implementado (completo, integrado en main.py). ENABLED_SETUPS: setup_a, setup_d_bos, setup_d_choch. Setup B (0% WR) and F (34.8% WR) disabled. OB selector upgraded with composite scoring. SL-too-close filter in strategy layer. Setup D split into BOS/CHoCH variants. AI bypassed for all active setups. Phase 2 config flags: PD_AS_CONFLUENCE, SETUP_A_MODE, SETUP_D_MIN_DISPLACEMENT_PCT (all behind env vars, defaults preserve current behavior).
+> Última actualización: 2026-03-13
+> Estado: implementado (completo, integrado en main.py). ENABLED_SETUPS: setup_a, setup_b, setup_d_bos, setup_d_choch. Setup B hardened with BOS age + entry distance filters. Setup F (34.8% WR) disabled. OB selector upgraded with composite scoring. SL-too-close filter in strategy layer. Setup D split into BOS/CHoCH variants. AI bypassed for all active setups. Phase 2 config flags: PD_AS_CONFLUENCE, SETUP_A_MODE, SETUP_D_MIN_DISPLACEMENT_PCT (all behind env vars, defaults preserve current behavior).
 
 ## Qué hace (30 segundos)
 El Strategy Service es el detective del sistema. Analiza los datos del Data Service buscando patrones de Smart Money Concepts (SMC): rupturas de estructura (BOS/CHoCH), order blocks, fair value gaps, sweeps de liquidez, y zonas premium/discount. Cuando encuentra un setup con suficiente confluencia, genera un `TradeSetup` para evaluación.
@@ -51,11 +51,15 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
   - **SL-too-close early filter**: `MIN_RISK_DISTANCE_PCT` check runs in strategy layer (before building TradeSetup), not just in Risk guardrails.
   - **AI bypass**: In `AI_BYPASS_SETUP_TYPES` — AI filter skipped, synthetic AIDecision(confidence=1.0) generated. AI v2 had 89.6% approval rate = no value added.
   - **Backtest 60d aggressive**: 46 trades, 47.8% WR, +$2,510. El bottleneck principal era `no_aligned_sweep` — gap=20 solo producía 11 trades. Gap=40 captura sweeps más lejanos sin degradar calidad.
-- **Setup B** (secundario): BOS + FVG adyacente a OB — **DESHABILITADO** (0% WR live, removed from ENABLED_SETUPS)
+- **Setup B** (secundario): BOS + FVG adyacente a OB — **HABILITADO** (AI bypassed, hardened 2026-03-13)
   - Dirección BOS determina dirección del trade (bidireccional como Setup A)
-  - **Entry: FVG 75%** `fvg.low + FVG_ENTRY_PCT * range` (bullish) — shallower que midpoint para mayor fill rate. Configurable via `FVG_ENTRY_PCT` (default 0.75). SL ancho desde el OB wick.
+  - **Entry: FVG 75%** `fvg.low + FVG_ENTRY_PCT * range` (bullish) / `fvg.high - FVG_ENTRY_PCT * range` (bearish) — shallower que midpoint para mayor fill rate. Configurable via `FVG_ENTRY_PCT` (default 0.75). SL ancho desde el OB wick.
   - SL: OB wick (igual que A/F)
   - FVG-OB adjacency threshold: `FVG_OB_MAX_GAP_PCT` (0.5%)
+  - **Hardened filters (2026-03-13):** Root cause: accepted stale BOS hours after impulse move, placing zombie entries 2-3% from price.
+    - BOS recency: must be within `SETUP_B_MAX_BOS_AGE_CANDLES` (12) candles (~3h on 15m)
+    - Entry distance: must be within `SETUP_B_MAX_ENTRY_DISTANCE_PCT` (2%) of current price
+    - Direction bug fixed: entry branch now uses "bullish"/"bearish" (was "long" — never matched, affected bullish entry placement)
   - **Backtest 60d aggressive**: 55 trades, 52.7% WR, +$5,169. Antes con OB 75% entry (previo cambio): 29.8% WR, -$1,680.
 - **Setup F** — Pure OB Retest: BOS + OB, sin FVG requerido — **DESHABILITADO** (34.8% WR, hardened, pending re-backtest)
   - Igual que Setup B pero sin necesitar FVG adyacente al OB
@@ -152,6 +156,8 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 - `SETUP_A_MODE: str = "both"` — Setup A CHoCH/HTF alignment mode: "continuation", "reversal", or "both" (env var)
 - `SETUP_A_MAX_SWEEP_CHOCH_GAP: int = 40` — máximo candles entre sweep y CHoCH (was 20, increased after backtest validation)
 - `FVG_OB_MAX_GAP_PCT: float = 0.005` — 0.5% gap máximo entre FVG y OB para Setup B adjacency
+- `SETUP_B_MAX_BOS_AGE_CANDLES: int = 12` — max candles since BOS (12 = ~3h on 15m)
+- `SETUP_B_MAX_ENTRY_DISTANCE_PCT: float = 0.02` — max entry distance from current price (2%)
 - `REQUIRE_HTF_LTF_ALIGNMENT: bool = False` — si True, LTF debe alinearse con HTF; default False para bidireccional
 - `REQUIRE_PD_ALIGNMENT: bool = True` — premium/discount zone debe alinear con dirección (core SMC)
 - `PD_OVERRIDE_MIN_CONFLUENCES: int = 5` — setups con 5+ confluencias pueden override PD misalignment (evita lockouts totales en bearish+discount)
@@ -229,5 +235,5 @@ El backtester soporta `--ai` flag para evaluar swing setups con Claude sobre dat
 - `test_order_blocks.py` — detección, volumen, expiración, mitigación
 - `test_fvg.py` — detección, fill, expiración
 - `test_liquidity.py` — clustering, sweeps, premium/discount, equilibrium band, swept persistence
-- `test_setups.py` — Setup A/B, confluencia, TPs, PD alignment, PD override, PD_AS_CONFLUENCE, SETUP_A_MODE, SL direction validation, simple R:R, OB proximity, temporal ordering, Setup F hardening (BOS age, displacement, OB-BOS gap, OB score, CVD/funding exclusion, entry distance, min confluences)
+- `test_setups.py` — Setup A/B, confluencia, TPs, PD alignment, PD override, PD_AS_CONFLUENCE, SETUP_A_MODE, SL direction validation, simple R:R, OB proximity, temporal ordering, Setup F hardening (BOS age, displacement, OB-BOS gap, OB score, CVD/funding exclusion, entry distance, min confluences), Setup B hardening (BOS age, entry distance, direction bug fix)
 - `test_quick_setups.py` — Setup C/D/E, cooldowns, R:R quick vs swing, AI bypass, data validation, SETUP_D_MIN_DISPLACEMENT_PCT, PD_AS_CONFLUENCE on Setup D

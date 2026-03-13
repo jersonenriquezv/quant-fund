@@ -11,12 +11,17 @@ State machine:
     active ──[timeout]───> closed                (market close)
     active ──[price >= 1:1 R:R]──> SL moves to breakeven (entry price)
     active ──[price >= 1.5:1 R:R]──> SL moves to tp1_price (trailing)
+    active ──[progressive trail]──> SL trails in 0.5 R:R steps (TRAILING_TP_ENABLED)
 
 Exit management:
 - SL: stop-market at sl_price for 100% of position
-- TP: limit at tp2_price (2:1 R:R) for 100% of position
-- Breakeven: when price crosses tp1_price (1:1), SL moves to entry price
-- Trailing: when price crosses midpoint(tp1,tp2) (1.5:1), SL moves to tp1_price
+- TP: limit at tp2_price (2:1 R:R) or ceiling TP at 5:1 R:R (progressive trail)
+- Legacy mode (TRAILING_TP_ENABLED=False):
+    - Breakeven: when price crosses tp1_price (1:1), SL moves to entry price
+    - Trailing: when price crosses midpoint(tp1,tp2) (1.5:1), SL moves to tp1_price
+- Progressive trail mode (TRAILING_TP_ENABLED=True):
+    - SL trails in TRAIL_STEP_RR (0.5) R:R increments, always one step behind
+    - Ceiling TP at TRAIL_CEILING_RR (5.0) on exchange as crash protection
 
 Critical safety:
 - Entry fill + SL placement fails → EMERGENCY market close
@@ -114,10 +119,22 @@ class PositionMonitor:
         if pos is None or pos.phase != "pending_entry":
             return None
 
+        cancelled = True
         if pos.entry_order_id:
-            await self._executor.cancel_order(pos.entry_order_id, pair)
+            ok = await self._executor.cancel_order(pos.entry_order_id, pair)
+            if not ok:
+                cancelled = False
         if pos.is_split_entry and pos.entry2_order_id:
-            await self._executor.cancel_order(pos.entry2_order_id, pair)
+            ok = await self._executor.cancel_order(pos.entry2_order_id, pair)
+            if not ok:
+                cancelled = False
+
+        if not cancelled:
+            logger.error(
+                f"Failed to cancel pending order(s) for {pair} — "
+                f"aborting replacement to avoid duplicate orders on exchange"
+            )
+            return None
 
         # ML: resolve as replaced
         self._ml_resolve_close(pos, "replaced")
@@ -652,13 +669,15 @@ class PositionMonitor:
                 self._close_position(pos, "tp")
                 return
 
-        # Breakeven check — poll current price
-        if not pos.breakeven_hit and pos.actual_entry_price:
-            await self._check_breakeven(pos)
-
-        # Trailing SL check — move SL to tp1 when price crosses 1.5:1 R:R
-        if pos.breakeven_hit and not pos.trailing_sl_moved and pos.actual_entry_price:
-            await self._check_trailing_sl(pos)
+        # SL management — progressive trail or legacy breakeven+trailing
+        if pos.actual_entry_price:
+            if settings.TRAILING_TP_ENABLED:
+                await self._check_progressive_trail(pos)
+            else:
+                if not pos.breakeven_hit:
+                    await self._check_breakeven(pos)
+                if pos.breakeven_hit and not pos.trailing_sl_moved:
+                    await self._check_trailing_sl(pos)
 
     # ================================================================
     # Breakeven trigger — move SL to entry when price crosses 1:1 R:R
@@ -726,6 +745,65 @@ class PositionMonitor:
             )
             await self._adjust_sl(pos, pos.tp1_price)
             pos.trailing_sl_moved = True
+
+    # ================================================================
+    # Progressive trailing SL — unified trail in TRAIL_STEP_RR increments
+    # ================================================================
+
+    async def _check_progressive_trail(self, pos: ManagedPosition) -> None:
+        """Trail SL in 0.5 R:R steps. SL always trails one step behind.
+
+        Level 0 = no trail (SL at original).
+        Level 1 = breakeven (SL at entry).
+        Level 2 = SL at 1.0 R:R level.
+        Level N = SL at (N-1) * TRAIL_STEP_RR R:R level.
+        """
+        risk = abs(pos.actual_entry_price - pos.sl_price)
+        if risk <= 0:
+            return
+
+        ticker = await self._executor.fetch_ticker(pos.pair)
+        if ticker is None:
+            return
+
+        current_price = float(ticker.get("last", 0) or 0)
+        if current_price <= 0:
+            return
+
+        # Calculate current R:R from price movement
+        if pos.direction == "long":
+            current_rr = (current_price - pos.actual_entry_price) / risk
+        else:
+            current_rr = (pos.actual_entry_price - current_price) / risk
+
+        if current_rr < settings.TRAIL_ACTIVATION_RR:
+            return
+
+        # Determine trail level: how many full steps price has crossed
+        level = int(current_rr / settings.TRAIL_STEP_RR)
+        if level <= pos.trail_level:
+            return
+
+        # Calculate new SL: one step behind current level
+        sl_rr = (level - 1) * settings.TRAIL_STEP_RR
+        if pos.direction == "long":
+            new_sl = pos.actual_entry_price + (risk * sl_rr)
+        else:
+            new_sl = pos.actual_entry_price - (risk * sl_rr)
+
+        logger.info(
+            f"Progressive trail: {pos.pair} {pos.direction} "
+            f"price={current_price:.2f} R:R={current_rr:.2f} "
+            f"level {pos.trail_level}→{level} "
+            f"SL→{new_sl:.2f} (locks {sl_rr:.1f}R)"
+        )
+
+        await self._adjust_sl(pos, new_sl)
+        pos.trail_level = level
+
+        # Keep breakeven_hit compatible with dashboard/logging
+        if not pos.breakeven_hit:
+            pos.breakeven_hit = True
 
     # ================================================================
     # State: emergency_pending (retry failed emergency close)

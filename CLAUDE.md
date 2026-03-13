@@ -25,19 +25,17 @@ The bot looks for 3 active setup types (others exist but are disabled):
 - Entry: configurable depth into OB body (`SETUP_A_ENTRY_PCT`, default 50%)
 - AI filter bypassed (89.6% approval rate = no value added)
 
-**Setup B (secondary) — BOS + FVG + Order Block:** (ENABLED, AI bypassed)
-- BOS confirms trend continuation on LTF
-- FVG inside or adjacent to OB (max 0.5% gap)
-- Entry: 75% of FVG gap (shallower fill than Setup A)
-- AI filter bypassed (AI v1 destroyed it: 49% WR → 21.4% WR)
+**Setup B (secondary) — BOS + FVG + Order Block:** (DISABLED)
+- Disabled: 0-7.7% WR in backtests, destroys PnL in every run.
+- Code remains for future re-enable.
 
-**Setup D_bos / D_choch — LTF Structure Scalp:** (ENABLED, quick setup)
-- CHoCH or BOS on 5m + fresh OB near price
+**Setup D_choch — LTF CHoCH Scalp:** (ENABLED, quick setup)
+- CHoCH on 5m + fresh OB near price
 - No sweep or FVG required. HTF bias + PD zone aligned.
 - Entry: 50% of OB. Quick setup (1h entry timeout, 4h max duration).
-- Split into `setup_d_bos` and `setup_d_choch` variants for per-variant measurement.
+- 75% WR in backtests.
 
-**Disabled setups:** Setup F (only profitable 90d+). Setup C, E, G pending validation.
+**Disabled setups:** Setup B (0-7.7% WR). Setup D_bos (20-33% WR, net negative). Setup F (only profitable 90d+). Setup C, E, G pending validation.
 
 **Mandatory rules:**
 - Minimum 2 confluences (OB alone = no trade)
@@ -335,20 +333,22 @@ Deterministic Python engine that detects SMC patterns. No AI. Pure rules.
 
 ---
 
-### Setup B (Secondary) — BOS + FVG + Order Block (DISABLED — 0% WR live)
+### Setup B (Secondary) — BOS + FVG + Order Block (DISABLED)
 
-Disabled from ENABLED_SETUPS. Code remains for future re-enable.
+Disabled from ENABLED_SETUPS. 0-7.7% WR in backtests. Code remains for future re-enable.
 
 ---
 
-### Setup D (Quick) — LTF Structure Scalp (ENABLED — setup_d_bos, setup_d_choch)
+### Setup D_choch (Quick) — LTF CHoCH Scalp (ENABLED)
 
-1. CHoCH or BOS on 5m
+1. CHoCH on 5m
 2. Fresh OB near price
 3. HTF bias + PD zone aligned
 4. Entry at 50% of OB
 5. AI bypassed (QUICK_SETUP_TYPES) + Risk check passes
 6. 1h entry timeout, 4h max duration
+
+Setup D_bos disabled (20-33% WR, net negative in all runs).
 
 ---
 
@@ -364,9 +364,13 @@ Disabled from ENABLED_SETUPS. Code remains for future re-enable.
 ### Exit Rules
 
 * Stop Loss mandatory. Never move against trade.
-* Single TP at tp2 (2:1 R:R) — closes 100% of position
-* Breakeven: price crosses tp1 (1:1 R:R) → SL moves to entry
-* Trailing SL: price crosses midpoint of tp1 and tp2 (1.5:1 R:R) → SL moves to tp1
+* Default mode (`TRAILING_TP_ENABLED=false`):
+  * Single TP at tp2 (2:1 R:R) — closes 100% of position
+  * Breakeven: price crosses tp1 (1:1 R:R) → SL moves to entry
+  * Trailing SL: price crosses midpoint of tp1 and tp2 (1.5:1 R:R) → SL moves to tp1
+* Progressive trail mode (`TRAILING_TP_ENABLED=true`):
+  * Ceiling TP at 5:1 R:R (crash protection)
+  * SL trails in 0.5 R:R steps, always one step behind highest level reached
 * Max duration: 12 hours
 * Invalidation: Close through full OB/FVG → exit immediately
 
@@ -482,10 +486,15 @@ Instrument format: `"BTC-USDT-SWAP"`, `"ETH-USDT-SWAP"` (OKX convention).
 * Trading fee: `TRADING_FEE_RATE=0.0005` (0.05% per side, OKX taker). Total fees = (entry_notional + exit_notional) × rate
 * `actual_exit_price` tracked on every close and persisted to PostgreSQL `trades.actual_exit`
 
-**Position management after entry:**
+**Position management after entry (default, `TRAILING_TP_ENABLED=false`):**
 * Breakeven: price crosses tp1 (1:1 R:R) → SL moves to entry price
 * Trailing SL: price crosses midpoint of tp1 and tp2 (1.5:1 R:R) → SL moves to tp1
 * TP: price reaches tp2 (2:1 R:R) → 100% close
+
+**Position management (progressive trail, `TRAILING_TP_ENABLED=true`):**
+* SL trails in `TRAIL_STEP_RR` (0.5) R:R steps, always one step behind
+* Ceiling TP at `TRAIL_CEILING_RR` (5:1) as crash protection
+* Backtester supports both modes via the same setting
 
 **Trading Mode:**
 * Demo first (4-week minimum): set `OKX_SANDBOX=true`, adds `x-simulated-trading: 1` header

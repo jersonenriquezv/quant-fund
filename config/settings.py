@@ -193,13 +193,22 @@ class Settings:
     # Bearish: entry = fvg.high - pct * (fvg.high - fvg.low)
     FVG_ENTRY_PCT: float = float(os.getenv("FVG_ENTRY_PCT", "0.75"))
 
+    # --- Setup B freshness filters (mirrors Setup F pattern) ---
+    # Max candles since BOS to be considered fresh (12 = ~3h on 15m).
+    # Prevents stale detection after large impulse moves have completed.
+    SETUP_B_MAX_BOS_AGE_CANDLES: int = 12
+    # Max distance from current price to entry (2% = reject zombie entries).
+    # BTC@71k → max ~$1,420 distance. ETH@2.1k → max ~$42.
+    SETUP_B_MAX_ENTRY_DISTANCE_PCT: float = 0.02
+
     # --- Enabled setups ---
     # Only these setup types will be traded. Others are detected but discarded.
-    # Backtest 60d aggressive combined A+B+D+F: 97 trades, 51.5% WR, +$7,558.
-    # D added: 66.7% WR in combined (9 trades, +$2,553). Quick setup — skips AI.
-    # C, E, G pending validation.
+    # Backtest 03-12: A+D_choch best combo. A: 55-60% WR consistent. D_choch: 75% WR.
+    # B disabled: 0-7.7% WR, destroys PnL in every run.
+    # D_bos disabled: 20-33% WR, net negative in all runs.
+    # C, E, F, G pending validation.
     ENABLED_SETUPS: list = field(default_factory=lambda: [
-        "setup_a", "setup_b", "setup_d_bos", "setup_d_choch",
+        "setup_a", "setup_d_choch",
     ])
 
     # Setup A entry depth — fraction of OB body for entry placement.
@@ -310,6 +319,19 @@ class Settings:
     # TP2: cerrar X% a 1:2 RR
     TP2_CLOSE_PCT: float = 0.30  # 30%
     TP2_RR_RATIO: float = 2.0
+
+    # ========================
+    # PROGRESSIVE TRAILING SL
+    # ========================
+    # When enabled, SL trails in 0.5 R:R steps instead of fixed breakeven + tp1.
+    # A ceiling TP at TRAIL_CEILING_RR stays on exchange as crash protection.
+    TRAILING_TP_ENABLED: bool = os.getenv("TRAILING_TP_ENABLED", "false").lower() == "true"
+    # R:R increment per trail step (0.5 = trail advances every 0.5 R:R)
+    TRAIL_STEP_RR: float = float(os.getenv("TRAIL_STEP_RR", "0.5"))
+    # Minimum R:R to activate trailing (1.0 = start at breakeven level)
+    TRAIL_ACTIVATION_RR: float = float(os.getenv("TRAIL_ACTIVATION_RR", "1.0"))
+    # Safety ceiling TP on exchange (bot crash protection)
+    TRAIL_CEILING_RR: float = float(os.getenv("TRAIL_CEILING_RR", "5.0"))
 
 
     # ========================

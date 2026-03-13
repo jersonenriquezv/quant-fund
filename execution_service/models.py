@@ -80,6 +80,7 @@ class ManagedPosition:
     # Breakeven + trailing tracking
     breakeven_hit: bool = False   # True after SL moved to breakeven
     trailing_sl_moved: bool = False  # True after SL moved to tp1_price
+    trail_level: int = 0  # Progressive trail step (0=no trail, 1=breakeven, 2=1.5RR, ...)
 
     # Emergency close retry tracking
     emergency_retries: int = 0

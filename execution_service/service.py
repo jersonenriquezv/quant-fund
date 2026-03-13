@@ -231,7 +231,14 @@ class ExecutionService:
                 )
                 self._monitor._record_pending_replaced(existing)
                 old = await self._monitor.cancel_and_remove_pending(setup.pair)
-                if old and self._risk is not None:
+                if old is None:
+                    # Cancel failed — old order still live on exchange, abort
+                    logger.error(
+                        f"Cannot replace pending entry for {setup.pair} — "
+                        f"cancel failed, aborting to prevent duplicate orders"
+                    )
+                    return False
+                if self._risk is not None:
                     self._risk.on_trade_cancelled(setup.pair, old.direction)
             elif existing.setup_type == "manual":
                 # Adopted position — allow bot to open its own entry alongside it.
@@ -261,7 +268,17 @@ class ExecutionService:
         # SL/TP are attached to the entry order — OKX auto-creates them on fill.
         side = "buy" if setup.direction == "long" else "sell"
         sl_price = setup.sl_price
-        tp_price = setup.tp2_price
+
+        # Ceiling TP: when progressive trail is enabled, place TP at 5:1 R:R
+        # as crash protection. The trailing SL handles actual exits.
+        if settings.TRAILING_TP_ENABLED:
+            risk = abs(setup.entry_price - setup.sl_price)
+            if setup.direction == "long":
+                tp_price = setup.entry_price + (risk * settings.TRAIL_CEILING_RR)
+            else:
+                tp_price = setup.entry_price - (risk * settings.TRAIL_CEILING_RR)
+        else:
+            tp_price = setup.tp2_price
 
         # Validate SL is still valid vs current market price.
         # If price moved past the SL, it would trigger immediately → OKX rejects.

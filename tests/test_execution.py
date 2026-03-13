@@ -437,7 +437,11 @@ class TestSLHit:
 
 
 class TestBreakevenTrigger:
-    """Price crosses 1:1 R:R → SL moves to entry."""
+    """Price crosses 1:1 R:R → SL moves to entry (legacy mode)."""
+
+    @pytest.fixture(autouse=True)
+    def _legacy_mode(self, monkeypatch):
+        monkeypatch.setattr(settings, "TRAILING_TP_ENABLED", False)
 
     def test_breakeven_moves_sl_to_entry(self):
         executor = _mock_executor()
@@ -565,7 +569,11 @@ class TestBreakevenTrigger:
 
 
 class TestTrailingSL:
-    """Price crosses 1.5:1 R:R midpoint → SL moves to tp1."""
+    """Price crosses 1.5:1 R:R midpoint → SL moves to tp1 (legacy mode)."""
+
+    @pytest.fixture(autouse=True)
+    def _legacy_mode(self, monkeypatch):
+        monkeypatch.setattr(settings, "TRAILING_TP_ENABLED", False)
 
     def test_trailing_sl_moves_to_tp1(self):
         executor = _mock_executor()
@@ -1147,6 +1155,244 @@ class TestClOrdIdGeneration:
         id1 = "qf" + hashlib.md5(raw1.encode()).hexdigest()[:30]
         id2 = "qf" + hashlib.md5(raw2.encode()).hexdigest()[:30]
         assert id1 != id2
+
+
+# ================================================================
+# Progressive Trailing SL tests
+# ================================================================
+
+class TestProgressiveTrail:
+    """Progressive trailing SL in 0.5 R:R steps."""
+
+    @pytest.fixture(autouse=True)
+    def _enable_trail(self, monkeypatch):
+        monkeypatch.setattr(settings, "TRAILING_TP_ENABLED", True)
+        monkeypatch.setattr(settings, "TRAIL_STEP_RR", 0.5)
+        monkeypatch.setattr(settings, "TRAIL_ACTIVATION_RR", 1.0)
+        monkeypatch.setattr(settings, "TRAIL_CEILING_RR", 5.0)
+
+    def test_trail_advances_in_steps(self):
+        """Price moves through 1.0, 1.5, 2.0, 2.5 R:R — SL advances each time."""
+        executor = _mock_executor()
+        risk = MagicMock()
+        monitor = PositionMonitor(executor, risk)
+
+        # Long: entry=2000, SL=1960 → risk=40
+        pos = make_position(phase="active", size=0.05)
+        pos.actual_entry_price = 2000.0
+        pos.filled_at = int(time.time())
+        pos.sl_order_id = "ord-sl"
+        pos.tp_order_id = "ord-tp"
+        pos.current_sl_price = 1960.0
+        monitor.register(pos)
+
+        async def mock_fetch(order_id, pair):
+            return make_order(order_id, status="open")
+        executor.fetch_order = AsyncMock(side_effect=mock_fetch)
+        executor.place_stop_market = AsyncMock(return_value=make_order("ord-sl-new"))
+        executor.cancel_order = AsyncMock(return_value=True)
+
+        # Step 1: price at 2045 → 1.125 R:R → level 2 (int(1.125/0.5)=2)
+        # SL = entry + (2-1)*0.5*40 = 2000 + 20 = 2020
+        executor.fetch_ticker = AsyncMock(return_value={"last": 2045.0})
+        asyncio.run(monitor._check_all_positions())
+        assert pos.trail_level == 2
+        assert pos.breakeven_hit is True
+        sl_call = executor.place_stop_market.call_args
+        assert sl_call[0][3] == 2020.0  # SL at 0.5 R:R level
+
+        # Step 2: price at 2065 → 1.625 R:R → level 3
+        # SL = entry + (3-1)*0.5*40 = 2000 + 40 = 2040
+        executor.place_stop_market.reset_mock()
+        executor.cancel_order.reset_mock()
+        executor.place_stop_market = AsyncMock(return_value=make_order("ord-sl-new2"))
+        executor.fetch_ticker = AsyncMock(return_value={"last": 2065.0})
+        asyncio.run(monitor._check_all_positions())
+        assert pos.trail_level == 3
+        sl_call = executor.place_stop_market.call_args
+        assert sl_call[0][3] == 2040.0  # SL at 1.0 R:R level
+
+        # Step 3: price at 2105 → 2.625 R:R → level 5
+        # SL = entry + (5-1)*0.5*40 = 2000 + 80 = 2080
+        executor.place_stop_market.reset_mock()
+        executor.cancel_order.reset_mock()
+        executor.place_stop_market = AsyncMock(return_value=make_order("ord-sl-new3"))
+        executor.fetch_ticker = AsyncMock(return_value={"last": 2105.0})
+        asyncio.run(monitor._check_all_positions())
+        assert pos.trail_level == 5
+        sl_call = executor.place_stop_market.call_args
+        assert sl_call[0][3] == 2080.0  # SL at 2.0 R:R level
+
+    def test_trail_not_triggered_below_activation(self):
+        """Price at 0.8 R:R — SL stays at original."""
+        executor = _mock_executor()
+        risk = MagicMock()
+        monitor = PositionMonitor(executor, risk)
+
+        pos = make_position(phase="active", size=0.05)
+        pos.actual_entry_price = 2000.0
+        pos.filled_at = int(time.time())
+        pos.sl_order_id = "ord-sl"
+        pos.tp_order_id = "ord-tp"
+        pos.current_sl_price = 1960.0
+        monitor.register(pos)
+
+        async def mock_fetch(order_id, pair):
+            return make_order(order_id, status="open")
+        executor.fetch_order = AsyncMock(side_effect=mock_fetch)
+
+        # Price at 2032 → 0.8 R:R (32/40) — below activation (1.0)
+        executor.fetch_ticker = AsyncMock(return_value={"last": 2032.0})
+        asyncio.run(monitor._check_all_positions())
+
+        assert pos.trail_level == 0
+        assert pos.breakeven_hit is False
+        executor.place_stop_market.assert_not_called()
+
+    def test_trail_skips_levels(self):
+        """Price jumps from 0 to 2.5 R:R in one candle — SL moves to 2.0 level."""
+        executor = _mock_executor()
+        risk = MagicMock()
+        monitor = PositionMonitor(executor, risk)
+
+        pos = make_position(phase="active", size=0.05)
+        pos.actual_entry_price = 2000.0
+        pos.filled_at = int(time.time())
+        pos.sl_order_id = "ord-sl"
+        pos.tp_order_id = "ord-tp"
+        pos.current_sl_price = 1960.0
+        monitor.register(pos)
+
+        async def mock_fetch(order_id, pair):
+            return make_order(order_id, status="open")
+        executor.fetch_order = AsyncMock(side_effect=mock_fetch)
+        executor.place_stop_market = AsyncMock(return_value=make_order("ord-sl-new"))
+        executor.cancel_order = AsyncMock(return_value=True)
+
+        # Price at 2100 → 2.5 R:R → level 5 (int(2.5/0.5)=5)
+        # SL = entry + (5-1)*0.5*40 = 2000 + 80 = 2080
+        executor.fetch_ticker = AsyncMock(return_value={"last": 2100.0})
+        asyncio.run(monitor._check_all_positions())
+
+        assert pos.trail_level == 5
+        assert pos.breakeven_hit is True
+        sl_call = executor.place_stop_market.call_args
+        assert sl_call[0][3] == 2080.0
+
+    def test_trail_short_direction(self):
+        """Short: trail works correctly with reversed price direction."""
+        executor = _mock_executor()
+        risk = MagicMock()
+        monitor = PositionMonitor(executor, risk)
+
+        pos = make_position(
+            direction="short", phase="active", size=0.05,
+            entry_price=2000.0, sl_price=2040.0
+        )
+        pos.tp1_price = 1960.0
+        pos.tp2_price = 1920.0
+        pos.actual_entry_price = 2000.0
+        pos.filled_at = int(time.time())
+        pos.sl_order_id = "ord-sl"
+        pos.tp_order_id = "ord-tp"
+        pos.current_sl_price = 2040.0
+        monitor.register(pos)
+
+        async def mock_fetch(order_id, pair):
+            return make_order(order_id, status="open")
+        executor.fetch_order = AsyncMock(side_effect=mock_fetch)
+        executor.place_stop_market = AsyncMock(return_value=make_order("ord-sl-new"))
+        executor.cancel_order = AsyncMock(return_value=True)
+
+        # Short: price at 1935 → R:R = (2000-1935)/40 = 1.625 → level 3
+        # SL = entry - (3-1)*0.5*40 = 2000 - 40 = 1960
+        executor.fetch_ticker = AsyncMock(return_value={"last": 1935.0})
+        asyncio.run(monitor._check_all_positions())
+
+        assert pos.trail_level == 3
+        sl_call = executor.place_stop_market.call_args
+        assert sl_call[0][3] == 1960.0
+
+    def test_legacy_mode_when_disabled(self, monkeypatch):
+        """TRAILING_TP_ENABLED=False → old breakeven+trailing behavior."""
+        monkeypatch.setattr(settings, "TRAILING_TP_ENABLED", False)
+
+        executor = _mock_executor()
+        risk = MagicMock()
+        monitor = PositionMonitor(executor, risk)
+
+        pos = make_position(phase="active", size=0.05)
+        pos.actual_entry_price = 2000.0
+        pos.filled_at = int(time.time())
+        pos.sl_order_id = "ord-sl-old"
+        pos.tp_order_id = "ord-tp"
+        pos.current_sl_price = 1960.0
+        monitor.register(pos)
+
+        async def mock_fetch(order_id, pair):
+            return make_order(order_id, status="open")
+        executor.fetch_order = AsyncMock(side_effect=mock_fetch)
+        executor.place_stop_market = AsyncMock(return_value=make_order("ord-sl-new"))
+        executor.cancel_order = AsyncMock(return_value=True)
+
+        # Price above tp1 (2040) → breakeven in legacy mode
+        executor.fetch_ticker = AsyncMock(return_value={"last": 2045.0})
+        asyncio.run(monitor._check_all_positions())
+
+        assert pos.breakeven_hit is True
+        assert pos.trail_level == 0  # Progressive trail not used
+        sl_call = executor.place_stop_market.call_args
+        assert sl_call[0][3] == 2000.0  # Breakeven at entry
+
+    def test_ceiling_tp_used_on_entry(self, monkeypatch):
+        """Ceiling TP at 5:1 R:R is used when TRAILING_TP_ENABLED."""
+        monkeypatch.setattr(settings, "OKX_SANDBOX", True)
+        monkeypatch.setattr(settings, "TRAILING_TP_ENABLED", True)
+        monkeypatch.setattr(settings, "TRAIL_CEILING_RR", 5.0)
+
+        risk = MagicMock()
+        executor = _mock_executor()
+        monitor = MagicMock(spec=PositionMonitor)
+        monitor.positions = {}
+
+        executor.configure_pair = AsyncMock(return_value=True)
+        executor.fetch_ticker = AsyncMock(return_value={"ask": 2000.0, "bid": 1999.0})
+        executor.place_limit_order = AsyncMock(return_value=make_order("ord-1"))
+
+        service = _make_service(executor, monitor, risk)
+
+        # entry=2000, sl=1960 → risk=40, ceiling TP = 2000 + 40*5 = 2200
+        setup = make_setup(entry=2000.0, sl=1960.0, tp1=2040.0, tp2=2080.0)
+        result = asyncio.run(service.execute(setup, make_approval(), 0.85))
+
+        assert result is True
+        call_kwargs = executor.place_limit_order.call_args
+        tp_price_arg = call_kwargs[1].get("tp_price") or call_kwargs[0][5] if len(call_kwargs[0]) > 5 else None
+        # Check the tp_price kwarg
+        assert call_kwargs[1]["tp_price"] == 2200.0
+
+    def test_ceiling_tp_not_used_when_disabled(self, monkeypatch):
+        """TRAILING_TP_ENABLED=False → tp2_price is used as TP."""
+        monkeypatch.setattr(settings, "OKX_SANDBOX", True)
+        monkeypatch.setattr(settings, "TRAILING_TP_ENABLED", False)
+
+        risk = MagicMock()
+        executor = _mock_executor()
+        monitor = MagicMock(spec=PositionMonitor)
+        monitor.positions = {}
+
+        executor.configure_pair = AsyncMock(return_value=True)
+        executor.fetch_ticker = AsyncMock(return_value={"ask": 2000.0, "bid": 1999.0})
+        executor.place_limit_order = AsyncMock(return_value=make_order("ord-1"))
+
+        service = _make_service(executor, monitor, risk)
+
+        setup = make_setup(entry=2000.0, sl=1960.0, tp1=2040.0, tp2=2080.0)
+        result = asyncio.run(service.execute(setup, make_approval(), 0.85))
+
+        assert result is True
+        call_kwargs = executor.place_limit_order.call_args
+        assert call_kwargs[1]["tp_price"] == 2080.0  # Original tp2
 
 
 # ================================================================

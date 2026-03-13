@@ -1,6 +1,6 @@
 # Execution Service (Layer 5)
-> Última actualización: 2026-03-11 (Split entries, expectancy filters, execution metrics.)
-> Estado: **Fase 1 — COMPLETADA**. Entry + SL + TP atómicos (attached). Breakeven + trailing SL via price polling. CampaignMonitor para HTF position trades. PnL tracking con fee deduction (TRADING_FEE_RATE 0.05% per side).
+> Última actualización: 2026-03-13 (Progressive trailing SL — let winners run.)
+> Estado: **Fase 1 — COMPLETADA**. Entry + SL + TP atómicos (attached). Progressive trailing SL (0.5 R:R steps) with ceiling TP at 5:1 R:R. Legacy breakeven+trailing behind `TRAILING_TP_ENABLED=false`. CampaignMonitor para HTF position trades. PnL tracking con fee deduction (TRADING_FEE_RATE 0.05% per side).
 
 El brazo ejecutor del bot. Recibe trades aprobados por Risk Service y los ejecuta en OKX via ccxt.
 
@@ -104,7 +104,38 @@ Cuando `is_split_entry == True`, el monitor usa `_check_split_pending()` en vez 
 11. **Max slippage guard** — Después del fill, si `abs(actual_entry - entry) / entry > MAX_SLIPPAGE_PCT` (0.3%), la posición se cierra inmediatamente con `exit_reason = "excessive_slippage"`. Cancela SL/TP, market close. Skipped en sandbox mode (fills sintéticos). Configurable en `settings.MAX_SLIPPAGE_PCT`.
 12. **Deterministic clOrdId** — Cada limit order lleva un `clOrdId` basado en md5(pair+side+price+contracts). Si el bot reintenta la misma orden después de un timeout de red, OKX la rechaza como duplicada en vez de abrir dos posiciones.
 
-## Breakeven Logic
+## Progressive Trailing SL (default, `TRAILING_TP_ENABLED=true`)
+
+SL trails in `TRAIL_STEP_RR` (0.5) R:R increments. Always one step behind the highest R:R level reached:
+
+| Price reaches | R:R  | SL moves to    | Locked profit |
+|---------------|------|----------------|---------------|
+| tp1           | 1.0  | entry          | breakeven     |
+| 1.5 R:R       | 1.5  | 1.0 R:R level  | 1:1           |
+| tp2           | 2.0  | 1.5 R:R level  | 1.5:1         |
+| 2.5 R:R       | 2.5  | 2.0 R:R level  | 2:1           |
+| 3.0 R:R       | 3.0  | 2.5 R:R level  | 2.5:1         |
+| ...           | ...  | ...            | ...           |
+
+**Ceiling TP** at `TRAIL_CEILING_RR` (5.0) stays on exchange as crash protection. The trailing SL handles actual exits.
+
+1. En cada poll cycle (5s), si `actual_entry_price` exists:
+2. Calcula `risk = abs(actual_entry_price - sl_price)`
+3. Calcula `current_rr` desde ticker price vs entry
+4. Si `current_rr < TRAIL_ACTIVATION_RR` (1.0) → no trail
+5. `level = int(current_rr / TRAIL_STEP_RR)` — cuántos steps completos ha cruzado
+6. Si `level > pos.trail_level`:
+   - New SL = entry ± risk × (level - 1) × TRAIL_STEP_RR
+   - `_adjust_sl(pos, new_sl)`
+   - `pos.trail_level = level`
+   - Sets `breakeven_hit = True` for dashboard compatibility
+7. Level can skip (e.g., price jumps from 0 to 2.5 R:R → level=5, SL at 2.0 R:R)
+
+### Ceiling TP en service.py
+
+Cuando `TRAILING_TP_ENABLED=true`, `execute()` calcula el TP como `entry ± risk × TRAIL_CEILING_RR` en vez de usar `setup.tp2_price`. Esto mueve el TP de 2:1 R:R a 5:1 R:R.
+
+## Legacy Breakeven + Trailing SL (`TRAILING_TP_ENABLED=false`)
 
 1. En cada poll cycle (5s), si `breakeven_hit == False`:
 2. Fetch ticker via `fetch_ticker(pair)`
@@ -113,9 +144,8 @@ Cuando `is_split_entry == True`, el monitor usa `_check_split_pending()` en vez 
 5. On trigger: `_adjust_sl(pos, actual_entry_price)`, set `breakeven_hit = True`
 6. Solo se dispara una vez (idempotente)
 
-## Trailing SL Logic
-
-1. Después del breakeven check, si `breakeven_hit == True` y `trailing_sl_moved == False`:
+Después del breakeven:
+1. Si `breakeven_hit == True` y `trailing_sl_moved == False`:
 2. Calcula midpoint = `(tp1_price + tp2_price) / 2`
 3. Fetch ticker via `fetch_ticker(pair)`
 4. Long: si `current_price >= midpoint` → trigger
@@ -228,6 +258,10 @@ active ──[timeout 7d]─────────> closed        (max duratio
 | `HTF_MAX_CAMPAIGN_DURATION` | 604800 (7d) | Duración máxima de la campaña |
 | `HTF_ENTRY_TIMEOUT_SECONDS` | 86400 (24h) | Timeout de entry para limit orders HTF |
 | `HTF_MAX_CAMPAIGNS` | 1 | Máximo de campañas concurrentes |
+| `TRAILING_TP_ENABLED` | true | Progressive trail (env var). `false` = legacy breakeven+trailing |
+| `TRAIL_STEP_RR` | 0.5 | R:R increment per trail step |
+| `TRAIL_ACTIVATION_RR` | 1.0 | Min R:R to start trailing (breakeven level) |
+| `TRAIL_CEILING_RR` | 5.0 | Safety ceiling TP on exchange (crash protection) |
 
 ## Execution Metrics
 

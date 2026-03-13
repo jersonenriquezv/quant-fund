@@ -1197,3 +1197,142 @@ class TestSetupFHardening:
         setup = evaluator.evaluate_setup_f(**args)
         assert setup is not None
         assert len(setup.confluences) >= 3
+
+
+# ============================================================
+# Setup B Hardening tests (BOS age + entry distance + direction fix)
+# ============================================================
+
+def _make_setup_b_args(
+    bos_candle_index=18,
+    bos_direction="bullish",
+    num_candles=20,
+    candle_close=101.0,
+    ob_entry_price=101.0,
+    ob_volume_ratio=2.0,
+    fvg_high=103.0,
+    fvg_low=100.5,
+    pd_zone_type="discount",
+    htf_bias="bullish",
+):
+    """Build args for evaluate_setup_b with sensible defaults for a valid Setup B."""
+    now_ms = int(time.time() * 1000)
+    bos_timestamp = now_ms - (num_candles - 1 - bos_candle_index) * 900_000
+    brk = StructureBreak(
+        timestamp=bos_timestamp,
+        break_type="bos",
+        direction=bos_direction,
+        break_price=110.0,
+        broken_level=108.0,
+        candle_index=bos_candle_index,
+    )
+    state = MarketStructureState(
+        pair="BTC/USDT", timeframe="15m", trend=bos_direction,
+        swing_highs=[], swing_lows=[],
+        structure_breaks=[brk], latest_break=brk,
+    )
+    ob_brk = StructureBreak(
+        timestamp=bos_timestamp, break_type="bos", direction=bos_direction,
+        break_price=110.0, broken_level=108.0, candle_index=bos_candle_index,
+    )
+    ob = OrderBlock(
+        timestamp=now_ms - 2 * 900_000, pair="BTC/USDT", timeframe="15m",
+        direction=bos_direction, high=103.0, low=98.0,
+        body_high=102.0, body_low=100.0, entry_price=ob_entry_price,
+        volume=20.0, volume_ratio=ob_volume_ratio, mitigated=False,
+        associated_break=ob_brk,
+    )
+    fvg = FairValueGap(
+        timestamp=now_ms - 2 * 900_000, pair="BTC/USDT", timeframe="15m",
+        direction=bos_direction, high=fvg_high, low=fvg_low,
+        size_pct=0.025, filled_pct=0.0, fully_filled=False,
+    )
+    candles = [
+        make_candle(
+            close=candle_close, high=candle_close + 1,
+            low=candle_close - 1,
+            timestamp=now_ms - (num_candles - 1 - i) * 900_000,
+        )
+        for i in range(num_candles)
+    ]
+    pd = _make_pd_zone(pd_zone_type)
+    snapshot = make_market_snapshot(cvd_15m=100.0)
+    return dict(
+        structure_state=state,
+        active_obs=[ob],
+        active_fvgs=[fvg],
+        pd_zone=pd,
+        market_snapshot=snapshot,
+        candles=candles,
+        pair="BTC/USDT",
+        htf_bias=htf_bias,
+        liquidity_levels=[],
+    )
+
+
+class TestSetupBHardening:
+    """Test Setup B freshness filters (BOS age + entry distance) and direction fix."""
+
+    def test_valid_setup_b_passes_all_filters(self):
+        """A well-formed Setup B with fresh BOS + close entry passes."""
+        evaluator = SetupEvaluator()
+        args = _make_setup_b_args()
+        setup = evaluator.evaluate_setup_b(**args)
+        assert setup is not None
+        assert setup.setup_type == "setup_b"
+
+    def test_stale_bos_rejected(self):
+        """BOS older than SETUP_B_MAX_BOS_AGE_CANDLES is rejected."""
+        evaluator = SetupEvaluator()
+        original = settings.SETUP_B_MAX_BOS_AGE_CANDLES
+        settings.SETUP_B_MAX_BOS_AGE_CANDLES = 5
+        try:
+            # BOS at candle 0 with 20 candles → age = 19 > 5
+            args = _make_setup_b_args(bos_candle_index=0, num_candles=20)
+            setup = evaluator.evaluate_setup_b(**args)
+            assert setup is None
+        finally:
+            settings.SETUP_B_MAX_BOS_AGE_CANDLES = original
+
+    def test_fresh_bos_accepted(self):
+        """BOS within SETUP_B_MAX_BOS_AGE_CANDLES passes."""
+        evaluator = SetupEvaluator()
+        # BOS at candle 18 with 20 candles → age = 1 < 12
+        args = _make_setup_b_args(bos_candle_index=18, num_candles=20)
+        setup = evaluator.evaluate_setup_b(**args)
+        assert setup is not None
+
+    def test_entry_too_far_rejected(self):
+        """Entry > SETUP_B_MAX_ENTRY_DISTANCE_PCT from current price is rejected."""
+        evaluator = SetupEvaluator()
+        original = settings.SETUP_B_MAX_ENTRY_DISTANCE_PCT
+        settings.SETUP_B_MAX_ENTRY_DISTANCE_PCT = 0.001  # 0.1% — very tight
+        try:
+            # candle_close=95 → entry ~102 (bullish FVG) → ~7% distance → rejected
+            args = _make_setup_b_args(candle_close=95.0)
+            setup = evaluator.evaluate_setup_b(**args)
+            assert setup is None
+        finally:
+            settings.SETUP_B_MAX_ENTRY_DISTANCE_PCT = original
+
+    def test_entry_close_accepted(self):
+        """Entry within SETUP_B_MAX_ENTRY_DISTANCE_PCT passes."""
+        evaluator = SetupEvaluator()
+        # candle_close=101 → entry ~102.375 (bullish FVG) → ~1.4% < 2%
+        args = _make_setup_b_args(candle_close=101.0)
+        setup = evaluator.evaluate_setup_b(**args)
+        assert setup is not None
+
+    def test_direction_bug_fixed_bullish(self):
+        """Bullish entry uses fvg.low + range * pct (not fvg.high - range * pct)."""
+        evaluator = SetupEvaluator()
+        # FVG: high=103.0, low=100.5, range=2.5, FVG_ENTRY_PCT=0.75
+        # Correct (bullish): 100.5 + 2.5 * 0.75 = 102.375
+        # Buggy (old):       103.0 - 2.5 * 0.75 = 101.125
+        args = _make_setup_b_args(bos_direction="bullish", fvg_high=103.0, fvg_low=100.5)
+        setup = evaluator.evaluate_setup_b(**args)
+        assert setup is not None
+        expected = 100.5 + 2.5 * settings.FVG_ENTRY_PCT
+        assert abs(setup.entry_price - expected) < 0.01, (
+            f"Expected entry ~{expected:.2f} (bullish), got {setup.entry_price:.2f}"
+        )
