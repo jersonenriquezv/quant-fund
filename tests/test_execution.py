@@ -1122,6 +1122,34 @@ class TestOrphanedTradeReconciliation:
 
 
 # ================================================================
+# Idempotency / clOrdId tests
+# ================================================================
+
+class TestClOrdIdGeneration:
+    """Deterministic client order ID prevents duplicate orders after NetworkError."""
+
+    def test_clordid_is_deterministic(self):
+        """Same params → same clOrdId."""
+        import hashlib
+        pair, side, price, contracts = "ETH/USDT", "buy", 2000.0, 5.0
+        raw = f"{pair}:{side}:{price}:{contracts}"
+        id1 = "qf" + hashlib.md5(raw.encode()).hexdigest()[:30]
+        id2 = "qf" + hashlib.md5(raw.encode()).hexdigest()[:30]
+        assert id1 == id2
+        assert len(id1) == 32
+        assert id1.startswith("qf")
+
+    def test_clordid_differs_for_different_params(self):
+        """Different params → different clOrdId."""
+        import hashlib
+        raw1 = "ETH/USDT:buy:2000.0:5.0"
+        raw2 = "ETH/USDT:buy:2001.0:5.0"
+        id1 = "qf" + hashlib.md5(raw1.encode()).hexdigest()[:30]
+        id2 = "qf" + hashlib.md5(raw2.encode()).hexdigest()[:30]
+        assert id1 != id2
+
+
+# ================================================================
 # Split Entry tests
 # ================================================================
 

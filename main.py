@@ -253,8 +253,10 @@ async def on_candle_confirmed(candle: Candle) -> None:
         elif _execution_service is not None:
             ai_confidence = decision.confidence if decision else 0.0
             placed = await _execution_service.execute(setup, approval, ai_confidence)
-            if placed:
-                _setup_dedup_cache[dedup_key] = time.time()
+            # Always dedup — even on failure. NetworkError may mean the order
+            # reached OKX but we didn't get the response. Without this, the
+            # next candle retries and creates a duplicate live order.
+            _setup_dedup_cache[dedup_key] = time.time()
 
     _emit_metric("pipeline_latency_ms", (time.monotonic() - pipeline_start) * 1000, candle.pair)
 

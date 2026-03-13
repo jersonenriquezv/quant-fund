@@ -11,6 +11,7 @@ Does NOT contain business logic. Just places/cancels/fetches orders.
 """
 
 import asyncio
+import hashlib
 import time
 from typing import Callable, Optional
 
@@ -188,6 +189,15 @@ class OrderExecutor:
         symbol = self._ccxt_symbol(pair)
         contracts = self._to_contracts(pair, amount)
         params: dict = {}
+
+        # Deterministic client order ID — OKX rejects duplicates with same
+        # clOrdId, preventing double orders after network timeouts.
+        # Max 32 chars, alphanumeric. Based on (pair, side, price, contracts)
+        # so retries of the same order get rejected at the exchange level.
+        raw = f"{pair}:{side}:{price}:{contracts}"
+        cl_ord_id = "qf" + hashlib.md5(raw.encode()).hexdigest()[:30]
+        params["clOrdId"] = cl_ord_id
+
         if sl_trigger_price > 0:
             params["stopLoss"] = {"triggerPrice": sl_trigger_price}
         if tp_price > 0:
@@ -465,6 +475,17 @@ class OrderExecutor:
             except Exception as e:
                 logger.error(f"Find pending algo orders ({ord_type}) error: {pair} {e}")
         return all_orders
+
+    async def fetch_open_orders(self, pair: str) -> list[dict]:
+        """Fetch open regular orders for a pair (not algo orders)."""
+        symbol = self._ccxt_symbol(pair)
+        try:
+            return await self._run_sync(
+                self._exchange.fetch_open_orders, symbol
+            )
+        except (ccxt.NetworkError, ccxt.ExchangeError) as e:
+            logger.error(f"Fetch open orders error: {pair} {e}")
+            return []
 
     # ================================================================
     # Emergency
