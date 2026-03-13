@@ -119,6 +119,9 @@ class PositionMonitor:
         if pos.is_split_entry and pos.entry2_order_id:
             await self._executor.cancel_order(pos.entry2_order_id, pair)
 
+        # ML: resolve as replaced
+        self._ml_resolve_close(pos, "replaced")
+
         old_pos = pos
         self._positions.pop(pair, None)
         self._update_positions_cache()
@@ -1018,6 +1021,9 @@ class PositionMonitor:
         # Persist trade close to PostgreSQL
         self._persist_trade_close(pos)
 
+        # ML: resolve outcome
+        self._ml_resolve_close(pos, reason)
+
         # Update Redis positions cache
         self._update_positions_cache()
 
@@ -1085,6 +1091,57 @@ class PositionMonitor:
             )
         except Exception as e:
             logger.error(f"Failed to persist trade close: {pos.pair} {e}")
+
+    def _ml_resolve_close(self, pos: ManagedPosition, reason: str) -> None:
+        """Resolve ML setup outcome on position close (fire-and-forget)."""
+        if not pos.setup_id or self._data_store is None or self._data_store.postgres is None:
+            return
+        try:
+            # Map close_reason to outcome_type
+            outcome_map = {
+                "tp": "filled_tp",
+                "sl": "filled_sl",
+                "breakeven_sl": "filled_sl",
+                "trailing_sl": "filled_trailing",
+                "timeout": "filled_timeout",
+                "emergency": "filled_timeout",
+                "excessive_slippage": "filled_timeout",
+                "sl_too_close": "filled_timeout",
+                "cancelled": "unfilled_timeout",
+                "replaced": "replaced",
+            }
+            outcome_type = outcome_map.get(reason, "filled_timeout")
+
+            # Compute durations
+            fill_duration_ms = None
+            trade_duration_ms = None
+            if pos.filled_at and pos.created_at:
+                fill_duration_ms = (pos.filled_at - pos.created_at) * 1000
+            if pos.closed_at and pos.filled_at:
+                trade_duration_ms = (pos.closed_at - pos.filled_at) * 1000
+
+            # PnL
+            pnl_usd = None
+            if pos.actual_entry_price and pos.filled_size:
+                pnl_usd = pos.actual_entry_price * pos.filled_size * pos.pnl_pct
+
+            ok = self._data_store.postgres.update_ml_setup_outcome(
+                setup_id=pos.setup_id,
+                outcome_type=outcome_type,
+                pnl_pct=pos.pnl_pct if pos.pnl_pct != 0 else None,
+                pnl_usd=pnl_usd,
+                actual_entry=pos.actual_entry_price,
+                actual_exit=pos.actual_exit_price,
+                exit_reason=reason,
+                fill_duration_ms=fill_duration_ms,
+                trade_duration_ms=trade_duration_ms,
+            )
+            self._emit_metric(
+                "ml_outcome_update_ok" if ok else "ml_outcome_update_error", 1, pos.pair
+            )
+        except Exception as e:
+            logger.error(f"ML outcome resolution failed: {pos.pair} {e}")
+            self._emit_metric("ml_outcome_update_error", 1, pos.pair)
 
     def _update_positions_cache(self) -> None:
         """Write current open positions to Redis for dashboard consumption."""

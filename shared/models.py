@@ -7,6 +7,7 @@ No raw dicts. If you need a new data shape, define it here first.
 All fields match CLAUDE.md section "Shared Data Models" exactly.
 """
 
+import uuid
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -172,6 +173,7 @@ class TradeSetup:
     htf_bias: str           # "bullish" or "bearish"
     ob_timeframe: str       # Timeframe of the order block used
     entry2_price: float = 0.0  # OB 75% level for split entries (0 = single entry)
+    setup_id: str = field(default_factory=lambda: uuid.uuid4().hex[:16])  # ML tracking ID
 
 
 # ============================================================

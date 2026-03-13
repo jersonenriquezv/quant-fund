@@ -127,6 +127,7 @@ quant-fund/
 │   └── .env                 # Secrets (OKX keys, Etherscan, Anthropic) — NOT in git
 ├── shared/
 │   ├── models.py            # Dataclasses shared between all services
+│   ├── ml_features.py       # ML feature extraction (setup features + risk context)
 │   ├── logger.py            # Loguru setup (stdout + daily rotated files)
 │   ├── notifier.py          # Telegram push notifications (fire-and-forget)
 │   └── alert_manager.py     # Priority-based Telegram alerts (trade lifecycle, errors, daily summary)
@@ -184,7 +185,8 @@ quant-fund/
 │   ├── test_prompt_builder.py
 │   ├── test_data_service.py
 │   ├── test_execution.py
-│   └── test_quick_setups.py
+│   ├── test_quick_setups.py
+│   └── test_ml_features.py
 ├── scripts/
 │   └── backtest.py          # Offline backtester (historical candle replay)
 ├── dashboard/
@@ -491,6 +493,31 @@ Instrument format: `"BTC-USDT-SWAP"`, `"ETH-USDT-SWAP"` (OKX convention).
 
 ---
 
+### ML Instrumentation (`shared/ml_features.py`)
+
+Collects structured training data for two future classical ML models:
+1. **Fill probability model** — will a limit order get filled? (trains on: filled_*, unfilled_timeout, replaced)
+2. **Trade quality model** — if filled, will the trade be profitable? (trains on: filled_* only)
+
+**How it works:**
+* Every detected setup gets a `setup_id` (auto-generated in TradeSetup, 16-char hex UUID)
+* At detection time (BEFORE dedup/risk checks), `extract_setup_features()` captures ~40 features and writes to `ml_setups` table
+* At every terminal point (dedup, risk rejection, fill timeout, SL, TP, trailing, replace), outcome is resolved via `update_ml_setup_outcome()`
+* Features include: setup geometry (entry/SL/TP distances, R:R), decomposed confluences (has_sweep, has_choch, ob_volume_ratio, cvd_aligned, pd_zone, etc.), market state (funding, OI, CVD, buy dominance), missingness flags (has_funding, has_oi, has_cvd, has_news, has_whales), stale-entry features (setup_age_minutes, entry_distance_pct)
+* Risk context (capital, open positions, drawdown) captured separately — potentially leaky for quality model
+
+**Outcome types:** filled_tp, filled_sl, filled_trailing, filled_timeout, unfilled_timeout, risk_rejected, deduped, replaced
+
+**Data leakage safety:** Features captured at strategy detection time, before any downstream decision. Risk context stored in separate columns, flagged for careful use.
+
+**Health metrics:** `ml_setup_insert_ok/error`, `ml_outcome_update_ok/error` emitted to `bot_metrics` for Grafana monitoring.
+
+**Config:** `ML_FEATURE_VERSION` (int, in settings.py) — increment when strategy params change to segment training data.
+
+**Files:** `shared/ml_features.py` (feature extraction), `data_service/data_store.py` (ml_setups table + CRUD), `main.py` (pipeline instrumentation), `execution_service/monitor.py` (close outcome resolution)
+
+---
+
 ## Performance Metrics
 
 | Metric           | Target |
@@ -535,7 +562,7 @@ All inter-service communication uses typed frozen dataclasses. No raw dicts betw
 * `MarketSnapshot` — aggregates all of the above for a single pair at a point in time (includes `health` field)
 
 **Layer 2 (Strategy) outputs:**
-* `TradeSetup` — detected setup with entry/SL/TP1/TP2, confluences list, htf_bias, ob_timeframe
+* `TradeSetup` — detected setup with entry/SL/TP1/TP2, confluences list, htf_bias, ob_timeframe, setup_id (auto-generated 16-char hex for ML tracking)
 
 **Layer 3 (AI) outputs:**
 * `AIDecision` — confidence (0-1), approved (bool), reasoning, adjustments (dict), warnings (list)

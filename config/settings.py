@@ -234,6 +234,22 @@ class Settings:
     # 0.0 = disabled (default). 0.002 = 0.2% minimum displacement.
     SETUP_D_MIN_DISPLACEMENT_PCT: float = float(os.getenv("SETUP_D_MIN_DISPLACEMENT_PCT", "0.0"))
 
+    # ========================
+    # SETUP F HARDENING — Pure OB Retest quality filters
+    # ========================
+    # Max candles since BOS to be considered fresh (20 = ~5h on 15m).
+    SETUP_F_MAX_BOS_AGE_CANDLES: int = 20
+    # Max candle gap between OB and BOS (OB must form near the BOS impulse).
+    SETUP_F_MAX_OB_BOS_GAP_CANDLES: int = 10
+    # Minimum BOS displacement beyond broken level (0.2% = reject micro-breaks).
+    SETUP_F_MIN_BOS_DISPLACEMENT_PCT: float = 0.002
+    # Minimum composite OB score (0-1) from _score_ob(). Rejects low-quality OBs.
+    SETUP_F_MIN_OB_SCORE: float = 0.35
+    # Max distance from current price to entry (3% = reject zombie setups).
+    SETUP_F_MAX_ENTRY_DISTANCE_PCT: float = 0.03
+    # Minimum confluences (3 = BOS + OB + one of PD/volume). Higher than generic 2.
+    SETUP_F_MIN_CONFLUENCES: int = 3
+
     # Setup C — Funding Squeeze
     MOMENTUM_FUNDING_THRESHOLD: float = 0.0003  # Same as FUNDING_EXTREME_THRESHOLD
     MOMENTUM_CVD_LONG_MIN: float = 0.52          # Buy dominance > 52% for long
@@ -584,6 +600,13 @@ class Settings:
     # Drawdown warning threshold (fraction of MAX_DAILY_DRAWDOWN).
     # e.g. 0.66 = warn when DD reaches 66% of the daily limit.
     DD_WARNING_THRESHOLD: float = 0.66
+
+    # ========================
+    # ML INSTRUMENTATION
+    # ========================
+    # Feature version — increment when strategy params change in ways that
+    # alter feature semantics (e.g. changing OB scoring weights, PD rules).
+    ML_FEATURE_VERSION: int = 1
 
     # ========================
     # RECONNECTION

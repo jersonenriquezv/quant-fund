@@ -1,6 +1,6 @@
 # Arquitectura del Sistema
-> Última actualización: 2026-03-12
-> Estado: **5/5 capas implementadas** — pipeline completo Data → Strategy → Risk → Execution. AI filter currently bypassed for all active setups (setup_a in AI_BYPASS_SETUP_TYPES, setup_d variants in QUICK_SETUP_TYPES). ENABLED_SETUPS: setup_a, setup_d_bos, setup_d_choch. Setup B (0% WR) and F (34.8% WR) disabled. OB selector upgraded with composite scoring. PnL tracking con fee deduction (0.05% per side). Signal mode disponible (`SIGNAL_ONLY=true`).
+> Última actualización: 2026-03-13
+> Estado: **5/5 capas implementadas** — pipeline completo Data → Strategy → Risk → Execution. AI filter currently bypassed for all active setups (setup_a in AI_BYPASS_SETUP_TYPES, setup_d variants in QUICK_SETUP_TYPES). ENABLED_SETUPS: setup_a, setup_d_bos, setup_d_choch. Setup B (0% WR) and F (34.8% WR) disabled. OB selector upgraded with composite scoring. PnL tracking con fee deduction (0.05% per side). Signal mode disponible (`SIGNAL_ONLY=true`). **ML instrumentation** active: `ml_setups` table captures structured features at detection + outcomes at close.
 
 ## Qué hace (para entenderlo rápido)
 El sistema es un bot de trading que funciona como una línea de ensamblaje. Los datos entran por un lado, pasan por 5 filtros en orden, y si todos dicen "sí", se ejecuta el trade. Si cualquier filtro dice "no", el trade se descarta.
@@ -258,7 +258,50 @@ python scripts/backtest.py --days 60 --capital 10000 --csv
 - Reconstruir estado de Risk Service desde PostgreSQL al arrancar
 - Ver `docs/to-fix.md` para backlog completo (~30 IMPORTANT + 29 MINOR issues)
 
+## ML Instrumentation
+
+Desde 2026-03-13, el bot registra cada setup detectado con features estructurados en la tabla `ml_setups` de PostgreSQL. Objetivo: recolectar datos limpios (sin data leakage) para entrenar modelos ML futuros.
+
+### Dos modelos objetivo
+1. **Fill probability** — ¿este setup se va a llenar? Entrena con `filled_*` (positivo) + `unfilled_timeout` + `replaced` (negativo).
+2. **Trade quality** — si se llena, ¿será rentable? Entrena solo con `filled_*`. Label: `pnl_pct`.
+
+### Qué se captura
+
+**Al detectar (antes de dedup/risk):**
+- Geometría del setup (entry, SL, TP, R:R, risk_distance)
+- Confluences descompuestas (has_sweep, has_choch, ob_volume_ratio, pd_aligned, etc.)
+- Market snapshot (funding, OI, CVD, buy_dominance)
+- Stale/late entry features (entry_distance_pct, sl_distance_pct, setup_age_minutes)
+- Missingness flags (has_funding, has_oi, has_cvd, has_news, has_whales)
+- Risk context (capital, open_positions, daily_dd, weekly_dd)
+- `feature_version` (incrementar en `ML_FEATURE_VERSION` cuando cambien params de estrategia)
+
+**Al resolver:**
+- `outcome_type`: filled_tp, filled_sl, filled_trailing, filled_timeout, unfilled_timeout, risk_rejected, deduped, replaced
+- PnL, actual entry/exit, exit_reason, fill_duration_ms, trade_duration_ms
+
+### Archivos
+- `shared/ml_features.py` — extraction functions
+- `shared/models.py` — `TradeSetup.setup_id` (uuid auto-generated)
+- `data_service/data_store.py` — `ml_setups` table, `insert_ml_setup()`, `update_ml_setup_outcome()`
+- `execution_service/models.py` — `ManagedPosition.setup_id`
+- `main.py` — `_ml_log_setup()`, `_ml_resolve_outcome()` (fire-and-forget)
+- `execution_service/monitor.py` — `_ml_resolve_close()` (outcome on trade close/cancel/replace)
+- `config/settings.py` — `ML_FEATURE_VERSION`
+
+### Leakage safety
+- Features capturados ANTES de dedup/risk check (strategy-time)
+- Risk context separado (safe para fill model, caution para quality model)
+- No se usa información de outcome en features
+
+### Timeline
+- Fill model (~200 samples): ~5 meses a 10 trades/semana
+- Quality model (~500 samples): ~12 meses
+- Hasta entonces: solo recolección de datos
+
 ## Cambios recientes
+- 2026-03-13: **ML Instrumentation** — New `ml_setups` PostgreSQL table captures structured features for every detected setup (before dedup/risk). `TradeSetup.setup_id` (uuid) tracks each setup across detection→risk→execution→close. Features decomposed at write time: confluences (has_sweep, has_choch, ob_volume_ratio, cvd_aligned, pd_aligned), market snapshot (funding, OI, CVD, buy_dominance), stale/late-entry (entry_distance_pct, setup_age_minutes), missingness flags (has_funding, has_oi, has_cvd, has_news, has_whales). Outcomes resolved: filled_tp/sl/trailing/timeout, unfilled_timeout, risk_rejected, deduped, replaced. `ML_FEATURE_VERSION=1` in settings. New file: `shared/ml_features.py`. Pipeline instrumented in `main.py`, outcome resolution in `execution_service/monitor.py`. 14 new tests. Zero impact on trading logic — pure data collection.
 - 2026-03-11: **Single mode + PnL fix + Institutional AI** — Removed dual profile system (default/aggressive). Aggressive values merged as new defaults: AI_MIN_CONFIDENCE 0.50, MAX_DAILY_DRAWDOWN 5%, MAX_WEEKLY_DRAWDOWN 10%, COOLDOWN_MINUTES 15, MAX_TRADES_PER_DAY 10, MIN_RISK_REWARD 1.2, OB_PROXIMITY_PCT 0.008, PD_EQUILIBRIUM_BAND 0.01, ALLOW_EQUILIBRIUM_TRADES True, HTF_BIAS_REQUIRE_4H False, ENTRY_TIMEOUT_SECONDS 21600. PnL tracking now deducts trading fees (TRADING_FEE_RATE 0.05% per side) and stores actual_exit_price. All exit paths compute PnL before closing. AI prompt rewritten with scoring rubric (4 dimensions: setup_quality, market_support, contradiction, data_sufficiency). Deleted: ProfileSelector component, profile API route, profile sync in main.py. 478 tests pass.
 - 2026-03-11: **HTF Campaign Trading** — Position trades en 4H con Daily bias. CampaignMonitor gestiona ciclo de vida: initial entry → pyramid adds (hasta 3, margen decreciente: $30/$15/$10/$5) → trailing SL en 4H swing levels → timeout 7 días. Sin TP — sale solo via trailing SL. Intraday bloqueado en par con campaña activa. Nuevos modelos: `CampaignAdd`, `PositionCampaign`. Nuevo archivo: `execution_service/campaign_monitor.py`. Nueva tabla PostgreSQL: `campaigns`. Daily candles (1D) backfill + WebSocket. Settings: `HTF_CAMPAIGN_*`. Pipeline HTF wired en `main.py`. Alert: `notify_campaign_closed()`.
 - 2026-03-11: **Signal Mode** — Nuevo modo semi-manual (`SIGNAL_ONLY=true`). Bot detecta setups y pasa todos los filtros pero NO ejecuta — manda señal por Telegram con entry/SL/TP/R:R/size/confluences/AI reasoning. Para validar calidad de señales antes de confiar en ejecución automática. `config/settings.py` (SIGNAL_ONLY flag), `shared/alert_manager.py` (notify_signal), `main.py` (pipeline conditional). 5 tests nuevos.

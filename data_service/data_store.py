@@ -481,6 +481,101 @@ class PostgresStore:
                 )
             """)
 
+            # ML instrumentation — setup feature snapshots for future model training
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS ml_setups (
+                    id SERIAL PRIMARY KEY,
+                    setup_id VARCHAR(20) NOT NULL UNIQUE,
+                    feature_version INT NOT NULL DEFAULT 1,
+
+                    -- Setup geometry
+                    timestamp BIGINT NOT NULL,
+                    pair VARCHAR(20) NOT NULL,
+                    direction VARCHAR(5) NOT NULL,
+                    setup_type VARCHAR(20) NOT NULL,
+                    entry_price DOUBLE PRECISION NOT NULL,
+                    sl_price DOUBLE PRECISION NOT NULL,
+                    tp1_price DOUBLE PRECISION NOT NULL,
+                    tp2_price DOUBLE PRECISION NOT NULL,
+                    htf_bias VARCHAR(10),
+                    ob_timeframe VARCHAR(5),
+
+                    -- Derived geometry
+                    risk_distance_pct DOUBLE PRECISION,
+                    rr_ratio DOUBLE PRECISION,
+                    entry_distance_pct DOUBLE PRECISION,
+                    sl_distance_pct DOUBLE PRECISION,
+                    current_price_at_detection DOUBLE PRECISION,
+                    confluence_count INT,
+
+                    -- Stale / late entry
+                    setup_age_minutes DOUBLE PRECISION,
+
+                    -- Decomposed confluences
+                    has_liquidity_sweep BOOLEAN DEFAULT FALSE,
+                    has_choch BOOLEAN DEFAULT FALSE,
+                    has_bos BOOLEAN DEFAULT FALSE,
+                    has_fvg BOOLEAN DEFAULT FALSE,
+                    has_breaker_block BOOLEAN DEFAULT FALSE,
+                    pd_zone VARCHAR(12),
+                    pd_aligned BOOLEAN,
+                    ob_volume_ratio DOUBLE PRECISION,
+                    sweep_volume_ratio DOUBLE PRECISION,
+                    has_oi_flush BOOLEAN DEFAULT FALSE,
+                    oi_flush_usd DOUBLE PRECISION DEFAULT 0,
+                    cvd_aligned BOOLEAN DEFAULT FALSE,
+                    funding_extreme BOOLEAN DEFAULT FALSE,
+
+                    -- Market state at detection
+                    funding_rate DOUBLE PRECISION,
+                    oi_usd DOUBLE PRECISION,
+                    cvd_5m DOUBLE PRECISION,
+                    cvd_15m DOUBLE PRECISION,
+                    cvd_1h DOUBLE PRECISION,
+                    buy_dominance DOUBLE PRECISION,
+                    fear_greed_score INT,
+
+                    -- Missingness flags
+                    has_funding BOOLEAN DEFAULT FALSE,
+                    has_oi BOOLEAN DEFAULT FALSE,
+                    has_cvd BOOLEAN DEFAULT FALSE,
+                    has_news BOOLEAN DEFAULT FALSE,
+                    has_whales BOOLEAN DEFAULT FALSE,
+                    whale_count INT DEFAULT 0,
+                    recent_flush_count INT DEFAULT 0,
+                    recent_flush_total_usd DOUBLE PRECISION DEFAULT 0,
+
+                    -- Risk context (portfolio state)
+                    risk_capital DOUBLE PRECISION,
+                    risk_open_positions INT,
+                    risk_daily_dd_pct DOUBLE PRECISION,
+                    risk_weekly_dd_pct DOUBLE PRECISION,
+                    risk_trades_today INT,
+
+                    -- Outcome (filled after trade resolves)
+                    outcome_type VARCHAR(20),
+                    pnl_pct DOUBLE PRECISION,
+                    pnl_usd DOUBLE PRECISION,
+                    actual_entry DOUBLE PRECISION,
+                    actual_exit DOUBLE PRECISION,
+                    exit_reason VARCHAR(20),
+                    fill_duration_ms BIGINT,
+                    trade_duration_ms BIGINT,
+
+                    -- Metadata
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    resolved_at TIMESTAMP
+                )
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_ml_setups_pair_ts
+                ON ml_setups(pair, timestamp DESC)
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_ml_setups_outcome
+                ON ml_setups(outcome_type) WHERE outcome_type IS NOT NULL
+            """)
+
         logger.info("PostgreSQL tables verified/created")
 
     # --- Candle Storage ---
@@ -697,6 +792,178 @@ class PostgresStore:
                 logger.error(f"PostgreSQL fetch open trades failed: {e}")
                 return []
         return []
+
+    # --- ML Setup Storage ---
+
+    def insert_ml_setup(
+        self,
+        setup_id: str,
+        features: dict,
+        risk_context: dict | None = None,
+        feature_version: int = 1,
+    ) -> bool:
+        """Insert a feature snapshot for a detected setup. Fire-and-forget."""
+        for attempt in range(2):
+            if not self._ensure_connected():
+                return False
+            try:
+                rc = risk_context or {}
+                with self._conn.cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO ml_setups (
+                            setup_id, feature_version, timestamp,
+                            pair, direction, setup_type,
+                            entry_price, sl_price, tp1_price, tp2_price,
+                            htf_bias, ob_timeframe,
+                            risk_distance_pct, rr_ratio, entry_distance_pct,
+                            sl_distance_pct, current_price_at_detection,
+                            confluence_count, setup_age_minutes,
+                            has_liquidity_sweep, has_choch, has_bos,
+                            has_fvg, has_breaker_block,
+                            pd_zone, pd_aligned,
+                            ob_volume_ratio, sweep_volume_ratio,
+                            has_oi_flush, oi_flush_usd,
+                            cvd_aligned, funding_extreme,
+                            funding_rate, oi_usd,
+                            cvd_5m, cvd_15m, cvd_1h,
+                            buy_dominance, fear_greed_score,
+                            has_funding, has_oi, has_cvd, has_news, has_whales,
+                            whale_count, recent_flush_count, recent_flush_total_usd,
+                            risk_capital, risk_open_positions,
+                            risk_daily_dd_pct, risk_weekly_dd_pct, risk_trades_today
+                        ) VALUES (
+                            %s, %s, %s,
+                            %s, %s, %s,
+                            %s, %s, %s, %s,
+                            %s, %s,
+                            %s, %s, %s,
+                            %s, %s,
+                            %s, %s,
+                            %s, %s, %s,
+                            %s, %s,
+                            %s, %s,
+                            %s, %s,
+                            %s, %s,
+                            %s, %s,
+                            %s, %s,
+                            %s, %s, %s,
+                            %s, %s,
+                            %s, %s, %s, %s, %s,
+                            %s, %s, %s,
+                            %s, %s,
+                            %s, %s, %s
+                        ) ON CONFLICT (setup_id) DO NOTHING""",
+                        (
+                            setup_id, feature_version, features.get("timestamp", 0),
+                            features.get("pair"), features.get("direction"), features.get("setup_type"),
+                            features.get("entry_price"), features.get("sl_price"),
+                            features.get("tp1_price"), features.get("tp2_price"),
+                            features.get("htf_bias"), features.get("ob_timeframe"),
+                            features.get("risk_distance_pct"), features.get("rr_ratio"),
+                            features.get("entry_distance_pct"),
+                            features.get("sl_distance_pct"),
+                            features.get("current_price_at_detection"),
+                            features.get("confluence_count"), features.get("setup_age_minutes"),
+                            features.get("has_liquidity_sweep"), features.get("has_choch"),
+                            features.get("has_bos"),
+                            features.get("has_fvg"), features.get("has_breaker_block"),
+                            features.get("pd_zone"), features.get("pd_aligned"),
+                            features.get("ob_volume_ratio"), features.get("sweep_volume_ratio"),
+                            features.get("has_oi_flush"), features.get("oi_flush_usd"),
+                            features.get("cvd_aligned"), features.get("funding_extreme"),
+                            features.get("funding_rate"), features.get("oi_usd"),
+                            features.get("cvd_5m"), features.get("cvd_15m"), features.get("cvd_1h"),
+                            features.get("buy_dominance"), features.get("fear_greed_score"),
+                            features.get("has_funding"), features.get("has_oi"),
+                            features.get("has_cvd"), features.get("has_news"),
+                            features.get("has_whales"),
+                            features.get("whale_count"), features.get("recent_flush_count"),
+                            features.get("recent_flush_total_usd"),
+                            rc.get("risk_capital"), rc.get("risk_open_positions"),
+                            rc.get("risk_daily_dd_pct"), rc.get("risk_weekly_dd_pct"),
+                            rc.get("risk_trades_today"),
+                        ),
+                    )
+                logger.debug(f"ML: inserted setup {setup_id} ({features.get('pair')} {features.get('setup_type')})")
+                return True
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                logger.warning(f"ML setup insert connection error (attempt {attempt+1}): {e}")
+                self._conn = None
+                if attempt == 1:
+                    return False
+            except psycopg2.Error as e:
+                logger.error(f"ML setup insert failed: setup_id={setup_id} {e}")
+                return False
+        return False
+
+    def update_ml_setup_outcome(
+        self,
+        setup_id: str,
+        outcome_type: str,
+        pnl_pct: float | None = None,
+        pnl_usd: float | None = None,
+        actual_entry: float | None = None,
+        actual_exit: float | None = None,
+        exit_reason: str | None = None,
+        fill_duration_ms: int | None = None,
+        trade_duration_ms: int | None = None,
+        risk_context: dict | None = None,
+    ) -> bool:
+        """Update outcome columns for an ml_setup row. Fire-and-forget."""
+        for attempt in range(2):
+            if not self._ensure_connected():
+                return False
+            try:
+                fields = ["outcome_type = %s", "resolved_at = NOW()"]
+                values: list = [outcome_type]
+
+                if pnl_pct is not None:
+                    fields.append("pnl_pct = %s")
+                    values.append(pnl_pct)
+                if pnl_usd is not None:
+                    fields.append("pnl_usd = %s")
+                    values.append(pnl_usd)
+                if actual_entry is not None:
+                    fields.append("actual_entry = %s")
+                    values.append(actual_entry)
+                if actual_exit is not None:
+                    fields.append("actual_exit = %s")
+                    values.append(actual_exit)
+                if exit_reason is not None:
+                    fields.append("exit_reason = %s")
+                    values.append(exit_reason)
+                if fill_duration_ms is not None:
+                    fields.append("fill_duration_ms = %s")
+                    values.append(fill_duration_ms)
+                if trade_duration_ms is not None:
+                    fields.append("trade_duration_ms = %s")
+                    values.append(trade_duration_ms)
+                # Risk context can be added at risk check time
+                if risk_context:
+                    for key in ("risk_capital", "risk_open_positions",
+                                "risk_daily_dd_pct", "risk_weekly_dd_pct",
+                                "risk_trades_today"):
+                        if key in risk_context:
+                            fields.append(f"{key} = %s")
+                            values.append(risk_context[key])
+
+                values.append(setup_id)
+                with self._conn.cursor() as cur:
+                    cur.execute(
+                        f"UPDATE ml_setups SET {', '.join(fields)} WHERE setup_id = %s",
+                        values,
+                    )
+                logger.debug(f"ML: updated setup {setup_id} outcome={outcome_type}")
+                return True
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                logger.warning(f"ML setup update connection error (attempt {attempt+1}): {e}")
+                self._conn = None
+                if attempt == 1:
+                    return False
+            except psycopg2.Error as e:
+                logger.error(f"ML setup outcome update failed: setup_id={setup_id} {e}")
+                return False
+        return False
 
     # --- Campaign Storage ---
 

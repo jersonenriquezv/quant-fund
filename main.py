@@ -19,6 +19,7 @@ import time
 from config.settings import settings, QUICK_SETUP_TYPES, AI_BYPASS_SETUP_TYPES
 from shared.logger import setup_logger
 from shared.models import Candle, AIDecision
+from shared.ml_features import extract_setup_features, extract_risk_context
 from data_service.service import DataService
 from strategy_service import StrategyService
 from ai_service import AIService
@@ -148,6 +149,9 @@ async def on_candle_confirmed(candle: Candle) -> None:
         f"confluences={setup.confluences}"
     )
 
+    # --- ML: capture feature snapshot BEFORE dedup/risk checks ---
+    _ml_log_setup(setup, candle)
+
     # Dedup: block identical setups within TTL (covers ALL setup types, not just Claude)
     dedup_key = (setup.pair, setup.direction, setup.setup_type,
                  round(setup.entry_price, 2))
@@ -159,6 +163,7 @@ async def on_candle_confirmed(candle: Candle) -> None:
             f"{setup.setup_type} entry={setup.entry_price:.2f} — "
             f"already processed {int(now - last_eval)}s ago, skipping"
         )
+        _ml_resolve_outcome(setup.setup_id, "deduped")
         return
 
     # Pre-check: can this pair meet exchange minimum order size?
@@ -175,6 +180,7 @@ async def on_candle_confirmed(candle: Candle) -> None:
                 f"(need ${min_size * setup.entry_price:.0f} notional, "
                 f"have ${max_notional:.0f} at {settings.MAX_LEVERAGE}x)"
             )
+            _ml_resolve_outcome(setup.setup_id, "risk_rejected")
             return
 
     # Layer 3: AI Service — Claude filter
@@ -208,6 +214,11 @@ async def on_candle_confirmed(candle: Candle) -> None:
                 "direction": setup.direction,
                 "reason": approval.reason,
             })
+            # ML: resolve with risk context at rejection time
+            _ml_resolve_outcome(
+                setup.setup_id, "risk_rejected",
+                risk_context=extract_risk_context(_risk_service),
+            )
             # Cache structural risk rejections (SL too close, R:R too low) so the
             # same broken setup doesn't re-trigger Claude after dedup TTL expires.
             reason_lower = (approval.reason or "").lower()
@@ -246,6 +257,56 @@ async def on_candle_confirmed(candle: Candle) -> None:
                 _setup_dedup_cache[dedup_key] = time.time()
 
     _emit_metric("pipeline_latency_ms", (time.monotonic() - pipeline_start) * 1000, candle.pair)
+
+
+# ================================================================
+# ML instrumentation helpers (fire-and-forget)
+# ================================================================
+
+def _ml_log_setup(setup, candle: Candle) -> None:
+    """Log setup features to ml_setups table at detection time."""
+    if _data_service is None or _data_service.postgres is None:
+        return
+    try:
+        snapshot = _data_service.get_market_snapshot(candle.pair)
+        current_price = candle.close
+        features = extract_setup_features(setup, snapshot, current_price)
+        # Add fields that come from setup but aren't in the feature dict yet
+        features["timestamp"] = setup.timestamp
+        features["tp1_price"] = setup.tp1_price
+        features["tp2_price"] = setup.tp2_price
+
+        # Risk context at detection time (before risk check)
+        risk_ctx = None
+        if _risk_service is not None:
+            risk_ctx = extract_risk_context(_risk_service)
+
+        ok = _data_service.postgres.insert_ml_setup(
+            setup_id=setup.setup_id,
+            features=features,
+            risk_context=risk_ctx,
+            feature_version=settings.ML_FEATURE_VERSION,
+        )
+        _emit_metric("ml_setup_insert_ok" if ok else "ml_setup_insert_error", 1, setup.pair)
+    except Exception as e:
+        logger.error(f"ML setup logging failed: {e}")
+        _emit_metric("ml_setup_insert_error", 1, setup.pair)
+
+
+def _ml_resolve_outcome(setup_id: str, outcome_type: str, **kwargs) -> None:
+    """Resolve an ml_setup outcome (fire-and-forget)."""
+    if not setup_id or _data_service is None or _data_service.postgres is None:
+        return
+    try:
+        ok = _data_service.postgres.update_ml_setup_outcome(
+            setup_id=setup_id,
+            outcome_type=outcome_type,
+            **kwargs,
+        )
+        _emit_metric("ml_outcome_update_ok" if ok else "ml_outcome_update_error", 1)
+    except Exception as e:
+        logger.error(f"ML outcome resolution failed: {setup_id} {e}")
+        _emit_metric("ml_outcome_update_error", 1)
 
 
 # ================================================================

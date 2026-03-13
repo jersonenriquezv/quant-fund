@@ -29,6 +29,7 @@ class ManagedPosition:
     pair: str
     direction: str              # "long" or "short"
     setup_type: str             # "setup_a" or "setup_b"
+    setup_id: str = ""          # ML tracking ID (from TradeSetup.setup_id)
 
     # Phase
     phase: str = "pending_entry"  # pending_entry, active, closed

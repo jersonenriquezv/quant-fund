@@ -369,6 +369,7 @@ class ExecutionService:
             pair=setup.pair,
             direction=setup.direction,
             setup_type=setup.setup_type,
+            setup_id=setup.setup_id,
             phase="pending_entry",
             entry_price=setup.entry_price,
             sl_price=setup.sl_price,
