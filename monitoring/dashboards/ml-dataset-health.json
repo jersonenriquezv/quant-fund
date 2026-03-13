@@ -1,0 +1,465 @@
+{
+  "uid": "ml-dataset-health",
+  "title": "ML Dataset Health",
+  "tags": [
+    "ml",
+    "system"
+  ],
+  "timezone": "browser",
+  "refresh": "5m",
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Total Setups Captured",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT COUNT(*) AS \"Total Setups\" FROM ml_setups",
+          "format": "table",
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [{"parameters": [], "type": "function"}],
+            "groupBy": [{"property": {"type": "string"}, "type": "groupBy"}],
+            "limit": 50
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "yellow", "value": null},
+              {"color": "green", "value": 50}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Resolved %",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT ROUND(100.0 * SUM(CASE WHEN outcome_type IS NOT NULL THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) AS \"Resolved %\" FROM ml_setups",
+          "format": "table",
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [{"parameters": [], "type": "function"}],
+            "groupBy": [{"property": {"type": "string"}, "type": "groupBy"}],
+            "limit": 50
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "yellow", "value": 90},
+              {"color": "green", "value": 99}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Unresolved (No Outcome)",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT COUNT(*) AS \"Unresolved\" FROM ml_setups WHERE outcome_type IS NULL AND created_at < NOW() - INTERVAL '2 hours'",
+          "format": "table",
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [{"parameters": [], "type": "function"}],
+            "groupBy": [{"property": {"type": "string"}, "type": "groupBy"}],
+            "limit": 50
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 1},
+              {"color": "red", "value": 5}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Insert Errors (24h)",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT COALESCE(SUM(value), 0) AS \"Errors\" FROM bot_metrics WHERE metric_name IN ('ml_setup_insert_error', 'ml_outcome_update_error') AND created_at > NOW() - INTERVAL '24 hours'",
+          "format": "table",
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [{"parameters": [], "type": "function"}],
+            "groupBy": [{"property": {"type": "string"}, "type": "groupBy"}],
+            "limit": 50
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 1},
+              {"color": "red", "value": 5}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Outcome Distribution",
+      "type": "piechart",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 4
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT outcome_type AS \"Outcome\", COUNT(*) AS \"Count\" FROM ml_setups WHERE outcome_type IS NOT NULL GROUP BY outcome_type ORDER BY COUNT(*) DESC",
+          "format": "table",
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [{"parameters": [], "type": "function"}],
+            "groupBy": [{"property": {"type": "string"}, "type": "groupBy"}],
+            "limit": 50
+          }
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"]
+        },
+        "pieType": "pie",
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": ["value", "percent"]
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Setups by Setup Type",
+      "type": "barchart",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 4
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT setup_type AS \"Setup Type\", COUNT(*) AS \"Total\", SUM(CASE WHEN outcome_type LIKE 'filled_%' THEN 1 ELSE 0 END) AS \"Filled\", SUM(CASE WHEN outcome_type = 'unfilled_timeout' THEN 1 ELSE 0 END) AS \"Unfilled\", SUM(CASE WHEN outcome_type IN ('risk_rejected', 'deduped', 'replaced') THEN 1 ELSE 0 END) AS \"Filtered\" FROM ml_setups GROUP BY setup_type ORDER BY COUNT(*) DESC",
+          "format": "table",
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [{"parameters": [], "type": "function"}],
+            "groupBy": [{"property": {"type": "string"}, "type": "groupBy"}],
+            "limit": 50
+          }
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "stacking": "normal"
+      }
+    },
+    {
+      "id": 7,
+      "title": "Setups Captured Over Time",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 12
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT DATE_TRUNC('day', created_at) AS time, COUNT(*) AS \"Setups\" FROM ml_setups WHERE $__timeFilter(created_at) GROUP BY DATE_TRUNC('day', created_at) ORDER BY time",
+          "format": "time_series",
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [{"parameters": [], "type": "function"}],
+            "groupBy": [{"property": {"type": "string"}, "type": "groupBy"}],
+            "limit": 50
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 50
+          }
+        }
+      }
+    },
+    {
+      "id": 8,
+      "title": "Fill Rate by Pair",
+      "type": "bargauge",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 12
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT pair AS \"Pair\", ROUND(100.0 * SUM(CASE WHEN outcome_type LIKE 'filled_%' THEN 1 ELSE 0 END) / NULLIF(SUM(CASE WHEN outcome_type LIKE 'filled_%' OR outcome_type = 'unfilled_timeout' THEN 1 ELSE 0 END), 0), 1) AS \"Fill Rate %\" FROM ml_setups WHERE outcome_type IS NOT NULL GROUP BY pair",
+          "format": "table",
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [{"parameters": [], "type": "function"}],
+            "groupBy": [{"property": {"type": "string"}, "type": "groupBy"}],
+            "limit": 50
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "yellow", "value": 30},
+              {"color": "green", "value": 60}
+            ]
+          }
+        }
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient"
+      }
+    },
+    {
+      "id": 9,
+      "title": "Data Completeness",
+      "type": "bargauge",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 20
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT ROUND(100.0 * SUM(CASE WHEN has_funding THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) AS \"Funding\", ROUND(100.0 * SUM(CASE WHEN has_oi THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) AS \"OI\", ROUND(100.0 * SUM(CASE WHEN has_cvd THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) AS \"CVD\", ROUND(100.0 * SUM(CASE WHEN has_news THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) AS \"News\", ROUND(100.0 * SUM(CASE WHEN has_whales THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) AS \"Whales\" FROM ml_setups",
+          "format": "table",
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [{"parameters": [], "type": "function"}],
+            "groupBy": [{"property": {"type": "string"}, "type": "groupBy"}],
+            "limit": 50
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "yellow", "value": 50},
+              {"color": "green", "value": 80}
+            ]
+          }
+        }
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient"
+      }
+    },
+    {
+      "id": 10,
+      "title": "ML Health Metrics",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 20
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT DATE_TRUNC('hour', created_at) AS time, metric_name AS metric, SUM(value) AS \"Count\" FROM bot_metrics WHERE metric_name LIKE 'ml_%' AND $__timeFilter(created_at) GROUP BY DATE_TRUNC('hour', created_at), metric_name ORDER BY time",
+          "format": "time_series",
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [{"parameters": [], "type": "function"}],
+            "groupBy": [{"property": {"type": "string"}, "type": "groupBy"}],
+            "limit": 50
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 50,
+            "stacking": {"mode": "normal"}
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byRegexp", "options": "error"},
+            "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}]
+          },
+          {
+            "matcher": {"id": "byRegexp", "options": "ok"},
+            "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "green"}}]
+          }
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "title": "Recent Setups",
+      "type": "table",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 28
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT created_at AS \"Time\", pair AS \"Pair\", direction AS \"Dir\", setup_type AS \"Setup\", ROUND(entry_price::numeric, 2) AS \"Entry\", confluence_count AS \"Conf\", COALESCE(outcome_type, 'pending') AS \"Outcome\", ROUND(COALESCE(pnl_pct, 0)::numeric, 3) AS \"PnL %\", ROUND(COALESCE(pnl_usd, 0)::numeric, 2) AS \"PnL $\", CASE WHEN has_funding THEN 'Y' ELSE 'N' END AS \"Fund\", CASE WHEN has_cvd THEN 'Y' ELSE 'N' END AS \"CVD\", CASE WHEN has_oi THEN 'Y' ELSE 'N' END AS \"OI\" FROM ml_setups ORDER BY created_at DESC LIMIT 50",
+          "format": "table",
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [{"parameters": [], "type": "function"}],
+            "groupBy": [{"property": {"type": "string"}, "type": "groupBy"}],
+            "limit": 50
+          }
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "version": 1
+}
