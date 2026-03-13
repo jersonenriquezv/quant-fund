@@ -594,8 +594,8 @@ class Settings:
     # Whale notification filtering — reduce noise
     # Only notify exchange deposits/withdrawals (skip neutral inter-wallet transfers)
     WHALE_NOTIFY_EXCHANGE_ONLY: bool = True
-    # Minimum USD value to trigger a Telegram notification ($1M = market-moving)
-    WHALE_NOTIFY_MIN_USD: float = 1_000_000
+    # Minimum USD value to trigger a Telegram notification
+    WHALE_NOTIFY_MIN_USD: float = 200_000
 
     # Drawdown warning threshold (fraction of MAX_DAILY_DRAWDOWN).
     # e.g. 0.66 = warn when DD reaches 66% of the daily limit.

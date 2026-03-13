@@ -468,8 +468,12 @@ class DataService:
                     f"every {settings.ETHERSCAN_CHECK_INTERVAL}s")
 
         while self._running:
+            count_before = len(self._etherscan._movements)
             await self._etherscan._poll_all_wallets()
             self._publish_whale_movements()
+            new_movements = self._etherscan._movements[count_before:]
+            if new_movements:
+                await self._notify_new_movements(new_movements)
             await asyncio.sleep(settings.ETHERSCAN_CHECK_INTERVAL)
 
     async def _btc_whale_loop(self) -> None:
@@ -483,11 +487,15 @@ class DataService:
                     f"every {settings.MEMPOOL_CHECK_INTERVAL}s")
 
         while self._running:
+            count_before = len(self._btc_whale._movements)
             await self._btc_whale._poll_all_wallets()
             self._publish_whale_movements()
+            new_movements = self._btc_whale._movements[count_before:]
+            if new_movements:
+                await self._notify_new_movements(new_movements)
             await asyncio.sleep(settings.MEMPOOL_CHECK_INTERVAL)
 
-    async def _notify_new_movements(self, movements: list, before_ids: set) -> None:
+    async def _notify_new_movements(self, movements: list) -> None:
         """Send whale alerts via AlertManager with strict filtering.
 
         Only exchange deposits/withdrawals above WHALE_NOTIFY_MIN_USD are sent
@@ -497,8 +505,7 @@ class DataService:
         """
         if self._alert_manager is None:
             return
-        new_movements = [m for m in movements if id(m) not in before_ids]
-        for m in new_movements:
+        for m in movements:
             # Skip neutral inter-wallet transfers (no directional signal)
             if settings.WHALE_NOTIFY_EXCHANGE_ONLY:
                 if m.action not in ("exchange_deposit", "exchange_withdrawal"):
