@@ -303,6 +303,56 @@ class SimulatedTrade:
 
 
 # ================================================================
+# SimulatedCampaign — tracks an HTF campaign through its lifecycle
+# ================================================================
+
+@dataclass
+class SimulatedCampaign:
+    """An HTF campaign being simulated through candle replay.
+
+    Exit management (matches live campaigns):
+    - No TP — exit via trailing SL on 4H swing levels only
+    - Pyramid adds: up to 3 with decreasing margin ($15/$10/$5)
+    - Timeout: 7 days max duration
+    """
+
+    # Setup identity
+    pair: str
+    direction: str              # "long" or "short"
+    setup_type: str
+
+    # Target prices
+    entry_price: float
+    sl_price: float             # Initial SL (OB edge)
+    initial_margin: float
+    leverage: float
+    position_size: float        # Initial size in base currency
+
+    # State tracking
+    phase: str = "pending"      # "pending" -> "active" -> "closed"
+    current_sl: float = 0.0     # Trails on 4H swing levels
+    weighted_entry: float = 0.0 # VWAP of all fills
+    total_size: float = 0.0     # Sum of all filled sizes
+    total_margin: float = 0.0   # Sum of all margins
+
+    # Pyramid adds (filled)
+    adds: list = field(default_factory=list)  # list of dicts
+    # Pending add: {add_number, entry_price, margin, size, deadline_ms}
+    pending_add: dict | None = None
+
+    # Timing (ms)
+    setup_time_ms: int = 0
+    entry_deadline_ms: int = 0
+    entry_time_ms: int = 0
+    close_time_ms: int = 0
+
+    # Exit info
+    exit_price: float = 0.0
+    pnl_usd: float = 0.0
+    exit_reason: str = ""
+
+
+# ================================================================
 # TradeSimulator — fill simulation engine
 # ================================================================
 
@@ -665,6 +715,285 @@ class TradeSimulator:
 
 
 # ================================================================
+# CampaignSimulator — HTF campaign simulation engine
+# ================================================================
+
+class CampaignSimulator:
+    """Simulates HTF campaign lifecycle: entry, pyramid adds, trailing SL, timeout.
+
+    Matches production CampaignMonitor logic:
+    - No TP orders — exit via trailing SL on 4H swing levels only
+    - Pyramid adds (up to 3) with decreasing margin
+    - 7-day max duration
+    - One campaign at a time (HTF_MAX_CAMPAIGNS=1)
+    """
+
+    def __init__(self, initial_capital: float,
+                 fill_mode: str = "optimistic",
+                 fill_buffer_pct: float = 0.001):
+        self.initial_capital: float = initial_capital
+        self.equity: float = initial_capital
+        self.pending: SimulatedCampaign | None = None
+        self.active: SimulatedCampaign | None = None
+        self.closed: list[SimulatedCampaign] = []
+        self.equity_curve: list[tuple[int, float]] = [(0, initial_capital)]
+        self.fill_mode: str = fill_mode
+        self.fill_buffer_pct: float = fill_buffer_pct
+
+        # Counters
+        self._campaigns_created: int = 0
+        self._campaigns_filled: int = 0
+        self._campaigns_timeout: int = 0
+        self._adds_attempted: int = 0
+        self._adds_filled: int = 0
+
+        # Failed entries — prevents re-entering same OB after SL
+        self._failed_entries: set[tuple[str, str, float]] = set()
+
+    def on_setup(self, setup: TradeSetup, candle: Candle) -> bool:
+        """Accept a new campaign setup. Returns True if pending created."""
+        if self.active is not None or self.pending is not None:
+            return False
+
+        # Don't re-enter an OB that already lost
+        entry_key = (setup.pair, setup.direction, round(setup.entry_price, 2))
+        if entry_key in self._failed_entries:
+            return False
+
+        margin = settings.HTF_INITIAL_MARGIN
+        leverage = float(settings.MAX_LEVERAGE)
+        notional = margin * leverage
+        position_size = notional / setup.entry_price
+
+        # Check exchange minimum
+        min_size = settings.MIN_ORDER_SIZES.get(setup.pair, 0)
+        if min_size > 0 and position_size < min_size:
+            return False
+
+        campaign = SimulatedCampaign(
+            pair=setup.pair,
+            direction=setup.direction,
+            setup_type=setup.setup_type,
+            entry_price=setup.entry_price,
+            sl_price=setup.sl_price,
+            initial_margin=margin,
+            leverage=leverage,
+            position_size=position_size,
+            current_sl=setup.sl_price,
+            setup_time_ms=candle.timestamp,
+            entry_deadline_ms=candle.timestamp + settings.HTF_ENTRY_TIMEOUT_SECONDS * 1000,
+        )
+        self.pending = campaign
+        self._campaigns_created += 1
+        return True
+
+    def on_candle(self, candle: Candle, strategy=None) -> None:
+        """Process one candle for campaign fills/exits."""
+        just_filled = self._process_pending(candle)
+        # Don't check SL on the same candle that filled the entry —
+        # avoids false immediate SL hits on wide 4H candles
+        if not just_filled:
+            self._process_active(candle, strategy)
+
+    def _check_fill(self, direction: str, entry_price: float,
+                    candle: Candle) -> bool:
+        """Check if entry would fill on this candle."""
+        if self.fill_mode == "conservative":
+            buffer = entry_price * self.fill_buffer_pct
+            if direction == "long":
+                return candle.low <= (entry_price - buffer)
+            else:
+                return candle.high >= (entry_price + buffer)
+        else:  # optimistic
+            if direction == "long":
+                return candle.low <= entry_price
+            else:
+                return candle.high >= entry_price
+
+    def _process_pending(self, candle: Candle) -> bool:
+        """Check if pending campaign entry fills or expires. Returns True if filled."""
+        if self.pending is None or self.pending.pair != candle.pair:
+            return False
+
+        c = self.pending
+
+        # Entry timeout (24h default)
+        if candle.timestamp > c.entry_deadline_ms:
+            c.phase = "closed"
+            c.exit_reason = "entry_timeout"
+            c.close_time_ms = candle.timestamp
+            self.closed.append(c)
+            self.pending = None
+            self._campaigns_timeout += 1
+            return False
+
+        # Fill check
+        if self._check_fill(c.direction, c.entry_price, candle):
+            c.phase = "active"
+            c.entry_time_ms = candle.timestamp
+            c.weighted_entry = c.entry_price
+            c.total_size = c.position_size
+            c.total_margin = c.initial_margin
+            self.active = c
+            self.pending = None
+            self._campaigns_filled += 1
+            return True
+
+        return False
+
+    def _process_active(self, candle: Candle, strategy=None) -> None:
+        """Check SL, trailing SL, pending adds, timeout for active campaign."""
+        if self.active is None or self.active.pair != candle.pair:
+            return
+
+        c = self.active
+
+        # Timeout (7 days)
+        duration_ms = candle.timestamp - c.entry_time_ms
+        if duration_ms >= settings.HTF_MAX_CAMPAIGN_DURATION * 1000:
+            self._close_campaign(c, candle.close, "timeout", candle.timestamp)
+            return
+
+        # SL check (priority — always first)
+        if c.direction == "long":
+            sl_hit = candle.low <= c.current_sl
+        else:
+            sl_hit = candle.high >= c.current_sl
+
+        if sl_hit:
+            self._close_campaign(c, c.current_sl, "trailing_sl", candle.timestamp)
+            return
+
+        # Check pending add fill
+        if c.pending_add is not None:
+            self._check_add_fill(c, candle)
+
+        # Trail SL on 4H swing levels (only on 4H candles)
+        if strategy is not None and candle.timeframe == settings.HTF_CAMPAIGN_SIGNAL_TF:
+            self._trail_sl(c, strategy)
+
+    def _trail_sl(self, c: SimulatedCampaign, strategy) -> None:
+        """Trail SL on 4H swing levels. Only moves SL up (long) or down (short)."""
+        swing_highs, swing_lows = strategy.get_htf_swing_levels(c.pair)
+
+        if c.direction == "long" and swing_lows:
+            for sl in sorted(swing_lows, key=lambda s: s.timestamp, reverse=True):
+                if sl.price > c.current_sl and sl.price < c.weighted_entry:
+                    c.current_sl = sl.price
+                    break
+        elif c.direction == "short" and swing_highs:
+            for sh in sorted(swing_highs, key=lambda s: s.timestamp, reverse=True):
+                if sh.price < c.current_sl and sh.price > c.weighted_entry:
+                    c.current_sl = sh.price
+                    break
+
+    def try_add(self, c: SimulatedCampaign, setup: TradeSetup,
+                candle: Candle) -> bool:
+        """Try to place a pyramid add on active campaign."""
+        if c.pending_add is not None:
+            return False
+        if len(c.adds) >= settings.HTF_MAX_ADDS:
+            return False
+        if setup.direction != c.direction:
+            return False
+
+        # Check profitability (>= HTF_ADD_MIN_RR from initial entry)
+        risk = abs(c.weighted_entry - c.sl_price)
+        if risk <= 0:
+            return False
+
+        if c.direction == "long":
+            profit = candle.close - c.weighted_entry
+        else:
+            profit = c.weighted_entry - candle.close
+
+        if (profit / risk) < settings.HTF_ADD_MIN_RR:
+            return False
+
+        # Determine add margin (decreasing: $15, $10, $5)
+        add_number = len(c.adds) + 1
+        margins = {
+            1: settings.HTF_ADD1_MARGIN,
+            2: settings.HTF_ADD2_MARGIN,
+            3: settings.HTF_ADD3_MARGIN,
+        }
+        margin = margins.get(add_number, 0)
+        if margin <= 0:
+            return False
+
+        notional = margin * c.leverage
+        add_size = notional / setup.entry_price
+
+        c.pending_add = {
+            "add_number": add_number,
+            "entry_price": setup.entry_price,
+            "margin": margin,
+            "size": add_size,
+            "deadline_ms": candle.timestamp + 14400 * 1000,  # 4h timeout
+        }
+        self._adds_attempted += 1
+        return True
+
+    def _check_add_fill(self, c: SimulatedCampaign, candle: Candle) -> None:
+        """Check if a pending pyramid add fills or times out."""
+        add = c.pending_add
+        if add is None:
+            return
+
+        # Add timeout (4 hours)
+        if candle.timestamp > add["deadline_ms"]:
+            c.pending_add = None
+            return
+
+        # Fill check
+        if self._check_fill(c.direction, add["entry_price"], candle):
+            # Update weighted entry (VWAP)
+            old_notional = c.weighted_entry * c.total_size
+            new_notional = add["entry_price"] * add["size"]
+            c.total_size += add["size"]
+            c.weighted_entry = (old_notional + new_notional) / c.total_size
+            c.total_margin += add["margin"]
+            c.adds.append(add)
+            c.pending_add = None
+            self._adds_filled += 1
+
+    def _close_campaign(self, c: SimulatedCampaign, price: float,
+                        reason: str, timestamp_ms: int) -> None:
+        """Close campaign and compute PnL net of fees."""
+        c.phase = "closed"
+        c.exit_price = price
+        c.close_time_ms = timestamp_ms
+        c.exit_reason = reason
+
+        # PnL
+        if c.direction == "long":
+            c.pnl_usd = (price - c.weighted_entry) * c.total_size
+        else:
+            c.pnl_usd = (c.weighted_entry - price) * c.total_size
+
+        # Fees (entry + exit notional × fee rate)
+        entry_notional = c.weighted_entry * c.total_size
+        exit_notional = price * c.total_size
+        total_fees = (entry_notional + exit_notional) * settings.TRADING_FEE_RATE
+        c.pnl_usd -= total_fees
+
+        self.equity += c.pnl_usd
+        self.equity_curve.append((timestamp_ms, self.equity))
+        self.closed.append(c)
+        self.active = None
+
+        # Mark failed entry so we don't re-enter the same OB
+        if c.pnl_usd < 0:
+            self._failed_entries.add(
+                (c.pair, c.direction, round(c.entry_price, 2))
+            )
+
+    def get_closed_campaigns(self) -> list[SimulatedCampaign]:
+        """Return closed campaigns excluding entry timeouts."""
+        return [c for c in self.closed if c.exit_reason != "entry_timeout"]
+
+
+# ================================================================
 # Metrics computation
 # ================================================================
 
@@ -826,6 +1155,114 @@ def _compute_sharpe(trades: list[SimulatedTrade], initial_capital: float,
         return 0.0
 
     return (mean_r / std_r) * math.sqrt(365)
+
+
+# ================================================================
+# Campaign metrics
+# ================================================================
+
+@dataclass
+class CampaignMetrics:
+    """Computed performance metrics for HTF campaigns."""
+    total_campaigns: int = 0
+    wins: int = 0
+    losses: int = 0
+    win_rate: float = 0.0
+    total_pnl_usd: float = 0.0
+    total_pnl_pct: float = 0.0
+    max_drawdown_pct: float = 0.0
+    sharpe_ratio: float = 0.0
+    profit_factor: float = 0.0
+    avg_duration_hours: float = 0.0
+    avg_adds: float = 0.0
+    entry_timeouts: int = 0
+    campaigns_created: int = 0
+    campaigns_filled: int = 0
+    adds_attempted: int = 0
+    adds_filled: int = 0
+    by_pair: dict = field(default_factory=dict)
+    by_direction: dict = field(default_factory=dict)
+    by_setup: dict = field(default_factory=dict)
+    exit_reasons: dict = field(default_factory=dict)
+
+
+def compute_campaign_metrics(csim: CampaignSimulator,
+                             period_days: float) -> CampaignMetrics:
+    """Compute performance metrics from campaign simulator results."""
+    m = CampaignMetrics()
+    campaigns = csim.get_closed_campaigns()
+
+    m.total_campaigns = len(campaigns)
+    m.entry_timeouts = sum(1 for c in csim.closed if c.exit_reason == "entry_timeout")
+    m.campaigns_created = csim._campaigns_created
+    m.campaigns_filled = csim._campaigns_filled
+    m.adds_attempted = csim._adds_attempted
+    m.adds_filled = csim._adds_filled
+
+    if not campaigns:
+        return m
+
+    m.wins = sum(1 for c in campaigns if c.pnl_usd > 0)
+    m.losses = sum(1 for c in campaigns if c.pnl_usd <= 0)
+    m.win_rate = m.wins / m.total_campaigns if m.total_campaigns > 0 else 0.0
+
+    m.total_pnl_usd = sum(c.pnl_usd for c in campaigns)
+    m.total_pnl_pct = (m.total_pnl_usd / csim.initial_capital) * 100
+
+    m.max_drawdown_pct = _compute_max_drawdown(csim.equity_curve)
+
+    # Sharpe from daily PnL
+    if campaigns and period_days >= 2:
+        daily_pnl: dict[str, float] = defaultdict(float)
+        for c in campaigns:
+            day = datetime.fromtimestamp(
+                c.close_time_ms / 1000, tz=timezone.utc
+            ).strftime("%Y-%m-%d")
+            daily_pnl[day] += c.pnl_usd
+        returns = [pnl / csim.initial_capital for pnl in daily_pnl.values()]
+        if len(returns) >= 2:
+            mean_r = sum(returns) / len(returns)
+            variance = sum((r - mean_r) ** 2 for r in returns) / (len(returns) - 1)
+            std_r = math.sqrt(variance) if variance > 0 else 0.0
+            m.sharpe_ratio = (mean_r / std_r) * math.sqrt(365) if std_r > 0 else 0.0
+
+    # Profit factor
+    gross_profit = sum(c.pnl_usd for c in campaigns if c.pnl_usd > 0)
+    gross_loss = abs(sum(c.pnl_usd for c in campaigns if c.pnl_usd < 0))
+    m.profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf")
+
+    # Average duration
+    durations = []
+    for c in campaigns:
+        if c.entry_time_ms > 0 and c.close_time_ms > 0:
+            durations.append((c.close_time_ms - c.entry_time_ms) / (1000 * 3600))
+    m.avg_duration_hours = sum(durations) / len(durations) if durations else 0.0
+
+    # Average adds per campaign
+    m.avg_adds = sum(len(c.adds) for c in campaigns) / len(campaigns)
+
+    # Breakdowns
+    for key_attr, target_dict in [("setup_type", m.by_setup),
+                                   ("pair", m.by_pair),
+                                   ("direction", m.by_direction)]:
+        groups: dict[str, list] = defaultdict(list)
+        for c in campaigns:
+            groups[getattr(c, key_attr)].append(c)
+        for name, group in sorted(groups.items()):
+            w = sum(1 for c in group if c.pnl_usd > 0)
+            pnl = sum(c.pnl_usd for c in group)
+            target_dict[name] = {
+                "count": len(group),
+                "wins": w,
+                "win_rate": w / len(group) if group else 0,
+                "pnl": pnl,
+            }
+
+    # Exit reasons
+    for c in campaigns:
+        m.exit_reasons[c.exit_reason] = m.exit_reasons.get(c.exit_reason, 0) + 1
+
+    return m
 
 
 # ================================================================
@@ -1033,6 +1470,102 @@ def _target_line(name: str, actual: str, target: str, met: bool) -> None:
 
 
 # ================================================================
+# Campaign report
+# ================================================================
+
+def print_campaign_report(m: CampaignMetrics, csim: CampaignSimulator,
+                          period_days: float) -> None:
+    """Print HTF campaign backtest report."""
+    print()
+    print("=" * 70)
+    print(f"HTF CAMPAIGN BACKTEST  (fill_mode={csim.fill_mode})")
+    print("=" * 70)
+
+    print(f"\nCAMPAIGN FUNNEL:")
+    print(f"  Campaigns created:   {m.campaigns_created}")
+    print(f"  Entry timeouts:      {m.entry_timeouts}")
+    print(f"  Campaigns filled:    {m.campaigns_filled}")
+    print(f"  Adds attempted:      {m.adds_attempted}")
+    print(f"  Adds filled:         {m.adds_filled}")
+
+    campaigns = csim.get_closed_campaigns()
+    print(f"\n{'='*70}")
+    print(f"CAMPAIGN SIMULATION")
+    print(f"{'='*70}")
+    print(f"  Initial capital:    ${csim.initial_capital:,.2f}")
+    print(f"  Final equity:       ${csim.equity:,.2f}")
+    print(f"  Campaigns executed: {m.total_campaigns}")
+
+    if m.total_campaigns == 0:
+        print(f"\n  No campaigns executed.")
+        print(f"{'='*70}")
+        return
+
+    print(f"  Wins / Losses:      {m.wins} / {m.losses}")
+    print(f"  Win rate:           {m.win_rate*100:.1f}%")
+    print(f"  Avg duration:       {m.avg_duration_hours:.1f}h")
+    print(f"  Avg adds/campaign:  {m.avg_adds:.1f}")
+    print()
+
+    print(f"PERFORMANCE:")
+    print(f"  Total PnL:          ${m.total_pnl_usd:+,.2f} ({m.total_pnl_pct:+.2f}%)")
+    print(f"  Profit factor:      {m.profit_factor:.2f}")
+    print(f"  Max drawdown:       {m.max_drawdown_pct:.2f}%")
+    print(f"  Sharpe ratio:       {m.sharpe_ratio:.2f}")
+    print()
+
+    if m.by_setup:
+        print(f"BY SETUP TYPE:")
+        for name, stats in sorted(m.by_setup.items()):
+            print(f"  {name:<12} campaigns={stats['count']:<4} "
+                  f"win={stats['win_rate']*100:5.1f}%  "
+                  f"PnL=${stats['pnl']:+,.2f}")
+        print()
+
+    if m.by_pair:
+        print(f"BY PAIR:")
+        for name, stats in sorted(m.by_pair.items()):
+            print(f"  {name:<12} campaigns={stats['count']:<4} "
+                  f"win={stats['win_rate']*100:5.1f}%  "
+                  f"PnL=${stats['pnl']:+,.2f}")
+        print()
+
+    if m.by_direction:
+        print(f"BY DIRECTION:")
+        for name, stats in sorted(m.by_direction.items()):
+            print(f"  {name:<12} campaigns={stats['count']:<4} "
+                  f"win={stats['win_rate']*100:5.1f}%  "
+                  f"PnL=${stats['pnl']:+,.2f}")
+        print()
+
+    if m.exit_reasons:
+        print(f"EXIT REASONS:")
+        for reason, count in sorted(m.exit_reasons.items(), key=lambda x: -x[1]):
+            pct = count / m.total_campaigns * 100
+            print(f"  {reason:<20} {count:>4} ({pct:5.1f}%)")
+        print()
+
+    # Campaign log
+    if campaigns:
+        print(f"CAMPAIGN LOG:")
+        print(f"  {'#':<4} {'Entry Time':<17} {'Pair':<10} {'Type':<10} "
+              f"{'Dir':<6} {'Entry':>10} {'Exit':>10} {'Adds':>5} "
+              f"{'Dur(h)':>7} {'PnL':>10} {'Reason':<14}")
+        print(f"  {'-'*110}")
+        for i, c in enumerate(campaigns, 1):
+            dur_h = ((c.close_time_ms - c.entry_time_ms) / (1000 * 3600)
+                     if c.entry_time_ms > 0 else 0)
+            print(f"  {i:<4} {_ts_to_str(c.entry_time_ms):<17} {c.pair:<10} "
+                  f"{c.setup_type:<10} {c.direction:<6} "
+                  f"{c.entry_price:>10.2f} {c.exit_price:>10.2f} "
+                  f"{len(c.adds):>5} {dur_h:>7.1f} "
+                  f"${c.pnl_usd:>+9.2f} {c.exit_reason:<14}")
+        print()
+
+    print("=" * 70)
+
+
+# ================================================================
 # CSV export
 # ================================================================
 
@@ -1148,6 +1681,63 @@ def save_results_json(m: BacktestMetrics, period_days: float,
     return filename
 
 
+def save_campaign_results_json(m: CampaignMetrics, period_days: float,
+                               capital: float, pairs: list[str]) -> str:
+    """Save campaign backtest summary to JSON."""
+    results_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "backtest_results")
+    os.makedirs(results_dir, exist_ok=True)
+
+    ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
+    filename = os.path.join(results_dir, f"{ts}_{int(period_days)}d_campaign.json")
+
+    result = {
+        "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+        "mode": "campaign",
+        "period_days": round(period_days, 1),
+        "capital": capital,
+        "pairs": pairs,
+        "summary": {
+            "total_campaigns": m.total_campaigns,
+            "wins": m.wins,
+            "losses": m.losses,
+            "win_rate": round(m.win_rate * 100, 1),
+            "total_pnl_usd": round(m.total_pnl_usd, 2),
+            "total_pnl_pct": round(m.total_pnl_pct, 2),
+            "max_drawdown_pct": round(m.max_drawdown_pct, 1),
+            "sharpe_ratio": round(m.sharpe_ratio, 2),
+            "profit_factor": round(m.profit_factor, 2) if m.profit_factor != float("inf") else "inf",
+            "avg_duration_hours": round(m.avg_duration_hours, 1),
+            "avg_adds": round(m.avg_adds, 1),
+        },
+        "funnel": {
+            "campaigns_created": m.campaigns_created,
+            "entry_timeouts": m.entry_timeouts,
+            "campaigns_filled": m.campaigns_filled,
+            "adds_attempted": m.adds_attempted,
+            "adds_filled": m.adds_filled,
+        },
+        "by_setup": m.by_setup,
+        "by_pair": m.by_pair,
+        "by_direction": m.by_direction,
+        "exit_reasons": m.exit_reasons,
+    }
+
+    # Round floats in nested dicts
+    for section in [result["by_setup"], result["by_pair"], result["by_direction"]]:
+        for key, val in section.items():
+            if isinstance(val, dict):
+                for k, v in val.items():
+                    if isinstance(v, float):
+                        val[k] = round(v, 4)
+
+    with open(filename, "w") as f:
+        json.dump(result, f, indent=2)
+
+    print(f"Results saved: {filename}")
+    return filename
+
+
 # ================================================================
 # Main backtest
 # ================================================================
@@ -1157,13 +1747,18 @@ def run_backtest(pairs: list[str] | None = None, verbose: bool = False,
                  capital: float = 10000.0, export: bool = False,
                  days: int | None = None, ai_enabled: bool = False,
                  fill_mode: str | None = None,
-                 fill_buffer_pct: float | None = None):
+                 fill_buffer_pct: float | None = None,
+                 campaign: bool = False):
     from config.settings import settings
 
     if pairs is None:
         pairs = settings.TRADING_PAIRS
 
     all_timeframes = settings.HTF_TIMEFRAMES + settings.LTF_TIMEFRAMES
+
+    # Campaign mode: also load daily candles for HTF bias
+    if campaign and "1d" not in all_timeframes:
+        all_timeframes = all_timeframes + ["1d"]
 
     # Connect to PostgreSQL
     pg = PostgresStore()
@@ -1211,10 +1806,20 @@ def run_backtest(pairs: list[str] | None = None, verbose: bool = False,
     fb = fill_buffer_pct if fill_buffer_pct is not None else settings.BACKTEST_FILL_BUFFER_PCT
     simulator = TradeSimulator(initial_capital=capital, fill_mode=fm,
                                fill_buffer_pct=fb)
+
+    # Campaign simulator (campaign mode only)
+    csim = CampaignSimulator(initial_capital=capital, fill_mode=fm,
+                             fill_buffer_pct=fb) if campaign else None
+
     setups_count = 0
     setups_deduped = 0
     total_evaluated = 0
     total_warmup = 0
+    htf_setups_count = 0
+
+    # Campaign dedup cache — prevents re-entering same HTF setup
+    _campaign_dedup: dict[tuple, int] = {}
+    _CAMPAIGN_DEDUP_TTL_MS = 4 * 3600 * 1000  # 4 hours (one 4H candle)
 
     # Setup dedup cache — same logic as main.py
     # Key: (pair, direction, setup_type, rounded entry_price)
@@ -1223,7 +1828,12 @@ def run_backtest(pairs: list[str] | None = None, verbose: bool = False,
     _DEDUP_TTL_MS = 3600 * 1000  # 1 hour
 
     for pair in pairs:
-        trigger_candles = data.get_trigger_candles(pair, settings.LTF_TIMEFRAMES)
+        # Campaign mode: include 4H candles for HTF evaluation + LTF for SL granularity
+        if campaign:
+            campaign_tfs = [settings.HTF_CAMPAIGN_SIGNAL_TF] + settings.LTF_TIMEFRAMES
+            trigger_candles = data.get_trigger_candles(pair, campaign_tfs)
+        else:
+            trigger_candles = data.get_trigger_candles(pair, settings.LTF_TIMEFRAMES)
         if not trigger_candles:
             logger.warning(f"No trigger candles for {pair}")
             continue
@@ -1251,11 +1861,49 @@ def run_backtest(pairs: list[str] | None = None, verbose: bool = False,
                 data.set_time(candle.timestamp)
 
                 # Process existing trades BEFORE strategy eval (no look-ahead)
-                simulator.on_candle(candle)
+                if not campaign:
+                    simulator.on_candle(candle)
+
+                # Campaign: process all candles for SL/fill granularity
+                if csim is not None:
+                    csim.on_candle(candle, strategy)
 
                 is_warmup = i < warmup
                 if is_warmup:
                     total_warmup += 1
+                    continue
+
+                # Campaign HTF evaluation (4H candles only)
+                if csim is not None and candle.timeframe == settings.HTF_CAMPAIGN_SIGNAL_TF:
+                    htf_setup = strategy.evaluate_htf(pair, candle)
+                    if htf_setup:
+                        # Campaign dedup: skip if same setup evaluated recently
+                        c_dedup_key = (htf_setup.pair, htf_setup.direction,
+                                       htf_setup.setup_type,
+                                       round(htf_setup.entry_price, 2))
+                        c_last_eval = _campaign_dedup.get(c_dedup_key, 0)
+                        if (candle.timestamp - c_last_eval) < _CAMPAIGN_DEDUP_TTL_MS:
+                            continue
+                        _campaign_dedup[c_dedup_key] = candle.timestamp
+
+                        htf_setups_count += 1
+                        if csim.active is not None and csim.pending is None:
+                            taken = csim.try_add(csim.active, htf_setup, candle)
+                            if verbose and taken:
+                                print(f"  [CAMPAIGN ADD] {_ts_to_str(candle.timestamp)} "
+                                      f"{htf_setup.setup_type} {htf_setup.direction} "
+                                      f"entry={htf_setup.entry_price:.2f}")
+                        elif csim.active is None and csim.pending is None:
+                            taken = csim.on_setup(htf_setup, candle)
+                            if verbose and taken:
+                                print(f"  [CAMPAIGN NEW] {_ts_to_str(candle.timestamp)} "
+                                      f"{htf_setup.setup_type} {htf_setup.direction} "
+                                      f"entry={htf_setup.entry_price:.2f} "
+                                      f"sl={htf_setup.sl_price:.2f}")
+                    continue  # 4H candles skip intraday evaluation
+
+                # Skip intraday evaluation in campaign-only mode
+                if campaign:
                     continue
 
                 total_evaluated += 1
@@ -1369,8 +2017,10 @@ def run_backtest(pairs: list[str] | None = None, verbose: bool = False,
 
     # Compute period
     all_trigger = []
+    period_tfs = ([settings.HTF_CAMPAIGN_SIGNAL_TF] + settings.LTF_TIMEFRAMES
+                  if campaign else settings.LTF_TIMEFRAMES)
     for pair in pairs:
-        tc = data.get_trigger_candles(pair, settings.LTF_TIMEFRAMES)
+        tc = data.get_trigger_candles(pair, period_tfs)
         if days is not None and tc:
             cutoff_ms = tc[-1].timestamp - (days * 86400 * 1000)
             tc = [c for c in tc if c.timestamp >= cutoff_ms]
@@ -1386,6 +2036,13 @@ def run_backtest(pairs: list[str] | None = None, verbose: bool = False,
     if period_days > 0:
         print(f"Period: {_ts_to_date(first_ts)} to {_ts_to_date(last_ts)} "
               f"({period_days:.1f} days)")
+
+    # Campaign mode: print campaign results
+    if csim is not None:
+        campaign_metrics = compute_campaign_metrics(csim, period_days)
+        print_campaign_report(campaign_metrics, csim, period_days)
+        save_campaign_results_json(campaign_metrics, period_days, capital, pairs)
+        return
 
     # Compute metrics and print report
     metrics = compute_metrics(simulator, period_days)
@@ -1429,6 +2086,8 @@ def main():
                         help="Fill model: optimistic (touch=fill) or conservative (penetrate by buffer)")
     parser.add_argument("--fill-buffer", type=float, default=None,
                         help="Fill buffer %% for conservative mode (default: 0.001 = 0.1%%)")
+    parser.add_argument("--campaign", action="store_true",
+                        help="Run HTF campaign backtest (4H setups, pyramid adds, trailing SL)")
     args = parser.parse_args()
 
     pairs = [args.pair] if args.pair else None
@@ -1442,6 +2101,7 @@ def main():
         ai_enabled=args.ai,
         fill_mode=args.fill_mode,
         fill_buffer_pct=args.fill_buffer,
+        campaign=args.campaign,
     )
 
 

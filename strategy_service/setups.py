@@ -451,12 +451,14 @@ class SetupEvaluator:
 
         Conditions:
         1. HTF bias defined
-        2. BOS on LTF confirming direction
-        3. Fresh OB aligned with direction
-        4. PD zone aligned
-        5. OB within range of current price
-        6. Minimum 2 confluences
-        7. Blended R:R >= MIN_RISK_REWARD
+        2. Fresh BOS on LTF (within SETUP_F_MAX_BOS_AGE_CANDLES)
+        3. BOS displacement above SETUP_F_MIN_BOS_DISPLACEMENT_PCT
+        4. Fresh OB aligned with direction, temporally near BOS
+        5. OB composite score >= SETUP_F_MIN_OB_SCORE
+        6. PD zone aligned
+        7. Entry within SETUP_F_MAX_ENTRY_DISTANCE_PCT of current price
+        8. Minimum SETUP_F_MIN_CONFLUENCES (3) structural confluences
+        9. R:R >= MIN_RISK_REWARD
         """
         if htf_bias not in ("bullish", "bearish"):
             logger.debug(f"Setup F [{pair}]: HTF bias undefined")
@@ -473,6 +475,22 @@ class SetupEvaluator:
         latest_bos = bos_breaks[-1]
         direction = latest_bos.direction
 
+        # BOS recency filter — reject stale BOS
+        if candles:
+            candles_since_bos = len(candles) - 1 - latest_bos.candle_index
+            if candles_since_bos > settings.SETUP_F_MAX_BOS_AGE_CANDLES:
+                logger.debug(f"Setup F [{pair}]: BOS too old ({candles_since_bos} candles "
+                             f"> {settings.SETUP_F_MAX_BOS_AGE_CANDLES})")
+                return None
+
+        # BOS displacement filter — reject micro-breaks
+        if latest_bos.broken_level > 0:
+            displacement = abs(latest_bos.break_price - latest_bos.broken_level) / latest_bos.broken_level
+            if displacement < settings.SETUP_F_MIN_BOS_DISPLACEMENT_PCT:
+                logger.debug(f"Setup F [{pair}]: BOS displacement too small "
+                             f"({displacement:.4f} < {settings.SETUP_F_MIN_BOS_DISPLACEMENT_PCT})")
+                return None
+
         if settings.REQUIRE_HTF_LTF_ALIGNMENT and direction != htf_bias:
             logger.debug(f"Setup F [{pair}]: BOS {direction} != HTF {htf_bias}")
             return None
@@ -487,38 +505,40 @@ class SetupEvaluator:
                 logger.debug(f"Setup F [{pair}]: PD misaligned (zone={zone} dir={direction})")
                 return None
 
+        # Filter OBs: aligned direction + temporally near the BOS
+        candle_duration_ms = (
+            (candles[1].timestamp - candles[0].timestamp)
+            if len(candles) >= 2 else 900_000
+        )
+        max_gap_ms = settings.SETUP_F_MAX_OB_BOS_GAP_CANDLES * candle_duration_ms
+
         aligned_obs = [
             ob for ob in active_obs
             if ob.direction == direction
+            and abs(ob.timestamp - latest_bos.timestamp) <= max_gap_ms
         ]
         if not aligned_obs:
-            logger.debug(f"Setup F [{pair}]: no aligned OBs (total={len(active_obs)} dir={direction})")
+            all_aligned = [ob for ob in active_obs if ob.direction == direction]
+            logger.debug(f"Setup F [{pair}]: no OBs near BOS (aligned={len(all_aligned)} "
+                         f"within_gap=0 max_gap={settings.SETUP_F_MAX_OB_BOS_GAP_CANDLES})")
             return None
 
         current_price = candles[-1].close if candles else 0
-        best_ob = self._find_best_ob(aligned_obs, current_price, direction)
+        best_ob, best_score = self._find_best_ob_with_score(aligned_obs, current_price, direction)
         if best_ob is None:
             logger.debug(f"Setup F [{pair}]: no OBs within range (aligned={len(aligned_obs)})")
             return None
 
-        # Volume + CVD confirmation
+        # OB composite score minimum
+        if best_score < settings.SETUP_F_MIN_OB_SCORE:
+            logger.debug(f"Setup F [{pair}]: OB score too low ({best_score:.3f} "
+                         f"< {settings.SETUP_F_MIN_OB_SCORE})")
+            return None
+
+        # Volume confluence (structural only — no CVD or funding)
         vol_confluences = []
         if best_ob.volume_ratio >= settings.OB_MIN_VOLUME_RATIO:
             vol_confluences.append(f"ob_volume_{best_ob.volume_ratio:.1f}x")
-
-        if market_snapshot and market_snapshot.cvd:
-            cvd = market_snapshot.cvd
-            if direction == "bullish" and cvd.cvd_15m > 0:
-                vol_confluences.append("cvd_aligned_bullish")
-            elif direction == "bearish" and cvd.cvd_15m < 0:
-                vol_confluences.append("cvd_aligned_bearish")
-
-        if market_snapshot and market_snapshot.funding:
-            rate = market_snapshot.funding.rate
-            if direction == "bullish" and rate < -0.0001:
-                vol_confluences.append("funding_negative_long_opportunity")
-            elif direction == "bearish" and rate > 0.0003:
-                vol_confluences.append("funding_extreme_positive")
 
         confluences = []
         confluences.append(f"bos_{latest_bos.direction}")
@@ -531,8 +551,10 @@ class SetupEvaluator:
                 confluences.append(f"pd_zone_{pd_zone.zone}")
         confluences.extend(vol_confluences)
 
-        if not self._check_confluence_minimum(confluences):
-            logger.debug(f"Setup F [{pair}]: insufficient confluences ({len(confluences)}<2: {confluences})")
+        # Setup F-specific minimum confluences (higher than generic 2)
+        if len(confluences) < settings.SETUP_F_MIN_CONFLUENCES:
+            logger.debug(f"Setup F [{pair}]: insufficient confluences "
+                         f"({len(confluences)}<{settings.SETUP_F_MIN_CONFLUENCES}: {confluences})")
             return None
 
         # Deferred PD check with confluence override (hard gate mode only)
@@ -548,6 +570,14 @@ class SetupEvaluator:
 
         sl_price = self._calculate_sl(best_ob, direction)
         entry_price = best_ob.entry_price
+
+        # Entry distance filter — reject zombie setups pointing at distant OBs
+        if current_price > 0:
+            entry_dist = abs(entry_price - current_price) / current_price
+            if entry_dist > settings.SETUP_F_MAX_ENTRY_DISTANCE_PCT:
+                logger.debug(f"Setup F [{pair}]: entry too far from price "
+                             f"({entry_dist:.4f} > {settings.SETUP_F_MAX_ENTRY_DISTANCE_PCT})")
+                return None
 
         # Validate SL is on correct side of entry
         if not self._validate_sl_direction(entry_price, sl_price, direction):
@@ -938,6 +968,16 @@ class SetupEvaluator:
         direction: str,
     ) -> Optional[OrderBlock]:
         """Find the best OB using composite scoring (volume, freshness, proximity, size)."""
+        best_ob, _ = self._find_best_ob_with_score(obs, current_price, direction)
+        return best_ob
+
+    def _find_best_ob_with_score(
+        self,
+        obs: list[OrderBlock],
+        current_price: float,
+        direction: str,
+    ) -> tuple[Optional[OrderBlock], float]:
+        """Find the best OB and return (ob, score). Score is -1 if no valid OB."""
         best_ob = None
         best_score = -1.0
 
@@ -947,7 +987,7 @@ class SetupEvaluator:
                 best_score = score
                 best_ob = ob
 
-        return best_ob
+        return best_ob, best_score
 
     def _compute_rr(
         self,

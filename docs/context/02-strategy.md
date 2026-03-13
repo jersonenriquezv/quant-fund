@@ -57,11 +57,19 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
   - SL: OB wick (igual que A/F)
   - FVG-OB adjacency threshold: `FVG_OB_MAX_GAP_PCT` (0.5%)
   - **Backtest 60d aggressive**: 55 trades, 52.7% WR, +$5,169. Antes con OB 75% entry (previo cambio): 29.8% WR, -$1,680.
-- **Setup F** — Pure OB Retest: BOS + OB, sin FVG requerido — **DESHABILITADO** (34.8% WR, removed from ENABLED_SETUPS)
+- **Setup F** — Pure OB Retest: BOS + OB, sin FVG requerido — **DESHABILITADO** (34.8% WR, hardened, pending re-backtest)
   - Igual que Setup B pero sin necesitar FVG adyacente al OB
   - Dispara cuando hay BOS + OB alineados pero no hay FVG nearby
   - Evaluado después de B — si B matchea primero, F no se evalúa
-  - DEBUG logs en cada early return (HTF undefined, no BOS, BOS≠HTF, PD misaligned, no OBs, no OBs in range, confluences, R:R)
+  - **Hardened filters (2026-03-12):** Root cause of 34.8% WR: accepted stale BOS, unrelated OBs, inflated confluences with CVD/funding.
+    - BOS recency: must be within `SETUP_F_MAX_BOS_AGE_CANDLES` (20) candles
+    - BOS displacement: must exceed `SETUP_F_MIN_BOS_DISPLACEMENT_PCT` (0.2%) beyond broken level
+    - OB-BOS temporal association: OB must be within `SETUP_F_MAX_OB_BOS_GAP_CANDLES` (10) candles of BOS
+    - OB quality floor: composite score must be >= `SETUP_F_MIN_OB_SCORE` (0.35)
+    - Entry distance: must be within `SETUP_F_MAX_ENTRY_DISTANCE_PCT` (3%) of current price
+    - CVD and funding removed from confluences (structural setup — noise inflation)
+    - Minimum confluences raised to `SETUP_F_MIN_CONFLUENCES` (3) — BOS + OB + one of (PD, volume)
+  - DEBUG logs en cada early return (HTF undefined, no BOS, BOS too old, BOS displacement, BOS≠HTF, PD misaligned, no OBs near BOS, no OBs in range, OB score, entry distance, confluences, R:R)
 - **Setup G** — Breaker Block Retest: OB mitigado con dirección invertida
   - Bullish OB mitigado → bearish breaker → short entry en retest
   - Bearish OB mitigado → bullish breaker → long entry en retest
@@ -154,6 +162,12 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 - `MAX_TRADE_DURATION_QUICK: int = 14400` — timeout 4h para quick setups
 - `QUICK_SETUP_COOLDOWN: int = 3600` — cooldown 1h por (pair, setup_type). Mismo valor en default y aggressive — el perfil aggressive ya no reduce el cooldown.
 - `SETUP_D_MIN_DISPLACEMENT_PCT: float = 0.0` — minimum BOS/CHoCH displacement for Setup D (0.0 = disabled, env var)
+- `SETUP_F_MAX_BOS_AGE_CANDLES: int = 20` — max candles since BOS (20 = ~5h on 15m)
+- `SETUP_F_MAX_OB_BOS_GAP_CANDLES: int = 10` — max candle gap between OB and BOS timestamps
+- `SETUP_F_MIN_BOS_DISPLACEMENT_PCT: float = 0.002` — min BOS displacement (0.2%)
+- `SETUP_F_MIN_OB_SCORE: float = 0.35` — min composite OB score from `_score_ob()`
+- `SETUP_F_MAX_ENTRY_DISTANCE_PCT: float = 0.03` — max entry distance from current price (3%)
+- `SETUP_F_MIN_CONFLUENCES: int = 3` — min structural confluences (BOS + OB + PD/volume)
 - `MOMENTUM_FUNDING_THRESHOLD: float = 0.0003` — umbral funding rate para Setup C
 - `MOMENTUM_CVD_LONG_MIN: float = 0.52` — buy dominance mínimo para long (Setup C)
 - `MOMENTUM_CVD_SHORT_MAX: float = 0.48` — buy dominance máximo para short (Setup C)
@@ -215,5 +229,5 @@ El backtester soporta `--ai` flag para evaluar swing setups con Claude sobre dat
 - `test_order_blocks.py` — detección, volumen, expiración, mitigación
 - `test_fvg.py` — detección, fill, expiración
 - `test_liquidity.py` — clustering, sweeps, premium/discount, equilibrium band, swept persistence
-- `test_setups.py` — Setup A/B, confluencia, TPs, PD alignment, PD override, PD_AS_CONFLUENCE, SETUP_A_MODE, SL direction validation, simple R:R, OB proximity, temporal ordering
+- `test_setups.py` — Setup A/B, confluencia, TPs, PD alignment, PD override, PD_AS_CONFLUENCE, SETUP_A_MODE, SL direction validation, simple R:R, OB proximity, temporal ordering, Setup F hardening (BOS age, displacement, OB-BOS gap, OB score, CVD/funding exclusion, entry distance, min confluences)
 - `test_quick_setups.py` — Setup C/D/E, cooldowns, R:R quick vs swing, AI bypass, data validation, SETUP_D_MIN_DISPLACEMENT_PCT, PD_AS_CONFLUENCE on Setup D

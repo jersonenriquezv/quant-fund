@@ -977,3 +977,223 @@ class TestSetupAMode:
             assert counter is not None
         finally:
             settings.SETUP_A_MODE = original
+
+
+# ============================================================
+# Setup F Hardening tests
+# ============================================================
+
+def _make_setup_f_args(
+    bos_candle_index=18,
+    bos_direction="bullish",
+    bos_break_price=110.0,
+    bos_broken_level=108.0,
+    ob_timestamp=None,
+    ob_entry_price=101.0,
+    ob_volume_ratio=2.0,
+    pd_zone_type="discount",
+    htf_bias="bullish",
+    num_candles=20,
+    candle_close=101.0,
+    bos_timestamp=None,
+):
+    """Build args for evaluate_setup_f with sensible defaults for a valid Setup F."""
+    now_ms = int(time.time() * 1000)
+    # BOS timestamp: compute from candle_index and candle spacing (15m = 900s)
+    if bos_timestamp is None:
+        bos_timestamp = now_ms - (num_candles - 1 - bos_candle_index) * 900_000
+    brk = StructureBreak(
+        timestamp=bos_timestamp,
+        break_type="bos",
+        direction=bos_direction,
+        break_price=bos_break_price,
+        broken_level=bos_broken_level,
+        candle_index=bos_candle_index,
+    )
+    state = MarketStructureState(
+        pair="BTC/USDT", timeframe="15m", trend=bos_direction,
+        swing_highs=[], swing_lows=[],
+        structure_breaks=[brk], latest_break=brk,
+    )
+    # OB timestamp near the BOS by default
+    if ob_timestamp is None:
+        ob_timestamp = bos_timestamp - 2 * 900_000  # 2 candles before BOS
+    ob_brk = StructureBreak(
+        timestamp=ob_timestamp, break_type="bos", direction=bos_direction,
+        break_price=bos_break_price, broken_level=bos_broken_level,
+        candle_index=bos_candle_index,
+    )
+    ob = OrderBlock(
+        timestamp=ob_timestamp, pair="BTC/USDT", timeframe="15m",
+        direction=bos_direction, high=103.0, low=98.0,
+        body_high=102.0, body_low=100.0, entry_price=ob_entry_price,
+        volume=20.0, volume_ratio=ob_volume_ratio, mitigated=False,
+        associated_break=ob_brk,
+    )
+    candles = [
+        make_candle(
+            close=candle_close, high=candle_close + 1,
+            low=candle_close - 1,
+            timestamp=now_ms - (num_candles - 1 - i) * 900_000,
+        )
+        for i in range(num_candles)
+    ]
+    pd = _make_pd_zone(pd_zone_type)
+    return dict(
+        structure_state=state,
+        active_obs=[ob],
+        pd_zone=pd,
+        market_snapshot=None,
+        candles=candles,
+        pair="BTC/USDT",
+        htf_bias=htf_bias,
+        liquidity_levels=[],
+    )
+
+
+class TestSetupFHardening:
+    """Test Setup F hardening filters."""
+
+    def test_valid_setup_f_passes_all_filters(self):
+        """A well-formed Setup F with fresh BOS, close OB, good score passes."""
+        evaluator = SetupEvaluator()
+        args = _make_setup_f_args()
+        setup = evaluator.evaluate_setup_f(**args)
+        assert setup is not None
+        assert setup.setup_type == "setup_f"
+        assert setup.direction == "long"
+
+    def test_stale_bos_rejected(self):
+        """BOS older than SETUP_F_MAX_BOS_AGE_CANDLES is rejected."""
+        evaluator = SetupEvaluator()
+        # BOS at candle_index=0, 19 candles ago in a 20-candle list → gap=19
+        # With max=20, this would pass. Set max to 5 to force rejection.
+        original = settings.SETUP_F_MAX_BOS_AGE_CANDLES
+        settings.SETUP_F_MAX_BOS_AGE_CANDLES = 5
+        try:
+            args = _make_setup_f_args(bos_candle_index=0, num_candles=20)
+            setup = evaluator.evaluate_setup_f(**args)
+            assert setup is None
+        finally:
+            settings.SETUP_F_MAX_BOS_AGE_CANDLES = original
+
+    def test_fresh_bos_accepted(self):
+        """BOS within SETUP_F_MAX_BOS_AGE_CANDLES passes."""
+        evaluator = SetupEvaluator()
+        # BOS at candle_index=18, 1 candle ago → fresh
+        args = _make_setup_f_args(bos_candle_index=18, num_candles=20)
+        setup = evaluator.evaluate_setup_f(**args)
+        assert setup is not None
+
+    def test_bos_displacement_too_small_rejected(self):
+        """BOS with displacement below SETUP_F_MIN_BOS_DISPLACEMENT_PCT is rejected."""
+        evaluator = SetupEvaluator()
+        # broken_level=108, break_price=108.1 → displacement=0.1/108=0.0009 < 0.002
+        args = _make_setup_f_args(bos_break_price=108.1, bos_broken_level=108.0)
+        setup = evaluator.evaluate_setup_f(**args)
+        assert setup is None
+
+    def test_bos_displacement_sufficient_accepted(self):
+        """BOS with adequate displacement passes."""
+        evaluator = SetupEvaluator()
+        # broken_level=108, break_price=110 → displacement=2/108=0.0185 > 0.002
+        args = _make_setup_f_args(bos_break_price=110.0, bos_broken_level=108.0)
+        setup = evaluator.evaluate_setup_f(**args)
+        assert setup is not None
+
+    def test_ob_too_far_from_bos_rejected(self):
+        """OB timestamped far from BOS is filtered out."""
+        evaluator = SetupEvaluator()
+        now_ms = int(time.time() * 1000)
+        bos_ts = now_ms - 1 * 900_000  # BOS 1 candle ago
+        # OB 20 candles before BOS (>10 candle gap)
+        ob_ts = bos_ts - 20 * 900_000
+        args = _make_setup_f_args(
+            bos_candle_index=18, bos_timestamp=bos_ts, ob_timestamp=ob_ts,
+        )
+        setup = evaluator.evaluate_setup_f(**args)
+        assert setup is None
+
+    def test_ob_near_bos_accepted(self):
+        """OB within SETUP_F_MAX_OB_BOS_GAP_CANDLES of BOS passes."""
+        evaluator = SetupEvaluator()
+        now_ms = int(time.time() * 1000)
+        bos_ts = now_ms - 1 * 900_000
+        ob_ts = bos_ts - 3 * 900_000  # 3 candles before BOS (within 10)
+        args = _make_setup_f_args(
+            bos_candle_index=18, bos_timestamp=bos_ts, ob_timestamp=ob_ts,
+        )
+        setup = evaluator.evaluate_setup_f(**args)
+        assert setup is not None
+
+    def test_low_ob_score_rejected(self):
+        """OB with composite score below SETUP_F_MIN_OB_SCORE is rejected."""
+        evaluator = SetupEvaluator()
+        original = settings.SETUP_F_MIN_OB_SCORE
+        settings.SETUP_F_MIN_OB_SCORE = 0.99  # Impossibly high
+        try:
+            args = _make_setup_f_args()
+            setup = evaluator.evaluate_setup_f(**args)
+            assert setup is None
+        finally:
+            settings.SETUP_F_MIN_OB_SCORE = original
+
+    def test_cvd_not_in_confluences(self):
+        """CVD should not appear in Setup F confluences."""
+        evaluator = SetupEvaluator()
+        args = _make_setup_f_args()
+        args["market_snapshot"] = make_market_snapshot(cvd_15m=500.0)
+        setup = evaluator.evaluate_setup_f(**args)
+        assert setup is not None
+        assert not any("cvd" in c for c in setup.confluences)
+
+    def test_funding_not_in_confluences(self):
+        """Funding should not appear in Setup F confluences."""
+        evaluator = SetupEvaluator()
+        args = _make_setup_f_args()
+        args["market_snapshot"] = make_market_snapshot(funding_rate=-0.001)
+        setup = evaluator.evaluate_setup_f(**args)
+        assert setup is not None
+        assert not any("funding" in c for c in setup.confluences)
+
+    def test_entry_too_far_rejected(self):
+        """Entry >SETUP_F_MAX_ENTRY_DISTANCE_PCT from current price is rejected."""
+        evaluator = SetupEvaluator()
+        original = settings.SETUP_F_MAX_ENTRY_DISTANCE_PCT
+        settings.SETUP_F_MAX_ENTRY_DISTANCE_PCT = 0.001  # 0.1% — very tight
+        try:
+            # OB entry at 101, candle close at 101 → 0% distance → passes
+            # OB entry at 95, candle close at 101 → ~6% → rejected
+            args = _make_setup_f_args(ob_entry_price=95.0, candle_close=101.0)
+            setup = evaluator.evaluate_setup_f(**args)
+            assert setup is None
+        finally:
+            settings.SETUP_F_MAX_ENTRY_DISTANCE_PCT = original
+
+    def test_min_3_confluences_required(self):
+        """Setup F requires SETUP_F_MIN_CONFLUENCES (3) — BOS + OB alone not enough."""
+        evaluator = SetupEvaluator()
+        # Use PD_AS_CONFLUENCE=True so PD is only added when aligned, not always
+        original_pd = settings.PD_AS_CONFLUENCE
+        settings.PD_AS_CONFLUENCE = True
+        try:
+            # pd_zone=premium for bullish direction → PD misaligned → no PD confluence
+            # volume_ratio=0.5 → below OB_MIN_VOLUME_RATIO (1.2) → no volume confluence
+            # Only BOS + OB = 2 confluences < 3
+            args = _make_setup_f_args(
+                pd_zone_type="premium", ob_volume_ratio=0.5,
+            )
+            setup = evaluator.evaluate_setup_f(**args)
+            assert setup is None
+        finally:
+            settings.PD_AS_CONFLUENCE = original_pd
+
+    def test_3_confluences_with_pd_passes(self):
+        """BOS + OB + PD aligned = 3 confluences → passes."""
+        evaluator = SetupEvaluator()
+        args = _make_setup_f_args(
+            pd_zone_type="discount", ob_volume_ratio=0.5,
+        )
+        setup = evaluator.evaluate_setup_f(**args)
+        assert setup is not None
+        assert len(setup.confluences) >= 3
