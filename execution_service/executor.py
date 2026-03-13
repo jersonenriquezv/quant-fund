@@ -332,7 +332,7 @@ class OrderExecutor:
             return True
         except ccxt.OrderNotFound:
             # Regular cancel failed — try algo cancel (SL/TP are algo orders)
-            return await self._cancel_algo_order(order_id, pair)
+            return await self.cancel_algo_order(order_id, pair)
         except ccxt.NetworkError as e:
             logger.error(f"Cancel network error: {pair} order_id={order_id} {e}")
             return False
@@ -340,7 +340,7 @@ class OrderExecutor:
             logger.error(f"Cancel exchange error: {pair} order_id={order_id} {e}")
             return False
 
-    async def _cancel_algo_order(self, order_id: str, pair: str) -> bool:
+    async def cancel_algo_order(self, order_id: str, pair: str) -> bool:
         """Cancel an algo order (trigger/conditional) on OKX.
 
         Uses OKX native REST endpoint POST /api/v5/trade/cancel-algos.

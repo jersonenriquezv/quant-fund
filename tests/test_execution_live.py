@@ -45,7 +45,7 @@ async def cleanup_only():
             for o in orders:
                 algo_id = o.get("algoId")
                 print(f"Cancelling {ord_type} algo order: {algo_id}")
-                await executor._cancel_algo_order(algo_id, pair)
+                await executor.cancel_algo_order(algo_id, pair)
             if not orders:
                 print(f"No pending {ord_type} orders")
         except Exception as e:
