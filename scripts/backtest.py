@@ -35,7 +35,7 @@ from strategy_service.service import StrategyService
 from shared.logger import setup_logger
 from config.settings import settings, QUICK_SETUP_TYPES
 
-logger = setup_logger("backtest")
+logger = setup_logger("backtest", file_level="INFO")
 
 
 # ================================================================

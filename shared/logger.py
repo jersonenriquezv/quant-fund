@@ -34,7 +34,7 @@ def _is_testing() -> bool:
     return "pytest" in sys.modules or "_pytest" in sys.modules
 
 
-def setup_logger(service_name: str) -> "logger":
+def setup_logger(service_name: str, file_level: str = "DEBUG") -> "logger":
     """Configure loguru for a specific service.
 
     Call once at service init. Returns the configured logger.
@@ -44,6 +44,7 @@ def setup_logger(service_name: str) -> "logger":
 
     Args:
         service_name: e.g. "data_service", "strategy_service"
+        file_level: minimum level for file sink (default DEBUG, use INFO for scripts)
     """
     # Remove default handler (has emoji/colors that pollute Docker logs)
     logger.remove()
@@ -72,7 +73,7 @@ def setup_logger(service_name: str) -> "logger":
     logger.add(
         str(_LOG_DIR / f"{service_name}_{{time:YYYY-MM-DD}}.log"),
         format=_LOG_FORMAT,
-        level="DEBUG",
+        level=file_level,
         rotation="00:00",       # New file at midnight
         retention="30 days",
         compression="gz",       # Compress old logs
