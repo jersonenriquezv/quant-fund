@@ -22,7 +22,7 @@ The bot looks for 3 active setup types (others exist but are disabled):
 - Price sweeps retail stops (liquidity sweep)
 - Then reverses direction (CHoCH)
 - And retraces to a fresh Order Block (zone where institutions bought/sold)
-- Entry: configurable depth into OB body (`SETUP_A_ENTRY_PCT`, default 50%)
+- Entry: configurable depth into OB body (`SETUP_A_ENTRY_PCT`, default 65% — Optuna optimized 2026-03-15)
 - AI filter bypassed (89.6% approval rate = no value added)
 
 **Setup B (secondary) — BOS + FVG + Order Block:** (DISABLED)
@@ -41,8 +41,9 @@ The bot looks for 3 active setup types (others exist but are disabled):
 - Minimum 2 confluences (OB alone = no trade)
 - Long only in discount (below 50% of the range), short only in premium (above 50%)
 - PD override: setups with 5+ confluences can trade against PD zone
-- OB selection: composite scoring (volume 35%, freshness 30%, proximity 20%, body size 15%). OB_MIN_BODY_PCT (0.1%) filters micro-OBs.
+- OB selection: composite scoring (volume 35%, freshness 30%, proximity 20%, body size 15%). OB_MIN_BODY_PCT (0.15%) filters micro-OBs.
 - SL-too-close filter in Strategy layer (MIN_RISK_DISTANCE_PCT 0.2%) before building TradeSetup
+- Expectancy filters: MIN_ATR_PCT (0.45% — skip dead markets), MIN_TARGET_SPACE_R (1.4 — require room to target)
 
 ### 2. AI filter (currently bypassed)
 
@@ -193,7 +194,8 @@ quant-fund/
 │   ├── test_quick_setups.py
 │   └── test_ml_features.py
 ├── scripts/
-│   └── backtest.py          # Offline backtester (historical candle replay)
+│   ├── backtest.py          # Offline backtester (historical candle replay)
+│   └── optimize.py          # Optuna parameter optimizer (automated tuning)
 ├── dashboard/
 │   ├── api/                 # FastAPI backend (read-only, port 8000)
 │   └── web/                 # Next.js frontend (port 3000)
@@ -326,7 +328,7 @@ Deterministic Python engine that detects SMC patterns. No AI. Pure rules.
 4. CHoCH confirms direction change
 5. Fresh OB forms (<72h)
 6. OB in discount (long) or premium (short) — or 5+ confluences override PD
-7. Retrace to OB — entry at `SETUP_A_ENTRY_PCT` (default 50%)
+7. Retrace to OB — entry at `SETUP_A_ENTRY_PCT` (default 65% — Optuna optimized)
 8. Volume spike >2x + liquidations visible
 9. SL-too-close filter (`MIN_RISK_DISTANCE_PCT` 0.2%) in strategy layer
 10. AI bypassed (synthetic approval) + Risk check passes
@@ -481,6 +483,12 @@ Instrument format: `"BTC-USDT-SWAP"`, `"ETH-USDT-SWAP"` (OKX convention).
 * SL/TP placement fails after entry fills → EMERGENCY close at market immediately
 * Slippage tracking: log expected vs actual fill price on every order
 
+**Periodic SL verification:**
+* Every `SL_VERIFY_INTERVAL_SECONDS` (60s), `_verify_sl_exists()` calls `find_pending_algo_orders()` to confirm SL algo order still exists on exchange
+* Catches silent SL drops that `fetch_order()` status checks miss (OKX may report `open` but order is gone)
+* If SL not found + position still open → re-place SL immediately
+* Complements the existing SL vanished fallback (12 consecutive fetch failures)
+
 **PnL tracking:**
 * All exits (TP, SL, emergency, timeout, excessive slippage) calculate PnL net of trading fees
 * Trading fee: `TRADING_FEE_RATE=0.0005` (0.05% per side, OKX taker). Total fees = (entry_notional + exit_notional) × rate
@@ -531,6 +539,44 @@ Collects structured training data for two future classical ML models:
 **Config:** `ML_FEATURE_VERSION` (int, in settings.py) — increment when strategy params change to segment training data.
 
 **Files:** `shared/ml_features.py` (feature extraction), `data_service/data_store.py` (ml_setups table + CRUD), `main.py` (pipeline instrumentation), `execution_service/monitor.py` (close outcome resolution)
+
+---
+
+## Backtesting & Optimization (`scripts/`)
+
+### `scripts/backtest.py`
+Offline backtester — replays historical candles through StrategyService + simulates fills.
+
+```bash
+python scripts/backtest.py --days 60                      # basic run
+python scripts/backtest.py --days 60 --detail             # 1m resolution for SL/TP ordering
+python scripts/backtest.py --days 60 --fill-prob 0.8      # 80% fill probability
+python scripts/backtest.py --days 60 --fill-mode conservative --fill-buffer 0.001
+```
+
+**Timeframe-detail mode** (`--detail`): loads 1m candles from PostgreSQL. When a 5m/15m candle contains both SL and TP in its range, replays 1m sub-candles to determine which was hit first. Falls back to SL-first if no 1m data. Requires: `python scripts/fetch_history.py --timeframe 1m --days 90`.
+
+**Fill probability** (`--fill-prob`): after price reaches entry level, applies a random probability (seeded with `--seed` for reproducibility) to simulate realistic limit order fill rates. Default 1.0 = always fill.
+
+**Settings overrides**: `run_backtest(overrides={"PARAM": value})` for programmatic use (Optuna).
+
+### `scripts/optimize.py`
+Optuna parameter optimizer — automated strategy tuning via `run_backtest()`.
+
+```bash
+python scripts/optimize.py --days 60 --trials 100 --metric profit_factor
+python scripts/optimize.py --days 60 --trials 50 --walk-forward --jobs 2
+```
+
+**10 tunable parameters**: SETUP_A_ENTRY_PCT, SETUP_A_MAX_SWEEP_CHOCH_GAP, OB_PROXIMITY_PCT, OB_MAX_DISTANCE_PCT, MIN_RISK_DISTANCE_PCT, OB_MIN_VOLUME_RATIO, OB_MAX_AGE_HOURS, OB_MIN_BODY_PCT, MIN_ATR_PCT, MIN_TARGET_SPACE_R.
+
+**Metrics**: profit_factor (default), sharpe, pnl, win_rate, composite.
+
+**Walk-forward validation** (`--walk-forward`): splits data 70% train / 30% test. Optimizes on train, validates on test vs baseline. Detects overfitting.
+
+**Output**: JSON in `backtest_results/` with best params, top 5 trials, parameter importance.
+
+**Last optimization (2026-03-15)**: 20 trials, 30d, PF 1.05→2.65. Walk-forward validated (test PF=3.07 vs baseline PF=0.88). Key changes: SETUP_A_ENTRY_PCT 0.50→0.65, OB_MAX_DISTANCE_PCT 0.08→0.04, MIN_ATR_PCT 0.0025→0.0045. Full param table in `backtest_results/TRACKER.md`.
 
 ---
 
