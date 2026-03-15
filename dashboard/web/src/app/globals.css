@@ -528,6 +528,44 @@ a.news-item:hover {
   line-height: 1.4;
 }
 
+/* ── Liquidation Heatmap ── */
+.liq-heatmap { grid-column: 1 / -1; }
+
+.liq-canvas-container {
+  width: 100%;
+  height: 300px;
+  position: relative;
+}
+
+.liq-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.liq-tab {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.liq-tab:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-secondary);
+}
+
+.liq-tab-active {
+  background: rgba(59, 130, 246, 0.12);
+  color: var(--accent);
+  border-color: rgba(59, 130, 246, 0.3);
+}
+
 /* ── Responsive: Tablet ≤1023px ── */
 @media (max-width: 1023px) {
   .dashboard {
@@ -586,6 +624,9 @@ a.news-item:hover {
   .col-vol,
   .wallet-addr {
     display: none;
+  }
+  .liq-canvas-container {
+    height: 200px;
   }
   .btn-cancel {
     width: 100%;

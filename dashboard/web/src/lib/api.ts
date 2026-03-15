@@ -172,6 +172,18 @@ export interface HeadlinesData {
   headlines: HeadlineData[];
 }
 
+export interface LiqHeatmapBin {
+  price: number;
+  liq_long_usd: number;
+  liq_short_usd: number;
+}
+
+export interface LiqHeatmapData {
+  pair: string;
+  current_price: number;
+  bins: LiqHeatmapBin[];
+}
+
 export async function postApi<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${getApiBase()}/api${path}`, {
     method: "POST",

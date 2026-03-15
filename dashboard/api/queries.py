@@ -61,7 +61,7 @@ async def get_recent_risk_events(limit: int = 20) -> list[dict]:
 async def get_candles(pair: str, timeframe: str, count: int = 100) -> list[dict]:
     async with db.pg_pool.acquire() as conn:
         rows = await conn.fetch(
-            """SELECT timestamp, open, high, low, close, volume
+            """SELECT timestamp, open, high, low, close, volume, volume_quote
                FROM candles
                WHERE pair = $1 AND timeframe = $2
                ORDER BY timestamp DESC LIMIT $3""",

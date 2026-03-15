@@ -145,6 +145,18 @@ class HTFBiasResponse(BaseModel):
     bias: dict[str, str]
 
 
+class LiqHeatmapBin(BaseModel):
+    price: float
+    liq_long_usd: float
+    liq_short_usd: float
+
+
+class LiqHeatmapResponse(BaseModel):
+    pair: str
+    current_price: float
+    bins: list[LiqHeatmapBin]
+
+
 class PositionData(BaseModel):
     pair: str
     direction: str

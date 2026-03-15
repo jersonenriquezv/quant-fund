@@ -18,7 +18,7 @@ Si el dashboard crashea, el bot sigue operando normalmente.
 | `GET /api/trades/{id}` | PG trades + ai_decisions | Detalle de trade con AI reasoning |
 | `GET /api/ai/decisions?limit=20` | PG ai_decisions | Evaluaciones recientes de Claude |
 | `GET /api/risk` | Redis + PG risk_events | DD, cooldown, eventos recientes. Filters `pending_entry` from open position count (only counts filled positions). |
-| `GET /api/candles/{pair}/{tf}?count=100` | PG candles | OHLCV para sparklines |
+| `GET /api/candles/{pair}/{tf}?count=100` | PG candles | OHLCV + volume_quote para sparklines y liquidation estimator |
 | `GET /api/stats` | PG trades (closed) | Win rate, P&L, profit factor |
 | `GET /api/whales?hours=24` | Redis (whale_movements) | Whale movements last N hours |
 | `WS /api/ws` | Redis poll cada 2s | Precio live + posiciones |
@@ -27,6 +27,7 @@ Si el dashboard crashea, el bot sigue operando normalmente.
 | `GET /api/sentiment` | Redis (`qf:bot:news:fear_greed`) | Fear & Greed score + label |
 | `GET /api/headlines` | Redis (`qf:bot:news:headlines:{BTC,ETH}`) | Recent news headlines (CryptoCompare) |
 | `POST /api/trades/{pair}/cancel` | Redis write (`qf:cancel_request:{pair}`) | Solicita cancelación de posición (TTL 60s) |
+| `GET /api/liquidation/heatmap/{pair}` | PG candles + Redis OI + cache | Estimated liquidation levels (bins con long/short USD) |
 
 ## Frontend — Layout
 
@@ -36,6 +37,7 @@ HEADER: Status dot + "QF" + LIVE/DEMO pill + F&G pill (colored) + UTC clock (tim
 ├── Open Positions (rich cards: TP2/TP3/leverage/AI confidence/time open/cancel) | Equity curve
 ├── Trade Log (tabla, hover rows) | AI Decision Log (mini-cards con confidence ring)
 ├── Active Order Blocks (full width)
+├── Estimated Liquidation Levels (full width, canvas heatmap, BTC/ETH tabs, 30s polling)
 ├── Whale Movements Log (full width)
 └── System Health: Redis + PG + API status dots
 ```
@@ -102,15 +104,16 @@ dashboard/
 │   │   ├── candles.py   # GET /api/candles/{pair}/{tf}
 │   │   ├── stats.py     # GET /api/stats
 │   │   ├── whales.py    # GET /api/whales
-│   │   ├── strategy.py  # GET /api/strategy/order-blocks, /api/strategy/htf-bias
-│   │   └── sentiment.py # GET /api/sentiment
+│   │   ├── strategy.py     # GET /api/strategy/order-blocks, /api/strategy/htf-bias
+│   │   ├── sentiment.py    # GET /api/sentiment
+│   │   └── liquidation.py  # GET /api/liquidation/heatmap/{pair}
 │   ├── ws.py            # WS /api/ws
 │   ├── requirements.txt
 │   └── Dockerfile
 └── web/
     ├── src/
     │   ├── app/          # Next.js app router
-    │   ├── components/   # 12 componentes UI (incl. OrderBlockPanel, FearGreedPill)
+    │   ├── components/   # 13 componentes UI (incl. OrderBlockPanel, FearGreedPill, LiquidationHeatmap)
     │   └── lib/          # API client, hooks
     ├── package.json
     ├── Dockerfile
@@ -170,6 +173,33 @@ Pill en el Header que muestra el Fear & Greed Index en tiempo real:
 - **Formato:** `F&G: 23` con tooltip completo ("Fear & Greed: 23/100 (Extreme Fear)")
 - **Graceful:** Si no hay datos en Redis → no renderiza (returns null)
 - **Mobile:** Pill compacto, no wrap
+
+## Liquidation Heatmap
+
+Estimated liquidation level chart — DIY approximation of Coinglass-style heatmap using OI + candle data.
+
+**Backend:** `data_service/liquidation_estimator.py`
+- Takes last 200 5m candles + current OI in USD
+- Projects liquidation prices for 5 leverage tiers (5x/10x/25x/50x/100x) with industry-average weights (0.30/0.30/0.20/0.15/0.05)
+- OI distributed across candles weighted by `volume_quote` (not uniform)
+- Bins: $50 for BTC, $2 for ETH (configurable via `LIQ_BIN_SIZE_BTC`/`LIQ_BIN_SIZE_ETH`)
+- Result cached in Redis (`qf:liq_heatmap:{pair}`, TTL 30s via `LIQ_CACHE_TTL`)
+
+**API:** `GET /api/liquidation/heatmap/{pair}` -> `LiqHeatmapResponse {pair, current_price, bins[]}`
+
+**Frontend:** `LiquidationHeatmap.tsx`
+- Canvas-based horizontal bar chart (no new dependencies)
+- Y-axis: price, X-axis: estimated USD
+- Long liquidations (red) extend left from center, short (green) extend right
+- Dashed blue line for current price
+- BTC/ETH tab selector
+- 30s polling via `usePolling`
+- `devicePixelRatio` scaling for retina
+- Mobile: 200px height (vs 300px desktop)
+
+**Limitations vs Coinglass:** Assumed leverage distribution (not real), OKX only, candle close as entry proxy, snapshot only (no time dimension). Labeled "Estimated Liquidation Levels" to be transparent.
+
+**Settings:** `LIQ_CANDLE_COUNT` (200), `LIQ_BIN_SIZE_BTC` (50), `LIQ_BIN_SIZE_ETH` (2), `LIQ_CACHE_TTL` (30)
 
 ## Bugs Conocidos (resueltos)
 

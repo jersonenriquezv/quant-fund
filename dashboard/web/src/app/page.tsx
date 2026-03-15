@@ -9,6 +9,7 @@ import { PnLChart } from "@/components/PnLChart";
 import { TradeLog } from "@/components/TradeLog";
 import { AILog } from "@/components/AILog";
 import { OrderBlockPanel } from "@/components/OrderBlockPanel";
+import { LiquidationHeatmap } from "@/components/LiquidationHeatmap";
 import { WhaleLog } from "@/components/WhaleLog";
 import { RecentTrades } from "@/components/RecentTrades";
 import { NewsPanel } from "@/components/NewsPanel";
@@ -54,6 +55,10 @@ export default function Dashboard() {
 
       <div className="card ob-panel">
         <OrderBlockPanel ws={ws} />
+      </div>
+
+      <div className="card liq-heatmap">
+        <LiquidationHeatmap />
       </div>
 
       <div className="card news-panel">
