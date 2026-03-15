@@ -199,10 +199,10 @@ class TestAIRejection:
     def test_ai_rejects_stops_pipeline(self):
         """AI rejects setup → risk and execution never called.
 
-        Uses setup_b (not in QUICK or AI_BYPASS) so it goes through Claude.
+        Uses setup_f (not in QUICK or AI_BYPASS) so it goes through Claude.
         """
         import asyncio
-        setup = _make_setup(setup_type="setup_b")
+        setup = _make_setup(setup_type="setup_f")
         decision = AIDecision(
             confidence=0.40, approved=False,
             reasoning="CVD divergence", adjustments={}, warnings=[],

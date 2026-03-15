@@ -372,6 +372,10 @@ class TestTimeout:
         mock_settings.MAX_DAILY_DRAWDOWN = 0.10
         mock_settings.MAX_WEEKLY_DRAWDOWN = 0.20
         mock_settings.TRADING_FEE_RATE = 0.0005
+        mock_settings.TRAILING_TP_ENABLED = False
+        mock_settings.TRAIL_STEP_RR = 0.5
+        mock_settings.TRAIL_ACTIVATION_RR = 1.0
+        mock_settings.TRAIL_CEILING_RR = 5.0
 
         sim = TradeSimulator(initial_capital=10000)
         setup = _setup(direction="long", entry=49500, sl=49000,

@@ -509,6 +509,32 @@ class AlertManager:
         )
         await self.alert(AlertPriority.WARNING, "health_check", msg)
 
+    async def notify_liquidation_clusters(
+        self, clusters: list[dict],
+    ) -> None:
+        """Top liquidation clusters near price — INFO priority, every 4h."""
+        if not clusters:
+            return
+
+        lines = ["\U0001f4a5 <b>LIQUIDATION CLUSTERS</b>"]
+        for c in clusters:
+            pair_label = c["pair"].replace("/USDT", "")
+            lines.append(f"\n<b>{pair_label}</b> (${c['price']:,.0f})")
+
+            for cl in c["above"]:
+                lines.append(
+                    f"  \U0001f7e2 ${cl['price']:,.0f} (+{cl['dist_pct']:.1f}%) "
+                    f"— shorts ${cl['usd']/1e6:,.0f}M"
+                )
+            for cl in c["below"]:
+                lines.append(
+                    f"  \U0001f534 ${cl['price']:,.0f} ({cl['dist_pct']:.1f}%) "
+                    f"— longs ${cl['usd']/1e6:,.0f}M"
+                )
+
+        msg = "\n".join(lines)
+        await self.alert(AlertPriority.INFO, "liquidation_clusters", msg)
+
     async def notify_health_recovered(self, components: list[str]) -> None:
         """Infrastructure component recovered — INFO priority."""
         msg = (

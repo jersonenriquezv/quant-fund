@@ -120,6 +120,10 @@ class Settings:
     # "conservative" = price must penetrate beyond entry by FILL_BUFFER_PCT
     BACKTEST_FILL_MODE: str = os.getenv("BACKTEST_FILL_MODE", "optimistic")
     BACKTEST_FILL_BUFFER_PCT: float = float(os.getenv("BACKTEST_FILL_BUFFER_PCT", "0.001"))
+    # Fill probability (0.0-1.0). After confirming price reached entry level,
+    # apply this probability to simulate realistic limit order fill rates.
+    # 1.0 = always fill (default). 0.8 = 80% fill chance.
+    BACKTEST_FILL_PROBABILITY: float = float(os.getenv("BACKTEST_FILL_PROBABILITY", "1.0"))
 
     # Maximum entry slippage before closing position immediately.
     # 0.003 = 0.3% → ETH@$2000: max $6 slippage. BTC@$70K: max $210.
@@ -141,11 +145,14 @@ class Settings:
 
     # --- Order Blocks ---
     # Volumen mínimo relativo (vs promedio) para validar un OB
-    OB_MIN_VOLUME_RATIO: float = 1.2  # 1.2x el promedio
+    # Optuna 03-15: 1.2→1.3 (PF 1.05→2.65, walk-forward validated)
+    OB_MIN_VOLUME_RATIO: float = 1.3
     # Horas máximas de vida de un OB antes de considerarlo viejo
-    OB_MAX_AGE_HOURS: int = 72
+    # Optuna 03-15: 72→84 (longer OB lifespan, more setups without quality loss)
+    OB_MAX_AGE_HOURS: int = 84
     # Minimum OB body size as % of price — reject micro-OBs that produce tiny SLs
-    OB_MIN_BODY_PCT: float = 0.001  # 0.1%
+    # Optuna 03-15: 0.001→0.0015 (filters more micro-OBs)
+    OB_MIN_BODY_PCT: float = 0.0015
     # OB scoring weights (must sum to 1.0)
     OB_SCORE_VOLUME_W: float = 0.35
     OB_SCORE_FRESHNESS_W: float = 0.30
@@ -177,11 +184,13 @@ class Settings:
 
     # --- Setup proximity ---
     # Max % of price that current price can be from OB entry to trigger setup
-    OB_PROXIMITY_PCT: float = 0.008  # 0.8%
+    # Optuna 03-15: 0.008→0.007 (slightly tighter proximity)
+    OB_PROXIMITY_PCT: float = 0.007  # 0.7%
 
     # Max distance (% of price) from current price to consider an OB for zone-based orders.
     # OBs beyond this distance are ignored to avoid absurdly distant limit orders.
-    OB_MAX_DISTANCE_PCT: float = 0.08  # 8%
+    # Optuna 03-15: 0.08→0.04 (reject distant OBs — biggest single improvement)
+    OB_MAX_DISTANCE_PCT: float = 0.04  # 4%
 
     # --- Setup B: FVG-OB adjacency ---
     # Max gap between FVG and OB as fraction of price to count as "adjacent".
@@ -214,7 +223,8 @@ class Settings:
     # Setup A entry depth — fraction of OB body for entry placement.
     # 0.50 = midpoint (deeper, better R:R but lower fill rate ~18%).
     # 0.65 = shallower (easier fill, slightly worse R:R).
-    SETUP_A_ENTRY_PCT: float = float(os.getenv("SETUP_A_ENTRY_PCT", "0.50"))
+    # Optuna 03-15: 0.50→0.65 (higher fill rate, walk-forward validated)
+    SETUP_A_ENTRY_PCT: float = float(os.getenv("SETUP_A_ENTRY_PCT", "0.65"))
 
     # Setup A mode: "both" (default), "continuation", or "reversal".
     # "continuation": CHoCH must align with HTF bias (safe, lower volume).
@@ -224,9 +234,8 @@ class Settings:
 
     # --- Setup A temporal ---
     # Max candles between sweep and CHoCH for Setup A validity.
-    # 40 candles = ~200min on 5m, ~10h on 15m. Backtest showed gap=40
-    # produces 4x more trades than gap=20 while keeping WR>45%.
-    SETUP_A_MAX_SWEEP_CHOCH_GAP: int = 40
+    # Optuna 03-15: 40→45 (slightly more temporal tolerance)
+    SETUP_A_MAX_SWEEP_CHOCH_GAP: int = 45
 
     # ========================
     # QUICK SETUPS (C, D, E) — Data-driven, shorter duration
@@ -272,9 +281,11 @@ class Settings:
 
     # --- Expectancy filters (post-detection, pre-AI) ---
     # Minimum ATR(14) as fraction of price. Rejects low-volatility setups.
-    MIN_ATR_PCT: float = float(os.getenv("MIN_ATR_PCT", "0.0025"))  # 0.25%
+    # Optuna 03-15: 0.0025→0.0045 (skip dead markets — strong filter)
+    MIN_ATR_PCT: float = float(os.getenv("MIN_ATR_PCT", "0.0045"))  # 0.45%
     # Minimum open space to nearest opposing structure as multiple of risk.
-    MIN_TARGET_SPACE_R: float = float(os.getenv("MIN_TARGET_SPACE_R", "1.2"))
+    # Optuna 03-15: 1.2→1.4 (require more room to target)
+    MIN_TARGET_SPACE_R: float = float(os.getenv("MIN_TARGET_SPACE_R", "1.4"))
 
     # --- Strategy behavior (profile-controlled) ---
     # If True, LTF structure (CHoCH/BOS) must align with HTF bias direction.
@@ -558,6 +569,11 @@ class Settings:
     # Sandbox: limit order tolerance from mark price (0.05% = fills like a market but with realistic slippage)
     SANDBOX_LIMIT_TOLERANCE_PCT: float = 0.0005
 
+    # Periodic SL verification interval (seconds).
+    # Every N seconds, confirm SL algo order still exists on exchange via
+    # find_pending_algo_orders(). Catches silent SL drops that fetch_order misses.
+    SL_VERIFY_INTERVAL_SECONDS: int = int(os.getenv("SL_VERIFY_INTERVAL_SECONDS", "60"))
+
     # ========================
     # HTF CAMPAIGN TRADING — Position trades on 4H timeframe
     # ========================
@@ -629,6 +645,18 @@ class Settings:
     # Feature version — increment when strategy params change in ways that
     # alter feature semantics (e.g. changing OB scoring weights, PD rules).
     ML_FEATURE_VERSION: int = 1
+
+    # ========================
+    # LIQUIDATION HEATMAP
+    # ========================
+    # Number of 5m candles to use for liquidation estimation (~17h at 200)
+    LIQ_CANDLE_COUNT: int = int(os.getenv("LIQ_CANDLE_COUNT", "200"))
+    # Price bin size for BTC liquidation levels (USD)
+    LIQ_BIN_SIZE_BTC: float = float(os.getenv("LIQ_BIN_SIZE_BTC", "50"))
+    # Price bin size for ETH liquidation levels (USD)
+    LIQ_BIN_SIZE_ETH: float = float(os.getenv("LIQ_BIN_SIZE_ETH", "2"))
+    # Redis cache TTL for computed heatmap (seconds)
+    LIQ_CACHE_TTL: int = int(os.getenv("LIQ_CACHE_TTL", "30"))
 
     # ========================
     # RECONNECTION

@@ -70,14 +70,19 @@ def setup_logger(service_name: str, file_level: str = "DEBUG") -> "logger":
     )
 
     # Daily rotated file per service
-    logger.add(
-        str(_LOG_DIR / f"{service_name}_{{time:YYYY-MM-DD}}.log"),
-        format=_LOG_FORMAT,
-        level=file_level,
-        rotation="00:00",       # New file at midnight
-        retention="30 days",
-        compression="gz",       # Compress old logs
-        enqueue=True,           # Thread-safe for async context
-    )
+    try:
+        logger.add(
+            str(_LOG_DIR / f"{service_name}_{{time:YYYY-MM-DD}}.log"),
+            format=_LOG_FORMAT,
+            level=file_level,
+            rotation="00:00",       # New file at midnight
+            retention="30 days",
+            compression="gz",       # Compress old logs
+            enqueue=True,           # Thread-safe for async context
+        )
+    except PermissionError:
+        # Log files owned by another process (e.g. bot running as root).
+        # Continue with stdout-only logging for scripts/backtests.
+        pass
 
     return logger

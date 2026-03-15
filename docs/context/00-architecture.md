@@ -1,6 +1,6 @@
 # Arquitectura del Sistema
-> Última actualización: 2026-03-13
-> Estado: **5/5 capas implementadas** — pipeline completo Data → Strategy → Risk → Execution. AI filter currently bypassed for all active setups (setup_a in AI_BYPASS_SETUP_TYPES, setup_d variants in QUICK_SETUP_TYPES). ENABLED_SETUPS: setup_a, setup_d_bos, setup_d_choch. Setup B (0% WR) and F (34.8% WR) disabled. OB selector upgraded with composite scoring. PnL tracking con fee deduction (0.05% per side). Signal mode disponible (`SIGNAL_ONLY=true`). **ML instrumentation** active: `ml_setups` table captures structured features at detection + outcomes at close.
+> Última actualización: 2026-03-15
+> Estado: **5/5 capas implementadas** — pipeline completo Data → Strategy → Risk → Execution. AI filter currently bypassed for all active setups (setup_a in AI_BYPASS_SETUP_TYPES, setup_d variants in QUICK_SETUP_TYPES). ENABLED_SETUPS: setup_a, setup_d_choch. Setup B (0-7.7% WR), D_bos (20-33% WR) and F (34.8% WR) disabled. OB selector upgraded with composite scoring. PnL tracking con fee deduction (0.05% per side). Signal mode disponible (`SIGNAL_ONLY=true`). **ML instrumentation** active: `ml_setups` table captures structured features at detection + outcomes at close.
 
 ## Qué hace (para entenderlo rápido)
 El sistema es un bot de trading que funciona como una línea de ensamblaje. Los datos entran por un lado, pasan por 5 filtros en orden, y si todos dicen "sí", se ejecuta el trade. Si cualquier filtro dice "no", el trade se descarta.
@@ -66,8 +66,8 @@ Sin esta arquitectura, tendríamos un solo programa gigante donde todo está mez
 1. Data Service recoge datos de OKX, Etherscan (liquidaciones via OI proxy, no Binance)
 2. Cuando hay una vela nueva (cada 5m/15m), manda los datos al Strategy Service
 3. Strategy Service analiza los datos buscando patrones SMC
-4. Si encuentra un setup completo (Setup A swing, o D_bos/D_choch quick), lo pasa al siguiente filtro
-5. **Pipeline dedup**: cache at pipeline entry covers ALL setup types (key: pair+direction+setup_type+entry_price, TTL 1h). Risk rejections for structural reasons ("SL too close") also cached.
+4. Si encuentra un setup completo (Setup A swing, o D_choch quick), lo pasa al siguiente filtro
+5. **Pipeline dedup**: cache at pipeline entry covers ALL setup types (key: pair+direction+setup_type, TTL 1h). `entry_price` excluded from key — same setup with slightly different entry should not bypass dedup. Risk rejections for structural reasons ("SL too close") also cached.
 6. **AI filter currently bypassed for ALL active setups:**
    - Setup A: in `AI_BYPASS_SETUP_TYPES` (89.6% approval = no value). Synthetic AIDecision(confidence=1.0).
    - Setup D variants: in `QUICK_SETUP_TYPES`. Synthetic AIDecision(confidence=1.0).
@@ -75,7 +75,7 @@ Sin esta arquitectura, tendríamos un solo programa gigante donde todo está mez
 7. **WebSocket candle dedup**: `_last_confirmed_ts` dict in websocket_feeds.py prevents duplicate pipeline runs if OKX sends same candle twice.
 8. Risk Service verifica TODOS los guardrails y calcula el position size
 9. Execution Service coloca la orden limit en OKX, con SL (stop-market) y TP (limit al tp2, 100% close). **En sandbox**: limit al ask/bid actual + 0.05% tolerancia (evita slippage de market orders).
-10. PositionMonitor gestiona el ciclo de vida: entry fill → breakeven (SL→entry al cruzar tp1) → trailing SL (SL→tp1 al cruzar midpoint) → TP/SL
+10. PositionMonitor gestiona el ciclo de vida: entry fill → breakeven (SL→entry al cruzar tp1) → trailing SL (SL→tp1 al cruzar midpoint) → TP/SL. **Progressive trailing** opcional (`TRAILING_TP_ENABLED=false` por defecto): trails SL en pasos de 0.5 R:R en vez de los dos saltos fijos.
 
 **HTF Campaign path** (cuando `HTF_CAMPAIGN_ENABLED=true`):
 - Velas 4H disparan evaluación HTF separada: Strategy (`evaluate_htf`) → AI → Risk → CampaignMonitor
@@ -236,15 +236,34 @@ Backtester completo con simulación de fills:
   - Single TP at tp2 (2:1 R:R) → 100% close. Breakeven at tp1 (1:1). Trailing SL at midpoint(tp1,tp2) → SL to tp1.
   - Timeout: `MAX_TRADE_DURATION_SECONDS`
   - Position sizing: `(equity * RISK_PER_TRADE) / |entry - sl|`, cap MAX_LEVERAGE
+- **Timeframe-detail mode** (`--detail`): carga velas 1m para resolver ambigüedad SL/TP. Cuando una vela contiene tanto SL como TP en su rango, replay 1m sub-candles para determinar cuál se tocó primero. Fallback a SL-first si no hay data 1m. Requiere velas 1m en PostgreSQL (via `fetch_history.py --timeframe 1m`).
+- **Fill probability** (`--fill-prob 0.8`): aplica probabilidad de fill después de que el precio alcanza entry. Simula fill rates realistas de limit orders. `--seed` para reproducibilidad. Default 1.0 (siempre fill).
 - **Risk guardrails** (matching live RiskService): MIN_RISK_DISTANCE_PCT, R:R check, cooldown after loss, max trades/day, daily DD, weekly DD. Tracks `risk_rejections` dict.
-- **Setup dedup cache**: key=(pair, direction, setup_type, round(entry_price, 2)), TTL=1h. Matches main.py live dedup.
+- **Setup dedup cache**: key=(pair, direction, setup_type, round(entry_price, 2)), TTL=1h. **Nota:** main.py live dedup ya no incluye entry_price en la key — backtest aún usa la key vieja.
 - **Métricas**: win rate, avg R:R, PnL, max drawdown, Sharpe, profit factor, trades/week
 - **Breakdowns**: por setup type, par, dirección, exit reasons, risk rejections
 - **Export CSV**: `--csv` genera archivo con todas las trades
 - **JSON persistence**: cada run guarda automáticamente un resumen JSON en `backtest_results/` con métricas, breakdowns y metadata. Filename: `{timestamp}_{days}d.json`. No requiere flag — siempre se guarda.
+- **Settings overrides**: `run_backtest(overrides={"PARAM": value})` permite override temporal de settings para optimización automática.
 
 ```bash
 python scripts/backtest.py --days 60 --capital 10000 --csv
+python scripts/backtest.py --days 60 --detail              # timeframe-detail (1m resolution)
+python scripts/backtest.py --days 60 --fill-prob 0.8        # 80% fill probability
+```
+
+### `scripts/optimize.py`
+Optuna parameter optimizer — automated strategy parameter tuning:
+- **Wraps `run_backtest()`** como función objetivo de Optuna
+- **10 parámetros tuneables**: SETUP_A_ENTRY_PCT, OB_PROXIMITY_PCT, MIN_RISK_DISTANCE_PCT, OB_MAX_AGE_HOURS, SETUP_A_MAX_SWEEP_CHOCH_GAP, OB_MIN_VOLUME_RATIO, OB_MIN_BODY_PCT, OB_MAX_DISTANCE_PCT, MIN_ATR_PCT, MIN_TARGET_SPACE_R
+- **Métricas**: profit_factor (default), sharpe, pnl, win_rate, composite
+- **Walk-forward validation** (`--walk-forward`): 70% train / 30% test. Detecta overfitting comparando optimized vs baseline en test period.
+- **Parallel trials**: `--jobs 2-4` (limitado por cores del Nitro 5)
+- **Output**: JSON con best params, top 5, parameter importance. Guardado en `backtest_results/`
+
+```bash
+python scripts/optimize.py --days 60 --trials 100 --metric profit_factor
+python scripts/optimize.py --days 60 --trials 50 --walk-forward --jobs 2
 ```
 
 **Tests:** 21 tests en `tests/test_backtest.py` (SL, single TP, breakeven, trailing SL, timeout, sizing, métricas).
@@ -268,7 +287,7 @@ Desde 2026-03-13, el bot registra cada setup detectado con features estructurado
 
 ### Qué se captura
 
-**Al detectar (antes de dedup/risk):**
+**Al detectar (después de dedup, antes de risk):**
 - Geometría del setup (entry, SL, TP, R:R, risk_distance)
 - Confluences descompuestas (has_sweep, has_choch, ob_volume_ratio, pd_aligned, etc.)
 - Market snapshot (funding, OI, CVD, buy_dominance)
@@ -291,7 +310,7 @@ Desde 2026-03-13, el bot registra cada setup detectado con features estructurado
 - `config/settings.py` — `ML_FEATURE_VERSION`
 
 ### Leakage safety
-- Features capturados ANTES de dedup/risk check (strategy-time)
+- Features capturados DESPUÉS de dedup, ANTES de risk check (strategy-time)
 - Risk context separado (safe para fill model, caution para quality model)
 - No se usa información de outcome en features
 
@@ -301,6 +320,12 @@ Desde 2026-03-13, el bot registra cada setup detectado con features estructurado
 - Hasta entonces: solo recolección de datos
 
 ## Cambios recientes
+- 2026-03-15: **Optuna parameter tuning** — Walk-forward validated parameter optimization (PF 1.05→2.65). Key changes: OB_MIN_VOLUME_RATIO 1.2→1.3, OB_MAX_AGE_HOURS 72→84, OB_MIN_BODY_PCT 0.001→0.0015, OB_PROXIMITY_PCT 0.008→0.007, OB_MAX_DISTANCE_PCT 0.08→0.04 (biggest improvement), SETUP_A_ENTRY_PCT 0.50→0.65, SETUP_A_MAX_SWEEP_CHOCH_GAP 40→45, MIN_ATR_PCT 0.0025→0.0045, MIN_TARGET_SPACE_R 1.2→1.4. New `scripts/optimize.py` for automated Optuna optimization.
+- 2026-03-15: **Periodic SL verification** — `_verify_sl_exists()` in PositionMonitor confirms SL algo order exists on exchange every `SL_VERIFY_INTERVAL_SECONDS` (60s) via `find_pending_algo_orders()`. Catches silent SL drops missed by `fetch_order()`. Re-places SL if missing. New `last_sl_verified_ms` field in ManagedPosition.
+- 2026-03-15: **Backtest enhancements** — Timeframe-detail mode (`--detail`) loads 1m candles to resolve ambiguous SL/TP ordering within a candle. Fill probability model (`--fill-prob 0.8`) simulates realistic limit order fill rates with `--seed` for reproducibility. `run_backtest(overrides={})` for Optuna parameter optimization. `_candle_duration_ms()` + binary search for 1m sub-candle lookup. Returns metrics for programmatic use.
+- 2026-03-15: **Liquidation heatmap** — DIY approximation of Coinglass-style heatmap. `data_service/liquidation_estimator.py` projects liquidation prices for 5 leverage tiers (5x-100x) using OI + candle volume distribution. Dashboard: canvas-based horizontal bar chart with BTC/ETH tabs. Settings: `LIQ_CANDLE_COUNT`, `LIQ_BIN_SIZE_BTC/ETH`, `LIQ_CACHE_TTL`.
+- 2026-03-15: **Logger resilience** — `shared/logger.py` wraps file sink creation in try/catch for PermissionError (e.g. bot running as root, script as user). Falls back to stdout-only logging.
+- 2026-03-15: **ExchangeClient 1m/1d timeframes** — `_timeframe_to_ms()` now supports 1m and 1d for backtest detail mode and daily candle backfill.
 - 2026-03-13: **ML Instrumentation** — New `ml_setups` PostgreSQL table captures structured features for every detected setup (before dedup/risk). `TradeSetup.setup_id` (uuid) tracks each setup across detection→risk→execution→close. Features decomposed at write time: confluences (has_sweep, has_choch, ob_volume_ratio, cvd_aligned, pd_aligned), market snapshot (funding, OI, CVD, buy_dominance), stale/late-entry (entry_distance_pct, setup_age_minutes), missingness flags (has_funding, has_oi, has_cvd, has_news, has_whales). Outcomes resolved: filled_tp/sl/trailing/timeout, unfilled_timeout, risk_rejected, deduped, replaced. `ML_FEATURE_VERSION=1` in settings. New file: `shared/ml_features.py`. Pipeline instrumented in `main.py`, outcome resolution in `execution_service/monitor.py`. 14 new tests. Zero impact on trading logic — pure data collection.
 - 2026-03-11: **Single mode + PnL fix + Institutional AI** — Removed dual profile system (default/aggressive). Aggressive values merged as new defaults: AI_MIN_CONFIDENCE 0.50, MAX_DAILY_DRAWDOWN 5%, MAX_WEEKLY_DRAWDOWN 10%, COOLDOWN_MINUTES 15, MAX_TRADES_PER_DAY 10, MIN_RISK_REWARD 1.2, OB_PROXIMITY_PCT 0.008, PD_EQUILIBRIUM_BAND 0.01, ALLOW_EQUILIBRIUM_TRADES True, HTF_BIAS_REQUIRE_4H False, ENTRY_TIMEOUT_SECONDS 21600. PnL tracking now deducts trading fees (TRADING_FEE_RATE 0.05% per side) and stores actual_exit_price. All exit paths compute PnL before closing. AI prompt rewritten with scoring rubric (4 dimensions: setup_quality, market_support, contradiction, data_sufficiency). Deleted: ProfileSelector component, profile API route, profile sync in main.py. 478 tests pass.
 - 2026-03-11: **HTF Campaign Trading** — Position trades en 4H con Daily bias. CampaignMonitor gestiona ciclo de vida: initial entry → pyramid adds (hasta 3, margen decreciente: $30/$15/$10/$5) → trailing SL en 4H swing levels → timeout 7 días. Sin TP — sale solo via trailing SL. Intraday bloqueado en par con campaña activa. Nuevos modelos: `CampaignAdd`, `PositionCampaign`. Nuevo archivo: `execution_service/campaign_monitor.py`. Nueva tabla PostgreSQL: `campaigns`. Daily candles (1D) backfill + WebSocket. Settings: `HTF_CAMPAIGN_*`. Pipeline HTF wired en `main.py`. Alert: `notify_campaign_closed()`.

@@ -90,6 +90,9 @@ class ManagedPosition:
     # Track the current SL trigger price (updated on SL adjustments)
     current_sl_price: float = 0.0
 
+    # Periodic SL verification — last time we confirmed SL exists on exchange
+    last_sl_verified_ms: int = 0
+
     # Database tracking
     db_trade_id: Optional[int] = None
 

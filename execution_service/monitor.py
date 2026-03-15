@@ -669,6 +669,18 @@ class PositionMonitor:
                 self._close_position(pos, "tp")
                 return
 
+        # Periodic SL verification — confirm SL algo order still exists on exchange.
+        # Catches silent SL drops that fetch_order status checks miss.
+        if pos.sl_order_id:
+            now_ms = int(time.time() * 1000)
+            verify_interval_ms = settings.SL_VERIFY_INTERVAL_SECONDS * 1000
+            if pos.last_sl_verified_ms == 0:
+                # First check — just start the timer, don't verify yet
+                pos.last_sl_verified_ms = now_ms
+            elif (now_ms - pos.last_sl_verified_ms) >= verify_interval_ms:
+                await self._verify_sl_exists(pos)
+                pos.last_sl_verified_ms = now_ms
+
         # SL management — progressive trail or legacy breakeven+trailing
         if pos.actual_entry_price:
             if settings.TRAILING_TP_ENABLED:
@@ -678,6 +690,67 @@ class PositionMonitor:
                     await self._check_breakeven(pos)
                 if pos.breakeven_hit and not pos.trailing_sl_moved:
                     await self._check_trailing_sl(pos)
+
+    # ================================================================
+    # Periodic SL verification — confirm SL exists via algo order list
+    # ================================================================
+
+    async def _verify_sl_exists(self, pos: ManagedPosition) -> None:
+        """Verify SL algo order exists on exchange via find_pending_algo_orders.
+
+        If SL order ID is not found in the pending algo list but the position
+        is still open, re-place the SL immediately.
+        """
+        algos = await self._executor.find_pending_algo_orders(pos.pair)
+        sl_found = any(
+            a.get("algoId") == pos.sl_order_id or a.get("algoClOrdId") == pos.sl_order_id
+            for a in algos
+        )
+
+        if sl_found:
+            return
+
+        # SL not in algo list — check if position still exists
+        exchange_pos = await self._executor.fetch_position(pos.pair)
+        if exchange_pos is None:
+            return  # Network error, skip
+
+        contracts = float(exchange_pos.get("contracts", 0))
+        if contracts <= 0:
+            # Position already closed — SL triggered silently
+            sl_price = pos.current_sl_price or pos.sl_price
+            logger.info(
+                f"SL verify: order gone + position closed: {pos.pair} "
+                f"(SL likely triggered at ~{sl_price:.2f})"
+            )
+            await self._cancel_tp(pos)
+            self._calculate_pnl(pos, sl_price)
+            if self._on_sl_hit and pos.pnl_pct < 0:
+                try:
+                    self._on_sl_hit(pos.pair, pos.sl_price, pos.entry_price)
+                except Exception as e:
+                    logger.error(f"on_sl_hit callback error: {pos.pair} {e}")
+            self._close_position(pos, "sl")
+            return
+
+        # Position open but SL missing — re-place immediately
+        logger.warning(
+            f"SL verify: order {pos.sl_order_id} NOT found on exchange "
+            f"but position open ({contracts} contracts): {pos.pair} — re-placing SL"
+        )
+        close_side = "sell" if pos.direction == "long" else "buy"
+        sl_price = pos.current_sl_price or pos.sl_price
+        new_sl = await self._executor.place_stop_market(
+            pos.pair, close_side, pos.filled_size, sl_price
+        )
+        if new_sl is not None:
+            pos.sl_order_id = new_sl.get("id")
+            pos.sl_fetch_failures = 0
+            logger.info(
+                f"SL re-placed after verify: {pos.pair} trigger={sl_price:.2f}"
+            )
+        else:
+            logger.error(f"Failed to re-place SL after verify: {pos.pair}")
 
     # ================================================================
     # Breakeven trigger — move SL to entry when price crosses 1:1 R:R

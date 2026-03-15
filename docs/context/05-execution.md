@@ -1,5 +1,5 @@
 # Execution Service (Layer 5)
-> Última actualización: 2026-03-13 (Progressive trailing SL — let winners run.)
+> Última actualización: 2026-03-15 (Periodic SL verification + progressive trailing SL.)
 > Estado: **Fase 1 — COMPLETADA**. Entry + SL + TP atómicos (attached). Progressive trailing SL (0.5 R:R steps) with ceiling TP at 5:1 R:R. Legacy breakeven+trailing behind `TRAILING_TP_ENABLED=false`. CampaignMonitor para HTF position trades. PnL tracking con fee deduction (TRADING_FEE_RATE 0.05% per side).
 
 El brazo ejecutor del bot. Recibe trades aprobados por Risk Service y los ejecuta en OKX via ccxt.
@@ -20,7 +20,7 @@ ExecutionService (facade)
 
 1. `execute(setup, approval, ai_confidence)` recibe trade aprobado
 2. **Valida precio ordering** — Long: `sl < entry < tp2`. Short: inverso.
-3. **Chequea posición existente** — Si hay pending_entry → reemplaza. Si hay adoptada → permite coexistencia. Si hay activa del bot → rechaza.
+3. **Chequea posición existente** — Si hay pending_entry → reemplaza (aborts if cancel fails to prevent duplicate orders on exchange). Si hay adoptada → permite coexistencia. Si hay activa del bot → rechaza.
 4. Configura el par (margin mode isolated + leverage). `defaultMarginMode` seteado a nivel de exchange en ccxt para evitar fallback a `cross`.
 5. **Split entry check**: si `setup.entry2_price > 0` y es swing setup y live mode:
    - Divide `position_size` 50/50 entre entry1 (OB 50%) y entry2 (OB 75%)
@@ -104,7 +104,7 @@ Cuando `is_split_entry == True`, el monitor usa `_check_split_pending()` en vez 
 11. **Max slippage guard** — Después del fill, si `abs(actual_entry - entry) / entry > MAX_SLIPPAGE_PCT` (0.3%), la posición se cierra inmediatamente con `exit_reason = "excessive_slippage"`. Cancela SL/TP, market close. Skipped en sandbox mode (fills sintéticos). Configurable en `settings.MAX_SLIPPAGE_PCT`.
 12. **Deterministic clOrdId** — Cada limit order lleva un `clOrdId` basado en md5(pair+side+price+contracts). Si el bot reintenta la misma orden después de un timeout de red, OKX la rechaza como duplicada en vez de abrir dos posiciones.
 
-## Progressive Trailing SL (default, `TRAILING_TP_ENABLED=true`)
+## Progressive Trailing SL (`TRAILING_TP_ENABLED=true`, default=false)
 
 SL trails in `TRAIL_STEP_RR` (0.5) R:R increments. Always one step behind the highest R:R level reached:
 
@@ -165,6 +165,13 @@ Cuando el SL algo order no se encuentra por 12 polls consecutivos (~60s):
 
 Also handles SL cancelled externally: re-places SL immediately.
 
+## Periodic SL verification
+
+Complementa el SL vanished fallback. Cada `SL_VERIFY_INTERVAL_SECONDS` (default 60s), `_verify_sl_exists()` llama a `find_pending_algo_orders()` para confirmar que el SL order ID existe en la lista de algo orders pendientes en OKX. Esto atrapa drops silenciosos donde `fetch_order()` sigue devolviendo `status=open` pero el SL realmente no existe en el exchange. Si no se encuentra:
+- **Position closed** → SL triggered silently, close in monitor
+- **Position open** → re-place SL immediately
+- Se usa `last_sl_verified_ms` en `ManagedPosition` para tracking del timer (primer poll solo inicializa, no verifica)
+
 ## OKX Algo Order Handling
 
 - `place_limit_order()` acepta `sl_trigger_price` y `tp_price` opcionales → ccxt los pasa como `stopLoss`/`takeProfit` params → OKX crea attached algo orders al fill
@@ -198,7 +205,7 @@ Esto resuelve el bug donde trades quedaban como "open" en la DB permanentemente 
 | `service.py` | Facade — execute(), start(), stop(), health(). Position adoption converts contracts→base. `_emit_metric()` wired to executor for Grafana. Accepts `on_sl_hit` callback for failed OB tracking. Sends ORDER PLACED Telegram notification on successful order placement. |
 | `executor.py` | Wrapper ccxt — place/cancel/fetch orders. Contracts conversion (`_to_contracts`, `contracts_to_base`). Attached SL/TP on entry. Algo cancel fallback. `find_pending_algo_orders()`, `fetch_open_orders()`. Deterministic `clOrdId` per order (md5 of pair+side+price+contracts) — OKX rejects duplicates, preventing double orders after network timeouts. Optional `metrics_callback` emits `okx_order_latency_ms` per order. `fetch_position()` returns `POSITION_EMPTY` ({}) when API succeeds but no position exists (vs `None` on error). |
 | `monitor.py` | Background loop — attached SL/TP discovery + manual fallback, breakeven + trailing SL via price polling. Post-fill SL distance check (`sl_too_close` close). Slippage guard (`excessive_slippage` close). Sends TRADE CLOSED + EMERGENCY Telegram notifications. Per-position try/catch in poll loop prevents one position's error from blocking others. |
-| `models.py` | ManagedPosition (intraday, includes split entry fields: `is_split_entry`, `entry2_price`, `entry1/2_filled/fill_price/fill_size`) + PositionCampaign (HTF) + CampaignAdd (pyramid entries) |
+| `models.py` | ManagedPosition (intraday, includes split entry fields: `is_split_entry`, `entry2_price`, `entry1/2_filled/fill_price/fill_size`, `last_sl_verified_ms` for periodic SL verify) + PositionCampaign (HTF) + CampaignAdd (pyramid entries) |
 | `campaign_monitor.py` | Background loop para HTF campaigns — entry fill tracking, pyramid adds, trailing SL en 4H swing levels, SL vanished fallback, timeout 7d. Persiste en PostgreSQL `campaigns` table. Notifica CAMPAIGN CLOSED via AlertManager. |
 
 ## HTF Campaign Monitor (`campaign_monitor.py`)
@@ -258,6 +265,7 @@ active ──[timeout 7d]─────────> closed        (max duratio
 | `HTF_MAX_CAMPAIGN_DURATION` | 604800 (7d) | Duración máxima de la campaña |
 | `HTF_ENTRY_TIMEOUT_SECONDS` | 86400 (24h) | Timeout de entry para limit orders HTF |
 | `HTF_MAX_CAMPAIGNS` | 1 | Máximo de campañas concurrentes |
+| `SL_VERIFY_INTERVAL_SECONDS` | 60 | Periodic SL verification interval (confirm SL algo order exists on exchange) |
 | `TRAILING_TP_ENABLED` | true | Progressive trail (env var). `false` = legacy breakeven+trailing |
 | `TRAIL_STEP_RR` | 0.5 | R:R increment per trail step |
 | `TRAIL_ACTIVATION_RR` | 1.0 | Min R:R to start trailing (breakeven level) |

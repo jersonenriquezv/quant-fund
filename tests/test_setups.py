@@ -177,7 +177,8 @@ class TestSetupA:
         assert setup is not None
         assert setup.setup_type == "setup_a"
         assert setup.direction == "long"
-        assert setup.entry_price == 101.0
+        # Entry at SETUP_A_ENTRY_PCT (0.65) of OB body: 100 + 0.65*(102-100) = 101.3
+        assert setup.entry_price == 101.3
         assert setup.sl_price == 98.0  # OB low
         assert len(setup.confluences) >= 2
 
@@ -563,8 +564,8 @@ class TestZoneBasedOB:
     def test_ob_at_exact_boundary(self):
         """OB exactly at OB_MAX_DISTANCE_PCT boundary is accepted."""
         evaluator = SetupEvaluator()
-        # OB_MAX_DISTANCE_PCT = 0.05 → at price 100, max distance = 5
-        ob = _make_ob(entry_price=95.0)
+        # OB_MAX_DISTANCE_PCT = 0.04 → at price 100, max distance = 4
+        ob = _make_ob(entry_price=96.0)
         assert evaluator._is_ob_within_range(100.0, ob) is True
 
     def test_find_best_ob_uses_composite_score(self):
@@ -620,7 +621,8 @@ class TestZoneBasedOB:
             pair="BTC/USDT", htf_bias="bullish", liquidity_levels=[],
         )
         assert setup is not None
-        assert setup.entry_price == 97.0
+        # Entry at SETUP_A_ENTRY_PCT (0.65) of OB body: 96 + 0.65*(98-96) = 97.3
+        assert setup.entry_price == 97.3
 
     def test_setup_a_rejects_ob_beyond_max_distance(self):
         """Setup A rejected when OB is beyond OB_MAX_DISTANCE_PCT."""

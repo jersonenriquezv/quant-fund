@@ -28,6 +28,7 @@ from execution_service import ExecutionService
 from execution_service.campaign_monitor import CampaignMonitor
 from shared.notifier import TelegramNotifier
 from shared.alert_manager import AlertManager
+from data_service.liquidation_estimator import estimate_liquidation_levels
 
 logger = setup_logger("main")
 
@@ -538,6 +539,80 @@ async def _daily_summary_loop() -> None:
         await asyncio.sleep(86400)
 
 
+async def _liquidation_alert_loop() -> None:
+    """Send top liquidation clusters near price every 4 hours via Telegram."""
+    # Wait 60s for data to populate on startup
+    await asyncio.sleep(60)
+
+    while True:
+        try:
+            await _send_liquidation_alert()
+        except Exception as e:
+            logger.error(f"Liquidation alert error: {e}")
+
+        await asyncio.sleep(4 * 3600)  # 4 hours
+
+
+async def _send_liquidation_alert() -> None:
+    """Compute and send top liquidation clusters for all pairs."""
+    if _data_service is None or _alert_manager is None:
+        return
+
+    all_clusters: list[dict] = []
+
+    for pair in settings.TRADING_PAIRS:
+        candles = _data_service.get_candles(pair, "5m", settings.LIQ_CANDLE_COUNT)
+        oi = _data_service.get_open_interest(pair)
+        if not candles or oi is None or oi.oi_usd <= 0:
+            continue
+
+        current_price = candles[-1].close
+        if current_price <= 0:
+            continue
+
+        bins = estimate_liquidation_levels(candles, oi.oi_usd, pair)
+        if not bins:
+            continue
+
+        # Find top clusters above price (short liquidations — fuel for up moves)
+        above = []
+        for b in bins:
+            if b.price > current_price and b.liq_short_usd > 0:
+                dist_pct = (b.price - current_price) / current_price * 100
+                if dist_pct <= 10:  # Within 10% above
+                    above.append({
+                        "price": b.price,
+                        "usd": b.liq_short_usd,
+                        "dist_pct": dist_pct,
+                    })
+
+        # Find top clusters below price (long liquidations — fuel for down moves)
+        below = []
+        for b in bins:
+            if b.price < current_price and b.liq_long_usd > 0:
+                dist_pct = (b.price - current_price) / current_price * 100
+                if dist_pct >= -10:  # Within 10% below
+                    below.append({
+                        "price": b.price,
+                        "usd": b.liq_long_usd,
+                        "dist_pct": dist_pct,
+                    })
+
+        # Sort by USD size and take top 3 each
+        above.sort(key=lambda x: x["usd"], reverse=True)
+        below.sort(key=lambda x: x["usd"], reverse=True)
+
+        all_clusters.append({
+            "pair": pair,
+            "price": current_price,
+            "above": above[:3],
+            "below": below[:3],
+        })
+
+    if all_clusters:
+        await _alert_manager.notify_liquidation_clusters(all_clusters)
+
+
 # ================================================================
 # Config validation
 # ================================================================
@@ -660,6 +735,7 @@ async def main() -> None:
     global _bot_start_time
     _bot_start_time = time.time()
     status_task = asyncio.create_task(_daily_summary_loop(), name="daily_summary")
+    liq_task = asyncio.create_task(_liquidation_alert_loop(), name="liquidation_alerts")
 
     # Wait for shutdown signal
     await shutdown_event.wait()
@@ -675,7 +751,7 @@ async def main() -> None:
     await _data_service.stop()
 
     # Cancel background tasks
-    for task in [data_task, status_task]:
+    for task in [data_task, status_task, liq_task]:
         if not task.done():
             task.cancel()
             try:

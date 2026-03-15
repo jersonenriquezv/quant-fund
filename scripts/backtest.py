@@ -18,6 +18,7 @@ import asyncio
 import csv
 import json
 import math
+import random
 import re
 import sys
 import os
@@ -60,10 +61,19 @@ class BacktestDataService:
         self._funding: dict[str, list[FundingRate]] = {}
         self._oi: dict[str, list[OpenInterest]] = {}
         self._cvd: dict[str, list[CVDSnapshot]] = {}
+        # 1m candle index for timeframe-detail resolution
+        # {pair: {timestamp_ms: [Candle, ...]}} — 1m candles grouped by parent candle timestamp
+        self._detail_loaded: bool = False
 
     def load_from_postgres(self, pg: PostgresStore, pairs: list[str],
-                           timeframes: list[str], count: int = 50000):
-        """Load historical candles, funding rates, and OI from PostgreSQL."""
+                           timeframes: list[str], count: int = 50000,
+                           load_detail: bool = False):
+        """Load historical candles, funding rates, and OI from PostgreSQL.
+
+        Args:
+            load_detail: If True, also load 1m candles for timeframe-detail
+                        resolution of ambiguous SL/TP ordering.
+        """
         for pair in pairs:
             for tf in timeframes:
                 candles = pg.load_candles(pair, tf, count)
@@ -74,6 +84,19 @@ class BacktestDataService:
                                 f"{_ts_to_str(candles[-1].timestamp)}]")
                 else:
                     logger.warning(f"No candles in DB: {pair} {tf}")
+
+            # Load 1m candles for timeframe-detail mode
+            if load_detail and "1m" not in timeframes:
+                candles_1m = pg.load_candles(pair, "1m", count * 5)
+                if candles_1m:
+                    self._candles[(pair, "1m")] = candles_1m
+                    self._detail_loaded = True
+                    logger.info(f"Loaded {len(candles_1m)} detail candles: {pair} 1m "
+                                f"[{_ts_to_str(candles_1m[0].timestamp)} -> "
+                                f"{_ts_to_str(candles_1m[-1].timestamp)}]")
+                else:
+                    logger.warning(f"No 1m candles in DB for {pair} — "
+                                   f"timeframe-detail will fall back to SL-first")
 
             # Load historical funding rates
             funding = pg.load_funding_rates(pair)
@@ -136,6 +159,40 @@ class BacktestDataService:
             oi=oi,
             cvd=cvd,
         )
+
+    def get_detail_candles(self, pair: str, start_ms: int,
+                           end_ms: int) -> list[Candle]:
+        """Get 1m candles within a time range for timeframe-detail resolution.
+
+        Args:
+            start_ms: Start of parent candle (inclusive)
+            end_ms: End of parent candle (exclusive)
+
+        Returns:
+            List of 1m candles sorted chronologically, or empty if unavailable.
+        """
+        all_1m = self._candles.get((pair, "1m"), [])
+        if not all_1m:
+            return []
+
+        # Binary search for start position
+        lo, hi = 0, len(all_1m) - 1
+        start_idx = len(all_1m)
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if all_1m[mid].timestamp >= start_ms:
+                start_idx = mid
+                hi = mid - 1
+            else:
+                lo = mid + 1
+
+        # Collect candles in range
+        result = []
+        for i in range(start_idx, len(all_1m)):
+            if all_1m[i].timestamp >= end_ms:
+                break
+            result.append(all_1m[i])
+        return result
 
     def get_trigger_candles(self, pair: str,
                             ltf_timeframes: list[str]) -> list[Candle]:
@@ -374,7 +431,10 @@ class TradeSimulator:
 
     def __init__(self, initial_capital: float,
                  fill_mode: str = "optimistic",
-                 fill_buffer_pct: float = 0.001):
+                 fill_buffer_pct: float = 0.001,
+                 fill_probability: float = 1.0,
+                 seed: int = 42,
+                 data_service: BacktestDataService | None = None):
         self.initial_capital: float = initial_capital
         self.equity: float = initial_capital
         self.pending: dict[str, SimulatedTrade] = {}   # keyed by pair
@@ -386,6 +446,11 @@ class TradeSimulator:
         # Fill model: "optimistic" (touch=fill) or "conservative" (penetrate by buffer)
         self.fill_mode: str = fill_mode
         self.fill_buffer_pct: float = fill_buffer_pct
+        # Probabilistic fill model: after price reaches entry, apply this probability
+        self.fill_probability: float = fill_probability
+        self._rng: random.Random = random.Random(seed)
+        # Data service for timeframe-detail resolution (1m candles)
+        self._data: BacktestDataService | None = data_service
 
         # Execution funnel counters
         self._pending_created: int = 0
@@ -560,18 +625,31 @@ class TradeSimulator:
         Optimistic mode: touch = fill (price reaches entry level).
         Conservative mode: price must penetrate beyond entry by buffer,
         simulating that a limit order needs the market to move through it.
+
+        After price check passes, applies fill_probability (0.0-1.0) to
+        simulate realistic limit order fill rates.
         """
+        price_reached = False
         if self.fill_mode == "conservative":
             buffer = trade.entry_price * self.fill_buffer_pct
             if trade.direction == "long":
-                return candle.low <= (trade.entry_price - buffer)
+                price_reached = candle.low <= (trade.entry_price - buffer)
             else:
-                return candle.high >= (trade.entry_price + buffer)
+                price_reached = candle.high >= (trade.entry_price + buffer)
         else:  # optimistic
             if trade.direction == "long":
-                return candle.low <= trade.entry_price
+                price_reached = candle.low <= trade.entry_price
             else:
-                return candle.high >= trade.entry_price
+                price_reached = candle.high >= trade.entry_price
+
+        if not price_reached:
+            return False
+
+        # Apply fill probability
+        if self.fill_probability < 1.0:
+            return self._rng.random() < self.fill_probability
+
+        return True
 
     def _process_pending(self, candle: Candle) -> None:
         """Check if pending entries fill or expire."""
@@ -603,6 +681,45 @@ class TradeSimulator:
         for pair in to_remove:
             del self.pending[pair]
 
+    def _candle_duration_ms(self, timeframe: str) -> int:
+        """Return duration of a candle in milliseconds."""
+        multipliers = {"1m": 60_000, "5m": 300_000, "15m": 900_000,
+                       "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}
+        return multipliers.get(timeframe, 300_000)
+
+    def _resolve_ambiguous_exit(self, trade: SimulatedTrade, candle: Candle,
+                                tp_target: float) -> str | None:
+        """Use 1m candles to determine if SL or TP was hit first.
+
+        Returns "sl" if SL hit first, "tp" if TP hit first, None if
+        no 1m data available (caller falls back to SL-first default).
+        """
+        if self._data is None or not self._data._detail_loaded:
+            return None
+
+        duration_ms = self._candle_duration_ms(candle.timeframe)
+        detail_candles = self._data.get_detail_candles(
+            candle.pair, candle.timestamp, candle.timestamp + duration_ms
+        )
+        if not detail_candles:
+            return None
+
+        for dc in detail_candles:
+            dc_sl_hit = (dc.low <= trade.current_sl if trade.direction == "long"
+                         else dc.high >= trade.current_sl)
+            dc_tp_hit = (dc.high >= tp_target if trade.direction == "long"
+                         else dc.low <= tp_target)
+
+            if dc_sl_hit and dc_tp_hit:
+                # Both hit on same 1m candle — can't resolve further, SL-first
+                return "sl"
+            if dc_sl_hit:
+                return "sl"
+            if dc_tp_hit:
+                return "tp"
+
+        return None
+
     def _process_active(self, candle: Candle) -> None:
         """Check SL, TP, breakeven, trailing, and timeout for active trades.
 
@@ -610,6 +727,10 @@ class TradeSimulator:
         1. SL check first (always priority)
         2. TP hit → close 100%
         3. SL management: progressive trail or legacy breakeven+trailing
+
+        Timeframe-detail: When both SL and TP are within the same candle,
+        uses 1m sub-candles to determine which was hit first. Falls back
+        to SL-first if no 1m data is available.
         """
         still_active = []
         for trade in self.active:
@@ -629,12 +750,32 @@ class TradeSimulator:
                 self.closed.append(trade)
                 continue
 
-            # SL check (priority — always first)
-            sl_hit = False
-            if trade.direction == "long":
-                sl_hit = candle.low <= trade.current_sl
-            else:
-                sl_hit = candle.high >= trade.current_sl
+            # Determine SL and TP hit on this candle
+            sl_hit = (candle.low <= trade.current_sl if trade.direction == "long"
+                      else candle.high >= trade.current_sl)
+
+            tp_target = trade.tp2_price
+            if settings.TRAILING_TP_ENABLED:
+                risk = abs(trade.entry_price - trade.sl_price)
+                if trade.direction == "long":
+                    tp_target = trade.entry_price + (risk * settings.TRAIL_CEILING_RR)
+                else:
+                    tp_target = trade.entry_price - (risk * settings.TRAIL_CEILING_RR)
+
+            tp_hit = self._price_reached(trade, candle, tp_target)
+
+            # Ambiguous: both SL and TP within same candle — resolve with 1m detail
+            if sl_hit and tp_hit:
+                resolution = self._resolve_ambiguous_exit(trade, candle, tp_target)
+                if resolution == "tp":
+                    # TP was hit first
+                    self._close_trade(trade, tp_target, "tp", candle.timestamp)
+                    self.closed.append(trade)
+                    continue
+                else:
+                    # SL first (or no 1m data — default to SL-first)
+                    sl_hit = True
+                    tp_hit = False
 
             if sl_hit:
                 if trade.trail_level > 0 and settings.TRAILING_TP_ENABLED:
@@ -649,16 +790,6 @@ class TradeSimulator:
                 self.closed.append(trade)
                 continue
 
-            # TP check — tp2 (legacy) or ceiling TP (progressive trail)
-            tp_target = trade.tp2_price
-            if settings.TRAILING_TP_ENABLED:
-                risk = abs(trade.entry_price - trade.sl_price)
-                if trade.direction == "long":
-                    tp_target = trade.entry_price + (risk * settings.TRAIL_CEILING_RR)
-                else:
-                    tp_target = trade.entry_price - (risk * settings.TRAIL_CEILING_RR)
-
-            tp_hit = self._price_reached(trade, candle, tp_target)
             if tp_hit:
                 self._close_trade(trade, tp_target, "tp", candle.timestamp)
                 self.closed.append(trade)
@@ -1339,7 +1470,10 @@ def print_report(m: BacktestMetrics, simulator: TradeSimulator,
     """Print full backtest report to console."""
     print()
     print("=" * 70)
-    print(f"BACKTEST RESULTS  (fill_mode={simulator.fill_mode})")
+    fill_info = f"fill_mode={simulator.fill_mode}"
+    if simulator.fill_probability < 1.0:
+        fill_info += f", fill_prob={simulator.fill_probability*100:.0f}%"
+    print(f"BACKTEST RESULTS  ({fill_info})")
     print("=" * 70)
 
     # -- Setup detection --
@@ -1797,8 +1931,20 @@ def run_backtest(pairs: list[str] | None = None, verbose: bool = False,
                  days: int | None = None, ai_enabled: bool = False,
                  fill_mode: str | None = None,
                  fill_buffer_pct: float | None = None,
-                 campaign: bool = False):
+                 fill_probability: float | None = None,
+                 seed: int = 42,
+                 campaign: bool = False,
+                 detail: bool = False,
+                 overrides: dict | None = None):
     from config.settings import settings
+
+    # Apply settings overrides (for Optuna optimization)
+    _originals = {}
+    if overrides:
+        for key, value in overrides.items():
+            if hasattr(settings, key):
+                _originals[key] = getattr(settings, key)
+                setattr(settings, key, value)
 
     if pairs is None:
         pairs = settings.TRADING_PAIRS
@@ -1818,7 +1964,8 @@ def run_backtest(pairs: list[str] | None = None, verbose: bool = False,
     # Load data — enough for requested days
     load_count = 50000  # Covers 90+ days of 5m data
     data = BacktestDataService()
-    data.load_from_postgres(pg, pairs, all_timeframes, count=load_count)
+    data.load_from_postgres(pg, pairs, all_timeframes, count=load_count,
+                            load_detail=detail)
     pg.close()
 
     # AI Service initialization
@@ -1853,8 +2000,14 @@ def run_backtest(pairs: list[str] | None = None, verbose: bool = False,
     clock = SimulatedClock()
     fm = fill_mode or settings.BACKTEST_FILL_MODE
     fb = fill_buffer_pct if fill_buffer_pct is not None else settings.BACKTEST_FILL_BUFFER_PCT
+    fp = fill_probability if fill_probability is not None else settings.BACKTEST_FILL_PROBABILITY
     simulator = TradeSimulator(initial_capital=capital, fill_mode=fm,
-                               fill_buffer_pct=fb)
+                               fill_buffer_pct=fb, fill_probability=fp,
+                               seed=seed,
+                               data_service=data if detail else None)
+
+    if fp < 1.0:
+        logger.info(f"Fill probability: {fp*100:.0f}% (seed={seed})")
 
     # Campaign simulator (campaign mode only)
     csim = CampaignSimulator(initial_capital=capital, fill_mode=fm,
@@ -2086,12 +2239,17 @@ def run_backtest(pairs: list[str] | None = None, verbose: bool = False,
         print(f"Period: {_ts_to_date(first_ts)} to {_ts_to_date(last_ts)} "
               f"({period_days:.1f} days)")
 
+    # Restore overridden settings
+    if _originals:
+        for key, value in _originals.items():
+            setattr(settings, key, value)
+
     # Campaign mode: print campaign results
     if csim is not None:
         campaign_metrics = compute_campaign_metrics(csim, period_days)
         print_campaign_report(campaign_metrics, csim, period_days)
         save_campaign_results_json(campaign_metrics, period_days, capital, pairs)
-        return
+        return campaign_metrics
 
     # Compute metrics and print report
     metrics = compute_metrics(simulator, period_days)
@@ -2111,6 +2269,8 @@ def run_backtest(pairs: list[str] | None = None, verbose: bool = False,
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"backtest_results_{ts}.csv"
             export_csv(trades, filename)
+
+    return metrics
 
 
 def main():
@@ -2135,6 +2295,12 @@ def main():
                         help="Fill model: optimistic (touch=fill) or conservative (penetrate by buffer)")
     parser.add_argument("--fill-buffer", type=float, default=None,
                         help="Fill buffer %% for conservative mode (default: 0.001 = 0.1%%)")
+    parser.add_argument("--fill-prob", type=float, default=None,
+                        help="Fill probability 0.0-1.0 (default: 1.0 = always fill)")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="RNG seed for fill probability (default: 42)")
+    parser.add_argument("--detail", action="store_true",
+                        help="Timeframe-detail mode: load 1m candles to resolve ambiguous SL/TP ordering")
     parser.add_argument("--campaign", action="store_true",
                         help="Run HTF campaign backtest (4H setups, pyramid adds, trailing SL)")
     args = parser.parse_args()
@@ -2150,7 +2316,10 @@ def main():
         ai_enabled=args.ai,
         fill_mode=args.fill_mode,
         fill_buffer_pct=args.fill_buffer,
+        fill_probability=args.fill_prob,
+        seed=args.seed,
         campaign=args.campaign,
+        detail=args.detail,
     )
 
 
