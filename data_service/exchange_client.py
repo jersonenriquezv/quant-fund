@@ -28,6 +28,8 @@ logger = setup_logger("data_service")
 _PAIR_TO_SYMBOL = {
     "BTC/USDT": "BTC-USDT-SWAP",
     "ETH/USDT": "ETH-USDT-SWAP",
+    "SOL/USDT": "SOL-USDT-SWAP",
+    "DOGE/USDT": "DOGE-USDT-SWAP",
 }
 
 # OKX max candles per request
@@ -37,6 +39,8 @@ _MAX_CANDLES_PER_REQUEST = 100
 _CONTRACT_SIZES = {
     "BTC/USDT": 0.01,   # 1 contract = 0.01 BTC
     "ETH/USDT": 0.1,    # 1 contract = 0.1 ETH
+    "SOL/USDT": 1.0,    # 1 contract = 1 SOL
+    "DOGE/USDT": 1000.0, # 1 contract = 1000 DOGE
 }
 
 # ccxt expects lowercase timeframes: "5m", "15m", "1h", "4h"

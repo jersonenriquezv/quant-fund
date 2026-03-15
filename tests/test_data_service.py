@@ -148,7 +148,7 @@ class TestWebSocketCandleParsing:
     def test_unknown_instid_ignored(self):
         feed = self._make_feed()
         msg = {
-            "arg": {"channel": "candle5m", "instId": "SOL-USDT-SWAP"},  # Not our pair
+            "arg": {"channel": "candle5m", "instId": "XRP-USDT-SWAP"},  # Not our pair
             "data": [[
                 str(int(time.time() * 1000)),
                 "100.0", "101.0", "99.0", "100.5",
@@ -429,11 +429,11 @@ class TestCVDTradeParsing:
     def test_unknown_pair_skipped(self):
         calc = self._make_calculator()
         msg = {
-            "arg": {"channel": "trades", "instId": "DOGE-USDT-SWAP"},
+            "arg": {"channel": "trades", "instId": "XRP-USDT-SWAP"},
             "data": [{"ts": "1000", "px": "0.1", "sz": "1000", "side": "buy"}],
         }
         calc._handle_trades(msg)
-        assert "DOGE/USDT" not in calc._trades
+        assert "XRP/USDT" not in calc._trades
 
 
 # ============================================================

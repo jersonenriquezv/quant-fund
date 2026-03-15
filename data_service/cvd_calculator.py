@@ -35,6 +35,8 @@ _OKX_WS_URL = "wss://ws.okx.com:8443/ws/v5/public"
 _INST_IDS = {
     "BTC/USDT": "BTC-USDT-SWAP",
     "ETH/USDT": "ETH-USDT-SWAP",
+    "SOL/USDT": "SOL-USDT-SWAP",
+    "DOGE/USDT": "DOGE-USDT-SWAP",
 }
 
 # Reverse map

@@ -60,7 +60,7 @@ class Settings:
     # PARES DE TRADING
     # ========================
     # Pares activos. El bot solo opera estos.
-    TRADING_PAIRS: List[str] = field(default_factory=lambda: ["ETH/USDT", "BTC/USDT"])
+    TRADING_PAIRS: List[str] = field(default_factory=lambda: ["ETH/USDT", "BTC/USDT", "SOL/USDT", "DOGE/USDT"])
 
     # ========================
     # TIMEFRAMES

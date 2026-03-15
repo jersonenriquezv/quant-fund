@@ -29,8 +29,8 @@ Without real-time market data, the Strategy Service has nothing to analyze. With
 ```
 1. Startup: connect Redis + PostgreSQL
 2. Backfill 500 candles per pair/timeframe via OKX REST (ccxt) → store in PostgreSQL + memory
-3. Connect OKX WebSocket → candle channels (8 total: 2 pairs × 4 timeframes)
-4. Connect OKX WebSocket → trades channel (2 pairs) for CVD calculation
+3. Connect OKX WebSocket → candle channels (16 total: 4 pairs × 4 timeframes)
+4. Connect OKX WebSocket → trades channel (4 pairs) for CVD calculation
 5. Start Etherscan polling loop (whale wallets every 5 min)
 6. Start news sentiment polling (F&G + headlines every 5 min)
 7. Start funding rate polling (every 8 hours) and OI polling (every 5 min)
@@ -89,11 +89,13 @@ Six methods:
 
 Auth: API key + secret + passphrase via ccxt. Market data is public, but auth is needed for trading.
 Instrument format: `BTC-USDT-SWAP` (hyphens). ccxt translates `BTC/USDT:USDT` internally.
+Supported pairs: BTC-USDT-SWAP, ETH-USDT-SWAP, SOL-USDT-SWAP, DOGE-USDT-SWAP.
+Contract sizes: BTC=0.01, ETH=0.1, SOL=1.0, DOGE=1000.
 Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, future timestamp → WARNING. All invalid data discarded.
 
 ### `data_service/websocket_feeds.py` — OKX Candle WebSocket
 - Connects to `wss://ws.okx.com:8443/ws/v5/business` (candle channels live here, NOT on `/public`)
-- Subscribes to 8 channels (base): 2 instIds × 4 timeframes (candle5m, candle15m, candle1H, candle4H). When HTF campaigns enabled, adds candle1D (+2 channels).
+- Subscribes to 16 channels (base): 4 instIds × 4 timeframes (candle5m, candle15m, candle1H, candle4H). When HTF campaigns enabled, adds candle1D (+4 channels).
 - **Candle confirmation:** OKX sends `confirm="1"` when candle is closed — only these are processed
 - **Volume units:** Uses `candle_data[6]` (volCcy = base currency) instead of `candle_data[5]` (vol = contracts). This matches ccxt REST backfill which returns volume in base currency. OKX candle format: `[ts, o, h, l, c, vol(contracts), volCcy(base), volCcyQuote(quote), confirm]`. Fix applied 2026-03-09 — previously used contracts, causing 100x volume mismatch for BTC (ctVal=0.01) and 10x for ETH (ctVal=0.1), which broke OB volume filter detection.
 - Stores last 600 candles per pair/timeframe in memory
@@ -108,7 +110,7 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 
 ### `data_service/cvd_calculator.py` — OKX Trades WebSocket + CVD
 - Connects to `wss://ws.okx.com:8443/ws/v5/public` (trades are on `/public`, separate connection from candle feed on `/business`)
-- Subscribes to `trades` channel for BTC-USDT-SWAP and ETH-USDT-SWAP
+- Subscribes to `trades` channel for BTC-USDT-SWAP, ETH-USDT-SWAP, SOL-USDT-SWAP, and DOGE-USDT-SWAP
 - Side: `"buy"` or `"sell"` directly from OKX (no mapping needed)
 - **Batching:** Accumulates raw trades in deques, recalculates every 5 seconds
 - Rolling windows: 5 minutes, 15 minutes, 1 hour
