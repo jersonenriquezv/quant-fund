@@ -227,9 +227,11 @@ class TestSetupA:
         evaluator = SetupEvaluator()
 
         state = _make_structure_state(break_type="choch", break_direction="bullish")
-        # Disable PD override so PD misalignment blocks the trade
+        # Disable PD override and PD_AS_CONFLUENCE so PD misalignment blocks the trade
         original = settings.PD_OVERRIDE_MIN_CONFLUENCES
+        original_pd = settings.PD_AS_CONFLUENCE
         settings.PD_OVERRIDE_MIN_CONFLUENCES = 0
+        settings.PD_AS_CONFLUENCE = False
         try:
             setup = evaluator.evaluate_setup_a(
                 structure_state=state, active_obs=[_make_ob()],
@@ -241,6 +243,7 @@ class TestSetupA:
             assert setup is None
         finally:
             settings.PD_OVERRIDE_MIN_CONFLUENCES = original
+            settings.PD_AS_CONFLUENCE = original_pd
 
     def test_setup_a_pd_override_with_high_confluence(self):
         """Long in premium allowed when confluences >= PD_OVERRIDE_MIN_CONFLUENCES."""
@@ -808,7 +811,9 @@ class TestPDAsConfluence:
         evaluator = SetupEvaluator()
         state = _make_structure_state(break_type="choch", break_direction="bullish")
         original_override = settings.PD_OVERRIDE_MIN_CONFLUENCES
+        original_pd = settings.PD_AS_CONFLUENCE
         settings.PD_OVERRIDE_MIN_CONFLUENCES = 0
+        settings.PD_AS_CONFLUENCE = False
         try:
             setup = evaluator.evaluate_setup_a(
                 structure_state=state, active_obs=[_make_ob()],
@@ -820,6 +825,7 @@ class TestPDAsConfluence:
             assert setup is None
         finally:
             settings.PD_OVERRIDE_MIN_CONFLUENCES = original_override
+            settings.PD_AS_CONFLUENCE = original_pd
 
     def test_pd_as_confluence_allows_misaligned(self):
         """PD_AS_CONFLUENCE=True: PD misalignment does NOT block trade."""
@@ -1177,7 +1183,9 @@ class TestSetupFHardening:
         evaluator = SetupEvaluator()
         # Use PD_AS_CONFLUENCE=True so PD is only added when aligned, not always
         original_pd = settings.PD_AS_CONFLUENCE
+        original_min = settings.SETUP_F_MIN_CONFLUENCES
         settings.PD_AS_CONFLUENCE = True
+        settings.SETUP_F_MIN_CONFLUENCES = 3
         try:
             # pd_zone=premium for bullish direction → PD misaligned → no PD confluence
             # volume_ratio=0.5 → below OB_MIN_VOLUME_RATIO (1.2) → no volume confluence
@@ -1189,6 +1197,7 @@ class TestSetupFHardening:
             assert setup is None
         finally:
             settings.PD_AS_CONFLUENCE = original_pd
+            settings.SETUP_F_MIN_CONFLUENCES = original_min
 
     def test_3_confluences_with_pd_passes(self):
         """BOS + OB + PD aligned = 3 confluences → passes."""

@@ -286,16 +286,21 @@ class TestSetupD:
         assert result is None
 
     def test_rejects_pd_misalignment(self, evaluator):
-        """Bullish direction in premium zone → reject."""
-        state = _make_structure_state("choch", "bullish")
-        ob = _make_ob(direction="bullish")
-        pd = _make_pd_zone("premium")  # Wrong zone for long
-        candles = make_candle_series(base_price=100.0, count=50, timeframe="5m")
+        """Bullish direction in premium zone → reject (when PD is hard gate)."""
+        original = settings.PD_AS_CONFLUENCE
+        settings.PD_AS_CONFLUENCE = False
+        try:
+            state = _make_structure_state("choch", "bullish")
+            ob = _make_ob(direction="bullish")
+            pd = _make_pd_zone("premium")  # Wrong zone for long
+            candles = make_candle_series(base_price=100.0, count=50, timeframe="5m")
 
-        result = evaluator.evaluate_setup_d(
-            "BTC/USDT", "bullish", state, [ob], pd, candles,
-        )
-        assert result is None
+            result = evaluator.evaluate_setup_d(
+                "BTC/USDT", "bullish", state, [ob], pd, candles,
+            )
+            assert result is None
+        finally:
+            settings.PD_AS_CONFLUENCE = original
 
     def test_rejects_htf_conflict(self, evaluator):
         """Bullish break but bearish HTF → reject."""
@@ -623,17 +628,22 @@ class TestSetupDDisplacement:
 class TestSetupDPDAsConfluence:
     """Test PD_AS_CONFLUENCE flag on Setup D."""
 
-    def test_pd_misaligned_blocks_by_default(self, evaluator):
-        """Default: PD misalignment blocks Setup D."""
-        state = _make_structure_state("choch", "bullish")
-        ob = _make_ob(direction="bullish", entry_price=100.0)
-        pd = _make_pd_zone("premium")  # Wrong for long
-        candles = make_candle_series(base_price=100.0, count=50, timeframe="5m",
-                                    price_changes=[0.0] * 50)
-        result = evaluator.evaluate_setup_d(
-            "BTC/USDT", "bullish", state, [ob], pd, candles,
-        )
-        assert result is None
+    def test_pd_misaligned_blocks_when_hard_gate(self, evaluator):
+        """PD_AS_CONFLUENCE=False: PD misalignment blocks Setup D."""
+        original = settings.PD_AS_CONFLUENCE
+        settings.PD_AS_CONFLUENCE = False
+        try:
+            state = _make_structure_state("choch", "bullish")
+            ob = _make_ob(direction="bullish", entry_price=100.0)
+            pd = _make_pd_zone("premium")  # Wrong for long
+            candles = make_candle_series(base_price=100.0, count=50, timeframe="5m",
+                                        price_changes=[0.0] * 50)
+            result = evaluator.evaluate_setup_d(
+                "BTC/USDT", "bullish", state, [ob], pd, candles,
+            )
+            assert result is None
+        finally:
+            settings.PD_AS_CONFLUENCE = original
 
     def test_pd_as_confluence_allows_misaligned(self, evaluator):
         """PD_AS_CONFLUENCE=True: PD misalignment does NOT block Setup D."""

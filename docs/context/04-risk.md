@@ -19,9 +19,9 @@ RiskService.check(setup)
   │
   ├── check min risk distance >= 0.1% (SL no demasiado cerca de entry)
   ├── check R:R ratio >= 1.2 (usa TP2 vs entry/SL)
-  ├── check cooldown (15 min post-loss)
-  ├── check max trades/día (10)
-  ├── check max posiciones abiertas (5)
+  ├── check cooldown (5 min post-loss)
+  ├── check max trades/día (20)
+  ├── check max posiciones abiertas (8)
   ├── check drawdown diario < 5%
   ├── check drawdown semanal < 10%
   ├── calcular tamaño posición: (Capital × Risk%) / |Entry - SL|
@@ -58,9 +58,9 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 - Checks:
   - `check_min_risk_distance(setup)` — SL distance >= MIN_RISK_DISTANCE_PCT (0.1%) del entry price. Rechaza noise trades donde comisiones comen el profit.
   - `check_rr_ratio(setup)` — R:R de TP2 >= MIN_RISK_REWARD (1.2 swing) o MIN_RISK_REWARD_QUICK (1.0 quick setups C/D/E)
-  - `check_cooldown(last_loss_time, current_time)` — COOLDOWN_MINUTES (15) elapsed?
-  - `check_max_trades_today(count)` — < MAX_TRADES_PER_DAY (10)?
-  - `check_max_open_positions(count)` — < MAX_OPEN_POSITIONS (5)?
+  - `check_cooldown(last_loss_time, current_time)` — COOLDOWN_MINUTES (5) elapsed?
+  - `check_max_trades_today(count)` — < MAX_TRADES_PER_DAY (20)?
+  - `check_max_open_positions(count)` — < MAX_OPEN_POSITIONS (8)?
   - `check_daily_drawdown(dd_pct)` — < MAX_DAILY_DRAWDOWN (5%)?
   - `check_weekly_drawdown(dd_pct)` — < MAX_WEEKLY_DRAWDOWN (10%)?
 
@@ -108,9 +108,9 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 | `MAX_LEVERAGE` | `7` | Apalancamiento máximo permitido |
 | `MAX_DAILY_DRAWDOWN` | `0.05` (5%) | DD diario máximo antes de pausar |
 | `MAX_WEEKLY_DRAWDOWN` | `0.10` (10%) | DD semanal máximo antes de pausar |
-| `MAX_OPEN_POSITIONS` | `5` | Posiciones simultáneas máximas |
-| `MAX_TRADES_PER_DAY` | `10` | Trades por día máximo |
-| `COOLDOWN_MINUTES` | `15` | Minutos de espera post-pérdida |
+| `MAX_OPEN_POSITIONS` | `8` | Posiciones simultáneas máximas (aggressive mode) |
+| `MAX_TRADES_PER_DAY` | `20` | Trades por día máximo (aggressive mode) |
+| `COOLDOWN_MINUTES` | `5` | Minutos de espera post-pérdida (aggressive mode) |
 | `MIN_RISK_REWARD` | `1.2` | R:R mínimo para swing setups A/B (TP2 vs SL) |
 | `MIN_RISK_REWARD_QUICK` | `1.0` | R:R mínimo para quick setups C/D/E |
 | `MIN_RISK_DISTANCE_PCT` | `0.002` (0.2%) | Distancia mínima SL-entry como fracción del precio. Rechaza noise trades. Para ETH@$2000, SL >= $4. Now also checked in Strategy layer (early filter in evaluate_setup_a/evaluate_setup_d) before building TradeSetup. |

@@ -1,6 +1,6 @@
 # Strategy Service
 > Última actualización: 2026-03-15
-> Estado: implementado (completo, integrado en main.py). ENABLED_SETUPS: setup_a, setup_d_choch. Setup B hardened (BOS age + entry distance + direction fix) but disabled (0-7.7% WR). Setup D_bos disabled (20-33% WR). Setup F (34.8% WR) disabled. OB selector upgraded with composite scoring. SL-too-close filter in strategy layer. AI bypassed for all active setups. Phase 2 config flags: PD_AS_CONFLUENCE, SETUP_A_MODE, SETUP_D_MIN_DISPLACEMENT_PCT (all behind env vars, defaults preserve current behavior).
+> Estado: implementado (completo, integrado en main.py). **Aggressive validation mode (2026-03-15):** ENABLED_SETUPS: setup_a, setup_b, setup_d_choch, setup_d_bos, setup_f — 5 tipos activos para maximizar detección y recolección de datos a $20/trade. Setup B re-habilitado (hardened filters activos, AI bypassed). Setup D_bos re-habilitado. Setup F re-habilitado con params relajados. PD_AS_CONFLUENCE=true (PD como confluencia, no gate). Expectancy filters relajados (MIN_ATR_PCT 0.20%, MIN_TARGET_SPACE_R 1.0). Todos los guardrails de riesgo sin cambios.
 
 ## Qué hace (30 segundos)
 El Strategy Service es el detective del sistema. Analiza los datos del Data Service buscando patrones de Smart Money Concepts (SMC): rupturas de estructura (BOS/CHoCH), order blocks, fair value gaps, sweeps de liquidez, y zonas premium/discount. Cuando encuentra un setup con suficiente confluencia, genera un `TradeSetup` para evaluación.
@@ -46,33 +46,33 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
   - `REQUIRE_HTF_LTF_ALIGNMENT` default `False` — permite counter-trend setups con estructura LTF clara.
   - **`SETUP_A_MODE`** (env var, default `"both"`): Controls CHoCH vs HTF alignment. `"continuation"` = CHoCH must align with HTF. `"reversal"` = CHoCH must oppose HTF. `"both"` = no alignment check. Legacy `REQUIRE_HTF_LTF_ALIGNMENT` still respected in "both" mode.
   - **Orden temporal obligatorio**: sweep ANTES del CHoCH
-  - **Proximidad temporal**: sweep dentro de `SETUP_A_MAX_SWEEP_CHOCH_GAP` candles del CHoCH (45 candles = ~225min en 5m, ~11h en 15m)
+  - **Proximidad temporal**: sweep dentro de `SETUP_A_MAX_SWEEP_CHOCH_GAP` candles del CHoCH (60 candles = ~300min en 5m, ~15h en 15m — aggressive mode: was 45)
   - **Entry depth configurable**: `SETUP_A_ENTRY_PCT` (default 0.65, env var override). Shallower entry for higher fill rate (Optuna 03-15: was 0.50).
   - **SL-too-close early filter**: `MIN_RISK_DISTANCE_PCT` check runs in strategy layer (before building TradeSetup), not just in Risk guardrails.
   - **AI bypass**: In `AI_BYPASS_SETUP_TYPES` — AI filter skipped, synthetic AIDecision(confidence=1.0) generated. AI v2 had 89.6% approval rate = no value added.
   - **Backtest 60d aggressive**: 46 trades, 47.8% WR, +$2,510. El bottleneck principal era `no_aligned_sweep` — gap=20 solo producía 11 trades. Gap=40 captura sweeps más lejanos sin degradar calidad.
-- **Setup B** (secundario): BOS + FVG adyacente a OB — **DESHABILITADO** (0-7.7% WR, hardened 2026-03-13)
+- **Setup B** (secundario): BOS + FVG adyacente a OB — **HABILITADO** (aggressive validation mode 2026-03-15, historical 0-7.7% WR, hardened 2026-03-13)
   - Dirección BOS determina dirección del trade (bidireccional como Setup A)
   - **Entry: FVG 75%** `fvg.low + FVG_ENTRY_PCT * range` (bullish) / `fvg.high - FVG_ENTRY_PCT * range` (bearish) — shallower que midpoint para mayor fill rate. Configurable via `FVG_ENTRY_PCT` (default 0.75). SL ancho desde el OB wick.
   - SL: OB wick (igual que A/F)
   - FVG-OB adjacency threshold: `FVG_OB_MAX_GAP_PCT` (0.5%)
   - **Hardened filters (2026-03-13):** Root cause: accepted stale BOS hours after impulse move, placing zombie entries 2-3% from price.
     - BOS recency: must be within `SETUP_B_MAX_BOS_AGE_CANDLES` (12) candles (~3h on 15m)
-    - Entry distance: must be within `SETUP_B_MAX_ENTRY_DISTANCE_PCT` (2%) of current price
+    - Entry distance: must be within `SETUP_B_MAX_ENTRY_DISTANCE_PCT` (4%, aggressive mode: was 2%) of current price
     - Direction bug fixed: entry branch now uses "bullish"/"bearish" (was "long" — never matched, affected bullish entry placement)
   - **Backtest 60d aggressive**: 55 trades, 52.7% WR, +$5,169. Antes con OB 75% entry (previo cambio): 29.8% WR, -$1,680.
-- **Setup F** — Pure OB Retest: BOS + OB, sin FVG requerido — **DESHABILITADO** (34.8% WR, hardened, pending re-backtest)
+- **Setup F** — Pure OB Retest: BOS + OB, sin FVG requerido — **HABILITADO** (aggressive validation mode 2026-03-15, historical 34.8% WR, hardened, params relajados: displacement 0.1%, min confluences 2)
   - Igual que Setup B pero sin necesitar FVG adyacente al OB
   - Dispara cuando hay BOS + OB alineados pero no hay FVG nearby
   - Evaluado después de B — si B matchea primero, F no se evalúa
   - **Hardened filters (2026-03-12):** Root cause of 34.8% WR: accepted stale BOS, unrelated OBs, inflated confluences with CVD/funding.
     - BOS recency: must be within `SETUP_F_MAX_BOS_AGE_CANDLES` (20) candles
-    - BOS displacement: must exceed `SETUP_F_MIN_BOS_DISPLACEMENT_PCT` (0.2%) beyond broken level
+    - BOS displacement: must exceed `SETUP_F_MIN_BOS_DISPLACEMENT_PCT` (0.1%, aggressive mode: was 0.2%) beyond broken level
     - OB-BOS temporal association: OB must be within `SETUP_F_MAX_OB_BOS_GAP_CANDLES` (10) candles of BOS
     - OB quality floor: composite score must be >= `SETUP_F_MIN_OB_SCORE` (0.35)
-    - Entry distance: must be within `SETUP_F_MAX_ENTRY_DISTANCE_PCT` (3%) of current price
+    - Entry distance: must be within `SETUP_F_MAX_ENTRY_DISTANCE_PCT` (5%, aggressive mode: was 3%) of current price
     - CVD and funding removed from confluences (structural setup — noise inflation)
-    - Minimum confluences raised to `SETUP_F_MIN_CONFLUENCES` (3) — BOS + OB + one of (PD, volume)
+    - Minimum confluences: `SETUP_F_MIN_CONFLUENCES` (2, aggressive mode: was 3) — BOS + OB sufficient
   - DEBUG logs en cada early return (HTF undefined, no BOS, BOS too old, BOS displacement, BOS≠HTF, PD misaligned, no OBs near BOS, no OBs in range, OB score, entry distance, confluences, R:R)
 - **Setup G** — Breaker Block Retest: OB mitigado con dirección invertida
   - Bullish OB mitigado → bearish breaker → short entry en retest
@@ -80,12 +80,12 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
   - DEBUG logs en cada early return (HTF undefined, no breakers, no aligned, PD misaligned, no in range, confluences, R:R)
   - Requiere HTF bias alineado con dirección del breaker + PD zone + min 2 confluencias
   - Usa `get_breaker_blocks()` de OrderBlockDetector
-- **Swing setups solo evalúan 15m OBs** — `SWING_SETUP_TIMEFRAMES = ["15m"]`. Los detectores corren en todos los LTF (15m + 5m) para que quick setups (C/D/E) tengan datos de 5m, pero la evaluación de A/B/F/G solo usa 15m. OBs de 5m producen micro-SLs (<0.2%) que las comisiones se comen.
+- **Swing setups evalúan 15m + 5m OBs** — `SWING_SETUP_TIMEFRAMES = ["15m", "5m"]` (aggressive mode: was 15m only). OBs de 5m producen SLs más ajustados pero `MIN_RISK_DISTANCE_PCT` (0.2%) filtra los micro-SLs que las comisiones se comen.
 - **Zone-based orders** — no requiere proximidad al OB. El bot coloca limit orders al 50% del OB body (configurable via `SETUP_A_ENTRY_PCT`) y espera fill. SL siempre en `ob.low` (long) / `ob.high` (short) — wick-to-wick, independiente del entry.
   - `_find_best_ob()` selecciona by composite scoring via `_score_ob()`: volume (35%), freshness (30%), proximity (20%), body size (15%). Replaces old "highest volume_ratio + tiebreak by timestamp" selector.
-  - `_score_ob()` returns -1 (filtered) for OBs below `OB_MIN_BODY_PCT` (0.15%) or beyond `OB_MAX_DISTANCE_PCT` (4%). Otherwise returns 0-1 composite score.
+  - `_score_ob()` returns -1 (filtered) for OBs below `OB_MIN_BODY_PCT` (0.15%) or beyond `OB_MAX_DISTANCE_PCT` (8%). Otherwise returns 0-1 composite score.
   - `OB_MIN_BODY_PCT` (0.15%) filters micro-OBs that produce tiny SLs eaten by commissions
-  - `_is_ob_within_range()` filtra OBs más allá de `OB_MAX_DISTANCE_PCT` (4%) del precio actual
+  - `_is_ob_within_range()` filtra OBs más allá de `OB_MAX_DISTANCE_PCT` (8%) del precio actual
   - `_is_price_near_ob()` se mantiene para notificaciones de OB summary, pero no bloquea setups
 - **SL direction validation** — `_validate_sl_direction()` en todos los setup types (A/B/F/G). Rechaza si SL está del lado incorrecto del entry (bearish: sl debe ser > entry, bullish: sl debe ser < entry). Fix para bug donde Setup B con FVG encima del OB producía entry > ob.high = SL invertido.
 - Mínimo 2 confluencias obligatorio (no configurable — hardcoded)
@@ -107,25 +107,25 @@ Setups A/B/F calculan `entry2_price` via `_compute_entry2()` en `setups.py`:
 
 Post-detection filters aplicados a cada swing setup (A/B/F/G) antes de retornar:
 
-1. **ATR filter** — rechaza si volatilidad (ATR 14 / entry_price) < `MIN_ATR_PCT` (0.45%). Mercados laterales sin espacio no son rentables. (Optuna 03-15: was 0.25% — strong filter)
-2. **Target space filter** — rechaza si el swing high/low (1H/4H) más cercano en dirección del trade está a menos de `MIN_TARGET_SPACE_R` (1.4) veces el riesgo. Si hay resistencia/soporte HTF demasiado cerca del entry, el TP no tiene espacio. (Optuna 03-15: was 1.2)
+1. **ATR filter** — rechaza si volatilidad (ATR 14 / entry_price) < `MIN_ATR_PCT` (0.20%). Relajado para aggressive validation mode (was 0.45% post-Optuna, was 0.25% pre-Optuna).
+2. **Target space filter** — rechaza si el swing high/low (1H/4H) más cercano en dirección del trade está a menos de `MIN_TARGET_SPACE_R` (1.0) veces el riesgo. Relajado para aggressive validation mode (was 1.4 post-Optuna, was 1.2 pre-Optuna).
 
 ### `strategy_service/quick_setups.py` — Quick Setups (C, D, E)
 Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan cuando no hay swing setup (A/B).
 
-- **Setup C — Funding Squeeze:** Funding rate extremo + CVD buy dominance alineado + HTF bias. Entry: precio actual. SL: 0.5%. TP1: 1:1 (breakeven trigger), TP2: 2:1 (single TP).
+- **Setup C — Funding Squeeze: HABILITADO** (aggressive validation mode 2026-03-15). Funding rate extremo + CVD buy dominance alineado + HTF bias. Entry: precio actual. SL: 0.5%. TP1: 1:1 (breakeven trigger), TP2: 2:1 (single TP).
   - Long: funding < -0.03%, buy dominance > 55%
   - Short: funding > +0.03%, buy dominance < 45%
 - **Setup D — LTF Structure Scalp:** CHoCH o BOS en 5m + OB fresco cerca del precio. No requiere sweep ni FVG. HTF bias + PD zone alineados. Entry: 50% del OB. TP1: 1:1 (breakeven trigger), TP2: 2:1 (single TP).
   - **Split into variants**: `setup_d_bos` and `setup_d_choch` for per-variant performance measurement. Variant determined by `latest_break.break_type`.
   - Both variants are in `QUICK_SETUP_TYPES` — skip AI filter, use short entry timeout (1h).
   - **setup_d_choch: HABILITADO** (75% WR in backtests)
-  - **setup_d_bos: DESHABILITADO** (20-33% WR, net negative in all runs)
+  - **setup_d_bos: HABILITADO** (aggressive validation mode 2026-03-15, historical 20-33% WR, net negative — recolectando datos live)
   - **`SETUP_D_MIN_DISPLACEMENT_PCT`** (env var, default `0.0` = disabled): Filters weak BOS/CHoCH where `abs(break_price - broken_level) / broken_level` is below threshold. E.g. `0.002` = 0.2% minimum displacement to qualify.
   - **Backtest 60d solo**: 56 trades, 42.9% WR, +$3,596. Sharpe 8.51, PF 2.26, max DD 4.8%.
   - **Backtest 60d combinado A+B+D+F**: 9 trades D, 66.7% WR, +$2,553. Total combinado: 97 trades, 51.5% WR, +$7,558.
   - ETH dominante (47/56 trades solo, 97/97 combinado). BTC 11.1% WR pero solo 9 trades — muestra insuficiente.
-- **Setup E — Cascade Reversal:** Caída de OI >2% (cascade proxy) + CVD revertiendo. Long después de cascade de longs, short después de cascade de shorts. Usa OB cercano como anchor o precio actual. TP1: 1:1 (breakeven trigger), TP2: 2:1 (single TP).
+- **Setup E — Cascade Reversal: HABILITADO** (aggressive validation mode 2026-03-15). Caída de OI >2% (cascade proxy) + CVD revertiendo. Long después de cascade de longs, short después de cascade de shorts. Usa OB cercano como anchor o precio actual. TP1: 1:1 (breakeven trigger), TP2: 2:1 (single TP).
 
 **Diferencias clave quick vs swing:**
 - Skip Claude AI filter (los datos SON la señal)
@@ -139,7 +139,7 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 - `evaluate(pair, candle)` — evalúa LTF candles: A → B → F → G → C → D → E, retorna `TradeSetup | None`
 - **`evaluate_htf(pair, candle)`** — evalúa 4H candles para HTF campaigns. Usa Daily candles para bias (en vez de 4H/1H). Corre los mismos detectores SMC en 4H data con params más amplios: OB age 168h (vs 48h), OB distance 10% (vs 5%), FVG age 168h, min risk distance 0.5% (vs 0.2%). Overrides temporales de settings durante evaluación. Retorna `TradeSetup | None`. Gate: `HTF_ENABLED_SETUPS` (default: A, B, F).
 - **`get_htf_swing_levels(pair)`** — retorna `(swing_highs, swing_lows)` de 4H data. Usado por CampaignMonitor para trailing SL.
-- **`ENABLED_SETUPS` gate** — después de detectar un setup, verifica `setup.setup_type in settings.ENABLED_SETUPS`. Si no está habilitado, logea debug y continúa evaluando el siguiente tipo. Default: `["setup_a", "setup_d_choch"]`. Setup B disabled (0-7.7% WR, hardened but not profitable). Setup D_bos disabled (20-33% WR, net negative). F disabled (34.8% WR). C, E, G pendientes de validación.
+- **`ENABLED_SETUPS` gate** — después de detectar un setup, verifica `setup.setup_type in settings.ENABLED_SETUPS`. Si no está habilitado, logea debug y continúa evaluando el siguiente tipo. **Aggressive validation mode (2026-03-15):** `["setup_a", "setup_b", "setup_c", "setup_d_choch", "setup_d_bos", "setup_e", "setup_f"]` — 7 tipos activos para maximizar detección y recolección de datos ML. Solo G pendiente de validación.
 - Coordina todos los módulos internos
 - Quick setup cooldown tracking per (pair, setup_type)
 - **Failed OB tracking** — `mark_ob_failed(pair, sl_price, entry_price)` registra en memoria OBs que resultaron en pérdida (PnL < 0). `is_ob_failed(pair, sl_price, entry_price)` consulta el registro antes de ejecutar un nuevo trade: si el OB ya perdió, el setup se descarta. El tracking usa la clave `(pair, sl_price, entry_price)`. Breakeven (PnL = 0%) NO marca el OB como fallido porque el setup parcialmente funcionó. Se resetea en restart.
@@ -148,24 +148,24 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 - Exporta `StrategyService`
 
 ## Settings (config/settings.py)
-- `SWING_SETUP_TIMEFRAMES: List[str] = ["15m"]` — timeframes para evaluación de swing setups (A/B/F/G). Detectores corren en todos los LTF.
+- `SWING_SETUP_TIMEFRAMES: List[str] = ["15m", "5m"]` — timeframes para evaluación de swing setups (A/B/F/G). Aggressive mode: added 5m (was 15m only).
 - `PD_EQUILIBRIUM_BAND: float = 0.01` — banda ±1% alrededor del 50% para zona equilibrium
-- `OB_MIN_VOLUME_RATIO: float = 1.3` — 1.3x volumen promedio para validar OB (Optuna 03-15: was 1.2)
+- `OB_MIN_VOLUME_RATIO: float = 1.0` — 1.0x volumen promedio para validar OB (aggressive mode: was 1.3 post-Optuna)
 - `OB_MAX_AGE_HOURS: int = 84` — horas máximas de vida de un OB (Optuna 03-15: was 72)
-- `OB_PROXIMITY_PCT: float = 0.007` — 0.7% del precio como margen de proximidad al OB (Optuna 03-15: was 0.8%)
-- `OB_MAX_DISTANCE_PCT: float = 0.04` — 4% máximo de distancia del precio al OB para zone-based orders (Optuna 03-15: was 8% — biggest single improvement)
+- `OB_PROXIMITY_PCT: float = 0.010` — 1.0% del precio como margen de proximidad al OB (aggressive mode: was 0.7% post-Optuna)
+- `OB_MAX_DISTANCE_PCT: float = 0.08` — 8% máximo de distancia del precio al OB para zone-based orders (aggressive mode: reverted to 8%, Optuna had narrowed to 4%)
 - `OB_MIN_BODY_PCT: float = 0.0015` — 0.15% minimum OB body size as fraction of price (Optuna 03-15: was 0.1%)
 - `OB_SCORE_VOLUME_W / FRESHNESS_W / PROXIMITY_W / SIZE_W` — composite OB scoring weights (0.35 / 0.30 / 0.20 / 0.15, must sum to 1.0)
 - `SETUP_A_ENTRY_PCT: float = 0.65` — fraction of OB body for Setup A entry placement (Optuna 03-15: was 0.50, higher fill rate)
 - `SETUP_A_MODE: str = "both"` — Setup A CHoCH/HTF alignment mode: "continuation", "reversal", or "both" (env var)
-- `SETUP_A_MAX_SWEEP_CHOCH_GAP: int = 45` — máximo candles entre sweep y CHoCH (Optuna 03-15: was 40)
+- `SETUP_A_MAX_SWEEP_CHOCH_GAP: int = 60` — máximo candles entre sweep y CHoCH (aggressive mode: was 45 post-Optuna)
 - `FVG_OB_MAX_GAP_PCT: float = 0.005` — 0.5% gap máximo entre FVG y OB para Setup B adjacency
 - `SETUP_B_MAX_BOS_AGE_CANDLES: int = 12` — max candles since BOS (12 = ~3h on 15m)
-- `SETUP_B_MAX_ENTRY_DISTANCE_PCT: float = 0.02` — max entry distance from current price (2%)
+- `SETUP_B_MAX_ENTRY_DISTANCE_PCT: float = 0.04` — max entry distance from current price (4%, aggressive mode: was 2%)
 - `REQUIRE_HTF_LTF_ALIGNMENT: bool = False` — si True, LTF debe alinearse con HTF; default False para bidireccional
 - `REQUIRE_PD_ALIGNMENT: bool = True` — premium/discount zone debe alinear con dirección (core SMC)
 - `PD_OVERRIDE_MIN_CONFLUENCES: int = 5` — setups con 5+ confluencias pueden override PD misalignment (evita lockouts totales en bearish+discount)
-- `PD_AS_CONFLUENCE: bool = false` — PD zone as confluence instead of hard gate (env var). Overrides PD_OVERRIDE behavior when true.
+- `PD_AS_CONFLUENCE: bool = true` — PD zone as confluence instead of hard gate (aggressive mode: was false). Overrides PD_OVERRIDE behavior when true.
 - `ALLOW_EQUILIBRIUM_TRADES: bool = True` — permitir trades en zona equilibrium
 - `HTF_BIAS_REQUIRE_4H: bool = False` — si 4H debe definir trend o 1H solo basta
 - `MIN_RISK_REWARD_QUICK: float = 1.0` — R:R mínimo para quick setups (C/D/E)
@@ -174,10 +174,10 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 - `SETUP_D_MIN_DISPLACEMENT_PCT: float = 0.0` — minimum BOS/CHoCH displacement for Setup D (0.0 = disabled, env var)
 - `SETUP_F_MAX_BOS_AGE_CANDLES: int = 20` — max candles since BOS (20 = ~5h on 15m)
 - `SETUP_F_MAX_OB_BOS_GAP_CANDLES: int = 10` — max candle gap between OB and BOS timestamps
-- `SETUP_F_MIN_BOS_DISPLACEMENT_PCT: float = 0.002` — min BOS displacement (0.2%)
+- `SETUP_F_MIN_BOS_DISPLACEMENT_PCT: float = 0.001` — min BOS displacement (0.1%, aggressive mode: was 0.2%)
 - `SETUP_F_MIN_OB_SCORE: float = 0.35` — min composite OB score from `_score_ob()`
-- `SETUP_F_MAX_ENTRY_DISTANCE_PCT: float = 0.03` — max entry distance from current price (3%)
-- `SETUP_F_MIN_CONFLUENCES: int = 3` — min structural confluences (BOS + OB + PD/volume)
+- `SETUP_F_MAX_ENTRY_DISTANCE_PCT: float = 0.05` — max entry distance from current price (5%, aggressive mode: was 3%)
+- `SETUP_F_MIN_CONFLUENCES: int = 2` — min structural confluences (aggressive mode: was 3, now BOS + OB sufficient)
 - `MOMENTUM_FUNDING_THRESHOLD: float = 0.0003` — umbral funding rate para Setup C
 - `MOMENTUM_CVD_LONG_MIN: float = 0.52` — buy dominance mínimo para long (Setup C)
 - `MOMENTUM_CVD_SHORT_MAX: float = 0.48` — buy dominance máximo para short (Setup C)

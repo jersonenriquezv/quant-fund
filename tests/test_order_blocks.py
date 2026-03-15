@@ -113,21 +113,26 @@ class TestOBVolumeFilter:
     def test_low_volume_ob_rejected(self):
         """OB with volume < OB_MIN_VOLUME_RATIO * avg should be rejected."""
         detector = OrderBlockDetector()
+        original = settings.OB_MIN_VOLUME_RATIO
+        settings.OB_MIN_VOLUME_RATIO = 1.5  # Explicit threshold for test
 
-        # All candles have volume=10, OB candle also has volume=10
-        # ratio = 10/10 = 1.0 < 1.5 → rejected
-        candles = []
-        for i in range(15):
-            if i == 8:
-                c = make_candle(open=104.0, high=106.0, low=98.0,
-                                close=100.0, volume=10.0, timestamp=i * 1000)
-            else:
-                c = make_candle(volume=10.0, timestamp=i * 1000)
-            candles.append(c)
+        try:
+            # All candles have volume=10, OB candle also has volume=10
+            # ratio = 10/10 = 1.0 < 1.5 → rejected
+            candles = []
+            for i in range(15):
+                if i == 8:
+                    c = make_candle(open=104.0, high=106.0, low=98.0,
+                                    close=100.0, volume=10.0, timestamp=i * 1000)
+                else:
+                    c = make_candle(volume=10.0, timestamp=i * 1000)
+                candles.append(c)
 
-        brk = _make_break("bullish", candle_index=10)
-        obs = detector.update(candles, [brk], "BTC/USDT", "15m", 15000)
-        assert len(obs) == 0
+            brk = _make_break("bullish", candle_index=10)
+            obs = detector.update(candles, [brk], "BTC/USDT", "15m", 15000)
+            assert len(obs) == 0
+        finally:
+            settings.OB_MIN_VOLUME_RATIO = original
 
     def test_high_volume_ob_accepted(self):
         """OB with volume >= OB_MIN_VOLUME_RATIO * avg should be accepted."""

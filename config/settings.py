@@ -72,7 +72,7 @@ class Settings:
     # Timeframes used for swing setup evaluation (A/B/F/G).
     # 5m OBs produce micro-SLs (<0.2%) that get eaten by commissions.
     # Detectors still run on all LTF_TIMEFRAMES (quick setups need 5m data).
-    SWING_SETUP_TIMEFRAMES: List[str] = field(default_factory=lambda: ["15m"])
+    SWING_SETUP_TIMEFRAMES: List[str] = field(default_factory=lambda: ["15m", "5m"])
 
     # ========================
     # RISK MANAGEMENT — Guardrails inquebrantables
@@ -93,13 +93,13 @@ class Settings:
     MAX_WEEKLY_DRAWDOWN: float = float(os.getenv("MAX_WEEKLY_DRAWDOWN", "0.10"))  # 10%
 
     # Máximo de posiciones abiertas simultáneamente
-    MAX_OPEN_POSITIONS: int = int(os.getenv("MAX_OPEN_POSITIONS", "5"))
+    MAX_OPEN_POSITIONS: int = int(os.getenv("MAX_OPEN_POSITIONS", "8"))
 
     # Máximo de trades por día
-    MAX_TRADES_PER_DAY: int = int(os.getenv("MAX_TRADES_PER_DAY", "10"))
+    MAX_TRADES_PER_DAY: int = int(os.getenv("MAX_TRADES_PER_DAY", "20"))
 
     # Minutos de espera después de una pérdida antes de operar otra vez
-    COOLDOWN_MINUTES: int = int(os.getenv("COOLDOWN_MINUTES", "15"))
+    COOLDOWN_MINUTES: int = int(os.getenv("COOLDOWN_MINUTES", "5"))
 
     # Mínimo Risk/Reward ratio para aceptar un trade
     MIN_RISK_REWARD: float = 1.2
@@ -146,7 +146,7 @@ class Settings:
     # --- Order Blocks ---
     # Volumen mínimo relativo (vs promedio) para validar un OB
     # Optuna 03-15: 1.2→1.3 (PF 1.05→2.65, walk-forward validated)
-    OB_MIN_VOLUME_RATIO: float = 1.3
+    OB_MIN_VOLUME_RATIO: float = 1.0
     # Horas máximas de vida de un OB antes de considerarlo viejo
     # Optuna 03-15: 72→84 (longer OB lifespan, more setups without quality loss)
     OB_MAX_AGE_HOURS: int = 84
@@ -185,12 +185,12 @@ class Settings:
     # --- Setup proximity ---
     # Max % of price that current price can be from OB entry to trigger setup
     # Optuna 03-15: 0.008→0.007 (slightly tighter proximity)
-    OB_PROXIMITY_PCT: float = 0.007  # 0.7%
+    OB_PROXIMITY_PCT: float = 0.010  # 1.0%
 
     # Max distance (% of price) from current price to consider an OB for zone-based orders.
     # OBs beyond this distance are ignored to avoid absurdly distant limit orders.
     # Optuna 03-15: 0.08→0.04 (reject distant OBs — biggest single improvement)
-    OB_MAX_DISTANCE_PCT: float = 0.04  # 4%
+    OB_MAX_DISTANCE_PCT: float = 0.08  # 8%
 
     # --- Setup B: FVG-OB adjacency ---
     # Max gap between FVG and OB as fraction of price to count as "adjacent".
@@ -206,9 +206,10 @@ class Settings:
     # Max candles since BOS to be considered fresh (12 = ~3h on 15m).
     # Prevents stale detection after large impulse moves have completed.
     SETUP_B_MAX_BOS_AGE_CANDLES: int = 12
-    # Max distance from current price to entry (2% = reject zombie entries).
-    # BTC@71k → max ~$1,420 distance. ETH@2.1k → max ~$42.
-    SETUP_B_MAX_ENTRY_DISTANCE_PCT: float = 0.02
+    # Max distance from current price to entry (4% = allow distant entries near liq clusters).
+    # BTC@84k → max ~$3,360 distance. ETH@2.1k → max ~$84.
+    # Relaxed from 2% for aggressive validation mode (2026-03-15).
+    SETUP_B_MAX_ENTRY_DISTANCE_PCT: float = 0.04
 
     # --- Enabled setups ---
     # Only these setup types will be traded. Others are detected but discarded.
@@ -217,7 +218,7 @@ class Settings:
     # D_bos disabled: 20-33% WR, net negative in all runs.
     # C, E, F, G pending validation.
     ENABLED_SETUPS: list = field(default_factory=lambda: [
-        "setup_a", "setup_d_choch",
+        "setup_a", "setup_b", "setup_c", "setup_d_choch", "setup_d_bos", "setup_e", "setup_f",
     ])
 
     # Setup A entry depth — fraction of OB body for entry placement.
@@ -235,7 +236,7 @@ class Settings:
     # --- Setup A temporal ---
     # Max candles between sweep and CHoCH for Setup A validity.
     # Optuna 03-15: 40→45 (slightly more temporal tolerance)
-    SETUP_A_MAX_SWEEP_CHOCH_GAP: int = 45
+    SETUP_A_MAX_SWEEP_CHOCH_GAP: int = 60
 
     # ========================
     # QUICK SETUPS (C, D, E) — Data-driven, shorter duration
@@ -260,13 +261,14 @@ class Settings:
     # Max candle gap between OB and BOS (OB must form near the BOS impulse).
     SETUP_F_MAX_OB_BOS_GAP_CANDLES: int = 10
     # Minimum BOS displacement beyond broken level (0.2% = reject micro-breaks).
-    SETUP_F_MIN_BOS_DISPLACEMENT_PCT: float = 0.002
+    SETUP_F_MIN_BOS_DISPLACEMENT_PCT: float = 0.001
     # Minimum composite OB score (0-1) from _score_ob(). Rejects low-quality OBs.
     SETUP_F_MIN_OB_SCORE: float = 0.35
-    # Max distance from current price to entry (3% = reject zombie setups).
-    SETUP_F_MAX_ENTRY_DISTANCE_PCT: float = 0.03
+    # Max distance from current price to entry (5% = allow entries near liq clusters).
+    # Relaxed from 3% for aggressive validation mode (2026-03-15).
+    SETUP_F_MAX_ENTRY_DISTANCE_PCT: float = 0.05
     # Minimum confluences (3 = BOS + OB + one of PD/volume). Higher than generic 2.
-    SETUP_F_MIN_CONFLUENCES: int = 3
+    SETUP_F_MIN_CONFLUENCES: int = 2
 
     # Setup C — Funding Squeeze
     MOMENTUM_FUNDING_THRESHOLD: float = 0.0003  # Same as FUNDING_EXTREME_THRESHOLD
@@ -282,10 +284,10 @@ class Settings:
     # --- Expectancy filters (post-detection, pre-AI) ---
     # Minimum ATR(14) as fraction of price. Rejects low-volatility setups.
     # Optuna 03-15: 0.0025→0.0045 (skip dead markets — strong filter)
-    MIN_ATR_PCT: float = float(os.getenv("MIN_ATR_PCT", "0.0045"))  # 0.45%
+    MIN_ATR_PCT: float = float(os.getenv("MIN_ATR_PCT", "0.0020"))  # 0.20%
     # Minimum open space to nearest opposing structure as multiple of risk.
     # Optuna 03-15: 1.2→1.4 (require more room to target)
-    MIN_TARGET_SPACE_R: float = float(os.getenv("MIN_TARGET_SPACE_R", "1.4"))
+    MIN_TARGET_SPACE_R: float = float(os.getenv("MIN_TARGET_SPACE_R", "1.0"))
 
     # --- Strategy behavior (profile-controlled) ---
     # If True, LTF structure (CHoCH/BOS) must align with HTF bias direction.
@@ -302,7 +304,7 @@ class Settings:
     # When True, PD zone becomes a confluence factor instead of a hard gate.
     # Aligned PD adds a confluence; misaligned PD omits it but does NOT reject.
     # Default False = current behavior (hard gate).
-    PD_AS_CONFLUENCE: bool = os.getenv("PD_AS_CONFLUENCE", "false").lower() == "true"
+    PD_AS_CONFLUENCE: bool = os.getenv("PD_AS_CONFLUENCE", "true").lower() == "true"
 
     # ========================
     # AI SERVICE — Claude Filter

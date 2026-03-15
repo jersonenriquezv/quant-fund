@@ -16,7 +16,7 @@ The bot watches 5m and 15m candles on BTC and ETH. When a candle closes, it pass
 
 ### 1. Strategy detects an SMC pattern
 
-The bot looks for 3 active setup types (others exist but are disabled):
+The bot runs in **aggressive validation mode** (since 2026-03-15) with 5 active setup types to maximize data collection at $20/trade. All risk guardrails remain unchanged.
 
 **Setup A (primary) — Liquidity Sweep + CHoCH + Order Block:** (ENABLED, AI bypassed)
 - Price sweeps retail stops (liquidity sweep)
@@ -25,9 +25,10 @@ The bot looks for 3 active setup types (others exist but are disabled):
 - Entry: configurable depth into OB body (`SETUP_A_ENTRY_PCT`, default 65% — Optuna optimized 2026-03-15)
 - AI filter bypassed (89.6% approval rate = no value added)
 
-**Setup B (secondary) — BOS + FVG + Order Block:** (DISABLED)
-- Disabled: 0-7.7% WR in backtests, destroys PnL in every run.
-- Code remains for future re-enable.
+**Setup B (secondary) — BOS + FVG + Order Block:** (ENABLED, AI bypassed)
+- Re-enabled 2026-03-15 in aggressive validation mode for data collection.
+- Historical WR: 0-7.7% in backtests. Hardened filters applied (BOS age, entry distance, direction fix).
+- AI filter bypassed (AI v1 destroyed it: 49% WR to 21.4% WR).
 
 **Setup D_choch — LTF CHoCH Scalp:** (ENABLED, quick setup)
 - CHoCH on 5m + fresh OB near price
@@ -35,15 +36,25 @@ The bot looks for 3 active setup types (others exist but are disabled):
 - Entry: 50% of OB. Quick setup (1h entry timeout, 4h max duration).
 - 75% WR in backtests.
 
-**Disabled setups:** Setup B (0-7.7% WR). Setup D_bos (20-33% WR, net negative). Setup F (only profitable 90d+). Setup C, E, G pending validation.
+**Setup D_bos — LTF BOS Scalp:** (ENABLED, quick setup)
+- Re-enabled 2026-03-15 in aggressive validation mode for data collection.
+- BOS on 5m + fresh OB near price. Same structure as D_choch.
+- Historical WR: 20-33%, net negative in backtests.
+
+**Setup F — Pure OB Retest:** (ENABLED, AI bypassed)
+- Re-enabled 2026-03-15 in aggressive validation mode with relaxed params.
+- BOS + OB, no FVG required. Hardened filters still active.
+- `SETUP_F_MIN_BOS_DISPLACEMENT_PCT`: 0.1% (was 0.2%). `SETUP_F_MIN_CONFLUENCES`: 2 (was 3).
+
+**Disabled setups:** Setup C, E, G pending validation.
 
 **Mandatory rules:**
 - Minimum 2 confluences (OB alone = no trade)
-- Long only in discount (below 50% of the range), short only in premium (above 50%)
-- PD override: setups with 5+ confluences can trade against PD zone
+- PD zone as confluence (`PD_AS_CONFLUENCE=true`): aligned PD adds confluence, misaligned omits but does NOT reject. No longer a hard gate.
+- PD override (legacy, superseded by PD_AS_CONFLUENCE): setups with 5+ confluences can trade against PD zone
 - OB selection: composite scoring (volume 35%, freshness 30%, proximity 20%, body size 15%). OB_MIN_BODY_PCT (0.15%) filters micro-OBs.
 - SL-too-close filter in Strategy layer (MIN_RISK_DISTANCE_PCT 0.2%) before building TradeSetup
-- Expectancy filters: MIN_ATR_PCT (0.45% — skip dead markets), MIN_TARGET_SPACE_R (1.4 — require room to target)
+- Expectancy filters: MIN_ATR_PCT (0.20% — relaxed for aggressive mode, was 0.45%), MIN_TARGET_SPACE_R (1.0 — relaxed for aggressive mode, was 1.4)
 
 ### 2. AI filter (currently bypassed)
 
@@ -283,7 +294,7 @@ Deterministic Python engine that detects SMC patterns. No AI. Pure rules.
 
 * Bullish OB: Last red candle before bullish impulse + BOS.
 * Bearish OB: Last green candle before bearish impulse + BOS.
-* Entry: configurable depth into OB body (`SETUP_A_ENTRY_PCT`, default 50%).
+* Entry: configurable depth into OB body (`SETUP_A_ENTRY_PCT`, default 65%).
 * SL: Below/above entire OB.
 * OB selection: composite scoring via `_score_ob()` — volume (35%), freshness (30%), proximity (20%), body size (15%). `OB_MIN_BODY_PCT` (0.1%) filters micro-OBs.
 * Crypto note: Only use fresh OBs (< 72 hours, `OB_MAX_AGE_HOURS`). Older OBs invalidate faster than in forex.
@@ -307,6 +318,7 @@ Deterministic Python engine that detects SMC patterns. No AI. Pure rules.
 * Premium (>50% of range): Shorts only.
 * Discount (<50% of range): Long only.
 * Equilibrium (49-51%): Allowed by default (`ALLOW_EQUILIBRIUM_TRADES=True`).
+* `PD_AS_CONFLUENCE=true` (since 2026-03-15): PD zone is a confluence factor, not a hard gate. Aligned PD adds confluence; misaligned omits but does not reject.
 * Crypto note: Recalculate every 4–6 hours using 4H swing high/low.
 
 **6. Volume & Institutional Indicators**
@@ -325,9 +337,9 @@ Deterministic Python engine that detects SMC patterns. No AI. Pure rules.
 1. Confirm HTF trend (4H or 1H)
 2. Identify liquidity buildup (equal highs/lows)
 3. Liquidity sweep occurs
-4. CHoCH confirms direction change
+4. CHoCH confirms direction change (within `SETUP_A_MAX_SWEEP_CHOCH_GAP` = 60 candles)
 5. Fresh OB forms (<72h)
-6. OB in discount (long) or premium (short) — or 5+ confluences override PD
+6. PD zone as confluence (aligned PD adds confluence, misaligned omits but does not reject)
 7. Retrace to OB — entry at `SETUP_A_ENTRY_PCT` (default 65% — Optuna optimized)
 8. Volume spike >2x + liquidations visible
 9. SL-too-close filter (`MIN_RISK_DISTANCE_PCT` 0.2%) in strategy layer
@@ -335,9 +347,9 @@ Deterministic Python engine that detects SMC patterns. No AI. Pure rules.
 
 ---
 
-### Setup B (Secondary) — BOS + FVG + Order Block (DISABLED)
+### Setup B (Secondary) — BOS + FVG + Order Block (ENABLED, AI bypassed — aggressive validation mode)
 
-Disabled from ENABLED_SETUPS. 0-7.7% WR in backtests. Code remains for future re-enable.
+Re-enabled 2026-03-15 for data collection. Historical WR: 0-7.7% in backtests. Hardened filters (BOS age, entry distance, direction fix) remain active. AI bypassed (in `AI_BYPASS_SETUP_TYPES`).
 
 ---
 
@@ -350,7 +362,7 @@ Disabled from ENABLED_SETUPS. 0-7.7% WR in backtests. Code remains for future re
 5. AI bypassed (QUICK_SETUP_TYPES) + Risk check passes
 6. 1h entry timeout, 4h max duration
 
-Setup D_bos disabled (20-33% WR, net negative in all runs).
+Setup D_bos re-enabled 2026-03-15 in aggressive validation mode (historical 20-33% WR, net negative — collecting live data).
 
 ---
 
@@ -382,7 +394,7 @@ Setup D_bos disabled (20-33% WR, net negative in all runs).
 
 Claude API (Sonnet) as filter. Does not originate trades. **Claude has NO internet access** — all data must be provided as structured context.
 
-**Current status (2026-03-12):** AI filter is **bypassed for all active setups**. Setup A is in `AI_BYPASS_SETUP_TYPES` (89.6% approval rate = no filtering value). Setup D variants are in `QUICK_SETUP_TYPES` (skip AI by design). Setup B and F are disabled. Zero Claude API calls in the pipeline currently. All code and infrastructure remain for re-enable when recalibrated.
+**Current status (2026-03-15):** AI filter is **bypassed for all active setups**. Setup A, B, F are in `AI_BYPASS_SETUP_TYPES` (synthetic AIDecision). Setup D variants (D_choch, D_bos) are in `QUICK_SETUP_TYPES` (skip AI by design). Zero Claude API calls in the pipeline currently. All code and infrastructure remain for re-enable when recalibrated.
 
 **Bypass mechanism:** `config/settings.py` defines `QUICK_SETUP_TYPES` (setup_c, setup_d, setup_d_bos, setup_d_choch, setup_e) and `AI_BYPASS_SETUP_TYPES` (setup_a, setup_b). Both generate synthetic `AIDecision(confidence=1.0, approved=True)` instead of calling Claude.
 
@@ -577,6 +589,8 @@ python scripts/optimize.py --days 60 --trials 50 --walk-forward --jobs 2
 **Output**: JSON in `backtest_results/` with best params, top 5 trials, parameter importance.
 
 **Last optimization (2026-03-15)**: 20 trials, 30d, PF 1.05→2.65. Walk-forward validated (test PF=3.07 vs baseline PF=0.88). Key changes: SETUP_A_ENTRY_PCT 0.50→0.65, OB_MAX_DISTANCE_PCT 0.08→0.04, MIN_ATR_PCT 0.0025→0.0045. Full param table in `backtest_results/TRACKER.md`.
+
+**Aggressive validation mode (2026-03-15)**: Post-optimization, params further relaxed for maximum trade detection at $20/trade. Goal: data collection, not profit optimization. Changes: ENABLED_SETUPS expanded to 5 types (A, B, D_choch, D_bos, F), MIN_ATR_PCT 0.0045→0.0020, MIN_TARGET_SPACE_R 1.4→1.0, OB_MAX_DISTANCE_PCT 0.04→0.08, OB_PROXIMITY_PCT 0.007→0.010, SETUP_A_MAX_SWEEP_CHOCH_GAP 45→60, SETUP_F_MIN_BOS_DISPLACEMENT_PCT 0.002→0.001, SETUP_F_MIN_CONFLUENCES 3→2, PD_AS_CONFLUENCE false→true. All risk guardrails unchanged.
 
 ---
 
