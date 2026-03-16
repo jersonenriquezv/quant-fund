@@ -567,9 +567,14 @@ class TestZoneBasedOB:
     def test_ob_at_exact_boundary(self):
         """OB exactly at OB_MAX_DISTANCE_PCT boundary is accepted."""
         evaluator = SetupEvaluator()
-        # OB_MAX_DISTANCE_PCT = 0.04 → at price 100, max distance = 4
-        ob = _make_ob(entry_price=96.0)
-        assert evaluator._is_ob_within_range(100.0, ob) is True
+        original = settings.OB_MAX_DISTANCE_PCT
+        settings.OB_MAX_DISTANCE_PCT = 0.04
+        try:
+            # OB_MAX_DISTANCE_PCT = 0.04 → at price 100, max distance = 4
+            ob = _make_ob(entry_price=96.0)
+            assert evaluator._is_ob_within_range(100.0, ob) is True
+        finally:
+            settings.OB_MAX_DISTANCE_PCT = original
 
     def test_find_best_ob_uses_composite_score(self):
         """_find_best_ob uses composite scoring (volume + freshness + proximity + size)."""
@@ -598,6 +603,8 @@ class TestZoneBasedOB:
     def test_setup_a_creates_without_proximity(self):
         """Setup A created when OB is within range but price not adjacent."""
         evaluator = SetupEvaluator()
+        original = settings.OB_MAX_DISTANCE_PCT
+        settings.OB_MAX_DISTANCE_PCT = 0.05
         state = _make_structure_state(
             trend="bullish", break_type="choch", break_direction="bullish",
         )
@@ -626,6 +633,7 @@ class TestZoneBasedOB:
         assert setup is not None
         # Entry at SETUP_A_ENTRY_PCT (0.65) of OB body: 96 + 0.65*(98-96) = 97.3
         assert setup.entry_price == 97.3
+        settings.OB_MAX_DISTANCE_PCT = original
 
     def test_setup_a_rejects_ob_beyond_max_distance(self):
         """Setup A rejected when OB is beyond OB_MAX_DISTANCE_PCT."""

@@ -72,7 +72,7 @@ class Settings:
     # Timeframes used for swing setup evaluation (A/B/F/G).
     # 5m OBs produce micro-SLs (<0.2%) that get eaten by commissions.
     # Detectors still run on all LTF_TIMEFRAMES (quick setups need 5m data).
-    SWING_SETUP_TIMEFRAMES: List[str] = field(default_factory=lambda: ["15m", "5m"])
+    SWING_SETUP_TIMEFRAMES: List[str] = field(default_factory=lambda: ["15m"])
 
     # ========================
     # RISK MANAGEMENT — Guardrails inquebrantables
@@ -190,7 +190,7 @@ class Settings:
     # Max distance (% of price) from current price to consider an OB for zone-based orders.
     # OBs beyond this distance are ignored to avoid absurdly distant limit orders.
     # Optuna 03-15: 0.08→0.04 (reject distant OBs — biggest single improvement)
-    OB_MAX_DISTANCE_PCT: float = 0.08  # 8%
+    OB_MAX_DISTANCE_PCT: float = 0.03  # 3%
 
     # --- Setup B: FVG-OB adjacency ---
     # Max gap between FVG and OB as fraction of price to count as "adjacent".
