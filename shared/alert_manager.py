@@ -535,6 +535,72 @@ class AlertManager:
         msg = "\n".join(lines)
         await self.alert(AlertPriority.INFO, "liquidation_clusters", msg)
 
+    async def notify_session_open(self, session_name: str, hours_utc: str) -> None:
+        """Trading session opened — INFO priority."""
+        labels = {
+            "asia": "\U0001f30f Asia (Tokyo)",
+            "europe": "\U0001f30d Europe (London)",
+            "us": "\U0001f30e US (New York)",
+        }
+        label = labels.get(session_name, session_name)
+        msg = (
+            f"\U0001f514 <b>SESSION OPEN — {label}</b>\n"
+            f"Hours: {hours_utc} UTC\n"
+            f"{'High volatility expected' if session_name == 'us' else 'Volume increasing'}"
+        )
+        await self.alert(AlertPriority.INFO, "session_open", msg)
+
+    async def notify_volatility_spike(
+        self, pair: str, current_atr_pct: float, avg_atr_pct: float,
+    ) -> None:
+        """ATR spiked 2x+ above average — setups likely incoming. WARNING priority."""
+        ratio = current_atr_pct / avg_atr_pct if avg_atr_pct > 0 else 0
+        pair_label = pair.replace("/USDT", "")
+        msg = (
+            f"\u26a1 <b>VOLATILITY SPIKE — {pair_label}</b>\n"
+            f"ATR: {current_atr_pct*100:.3f}% ({ratio:.1f}x above normal)\n"
+            f"Setups likely incoming"
+        )
+        await self.alert(AlertPriority.WARNING, "volatility_spike", msg)
+
+    async def notify_funding_extreme(
+        self, pair: str, rate: float, direction: str,
+    ) -> None:
+        """Funding rate extreme — squeeze potential. WARNING priority."""
+        pair_label = pair.replace("/USDT", "")
+        side = "SHORTS overcrowded" if rate > 0 else "LONGS overcrowded"
+        squeeze = "long squeeze risk" if rate > 0 else "short squeeze potential"
+        msg = (
+            f"\U0001f4b1 <b>FUNDING EXTREME — {pair_label}</b>\n"
+            f"Rate: {rate*100:.4f}% ({side})\n"
+            f"{squeeze}"
+        )
+        await self.alert(AlertPriority.WARNING, "funding_extreme", msg)
+
+    async def notify_setup_rejected(
+        self, pair: str, setup_type: str, direction: str,
+        stage: str, reason: str,
+    ) -> None:
+        """Setup detected but not executed — INFO priority."""
+        arrow = "\u2b06" if direction == "long" else "\u2b07"
+        msg = (
+            f"\U0001f6ab <b>SETUP REJECTED</b> {arrow}\n"
+            f"{pair} {direction.upper()} ({setup_type})\n"
+            f"Stage: {stage}\n"
+            f"Reason: {reason}"
+        )
+        await self.alert(AlertPriority.INFO, "setup_rejected", msg)
+
+    async def notify_dry_spell(self, hours: float, pairs: list[str]) -> None:
+        """No setups detected in X hours — WARNING priority."""
+        pairs_str = ", ".join(p.replace("/USDT", "") for p in pairs)
+        msg = (
+            f"\U0001f3dc <b>DRY SPELL — {hours:.0f}h no setups</b>\n"
+            f"Pairs: {pairs_str}\n"
+            f"Market may be ranging or filters too tight"
+        )
+        await self.alert(AlertPriority.WARNING, "dry_spell", msg)
+
     async def notify_health_recovered(self, components: list[str]) -> None:
         """Infrastructure component recovered — INFO priority."""
         msg = (

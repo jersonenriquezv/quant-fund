@@ -47,6 +47,11 @@ _campaign_monitor: CampaignMonitor | None = None
 _notifier: TelegramNotifier | None = None
 _alert_manager: AlertManager | None = None
 
+# Track last setup detection time for dry spell alerts
+_last_setup_detected_time: float = 0.0
+# Track ATR history per pair for volatility spike detection
+_atr_history: dict[str, list[float]] = {}  # pair -> [recent ATR values]
+
 
 # ================================================================
 # Pipeline callback — triggered on every confirmed candle
@@ -143,6 +148,9 @@ async def on_candle_confirmed(candle: Candle) -> None:
     if setup is None:
         return
 
+    global _last_setup_detected_time
+    _last_setup_detected_time = time.time()
+
     logger.info(
         f"Trade setup detected: type={setup.setup_type} pair={setup.pair} "
         f"direction={setup.direction} entry={setup.entry_price:.2f} "
@@ -211,6 +219,11 @@ async def on_candle_confirmed(candle: Candle) -> None:
         approval = _risk_service.check(setup)
         if not approval.approved:
             logger.info(f"Risk rejected: {approval.reason}")
+            if _alert_manager:
+                await _alert_manager.notify_setup_rejected(
+                    setup.pair, setup.setup_type, setup.direction,
+                    "Risk", approval.reason or "unknown",
+                )
             _persist_risk_event("trade_rejected", {
                 "pair": setup.pair,
                 "direction": setup.direction,
@@ -539,6 +552,152 @@ async def _daily_summary_loop() -> None:
         await asyncio.sleep(86400)
 
 
+# ================================================================
+# Trading session alerts
+# ================================================================
+
+# Sessions defined as (name, start_hour_utc, end_hour_utc, label)
+TRADING_SESSIONS = [
+    ("asia", 0, 9, "00:00-09:00"),
+    ("europe", 7, 16, "07:00-16:00"),
+    ("us", 13, 22, "13:00-22:00"),
+]
+
+
+async def _session_alert_loop() -> None:
+    """Send Telegram alert when a major trading session opens."""
+    # Track which sessions we've already alerted today
+    from datetime import datetime, timezone
+    alerted: dict[str, int] = {}  # session_name -> day_of_year
+
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            day = now.timetuple().tm_yday
+
+            for name, start_hour, _, hours_label in TRADING_SESSIONS:
+                if now.hour == start_hour and now.minute < 5:
+                    if alerted.get(name) != day and _alert_manager:
+                        await _alert_manager.notify_session_open(name, hours_label)
+                        alerted[name] = day
+        except Exception as e:
+            logger.error(f"Session alert error: {e}")
+
+        await asyncio.sleep(60)  # Check every minute
+
+
+# ================================================================
+# Dry spell alert — no setups detected in X hours
+# ================================================================
+
+_DRY_SPELL_THRESHOLD_HOURS = 4  # Alert after 4 hours of no setups
+_dry_spell_alerted: bool = False
+
+
+async def _dry_spell_loop() -> None:
+    """Alert when no setups detected for extended period."""
+    global _dry_spell_alerted
+
+    # Wait for bot to warm up
+    await asyncio.sleep(300)
+
+    while True:
+        try:
+            if _last_setup_detected_time > 0 and _alert_manager:
+                hours_since = (time.time() - _last_setup_detected_time) / 3600
+                if hours_since >= _DRY_SPELL_THRESHOLD_HOURS and not _dry_spell_alerted:
+                    await _alert_manager.notify_dry_spell(
+                        hours_since, settings.TRADING_PAIRS,
+                    )
+                    _dry_spell_alerted = True
+                elif hours_since < _DRY_SPELL_THRESHOLD_HOURS:
+                    _dry_spell_alerted = False  # Reset when setup found
+            elif _last_setup_detected_time == 0 and _alert_manager:
+                # Bot just started, no setup yet — check if it's been long enough
+                hours_since = (time.time() - _bot_start_time) / 3600
+                if hours_since >= _DRY_SPELL_THRESHOLD_HOURS and not _dry_spell_alerted:
+                    await _alert_manager.notify_dry_spell(
+                        hours_since, settings.TRADING_PAIRS,
+                    )
+                    _dry_spell_alerted = True
+        except Exception as e:
+            logger.error(f"Dry spell alert error: {e}")
+
+        await asyncio.sleep(600)  # Check every 10 min
+
+
+# ================================================================
+# Volatility spike + funding extreme alerts
+# ================================================================
+
+_vol_spike_cooldown: dict[str, float] = {}  # pair -> last alert time
+_funding_extreme_cooldown: dict[str, float] = {}  # pair -> last alert time
+_VOL_SPIKE_RATIO = 2.0  # ATR must be 2x above rolling average
+_VOL_ALERT_COOLDOWN = 3600  # 1 hour between alerts per pair
+_FUNDING_ALERT_COOLDOWN = 7200  # 2 hours between alerts per pair
+
+
+async def _market_monitor_loop() -> None:
+    """Monitor volatility spikes and funding extremes across all pairs."""
+    # Wait for data to populate
+    await asyncio.sleep(120)
+
+    while True:
+        try:
+            now = time.time()
+
+            for pair in settings.TRADING_PAIRS:
+                if _data_service is None or _alert_manager is None:
+                    continue
+
+                # --- Volatility spike detection ---
+                candles = _data_service.get_candles(pair, "5m", 100)
+                if candles and len(candles) >= 50:
+                    # Simple ATR: avg(high-low) over recent vs older window
+                    recent = candles[-14:]
+                    older = candles[-50:-14]
+                    current_atr = sum(c.high - c.low for c in recent) / len(recent)
+                    avg_atr = sum(c.high - c.low for c in older) / len(older)
+                    price = candles[-1].close
+
+                    if avg_atr > 0 and price > 0:
+                        current_pct = current_atr / price
+                        avg_pct = avg_atr / price
+                        ratio = current_pct / avg_pct
+
+                        last_alert = _vol_spike_cooldown.get(pair, 0)
+                        if ratio >= _VOL_SPIKE_RATIO and (now - last_alert) > _VOL_ALERT_COOLDOWN:
+                            await _alert_manager.notify_volatility_spike(
+                                pair, current_pct, avg_pct,
+                            )
+                            _vol_spike_cooldown[pair] = now
+
+                # --- Funding rate extreme detection ---
+                funding = _data_service.get_funding_rate(pair)
+                if funding and abs(funding.rate) >= settings.FUNDING_EXTREME_THRESHOLD:
+                    last_alert = _funding_extreme_cooldown.get(pair, 0)
+                    if (now - last_alert) > _FUNDING_ALERT_COOLDOWN:
+                        direction = "long" if funding.rate < 0 else "short"
+                        await _alert_manager.notify_funding_extreme(
+                            pair, funding.rate, direction,
+                        )
+                        _funding_extreme_cooldown[pair] = now
+
+                # --- Drawdown warning ---
+                if _risk_service is not None:
+                    daily_dd = _risk_service._state.get_daily_drawdown()
+                    dd_threshold = settings.MAX_DAILY_DRAWDOWN * settings.DD_WARNING_THRESHOLD
+                    if daily_dd >= dd_threshold and daily_dd < settings.MAX_DAILY_DRAWDOWN:
+                        await _alert_manager.notify_dd_warning(
+                            daily_dd, settings.MAX_DAILY_DRAWDOWN,
+                        )
+
+        except Exception as e:
+            logger.error(f"Market monitor error: {e}")
+
+        await asyncio.sleep(300)  # Check every 5 min
+
+
 async def _liquidation_alert_loop() -> None:
     """Send top liquidation clusters near price every 4 hours via Telegram."""
     # Wait 60s for data to populate on startup
@@ -736,6 +895,9 @@ async def main() -> None:
     _bot_start_time = time.time()
     status_task = asyncio.create_task(_daily_summary_loop(), name="daily_summary")
     liq_task = asyncio.create_task(_liquidation_alert_loop(), name="liquidation_alerts")
+    session_task = asyncio.create_task(_session_alert_loop(), name="session_alerts")
+    dry_spell_task = asyncio.create_task(_dry_spell_loop(), name="dry_spell_alerts")
+    market_monitor_task = asyncio.create_task(_market_monitor_loop(), name="market_monitor")
 
     # Wait for shutdown signal
     await shutdown_event.wait()
