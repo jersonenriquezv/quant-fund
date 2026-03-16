@@ -41,7 +41,14 @@ def _estimate_liquidation_levels(
     if not candles or oi_usd <= 0:
         return []
 
-    bin_size = BIN_SIZE_BTC if "BTC" in pair else BIN_SIZE_ETH
+    if "BTC" in pair:
+        bin_size = BIN_SIZE_BTC
+    elif "SOL" in pair:
+        bin_size = 0.5
+    elif "DOGE" in pair:
+        bin_size = 0.002
+    else:
+        bin_size = BIN_SIZE_ETH
 
     # Weight OI distribution by candle volume
     total_volume = sum(c.get("volume_quote", c.get("volume", 0)) for c in candles)

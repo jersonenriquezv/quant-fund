@@ -182,7 +182,7 @@ Estimated liquidation level chart — DIY approximation of Coinglass-style heatm
 - Takes last 200 5m candles + current OI in USD
 - Projects liquidation prices for 5 leverage tiers (5x/10x/25x/50x/100x) with industry-average weights (0.30/0.30/0.20/0.15/0.05)
 - OI distributed across candles weighted by `volume_quote` (not uniform)
-- Bins: $50 for BTC, $2 for ETH (configurable via `LIQ_BIN_SIZE_BTC`/`LIQ_BIN_SIZE_ETH`)
+- Bins: $50 for BTC, $2 for ETH, $0.50 for SOL, $0.002 for DOGE (configurable via `LIQ_BIN_SIZE_*`)
 - Result cached in Redis (`qf:liq_heatmap:{pair}`, TTL 30s via `LIQ_CACHE_TTL`)
 
 **API:** `GET /api/liquidation/heatmap/{pair}` -> `LiqHeatmapResponse {pair, current_price, bins[]}`
@@ -192,14 +192,14 @@ Estimated liquidation level chart — DIY approximation of Coinglass-style heatm
 - Y-axis: price, X-axis: estimated USD
 - Long liquidations (red) extend left from center, short (green) extend right
 - Dashed blue line for current price
-- BTC/ETH tab selector
+- BTC/ETH/SOL/DOGE tab selector
 - 30s polling via `usePolling`
 - `devicePixelRatio` scaling for retina
 - Mobile: 200px height (vs 300px desktop)
 
 **Limitations vs Coinglass:** Assumed leverage distribution (not real), OKX only, candle close as entry proxy, snapshot only (no time dimension). Labeled "Estimated Liquidation Levels" to be transparent.
 
-**Settings:** `LIQ_CANDLE_COUNT` (200), `LIQ_BIN_SIZE_BTC` (50), `LIQ_BIN_SIZE_ETH` (2), `LIQ_CACHE_TTL` (30)
+**Settings:** `LIQ_CANDLE_COUNT` (200), `LIQ_BIN_SIZE_BTC` (50), `LIQ_BIN_SIZE_ETH` (2), `LIQ_BIN_SIZE_SOL` (0.5), `LIQ_BIN_SIZE_DOGE` (0.002), `LIQ_CACHE_TTL` (30)
 
 ## Bugs Conocidos (resueltos)
 

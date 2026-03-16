@@ -1112,15 +1112,20 @@ class TestSetupFHardening:
     def test_ob_too_far_from_bos_rejected(self):
         """OB timestamped far from BOS is filtered out."""
         evaluator = SetupEvaluator()
-        now_ms = int(time.time() * 1000)
-        bos_ts = now_ms - 1 * 900_000  # BOS 1 candle ago
-        # OB 20 candles before BOS (>10 candle gap)
-        ob_ts = bos_ts - 20 * 900_000
-        args = _make_setup_f_args(
-            bos_candle_index=18, bos_timestamp=bos_ts, ob_timestamp=ob_ts,
-        )
-        setup = evaluator.evaluate_setup_f(**args)
-        assert setup is None
+        original = settings.SETUP_F_MAX_OB_BOS_GAP_CANDLES
+        settings.SETUP_F_MAX_OB_BOS_GAP_CANDLES = 10  # Explicit for test
+        try:
+            now_ms = int(time.time() * 1000)
+            bos_ts = now_ms - 1 * 900_000  # BOS 1 candle ago
+            # OB 20 candles before BOS (>10 candle gap)
+            ob_ts = bos_ts - 20 * 900_000
+            args = _make_setup_f_args(
+                bos_candle_index=18, bos_timestamp=bos_ts, ob_timestamp=ob_ts,
+            )
+            setup = evaluator.evaluate_setup_f(**args)
+            assert setup is None
+        finally:
+            settings.SETUP_F_MAX_OB_BOS_GAP_CANDLES = original
 
     def test_ob_near_bos_accepted(self):
         """OB within SETUP_F_MAX_OB_BOS_GAP_CANDLES of BOS passes."""

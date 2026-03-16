@@ -57,7 +57,7 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
   - SL: OB wick (igual que A/F)
   - FVG-OB adjacency threshold: `FVG_OB_MAX_GAP_PCT` (0.5%)
   - **Hardened filters (2026-03-13):** Root cause: accepted stale BOS hours after impulse move, placing zombie entries 2-3% from price.
-    - BOS recency: must be within `SETUP_B_MAX_BOS_AGE_CANDLES` (12) candles (~3h on 15m)
+    - BOS recency: must be within `SETUP_B_MAX_BOS_AGE_CANDLES` (30) candles (~7.5h on 15m, aggressive mode: was 12)
     - Entry distance: must be within `SETUP_B_MAX_ENTRY_DISTANCE_PCT` (4%, aggressive mode: was 2%) of current price
     - Direction bug fixed: entry branch now uses "bullish"/"bearish" (was "long" — never matched, affected bullish entry placement)
   - **Backtest 60d aggressive**: 55 trades, 52.7% WR, +$5,169. Antes con OB 75% entry (previo cambio): 29.8% WR, -$1,680.
@@ -66,9 +66,9 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
   - Dispara cuando hay BOS + OB alineados pero no hay FVG nearby
   - Evaluado después de B — si B matchea primero, F no se evalúa
   - **Hardened filters (2026-03-12):** Root cause of 34.8% WR: accepted stale BOS, unrelated OBs, inflated confluences with CVD/funding.
-    - BOS recency: must be within `SETUP_F_MAX_BOS_AGE_CANDLES` (20) candles
+    - BOS recency: must be within `SETUP_F_MAX_BOS_AGE_CANDLES` (40) candles (~10h on 15m, aggressive mode: was 20)
     - BOS displacement: must exceed `SETUP_F_MIN_BOS_DISPLACEMENT_PCT` (0.1%, aggressive mode: was 0.2%) beyond broken level
-    - OB-BOS temporal association: OB must be within `SETUP_F_MAX_OB_BOS_GAP_CANDLES` (10) candles of BOS
+    - OB-BOS temporal association: OB must be within `SETUP_F_MAX_OB_BOS_GAP_CANDLES` (20) candles of BOS (aggressive mode: was 10)
     - OB quality floor: composite score must be >= `SETUP_F_MIN_OB_SCORE` (0.35)
     - Entry distance: must be within `SETUP_F_MAX_ENTRY_DISTANCE_PCT` (5%, aggressive mode: was 3%) of current price
     - CVD and funding removed from confluences (structural setup — noise inflation)
@@ -160,7 +160,7 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 - `SETUP_A_MODE: str = "both"` — Setup A CHoCH/HTF alignment mode: "continuation", "reversal", or "both" (env var)
 - `SETUP_A_MAX_SWEEP_CHOCH_GAP: int = 60` — máximo candles entre sweep y CHoCH (aggressive mode: was 45 post-Optuna)
 - `FVG_OB_MAX_GAP_PCT: float = 0.005` — 0.5% gap máximo entre FVG y OB para Setup B adjacency
-- `SETUP_B_MAX_BOS_AGE_CANDLES: int = 12` — max candles since BOS (12 = ~3h on 15m)
+- `SETUP_B_MAX_BOS_AGE_CANDLES: int = 30` — max candles since BOS (~7.5h on 15m, aggressive mode: was 12)
 - `SETUP_B_MAX_ENTRY_DISTANCE_PCT: float = 0.04` — max entry distance from current price (4%, aggressive mode: was 2%)
 - `REQUIRE_HTF_LTF_ALIGNMENT: bool = False` — si True, LTF debe alinearse con HTF; default False para bidireccional
 - `REQUIRE_PD_ALIGNMENT: bool = True` — premium/discount zone debe alinear con dirección (core SMC)
@@ -172,8 +172,8 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 - `MAX_TRADE_DURATION_QUICK: int = 14400` — timeout 4h para quick setups
 - `QUICK_SETUP_COOLDOWN: int = 3600` — cooldown 1h por (pair, setup_type). Mismo valor en default y aggressive — el perfil aggressive ya no reduce el cooldown.
 - `SETUP_D_MIN_DISPLACEMENT_PCT: float = 0.0` — minimum BOS/CHoCH displacement for Setup D (0.0 = disabled, env var)
-- `SETUP_F_MAX_BOS_AGE_CANDLES: int = 20` — max candles since BOS (20 = ~5h on 15m)
-- `SETUP_F_MAX_OB_BOS_GAP_CANDLES: int = 10` — max candle gap between OB and BOS timestamps
+- `SETUP_F_MAX_BOS_AGE_CANDLES: int = 40` — max candles since BOS (~10h on 15m, aggressive mode: was 20)
+- `SETUP_F_MAX_OB_BOS_GAP_CANDLES: int = 20` — max candle gap between OB and BOS (aggressive mode: was 10)
 - `SETUP_F_MIN_BOS_DISPLACEMENT_PCT: float = 0.001` — min BOS displacement (0.1%, aggressive mode: was 0.2%)
 - `SETUP_F_MIN_OB_SCORE: float = 0.35` — min composite OB score from `_score_ob()`
 - `SETUP_F_MAX_ENTRY_DISTANCE_PCT: float = 0.05` — max entry distance from current price (5%, aggressive mode: was 3%)

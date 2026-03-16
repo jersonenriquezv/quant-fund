@@ -44,6 +44,10 @@ def _bin_size(pair: str) -> float:
     """Return price bin width for the given pair."""
     if "BTC" in pair:
         return settings.LIQ_BIN_SIZE_BTC
+    if "SOL" in pair:
+        return settings.LIQ_BIN_SIZE_SOL
+    if "DOGE" in pair:
+        return settings.LIQ_BIN_SIZE_DOGE
     return settings.LIQ_BIN_SIZE_ETH
 
 

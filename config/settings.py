@@ -205,7 +205,7 @@ class Settings:
     # --- Setup B freshness filters (mirrors Setup F pattern) ---
     # Max candles since BOS to be considered fresh (12 = ~3h on 15m).
     # Prevents stale detection after large impulse moves have completed.
-    SETUP_B_MAX_BOS_AGE_CANDLES: int = 12
+    SETUP_B_MAX_BOS_AGE_CANDLES: int = 30
     # Max distance from current price to entry (4% = allow distant entries near liq clusters).
     # BTC@84k → max ~$3,360 distance. ETH@2.1k → max ~$84.
     # Relaxed from 2% for aggressive validation mode (2026-03-15).
@@ -257,9 +257,9 @@ class Settings:
     # SETUP F HARDENING — Pure OB Retest quality filters
     # ========================
     # Max candles since BOS to be considered fresh (20 = ~5h on 15m).
-    SETUP_F_MAX_BOS_AGE_CANDLES: int = 20
+    SETUP_F_MAX_BOS_AGE_CANDLES: int = 40
     # Max candle gap between OB and BOS (OB must form near the BOS impulse).
-    SETUP_F_MAX_OB_BOS_GAP_CANDLES: int = 10
+    SETUP_F_MAX_OB_BOS_GAP_CANDLES: int = 20
     # Minimum BOS displacement beyond broken level (0.2% = reject micro-breaks).
     SETUP_F_MIN_BOS_DISPLACEMENT_PCT: float = 0.001
     # Minimum composite OB score (0-1) from _score_ob(). Rejects low-quality OBs.
@@ -615,6 +615,8 @@ class Settings:
     MIN_ORDER_SIZES: dict = field(default_factory=lambda: {
         "BTC/USDT": 0.0001,
         "ETH/USDT": 0.001,
+        "SOL/USDT": 0.01,
+        "DOGE/USDT": 1.0,
     })
 
     # ========================
@@ -653,10 +655,11 @@ class Settings:
     # ========================
     # Number of 5m candles to use for liquidation estimation (~17h at 200)
     LIQ_CANDLE_COUNT: int = int(os.getenv("LIQ_CANDLE_COUNT", "200"))
-    # Price bin size for BTC liquidation levels (USD)
+    # Price bin size for liquidation levels (USD) — per asset
     LIQ_BIN_SIZE_BTC: float = float(os.getenv("LIQ_BIN_SIZE_BTC", "50"))
-    # Price bin size for ETH liquidation levels (USD)
     LIQ_BIN_SIZE_ETH: float = float(os.getenv("LIQ_BIN_SIZE_ETH", "2"))
+    LIQ_BIN_SIZE_SOL: float = float(os.getenv("LIQ_BIN_SIZE_SOL", "0.5"))
+    LIQ_BIN_SIZE_DOGE: float = float(os.getenv("LIQ_BIN_SIZE_DOGE", "0.002"))
     # Redis cache TTL for computed heatmap (seconds)
     LIQ_CACHE_TTL: int = int(os.getenv("LIQ_CACHE_TTL", "30"))
 
