@@ -253,6 +253,14 @@ class Settings:
     # 0.0 = disabled (default). 0.002 = 0.2% minimum displacement.
     SETUP_D_MIN_DISPLACEMENT_PCT: float = float(os.getenv("SETUP_D_MIN_DISPLACEMENT_PCT", "0.0"))
 
+    # Setup D — entry depth into OB body (0.85 = shallow/close to price, 0.50 = midpoint).
+    # Higher = closer to price = easier fill during explosive moves.
+    SETUP_D_ENTRY_PCT: float = float(os.getenv("SETUP_D_ENTRY_PCT", "0.85"))
+
+    # Quick setup max OB distance (tighter than swing OB_MAX_DISTANCE_PCT).
+    # Explosive moves need entries NEAR price, not 3% away.
+    QUICK_OB_MAX_DISTANCE_PCT: float = float(os.getenv("QUICK_OB_MAX_DISTANCE_PCT", "0.015"))  # 1.5%
+
     # ========================
     # SETUP F HARDENING — Pure OB Retest quality filters
     # ========================

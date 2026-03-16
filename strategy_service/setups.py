@@ -934,6 +934,7 @@ class SetupEvaluator:
         self,
         ob: OrderBlock,
         current_price: float,
+        max_distance: float | None = None,
     ) -> float:
         """Score an OB by volume, freshness, proximity, and body size.
 
@@ -949,8 +950,9 @@ class SetupEvaluator:
             return -1
 
         # Distance filter — reject OBs beyond max range
+        max_dist_pct = max_distance if max_distance is not None else settings.OB_MAX_DISTANCE_PCT
         dist = abs(current_price - ob.entry_price) / current_price
-        if dist > settings.OB_MAX_DISTANCE_PCT:
+        if dist > max_dist_pct:
             return -1
 
         # Volume score (0-1): normalize to 0-5x range
@@ -982,9 +984,10 @@ class SetupEvaluator:
         obs: list[OrderBlock],
         current_price: float,
         direction: str,
+        max_distance: float | None = None,
     ) -> Optional[OrderBlock]:
         """Find the best OB using composite scoring (volume, freshness, proximity, size)."""
-        best_ob, _ = self._find_best_ob_with_score(obs, current_price, direction)
+        best_ob, _ = self._find_best_ob_with_score(obs, current_price, direction, max_distance)
         return best_ob
 
     def _find_best_ob_with_score(
@@ -992,13 +995,14 @@ class SetupEvaluator:
         obs: list[OrderBlock],
         current_price: float,
         direction: str,
+        max_distance: float | None = None,
     ) -> tuple[Optional[OrderBlock], float]:
         """Find the best OB and return (ob, score). Score is -1 if no valid OB."""
         best_ob = None
         best_score = -1.0
 
         for ob in obs:
-            score = self._score_ob(ob, current_price)
+            score = self._score_ob(ob, current_price, max_distance)
             if score > best_score:
                 best_score = score
                 best_ob = ob

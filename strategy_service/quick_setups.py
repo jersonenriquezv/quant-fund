@@ -188,8 +188,11 @@ class QuickSetupEvaluator:
             logger.debug(f"Setup D [{pair}]: no aligned OBs (dir={direction})")
             return None
 
-        # Use composite OB scoring (volume, freshness, proximity, body size)
-        best_ob = self._ob_scorer._find_best_ob(aligned_obs, current_price, direction)
+        # Use composite OB scoring with tighter distance for quick setups
+        best_ob = self._ob_scorer._find_best_ob(
+            aligned_obs, current_price, direction,
+            max_distance=settings.QUICK_OB_MAX_DISTANCE_PCT,
+        )
         if best_ob is None:
             logger.debug(
                 f"Setup D [{pair}]: no OB passes scoring "
@@ -197,8 +200,12 @@ class QuickSetupEvaluator:
             )
             return None
 
-        # Entry at 50% of OB body, SL beyond OB
-        entry_price = best_ob.entry_price
+        # Entry at SETUP_D_ENTRY_PCT of OB body (shallow = close to price for explosive moves)
+        pct = settings.SETUP_D_ENTRY_PCT
+        if direction == "bullish":
+            entry_price = best_ob.body_low + pct * (best_ob.body_high - best_ob.body_low)
+        else:
+            entry_price = best_ob.body_high - pct * (best_ob.body_high - best_ob.body_low)
         if direction == "bullish":
             sl_price = best_ob.low
         else:
