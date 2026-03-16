@@ -60,7 +60,7 @@ class Settings:
     # PARES DE TRADING
     # ========================
     # Pares activos. El bot solo opera estos.
-    TRADING_PAIRS: List[str] = field(default_factory=lambda: ["ETH/USDT", "BTC/USDT", "SOL/USDT", "DOGE/USDT"])
+    TRADING_PAIRS: List[str] = field(default_factory=lambda: ["ETH/USDT", "BTC/USDT", "SOL/USDT", "DOGE/USDT", "XRP/USDT", "LINK/USDT", "AVAX/USDT"])
 
     # ========================
     # TIMEFRAMES
@@ -625,6 +625,9 @@ class Settings:
         "ETH/USDT": 0.001,
         "SOL/USDT": 0.01,
         "DOGE/USDT": 1.0,
+        "XRP/USDT": 1.0,
+        "LINK/USDT": 0.1,
+        "AVAX/USDT": 0.1,
     })
 
     # ========================
@@ -690,7 +693,8 @@ QUICK_SETUP_TYPES = ("setup_c", "setup_d", "setup_d_bos", "setup_d_choch", "setu
 # Setup types that bypass AI filter but keep normal (swing) entry timeout.
 # setup_a: AI v2 approval rate 89.6% = no value added. Bypass until recalibrated.
 # setup_b: AI v1 destroyed it (49% WR → 21.4% WR). Bypass until recalibrated.
-AI_BYPASS_SETUP_TYPES = ("setup_a", "setup_b")
+# setup_f: AI bypassed per aggressive validation mode (2026-03-15).
+AI_BYPASS_SETUP_TYPES = ("setup_a", "setup_b", "setup_f")
 
 
 # Instancia global — importar esta en todo el proyecto

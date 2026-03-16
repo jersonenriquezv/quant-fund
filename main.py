@@ -209,8 +209,10 @@ async def on_candle_confirmed(candle: Candle) -> None:
     elif _ai_service is not None and _data_service is not None:
         decision = await _evaluate_with_claude(setup, candle)
         if decision is None:
+            _ml_resolve_outcome(setup.setup_id, "ai_rejected")
             return
         if not decision.approved:
+            _ml_resolve_outcome(setup.setup_id, "ai_rejected")
             return
 
     # Layer 4: Risk Service

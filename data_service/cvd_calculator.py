@@ -37,6 +37,9 @@ _INST_IDS = {
     "ETH/USDT": "ETH-USDT-SWAP",
     "SOL/USDT": "SOL-USDT-SWAP",
     "DOGE/USDT": "DOGE-USDT-SWAP",
+    "XRP/USDT": "XRP-USDT-SWAP",
+    "LINK/USDT": "LINK-USDT-SWAP",
+    "AVAX/USDT": "AVAX-USDT-SWAP",
 }
 
 # Reverse map

@@ -30,6 +30,9 @@ _PAIR_TO_SYMBOL = {
     "ETH/USDT": "ETH-USDT-SWAP",
     "SOL/USDT": "SOL-USDT-SWAP",
     "DOGE/USDT": "DOGE-USDT-SWAP",
+    "XRP/USDT": "XRP-USDT-SWAP",
+    "LINK/USDT": "LINK-USDT-SWAP",
+    "AVAX/USDT": "AVAX-USDT-SWAP",
 }
 
 # OKX max candles per request
@@ -41,6 +44,9 @@ _CONTRACT_SIZES = {
     "ETH/USDT": 0.1,    # 1 contract = 0.1 ETH
     "SOL/USDT": 1.0,    # 1 contract = 1 SOL
     "DOGE/USDT": 1000.0, # 1 contract = 1000 DOGE
+    "XRP/USDT": 100.0,  # 1 contract = 100 XRP
+    "LINK/USDT": 1.0,   # 1 contract = 1 LINK
+    "AVAX/USDT": 1.0,   # 1 contract = 1 AVAX
 }
 
 # ccxt expects lowercase timeframes: "5m", "15m", "1h", "4h"
