@@ -1,5 +1,5 @@
 """
-Quick Setup Evaluation — Setup C, D, E.
+Quick Setup Evaluation — Setup C, D, E, H.
 
 Data-driven setups with shorter duration (4h max) and lower R:R (1:1 min).
 These fire only when no swing setup (A/B) is detected.
@@ -7,6 +7,7 @@ These fire only when no swing setup (A/B) is detected.
 Setup C: Funding Squeeze — extreme funding + CVD alignment = momentum entry
 Setup D: LTF Structure Scalp — CHoCH/BOS on 5m + fresh OB, no sweep/FVG needed
 Setup E: Cascade Reversal — OI drop cascade + CVD reversal = catch the bounce
+Setup H: Momentum/Impulse — volume-driven directional move + BOS = ride the wave
 """
 
 import time
@@ -403,6 +404,209 @@ class QuickSetupEvaluator:
             confluences=confluences,
             htf_bias=htf_bias,
             ob_timeframe=best_ob.timeframe if best_ob else "5m",
+        )
+
+    def evaluate_setup_h(
+        self,
+        pair: str,
+        htf_bias: str,
+        structure_state: MarketStructureState,
+        candles: list[Candle],
+    ) -> Optional[TradeSetup]:
+        """Setup H — Momentum/Impulse Entry.
+
+        Signal: volume-driven impulse move in progress. Enter at current price
+        (momentum is happening NOW), SL at structural level (initiating OB or
+        impulse extreme), ride with progressive trailing.
+
+        Runs on both 5m and 15m candles.
+        """
+        if htf_bias not in ("bullish", "bearish"):
+            return None
+
+        n = settings.SETUP_H_MIN_IMPULSE_CANDLES
+        if not candles or len(candles) < n + 20:
+            return None
+
+        current_price = candles[-1].close
+        if current_price <= 0:
+            return None
+
+        # 1. Analyze last N candles for directional impulse
+        impulse_candles = candles[-n:]
+        bullish_count = sum(1 for c in impulse_candles if c.close >= c.open)
+        bearish_count = n - bullish_count
+
+        if bullish_count >= n * settings.SETUP_H_MIN_DIRECTIONAL_PCT:
+            direction = "bullish"
+        elif bearish_count >= n * settings.SETUP_H_MIN_DIRECTIONAL_PCT:
+            direction = "bearish"
+        else:
+            return None
+
+        # 2. HTF bias must align
+        if direction != htf_bias:
+            logger.debug(
+                f"Setup H [{pair}]: impulse {direction} != HTF {htf_bias}"
+            )
+            return None
+
+        # 3. Check minimum impulse move size
+        impulse_start = impulse_candles[0].open
+        impulse_end = impulse_candles[-1].close
+        move_pct = abs(impulse_end - impulse_start) / impulse_start if impulse_start > 0 else 0
+        if move_pct < settings.SETUP_H_MIN_IMPULSE_PCT:
+            logger.debug(
+                f"Setup H [{pair}]: impulse too small "
+                f"({move_pct*100:.3f}% < {settings.SETUP_H_MIN_IMPULSE_PCT*100:.1f}%)"
+            )
+            return None
+
+        # 4. Volume spike check — impulse vs prior 20 candles
+        prior_candles = candles[-(n + 20):-n]
+        avg_impulse_vol = sum(c.volume for c in impulse_candles) / n
+        avg_prior_vol = sum(c.volume for c in prior_candles) / len(prior_candles) if prior_candles else 0
+        if avg_prior_vol <= 0:
+            return None
+        vol_ratio = avg_impulse_vol / avg_prior_vol
+        if vol_ratio < settings.SETUP_H_VOLUME_SPIKE_RATIO:
+            logger.debug(
+                f"Setup H [{pair}]: volume ratio too low "
+                f"({vol_ratio:.2f}x < {settings.SETUP_H_VOLUME_SPIKE_RATIO}x)"
+            )
+            return None
+
+        # 4b. Exhaustion filter: deceleration check
+        # Compare body size of last 2 candles vs first 3 in impulse window
+        first_bodies = [abs(c.close - c.open) for c in impulse_candles[:3]]
+        last_bodies = [abs(c.close - c.open) for c in impulse_candles[-2:]]
+        avg_first_body = sum(first_bodies) / len(first_bodies) if first_bodies else 0
+        avg_last_body = sum(last_bodies) / len(last_bodies) if last_bodies else 0
+        if avg_first_body > 0:
+            decel_ratio = avg_last_body / avg_first_body
+            if decel_ratio < settings.SETUP_H_DECEL_RATIO:
+                logger.debug(
+                    f"Setup H [{pair}]: impulse decelerating "
+                    f"(body ratio {decel_ratio:.2f} < {settings.SETUP_H_DECEL_RATIO})"
+                )
+                return None
+
+        # 4c. Exhaustion filter: extended move check
+        # Reject if total impulse move already exceeds threshold
+        if move_pct > settings.SETUP_H_MAX_EXTENDED_PCT:
+            logger.debug(
+                f"Setup H [{pair}]: impulse already extended "
+                f"({move_pct*100:.2f}% > {settings.SETUP_H_MAX_EXTENDED_PCT*100:.1f}%)"
+            )
+            return None
+
+        # 4d. Exhaustion filter: volume decay check
+        # Compare volume of last 2 impulse candles vs first 3
+        first_vols = [c.volume for c in impulse_candles[:3]]
+        last_vols = [c.volume for c in impulse_candles[-2:]]
+        avg_first_vol = sum(first_vols) / len(first_vols) if first_vols else 0
+        avg_last_vol = sum(last_vols) / len(last_vols) if last_vols else 0
+        if avg_first_vol > 0:
+            vol_decay_ratio = avg_last_vol / avg_first_vol
+            if vol_decay_ratio < settings.SETUP_H_VOL_DECAY_RATIO:
+                logger.debug(
+                    f"Setup H [{pair}]: volume fading "
+                    f"(vol ratio {vol_decay_ratio:.2f} < {settings.SETUP_H_VOL_DECAY_RATIO})"
+                )
+                return None
+
+        # 5. BOS must exist in impulse direction
+        if not structure_state.structure_breaks:
+            return None
+        has_bos = any(
+            b.direction == direction
+            for b in structure_state.structure_breaks
+        )
+        if not has_bos:
+            logger.debug(f"Setup H [{pair}]: no BOS in {direction} direction")
+            return None
+
+        trade_dir = "long" if direction == "bullish" else "short"
+
+        # 6. Find initiating OB — last opposite-color candle before impulse
+        #    with volume >= 1x average (the candle that started the move)
+        sl_price = None
+        ob_found = False
+        pre_impulse = candles[:-(n)]
+        for c in reversed(pre_impulse[-10:]):  # Look back up to 10 candles before impulse
+            is_opposite = (direction == "bullish" and c.close < c.open) or \
+                          (direction == "bearish" and c.close >= c.open)
+            if is_opposite and c.volume >= avg_prior_vol:
+                if direction == "bullish":
+                    sl_price = c.low
+                else:
+                    sl_price = c.high
+                ob_found = True
+                break
+
+        # Fallback: use impulse extreme
+        if sl_price is None:
+            if direction == "bullish":
+                sl_price = min(c.low for c in impulse_candles)
+            else:
+                sl_price = max(c.high for c in impulse_candles)
+
+        # 7. Cap SL distance
+        entry_price = current_price
+        sl_distance_pct = abs(entry_price - sl_price) / entry_price if entry_price > 0 else 0
+        if sl_distance_pct > settings.SETUP_H_MAX_SL_PCT:
+            if direction == "bullish":
+                sl_price = entry_price * (1 - settings.SETUP_H_MAX_SL_PCT)
+            else:
+                sl_price = entry_price * (1 + settings.SETUP_H_MAX_SL_PCT)
+
+        risk = abs(entry_price - sl_price)
+        if risk <= 0:
+            return None
+
+        # SL-too-close filter
+        risk_pct = risk / entry_price if entry_price > 0 else 0
+        if risk_pct < settings.MIN_RISK_DISTANCE_PCT:
+            logger.debug(
+                f"Setup H [{pair}]: SL too close "
+                f"({risk_pct*100:.2f}% < {settings.MIN_RISK_DISTANCE_PCT*100:.1f}%)"
+            )
+            return None
+
+        # 8. TPs — standard R:R levels for trailing
+        if direction == "bullish":
+            tp1 = entry_price + risk * 1.0
+            tp2 = entry_price + risk * 3.0
+        else:
+            tp1 = entry_price - risk * 1.0
+            tp2 = entry_price - risk * 3.0
+
+        # 9. Build confluences
+        confluences = [
+            f"impulse_move_{move_pct*100:.2f}pct",
+            f"volume_spike_{vol_ratio:.1f}x",
+            "bos_confirmed",
+        ]
+        if ob_found:
+            confluences.append("initiating_ob")
+
+        logger.info(
+            f"Setup H found: {pair} {trade_dir} entry={entry_price:.2f} "
+            f"sl={sl_price:.2f} move={move_pct*100:.2f}% vol={vol_ratio:.1f}x"
+        )
+
+        return TradeSetup(
+            timestamp=int(time.time() * 1000),
+            pair=pair,
+            direction=trade_dir,
+            setup_type="setup_h",
+            entry_price=entry_price,
+            sl_price=sl_price,
+            tp1_price=tp1,
+            tp2_price=tp2,
+            confluences=confluences,
+            htf_bias=htf_bias,
+            ob_timeframe=candles[-1].timeframe,
         )
 
     # ================================================================

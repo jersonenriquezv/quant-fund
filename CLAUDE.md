@@ -46,6 +46,14 @@ The bot runs in **aggressive validation mode** (since 2026-03-15) with 5 active 
 - BOS + OB, no FVG required. Hardened filters still active.
 - `SETUP_F_MIN_BOS_DISPLACEMENT_PCT`: 0.1% (was 0.2%). `SETUP_F_MIN_CONFLUENCES`: 2 (was 3).
 
+**Setup H — Momentum/Impulse Entry:** (ENABLED, quick setup)
+- Detects volume-driven impulse moves in real-time (5m and 15m).
+- 5 filters: directional impulse (≥60% same-color candles), volume spike (≥1.5x avg), BOS confirmed, minimum move (≥0.3%), HTF bias aligned.
+- Entry: current price (market momentum is happening NOW — not a passive limit).
+- SL: at the initiating OB (structural SL), capped at 3% max distance.
+- TP: progressive trailing (ceiling TP at 5:1, trail in 0.5 R:R steps).
+- Quick setup (1h cooldown between same-pair detections).
+
 **Disabled setups:** Setup C, E, G pending validation.
 
 **Mandatory rules:**
@@ -53,7 +61,7 @@ The bot runs in **aggressive validation mode** (since 2026-03-15) with 5 active 
 - PD zone as confluence (`PD_AS_CONFLUENCE=true`): aligned PD adds confluence, misaligned omits but does NOT reject. No longer a hard gate.
 - PD override (legacy, superseded by PD_AS_CONFLUENCE): setups with 5+ confluences can trade against PD zone
 - OB selection: composite scoring (volume 35%, freshness 30%, proximity 20%, body size 15%). OB_MIN_BODY_PCT (0.15%) filters micro-OBs.
-- SL-too-close filter in Strategy layer (MIN_RISK_DISTANCE_PCT 0.2%) before building TradeSetup
+- SL-too-close filter in Strategy layer (MIN_RISK_DISTANCE_PCT 0.5%) before building TradeSetup
 - Expectancy filters: MIN_ATR_PCT (0.20% — relaxed for aggressive mode, was 0.45%), MIN_TARGET_SPACE_R (1.0 — relaxed for aggressive mode, was 1.4)
 
 ### 2. AI filter (currently bypassed)
@@ -62,6 +70,7 @@ All active setups bypass Claude:
 - **Setup A**: in `AI_BYPASS_SETUP_TYPES` — synthetic AIDecision(confidence=1.0). AI v2 had 89.6% approval = no value.
 - **Setup B**: in `AI_BYPASS_SETUP_TYPES` — AI v1 destroyed it (49% WR → 21.4% WR). Bypass until recalibrated.
 - **Setup D variants**: in `QUICK_SETUP_TYPES` — data-driven, skip AI by design.
+- **Setup H**: in both `QUICK_SETUP_TYPES` and `AI_BYPASS_SETUP_TYPES` — momentum entry, skip AI by design.
 - Pre-filter (funding extreme, F&G extreme, CVD divergence) and Claude evaluation code remain for future re-enable.
 - Pipeline dedup cache at entry prevents re-evaluating identical setups (1h TTL).
 
@@ -78,9 +87,9 @@ All active setups bypass Claude:
 
 - Entry: limit order at the OB price
 - SL: stop-market (guaranteed fill on crash)
-- Single TP at tp2 (2:1 R:R) — 100% close
+- Single TP at tp2 (3:1 R:R) — 100% close
 - Breakeven: price crosses tp1 (1:1 R:R) → SL moves to entry
-- Trailing SL: price crosses midpoint(tp1,tp2) (1.5:1 R:R) → SL moves to tp1
+- Trailing SL: price crosses midpoint(tp1,tp2) (2:1 R:R) → SL moves to tp1
 
 ### The ideal setup
 
@@ -95,7 +104,7 @@ A perfect long looks like this:
 7. Whales withdrawing from exchanges (accumulating)
 8. AI filter bypassed (currently all active setups skip Claude)
 9. Risk approves: there is capital, no drawdown, R:R is good
-10. Limit order at 50% of OB, SL below OB, TP at 2:1 R:R
+10. Limit order at 50% of OB, SL below OB, TP at 3:1 R:R
 
 **In short:** institutions hunt stops → confirmed reversal → bot enters where institutions entered → risk controls the size.
 
@@ -366,6 +375,21 @@ Setup D_bos re-enabled 2026-03-15 in aggressive validation mode (historical 20-3
 
 ---
 
+### Setup H (Quick) — Momentum/Impulse Entry (ENABLED)
+
+1. Analyze last 5 candles for directional impulse (≥60% same-color bodies)
+2. Volume spike: impulse candles avg volume ≥ 1.5x prior 20-candle avg
+3. BOS confirmed in impulse direction (from MarketStructureAnalyzer)
+4. Minimum impulse move ≥ 0.3% of price (filters chop)
+5. HTF bias alignment
+6. Entry at current price (market momentum happening NOW)
+7. SL at initiating OB (last opposite-color candle before impulse) or impulse extreme
+8. SL capped at 3% max distance
+9. TP via progressive trailing (ceiling 5:1, trail 0.5 R:R steps)
+10. Runs on both 5m and 15m candles
+
+---
+
 ### Minimum Confluence Rule
 
 * Minimum 2 confirmations per trade
@@ -379,9 +403,9 @@ Setup D_bos re-enabled 2026-03-15 in aggressive validation mode (historical 20-3
 
 * Stop Loss mandatory. Never move against trade.
 * Default mode (`TRAILING_TP_ENABLED=false`):
-  * Single TP at tp2 (2:1 R:R) — closes 100% of position
+  * Single TP at tp2 (3:1 R:R) — closes 100% of position
   * Breakeven: price crosses tp1 (1:1 R:R) → SL moves to entry
-  * Trailing SL: price crosses midpoint of tp1 and tp2 (1.5:1 R:R) → SL moves to tp1
+  * Trailing SL: price crosses midpoint of tp1 and tp2 (2:1 R:R) → SL moves to tp1
 * Progressive trail mode (`TRAILING_TP_ENABLED=true`):
   * Ceiling TP at 5:1 R:R (crash protection)
   * SL trails in 0.5 R:R steps, always one step behind highest level reached
@@ -396,7 +420,7 @@ Claude API (Sonnet) as filter. Does not originate trades. **Claude has NO intern
 
 **Current status (2026-03-15):** AI filter is **bypassed for all active setups**. Setup A, B, F are in `AI_BYPASS_SETUP_TYPES` (synthetic AIDecision). Setup D variants (D_choch, D_bos) are in `QUICK_SETUP_TYPES` (skip AI by design). Zero Claude API calls in the pipeline currently. All code and infrastructure remain for re-enable when recalibrated.
 
-**Bypass mechanism:** `config/settings.py` defines `QUICK_SETUP_TYPES` (setup_c, setup_d, setup_d_bos, setup_d_choch, setup_e) and `AI_BYPASS_SETUP_TYPES` (setup_a, setup_b). Both generate synthetic `AIDecision(confidence=1.0, approved=True)` instead of calling Claude.
+**Bypass mechanism:** `config/settings.py` defines `QUICK_SETUP_TYPES` (setup_c, setup_d, setup_d_bos, setup_d_choch, setup_e, setup_h) and `AI_BYPASS_SETUP_TYPES` (setup_a, setup_b, setup_f, setup_h). Both generate synthetic `AIDecision(confidence=1.0, approved=True)` instead of calling Claude.
 
 **Prompt approach (Scoring Rubric v2):**
 No narrative doctrine. Claude scores 4 dimensions (0-5): setup_quality, market_support, contradiction, data_sufficiency. Decision rules are mechanical: approve if setup_quality >= 3 AND contradiction <= 2 AND confidence >= threshold. "Insufficient edge" is a valid rejection — approval requires positive evidence, not just absence of contradiction.
@@ -481,7 +505,7 @@ Instrument format: `"BTC-USDT-SWAP"`, `"ETH-USDT-SWAP"` (OKX convention).
 1. Receive approved trade from Risk Service (TradeSetup + RiskApproval)
 2. Place limit entry order at calculated price (50% OB/FVG)
 3. Attach SL as stop-market order (guaranteed fill on volatile moves)
-4. Attach TP as limit order at tp2 (2:1 R:R, 100% close)
+4. Attach TP as limit order at tp2 (3:1 R:R, 100% close)
 5. Monitor fill status + progressive SL management
 
 **Order types:**
@@ -508,8 +532,8 @@ Instrument format: `"BTC-USDT-SWAP"`, `"ETH-USDT-SWAP"` (OKX convention).
 
 **Position management after entry (default, `TRAILING_TP_ENABLED=false`):**
 * Breakeven: price crosses tp1 (1:1 R:R) → SL moves to entry price
-* Trailing SL: price crosses midpoint of tp1 and tp2 (1.5:1 R:R) → SL moves to tp1
-* TP: price reaches tp2 (2:1 R:R) → 100% close
+* Trailing SL: price crosses midpoint of tp1 and tp2 (2:1 R:R) → SL moves to tp1
+* TP: price reaches tp2 (3:1 R:R) → 100% close
 
 **Position management (progressive trail, `TRAILING_TP_ENABLED=true`):**
 * SL trails in `TRAIL_STEP_RR` (0.5) R:R steps, always one step behind

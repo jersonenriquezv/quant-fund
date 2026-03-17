@@ -10,15 +10,15 @@ State machine:
     active ──[SL fills]──> closed                (loss or breakeven or trailing)
     active ──[timeout]───> closed                (market close)
     active ──[price >= 1:1 R:R]──> SL moves to breakeven (entry price)
-    active ──[price >= 1.5:1 R:R]──> SL moves to tp1_price (trailing)
+    active ──[price >= 2:1 R:R]──> SL moves to tp1_price (trailing)
     active ──[progressive trail]──> SL trails in 0.5 R:R steps (TRAILING_TP_ENABLED)
 
 Exit management:
 - SL: stop-market at sl_price for 100% of position
-- TP: limit at tp2_price (2:1 R:R) or ceiling TP at 5:1 R:R (progressive trail)
+- TP: limit at tp2_price (3:1 R:R) or ceiling TP at 5:1 R:R (progressive trail)
 - Legacy mode (TRAILING_TP_ENABLED=False):
     - Breakeven: when price crosses tp1_price (1:1), SL moves to entry price
-    - Trailing: when price crosses midpoint(tp1,tp2) (1.5:1), SL moves to tp1_price
+    - Trailing: when price crosses midpoint(tp1,tp2) (2:1), SL moves to tp1_price
 - Progressive trail mode (TRAILING_TP_ENABLED=True):
     - SL trails in TRAIL_STEP_RR (0.5) R:R increments, always one step behind
     - Ceiling TP at TRAIL_CEILING_RR (5.0) on exchange as crash protection
@@ -537,6 +537,10 @@ class PositionMonitor:
                      f"entry={pos.actual_entry_price} size={pos.filled_size:.6f} "
                      f"sl={pos.current_sl_price:.2f} tp={pos.tp2_price:.2f} "
                      f"sl_attached={sl_found} tp_attached={tp_found}")
+
+        # Notify Risk Service: pending → active
+        if self._risk is not None:
+            self._risk.on_trade_filled(pos.pair, pos.direction)
 
         # Persist trade to PostgreSQL
         self._persist_trade_open(pos)

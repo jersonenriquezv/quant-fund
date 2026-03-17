@@ -105,11 +105,10 @@ class Settings:
     MIN_RISK_REWARD: float = 1.2
 
     # Minimum SL distance as fraction of entry price.
-    # Rejects noise trades where commissions eat the profit.
-    # 0.002 = 0.2% → ETH@$2000: SL >= $4. BTC@$68K: SL >= $136.
-    # Backtest: 0.2% was optimal (54.5% WR, -$588). Lower lets micro-SL
-    # noise trades through. Higher filters good trades too aggressively.
-    MIN_RISK_DISTANCE_PCT: float = 0.002
+    # Rejects noise trades where SL is inside normal price noise.
+    # 0.005 = 0.5% → ETH@$2350: SL >= $11.75. BTC@$74K: SL >= $370.
+    # Raised from 0.2% (2026-03-16): 0.2% SLs were getting swept in 3-5 min.
+    MIN_RISK_DISTANCE_PCT: float = 0.005
 
     # Trading fee rate per side (OKX taker: 0.05%)
     # Deducted from PnL: total_fees = (entry_notional + exit_notional) * rate
@@ -219,6 +218,7 @@ class Settings:
     # C, E, F, G pending validation.
     ENABLED_SETUPS: list = field(default_factory=lambda: [
         "setup_a", "setup_b", "setup_c", "setup_d_choch", "setup_d_bos", "setup_e", "setup_f",
+        "setup_h",
     ])
 
     # Setup A entry depth — fraction of OB body for entry placement.
@@ -289,6 +289,19 @@ class Settings:
     CASCADE_CVD_REVERSAL_SHORT: float = 0.50      # Buy dominance < 50% after short cascade
     CASCADE_MAX_AGE_SECONDS: int = 900            # 15 min — cascade must be recent
 
+    # Setup H — Momentum/Impulse Entry
+    # Detects volume-driven impulse moves and enters at market price.
+    # SL at the initiating OB (structural SL), not a tight pip-based SL.
+    SETUP_H_MIN_IMPULSE_CANDLES: int = 5          # Min candles to analyze for impulse
+    SETUP_H_MIN_DIRECTIONAL_PCT: float = 0.60     # 60% of candles must be same direction
+    SETUP_H_MIN_IMPULSE_PCT: float = 0.003        # 0.3% minimum total move
+    SETUP_H_VOLUME_SPIKE_RATIO: float = 1.5       # 1.5x average volume
+    SETUP_H_MAX_SL_PCT: float = 0.03              # 3% max SL distance cap
+    # Exhaustion filters — reject momentum trades when impulse is fading
+    SETUP_H_DECEL_RATIO: float = 0.4              # Reject if avg body of last 2 < 40% of first 3
+    SETUP_H_MAX_EXTENDED_PCT: float = 0.015        # Reject if total move already > 1.5%
+    SETUP_H_VOL_DECAY_RATIO: float = 0.5           # Reject if avg volume of last 2 < 50% of first 3
+
     # --- Expectancy filters (post-detection, pre-AI) ---
     # Minimum ATR(14) as fraction of price. Rejects low-volatility setups.
     # Optuna 03-15: 0.0025→0.0045 (skip dead markets — strong filter)
@@ -337,16 +350,16 @@ class Settings:
     TP1_CLOSE_PCT: float = 0.50  # 50%
     TP1_RR_RATIO: float = 1.0
 
-    # TP2: cerrar X% a 1:2 RR
+    # TP2: cerrar X% a 1:3 RR
     TP2_CLOSE_PCT: float = 0.30  # 30%
-    TP2_RR_RATIO: float = 2.0
+    TP2_RR_RATIO: float = 3.0  # Raised from 2.0 (2026-03-16): 2:1 barely covered fees with tight SLs
 
     # ========================
     # PROGRESSIVE TRAILING SL
     # ========================
     # When enabled, SL trails in 0.5 R:R steps instead of fixed breakeven + tp1.
     # A ceiling TP at TRAIL_CEILING_RR stays on exchange as crash protection.
-    TRAILING_TP_ENABLED: bool = os.getenv("TRAILING_TP_ENABLED", "false").lower() == "true"
+    TRAILING_TP_ENABLED: bool = os.getenv("TRAILING_TP_ENABLED", "true").lower() == "true"
     # R:R increment per trail step (0.5 = trail advances every 0.5 R:R)
     TRAIL_STEP_RR: float = float(os.getenv("TRAIL_STEP_RR", "0.5"))
     # Minimum R:R to activate trailing (1.0 = start at breakeven level)
@@ -588,13 +601,13 @@ class Settings:
     # HTF CAMPAIGN TRADING — Position trades on 4H timeframe
     # ========================
     # Master switch — disabled by default, enable via env var after testing
-    HTF_CAMPAIGN_ENABLED: bool = os.getenv("HTF_CAMPAIGN_ENABLED", "false").lower() == "true"
+    HTF_CAMPAIGN_ENABLED: bool = os.getenv("HTF_CAMPAIGN_ENABLED", "true").lower() == "true"
     # Timeframe for setup detection (OB/FVG/sweep detection)
     HTF_CAMPAIGN_SIGNAL_TF: str = "4h"
     # Timeframe for trend bias (Daily)
     HTF_CAMPAIGN_BIAS_TF: str = "1d"
-    # Max concurrent campaigns (1 = one campaign at a time across all pairs)
-    HTF_MAX_CAMPAIGNS: int = 1
+    # Max concurrent campaigns (1 per pair, up to this many total)
+    HTF_MAX_CAMPAIGNS: int = 3
     # Pyramid sizing — decreasing margin per add (total $60 if all fill)
     HTF_INITIAL_MARGIN: float = float(os.getenv("HTF_INITIAL_MARGIN", "30"))
     HTF_ADD1_MARGIN: float = float(os.getenv("HTF_ADD1_MARGIN", "15"))
@@ -659,7 +672,7 @@ class Settings:
     # ========================
     # Feature version — increment when strategy params change in ways that
     # alter feature semantics (e.g. changing OB scoring weights, PD rules).
-    ML_FEATURE_VERSION: int = 1
+    ML_FEATURE_VERSION: int = 2  # v2: progressive trailing + HTF campaigns + wider SL/TP (2026-03-17)
 
     # ========================
     # LIQUIDATION HEATMAP
@@ -675,6 +688,20 @@ class Settings:
     LIQ_CACHE_TTL: int = int(os.getenv("LIQ_CACHE_TTL", "30"))
 
     # ========================
+    # POSITION GUARDIAN — Active position monitoring
+    # ========================
+    # Master switch — when enabled, guardian evaluates open positions on every candle
+    POSITION_GUARDIAN_ENABLED: bool = os.getenv("POSITION_GUARDIAN_ENABLED", "true").lower() == "true"
+    # Number of consecutive counter-direction candles to trigger early close
+    GUARDIAN_COUNTER_CANDLES: int = int(os.getenv("GUARDIAN_COUNTER_CANDLES", "3"))
+    # Ratio threshold for momentum death (recent body / reference body)
+    GUARDIAN_MOMENTUM_DECAY_RATIO: float = float(os.getenv("GUARDIAN_MOMENTUM_DECAY_RATIO", "0.3"))
+    # Minimum price range (as fraction of price) over last N candles to NOT be a stall
+    GUARDIAN_STALL_RANGE_PCT: float = float(os.getenv("GUARDIAN_STALL_RANGE_PCT", "0.001"))
+    # Whether to use CVD data for adverse divergence check
+    GUARDIAN_CVD_ENABLED: bool = os.getenv("GUARDIAN_CVD_ENABLED", "true").lower() == "true"
+
+    # ========================
     # RECONNECTION
     # ========================
     # Segundos iniciales de espera para reconexión
@@ -688,13 +715,13 @@ class Settings:
 
 
 # Quick setup type identifiers (bypass AI + use short entry timeout)
-QUICK_SETUP_TYPES = ("setup_c", "setup_d", "setup_d_bos", "setup_d_choch", "setup_e")
+QUICK_SETUP_TYPES = ("setup_c", "setup_d", "setup_d_bos", "setup_d_choch", "setup_e", "setup_h")
 
 # Setup types that bypass AI filter but keep normal (swing) entry timeout.
 # setup_a: AI v2 approval rate 89.6% = no value added. Bypass until recalibrated.
 # setup_b: AI v1 destroyed it (49% WR → 21.4% WR). Bypass until recalibrated.
 # setup_f: AI bypassed per aggressive validation mode (2026-03-15).
-AI_BYPASS_SETUP_TYPES = ("setup_a", "setup_b", "setup_f")
+AI_BYPASS_SETUP_TYPES = ("setup_a", "setup_b", "setup_f", "setup_h")
 
 
 # Instancia global — importar esta en todo el proyecto

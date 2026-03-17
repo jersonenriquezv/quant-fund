@@ -1,6 +1,6 @@
 # Risk Service
 > Última actualización: 2026-03-12
-> Estado: implementado (completo, integrado en main.py). Dual-mode position sizing: FIXED_TRADE_MARGIN ($20 default) o TRADE_CAPITAL_PCT (15% fallback). MIN_RISK_DISTANCE_PCT (0.2%) also checked in Strategy layer as early filter. Leverage always MAX_LEVERAGE (7x), not dynamic.
+> Estado: implementado (completo, integrado en main.py). Dual-mode position sizing: FIXED_TRADE_MARGIN ($20 default) o TRADE_CAPITAL_PCT (15% fallback). MIN_RISK_DISTANCE_PCT (0.5%) also checked in Strategy layer as early filter. Leverage always MAX_LEVERAGE (7x), not dynamic.
 
 ## Qué hace (30 segundos)
 El Risk Service es el guardián del capital. Antes de que cualquier trade se ejecute, pasa por 6 checks obligatorios (guardrails) y un cálculo de tamaño de posición. Si cualquier check falla, el trade NO se ejecuta. Sin excepciones.
@@ -17,7 +17,7 @@ TradeSetup (del Strategy Service)
   ▼
 RiskService.check(setup)
   │
-  ├── check min risk distance >= 0.1% (SL no demasiado cerca de entry)
+  ├── check min risk distance >= 0.5% (SL no demasiado cerca de entry)
   ├── check R:R ratio >= 1.2 (usa TP2 vs entry/SL)
   ├── check cooldown (5 min post-loss)
   ├── check max trades/día (20)
@@ -56,7 +56,7 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 - Cada método retorna `tuple[bool, str]` (passed, reason)
 - **Sin estado** — funciones puras, reciben valores y retornan veredicto
 - Checks:
-  - `check_min_risk_distance(setup)` — SL distance >= MIN_RISK_DISTANCE_PCT (0.1%) del entry price. Rechaza noise trades donde comisiones comen el profit.
+  - `check_min_risk_distance(setup)` — SL distance >= MIN_RISK_DISTANCE_PCT (0.5%) del entry price. Rechaza noise trades donde comisiones comen el profit.
   - `check_rr_ratio(setup)` — R:R de TP2 >= MIN_RISK_REWARD (1.2 swing) o MIN_RISK_REWARD_QUICK (1.0 quick setups C/D/E)
   - `check_cooldown(last_loss_time, current_time)` — COOLDOWN_MINUTES (5) elapsed?
   - `check_max_trades_today(count)` — < MAX_TRADES_PER_DAY (20)?
@@ -113,7 +113,7 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 | `COOLDOWN_MINUTES` | `5` | Minutos de espera post-pérdida (aggressive mode) |
 | `MIN_RISK_REWARD` | `1.2` | R:R mínimo para swing setups A/B (TP2 vs SL) |
 | `MIN_RISK_REWARD_QUICK` | `1.0` | R:R mínimo para quick setups C/D/E |
-| `MIN_RISK_DISTANCE_PCT` | `0.002` (0.2%) | Distancia mínima SL-entry como fracción del precio. Rechaza noise trades. Para ETH@$2000, SL >= $4. Now also checked in Strategy layer (early filter in evaluate_setup_a/evaluate_setup_d) before building TradeSetup. |
+| `MIN_RISK_DISTANCE_PCT` | `0.005` (0.5%) | Distancia mínima SL-entry como fracción del precio. Rechaza noise trades. Para ETH@$2000, SL >= $10. Now also checked in Strategy layer (early filter in evaluate_setup_a/evaluate_setup_d) before building TradeSetup. |
 | `MIN_ORDER_SIZES` | `{"BTC/USDT": 0.0001, "ETH/USDT": 0.001}` | Mínimo de tamaño de orden por par (OKX contract-based: BTC min 0.01 contracts × 0.01 ctVal, ETH min 0.01 × 0.1 ctVal). Pre-check en main.py filtra antes de Claude. |
 
 ## Tests
@@ -129,7 +129,7 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 ## FAQ
 
 **¿Por qué R:R usa TP2 y no TP1?**
-TP1 cierra 50% de la posición a 1:1 por diseño — es un partial close, no el target real. TP2 (1:2) es donde se evalúa si el trade vale la pena.
+TP1 cierra 50% de la posición a 1:1 por diseño — es un partial close, no el target real. TP2 (1:3) es donde se evalúa si el trade vale la pena.
 
 **¿Por qué estado en memoria y no en PostgreSQL?**
 Los checks son CPU puro (microsegundos). Depender de una DB haría los checks lentos y frágiles. El Execution Service actualiza el estado via `on_trade_opened/closed`. Redis como backup planeado para v2.

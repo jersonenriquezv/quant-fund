@@ -9,7 +9,7 @@ from dashboard.api import database as db
 
 router = APIRouter()
 
-PAIRS = ["BTC/USDT", "ETH/USDT"]
+PAIRS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "DOGE/USDT", "XRP/USDT", "LINK/USDT", "AVAX/USDT"]
 
 
 @router.websocket("/ws")

@@ -18,6 +18,7 @@ from shared.models import TradeSetup, RiskApproval
 from execution_service.executor import OrderExecutor
 from execution_service.monitor import PositionMonitor
 from execution_service.models import ManagedPosition
+from execution_service.position_guardian import PositionGuardian
 
 logger = setup_logger("execution_service")
 
@@ -39,12 +40,14 @@ class ExecutionService:
             )
             self._executor = None
             self._monitor = None
+            self._guardian = None
         else:
             self._executor = OrderExecutor(metrics_callback=self._emit_metric)
             self._monitor = PositionMonitor(
                 self._executor, risk_service, data_store=data_service,
                 alert_manager=alert_manager, on_sl_hit=on_sl_hit
             )
+            self._guardian = PositionGuardian(self._monitor)
             logger.info("Execution Service initialized")
 
     def _emit_metric(self, name: str, value: float, pair: str | None = None, labels: dict | None = None) -> None:
@@ -111,10 +114,11 @@ class ExecutionService:
 
             self._monitor.register(adopted)
 
-            # Notify Risk Service about the existing position
+            # Notify Risk Service about the existing position (already filled)
             if self._risk is not None:
                 self._risk.on_trade_opened(
-                    pair, direction, entry_price, int(time.time())
+                    pair, direction, entry_price, int(time.time()),
+                    phase="active",
                 )
 
             logger.info(

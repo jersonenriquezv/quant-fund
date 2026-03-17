@@ -7,7 +7,7 @@ Main entry: evaluate(pair, trigger_candle) -> TradeSetup | None
 Data flow:
     trigger_candle → fetch all candles from DataService →
     HTF analysis (4H/1H) → LTF analysis (15m/5m) →
-    Setup A → Setup B → Setup F → Setup G → Quick (C/D/E) → TradeSetup | None
+    Setup A → Setup B → Setup F → Setup G → Quick (C/D/E/H) → TradeSetup | None
 """
 
 import time
@@ -295,7 +295,7 @@ class StrategyService:
         # Step 5: Quick setups (C, D, E) — only if no swing setup found
         # ============================================================
         quick_setup = self._evaluate_quick_setups(
-            pair, htf_bias, candles_5m, market_snapshot, pd_zone,
+            pair, htf_bias, candles_5m, candles_15m, market_snapshot, pd_zone,
         )
         if quick_setup is not None:
             if quick_setup.setup_type not in settings.ENABLED_SETUPS:
@@ -310,10 +310,11 @@ class StrategyService:
         pair: str,
         htf_bias: str,
         candles_5m: list[Candle],
+        candles_15m: list[Candle],
         market_snapshot,
         pd_zone,
     ) -> Optional[TradeSetup]:
-        """Try quick setups C → D → E in order. Respects per-type cooldown."""
+        """Try quick setups C → D → E → H in order. Respects per-type cooldown."""
         if not candles_5m:
             return None
 
@@ -351,6 +352,18 @@ class StrategyService:
             if setup is not None:
                 self._quick_setup_last[(pair, "setup_e")] = now
                 return setup
+
+        # Setup H — Momentum/Impulse Entry (5m and 15m)
+        if not self._is_quick_cooldown_active(pair, "setup_h", now):
+            for tf, candles in [("5m", candles_5m), ("15m", candles_15m)]:
+                state = self._market_structure.get_state(pair, tf)
+                if state is not None and candles:
+                    setup = self._quick_setups.evaluate_setup_h(
+                        pair, htf_bias, state, candles,
+                    )
+                    if setup is not None:
+                        self._quick_setup_last[(pair, "setup_h")] = now
+                        return setup
 
         return None
 

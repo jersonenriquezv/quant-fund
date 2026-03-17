@@ -74,8 +74,8 @@ Sin esta arquitectura, tendríamos un solo programa gigante donde todo está mez
    - Setup B, F: disabled entirely (not in ENABLED_SETUPS).
 7. **WebSocket candle dedup**: `_last_confirmed_ts` dict in websocket_feeds.py prevents duplicate pipeline runs if OKX sends same candle twice.
 8. Risk Service verifica TODOS los guardrails y calcula el position size
-9. Execution Service coloca la orden limit en OKX, con SL (stop-market) y TP (limit al tp2, 100% close). **En sandbox**: limit al ask/bid actual + 0.05% tolerancia (evita slippage de market orders).
-10. PositionMonitor gestiona el ciclo de vida: entry fill → breakeven (SL→entry al cruzar tp1) → trailing SL (SL→tp1 al cruzar midpoint) → TP/SL. **Progressive trailing** opcional (`TRAILING_TP_ENABLED=false` por defecto): trails SL en pasos de 0.5 R:R en vez de los dos saltos fijos.
+9. Execution Service coloca la orden limit en OKX, con SL (stop-market) y TP (limit al tp2 3:1 R:R, 100% close). **En sandbox**: limit al ask/bid actual + 0.05% tolerancia (evita slippage de market orders).
+10. PositionMonitor gestiona el ciclo de vida: entry fill → breakeven (SL→entry al cruzar tp1 1:1) → trailing SL (SL→tp1 al cruzar midpoint 2:1) → TP/SL. **Progressive trailing** opcional (`TRAILING_TP_ENABLED=false` por defecto): trails SL en pasos de 0.5 R:R en vez de los dos saltos fijos.
 
 **HTF Campaign path** (cuando `HTF_CAMPAIGN_ENABLED=true`):
 - Velas 4H disparan evaluación HTF separada: Strategy (`evaluate_htf`) → AI → Risk → CampaignMonitor
@@ -233,7 +233,7 @@ Backtester completo con simulación de fills:
 - **TradeSimulator** — simula fills candle-by-candle:
   - Entry: limit order, fill cuando candle toca el precio. Timeout configurable.
   - SL: stop-market, prioridad máxima (check primero en cada candle).
-  - Single TP at tp2 (2:1 R:R) → 100% close. Breakeven at tp1 (1:1). Trailing SL at midpoint(tp1,tp2) → SL to tp1.
+  - Single TP at tp2 (3:1 R:R) → 100% close. Breakeven at tp1 (1:1). Trailing SL at midpoint(tp1,tp2) (2:1) → SL to tp1.
   - Timeout: `MAX_TRADE_DURATION_SECONDS`
   - Position sizing: `(equity * RISK_PER_TRADE) / |entry - sl|`, cap MAX_LEVERAGE
 - **Timeframe-detail mode** (`--detail`): carga velas 1m para resolver ambigüedad SL/TP. Cuando una vela contiene tanto SL como TP en su rango, replay 1m sub-candles para determinar cuál se tocó primero. Fallback a SL-first si no hay data 1m. Requiere velas 1m en PostgreSQL (via `fetch_history.py --timeframe 1m`).
@@ -340,7 +340,7 @@ Desde 2026-03-13, el bot registra cada setup detectado con features estructurado
 - 2026-03-10: **Whale log format** — ETH/BTC whale logs now prefix BEARISH|BULLISH|NEUTRAL, show wallet label first, include USD value consistently, show significance in brackets.
 - 2026-03-10: **WebSocket volume fix** — `websocket_feeds.py` uses `candle_data[6]` (base currency) instead of `[5]` (contracts). Fixes 100x volume mismatch for BTC, 10x for ETH vs REST backfill.
 - 2026-03-10: **Notifier returns bool** — `TelegramNotifier.send()` now returns `True`/`False` for success/failure.
-- 2026-03-10: **Trailing SL + TP3 cleanup** — Simplified exit management from 3-tier partial closes (TP1 50%, TP2 30%, TP3 20%) to single TP at tp2 (2:1 R:R, 100% close) + progressive SL: breakeven at tp1 (1:1), trailing SL at midpoint(tp1,tp2) (1.5:1) → SL moves to tp1. Removed `tp3_price` from TradeSetup, ManagedPosition, SimulatedTrade, settings, all setups, AI prompt, and tests. Backtester rewritten to match live execution. R:R simplified from weighted blended to simple `abs(tp2-entry)/abs(entry-sl)`. PostgreSQL `tp3_price` column kept for historical data (param default 0.0). 450 tests pass.
+- 2026-03-10: **Trailing SL + TP3 cleanup** — Simplified exit management from 3-tier partial closes (TP1 50%, TP2 30%, TP3 20%) to single TP at tp2 (3:1 R:R, 100% close) + progressive SL: breakeven at tp1 (1:1), trailing SL at midpoint(tp1,tp2) (2:1) → SL moves to tp1. Removed `tp3_price` from TradeSetup, ManagedPosition, SimulatedTrade, settings, all setups, AI prompt, and tests. Backtester rewritten to match live execution. R:R simplified from weighted blended to simple `abs(tp2-entry)/abs(entry-sl)`. PostgreSQL `tp3_price` column kept for historical data (param default 0.0). 450 tests pass.
 - 2026-03-10: **PricePanel hides undefined bias** — Dashboard hides the bias badge when HTF bias is "undefined" instead of showing "undefined" text.
 - 2026-03-09: **Phantom fill debug logging** — `monitor.py` logea WARNING con campos raw de OKX (avgPx, px, state) cuando fill price difiere >0.5% del limit price. Diagnostica caso donde buy-limit a $1937 reportó fill a $1990.
 - 2026-03-09: **Test log isolation** — `shared/logger.py` detecta pytest y skipea file sinks. Previene que Mock objects contaminen logs de producción.

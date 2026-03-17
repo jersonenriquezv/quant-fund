@@ -49,17 +49,32 @@ class RiskStateTracker:
     # ================================================================
 
     def record_trade_opened(
-        self, pair: str, direction: str, entry_price: float, timestamp: int
+        self, pair: str, direction: str, entry_price: float, timestamp: int,
+        *, phase: str = "pending",
     ) -> None:
-        """Record a new position opened."""
+        """Record a new position opened.
+
+        Args:
+            phase: "pending" for limit orders not yet filled,
+                   "active" for immediately filled positions.
+        """
         self._check_date_reset()
         self._open_positions.append({
             "pair": pair,
             "direction": direction,
             "entry_price": entry_price,
             "timestamp": timestamp,
+            "phase": phase,
         })
         self._save_to_redis()
+
+    def record_trade_filled(self, pair: str, direction: str) -> None:
+        """Mark a pending position as active (limit order filled)."""
+        for pos in self._open_positions:
+            if pos["pair"] == pair and pos["direction"] == direction and pos.get("phase") == "pending":
+                pos["phase"] = "active"
+                self._save_to_redis()
+                return
 
     def record_trade_closed(
         self, pair: str, direction: str, pnl_pct: float, timestamp: int
@@ -131,6 +146,11 @@ class RiskStateTracker:
         return len(self._trades_today)
 
     def get_open_positions_count(self) -> int:
+        """Return count of ALL tracked positions (pending + active).
+
+        Pending entries count toward max positions to prevent placing
+        unlimited orders when none have filled yet.
+        """
         return len(self._open_positions)
 
     def get_daily_dd_pct(self) -> float:

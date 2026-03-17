@@ -114,11 +114,11 @@ async def on_candle_confirmed(candle: Candle) -> None:
 
         if _campaign_monitor.has_active_campaign(candle.pair):
             # Active campaign on this pair — evaluate pyramid add
-            c = _campaign_monitor.campaign
+            c = _campaign_monitor.get_campaign(candle.pair)
             if c is not None and c.phase == "active":
                 await _campaign_monitor.evaluate_add(c, candle)
         else:
-            # No active campaign — check for new HTF setup
+            # No active campaign on this pair — check for new HTF setup
             await _evaluate_htf_pipeline(candle)
 
         _emit_metric("pipeline_latency_ms", (time.monotonic() - pipeline_start) * 1000, candle.pair)
@@ -144,6 +144,19 @@ async def on_candle_confirmed(candle: Candle) -> None:
 
     setup = _strategy_service.evaluate(candle.pair, candle)
     _publish_strategy_state(candle.pair)
+
+    # Position Guardian — evaluate open positions against live market conditions
+    if (settings.POSITION_GUARDIAN_ENABLED
+            and _execution_service is not None
+            and _execution_service._guardian is not None
+            and _data_service is not None):
+        try:
+            recent = _data_service.get_candles(candle.pair, candle.timeframe, count=20)
+            snapshot = _data_service.get_market_snapshot(candle.pair)
+            cvd = snapshot.cvd if snapshot else None
+            await _execution_service._guardian.evaluate(candle.pair, candle, recent, cvd)
+        except Exception as e:
+            logger.error(f"Position Guardian error: {e}")
 
     if setup is None:
         return
@@ -347,8 +360,10 @@ async def _evaluate_htf_pipeline(candle: Candle) -> None:
             logger.debug(f"HTF blocked: intraday position active on {candle.pair}")
             return
 
-    # Block if max campaigns reached
-    if _campaign_monitor.has_active_campaign():
+    # Block if max campaigns reached or already have one on this pair
+    if not _campaign_monitor.can_open_new_campaign():
+        return
+    if _campaign_monitor.has_active_campaign(candle.pair):
         return
 
     setup = _strategy_service.evaluate_htf(candle.pair, candle)
@@ -687,7 +702,7 @@ async def _market_monitor_loop() -> None:
 
                 # --- Drawdown warning ---
                 if _risk_service is not None:
-                    daily_dd = _risk_service._state.get_daily_drawdown()
+                    daily_dd = _risk_service._state.get_daily_dd_pct()
                     dd_threshold = settings.MAX_DAILY_DRAWDOWN * settings.DD_WARNING_THRESHOLD
                     if daily_dd >= dd_threshold and daily_dd < settings.MAX_DAILY_DRAWDOWN:
                         await _alert_manager.notify_dd_warning(

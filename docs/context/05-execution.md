@@ -44,7 +44,7 @@ pending_entry ──[4h/1h]─────> closed         (cancela entry)
 active ──[TP fills]──> closed                (profit — 100% at tp2)
 active ──[SL fills]──> closed                (loss, breakeven, or trailing)
 active ──[price >= tp1 (1:1)]──> SL moves to breakeven
-active ──[price >= midpoint(tp1,tp2) (1.5:1)]──> SL moves to tp1 (trailing)
+active ──[price >= midpoint(tp1,tp2) (2:1)]──> SL moves to tp1 (trailing)
 active ──[12h/4h]────> closed                (market close)
 active ──[SL fail]───> emergency_pending     (retry x3)
 
@@ -133,7 +133,7 @@ SL trails in `TRAIL_STEP_RR` (0.5) R:R increments. Always one step behind the hi
 
 ### Ceiling TP en service.py
 
-Cuando `TRAILING_TP_ENABLED=true`, `execute()` calcula el TP como `entry ± risk × TRAIL_CEILING_RR` en vez de usar `setup.tp2_price`. Esto mueve el TP de 2:1 R:R a 5:1 R:R.
+Cuando `TRAILING_TP_ENABLED=true`, `execute()` calcula el TP como `entry ± risk × TRAIL_CEILING_RR` en vez de usar `setup.tp2_price`. Esto mueve el TP de 3:1 R:R a 5:1 R:R.
 
 ## Legacy Breakeven + Trailing SL (`TRAILING_TP_ENABLED=false`)
 

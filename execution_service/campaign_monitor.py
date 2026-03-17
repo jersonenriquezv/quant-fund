@@ -42,23 +42,32 @@ class CampaignMonitor:
         self._strategy = strategy_service
         self._data_store = data_store
         self._alert_manager = alert_manager
-        self._campaign: Optional[PositionCampaign] = None
+        self._campaigns: dict[str, PositionCampaign] = {}  # keyed by pair
         self._running = False
         self._task: Optional[asyncio.Task] = None
 
     @property
-    def campaign(self) -> Optional[PositionCampaign]:
-        return self._campaign
+    def campaigns(self) -> dict[str, PositionCampaign]:
+        return self._campaigns
+
+    def get_campaign(self, pair: str) -> Optional[PositionCampaign]:
+        """Get the active campaign for a specific pair, if any."""
+        c = self._campaigns.get(pair)
+        if c is not None and c.phase == "closed":
+            return None
+        return c
 
     def has_active_campaign(self, pair: str | None = None) -> bool:
         """Check if there's an active campaign, optionally for a specific pair."""
-        if self._campaign is None:
-            return False
-        if self._campaign.phase == "closed":
-            return False
         if pair is not None:
-            return self._campaign.pair == pair
-        return True
+            c = self._campaigns.get(pair)
+            return c is not None and c.phase != "closed"
+        return any(c.phase != "closed" for c in self._campaigns.values())
+
+    def can_open_new_campaign(self) -> bool:
+        """Check if we can open another campaign (under max limit)."""
+        active = sum(1 for c in self._campaigns.values() if c.phase != "closed")
+        return active < settings.HTF_MAX_CAMPAIGNS
 
     # ================================================================
     # Lifecycle
@@ -73,7 +82,7 @@ class CampaignMonitor:
         logger.info("Campaign monitor started")
 
     async def stop(self) -> None:
-        """Stop the monitor. Cancel unfilled entries."""
+        """Stop the monitor. Cancel unfilled entries for all campaigns."""
         self._running = False
         if self._task and not self._task.done():
             self._task.cancel()
@@ -82,13 +91,15 @@ class CampaignMonitor:
             except asyncio.CancelledError:
                 pass
 
-        # Cancel pending initial entry
-        if self._campaign and self._campaign.phase == "pending_initial":
-            if self._campaign.initial_order_id:
-                await self._executor.cancel_order(
-                    self._campaign.initial_order_id, self._campaign.pair
-                )
-            self._close_campaign("cancelled")
+        # Cancel pending initial entries across all campaigns
+        for pair in list(self._campaigns.keys()):
+            c = self._campaigns[pair]
+            if c.phase == "pending_initial":
+                if c.initial_order_id:
+                    await self._executor.cancel_order(
+                        c.initial_order_id, c.pair
+                    )
+                self._close_campaign(pair, "cancelled")
 
         logger.info("Campaign monitor stopped")
 
@@ -105,8 +116,11 @@ class CampaignMonitor:
 
         Returns True if entry order placed successfully.
         """
-        if self._campaign is not None and self._campaign.phase != "closed":
-            logger.warning("Cannot execute campaign — one already active")
+        if self.has_active_campaign(setup.pair):
+            logger.warning(f"Cannot execute campaign — already active on {setup.pair}")
+            return False
+        if not self.can_open_new_campaign():
+            logger.warning("Cannot execute campaign — max campaigns reached")
             return False
 
         leverage = float(settings.MAX_LEVERAGE)
@@ -177,7 +191,7 @@ class CampaignMonitor:
             created_at=int(time.time()),
         )
 
-        self._campaign = campaign
+        self._campaigns[setup.pair] = campaign
         self._update_campaign_cache()
 
         logger.info(
@@ -203,18 +217,15 @@ class CampaignMonitor:
         """Poll campaign status at regular intervals."""
         while self._running:
             try:
-                if self._campaign and self._campaign.phase != "closed":
-                    await self._check_campaign()
+                for c in list(self._campaigns.values()):
+                    if c.phase != "closed":
+                        await self._check_campaign(c)
             except Exception as e:
                 logger.error(f"Campaign monitor poll error: {e}")
             await asyncio.sleep(settings.ORDER_POLL_INTERVAL)
 
-    async def _check_campaign(self) -> None:
+    async def _check_campaign(self, c: PositionCampaign) -> None:
         """Advance campaign state machine."""
-        c = self._campaign
-        if c is None:
-            return
-
         if c.phase == "pending_initial":
             await self._check_initial_entry(c)
         elif c.phase == "active":
@@ -232,7 +243,7 @@ class CampaignMonitor:
             logger.info(f"HTF campaign entry timeout: {c.pair}")
             if c.initial_order_id:
                 await self._executor.cancel_order(c.initial_order_id, c.pair)
-            self._close_campaign("cancelled")
+            self._close_campaign(c.pair, "cancelled")
             return
 
         if not c.initial_order_id:
@@ -254,7 +265,7 @@ class CampaignMonitor:
                 actual_price = float(order.get("average", 0) or order.get("price", 0))
                 await self._on_initial_filled(c, actual_price, filled)
             else:
-                self._close_campaign("cancelled")
+                self._close_campaign(c.pair, "cancelled")
 
     async def _on_initial_filled(self, c: PositionCampaign,
                                  actual_price: float, filled_size: float) -> None:
@@ -292,7 +303,7 @@ class CampaignMonitor:
                 result = await self._executor.close_position_market(
                     c.pair, close_side, filled_size
                 )
-                self._close_campaign("emergency")
+                self._close_campaign(c.pair, "emergency")
                 return
             c.sl_order_id = sl_order.get("id")
             c.current_sl_price = c.initial_sl_price
@@ -328,7 +339,7 @@ class CampaignMonitor:
             if sl_status and sl_status.get("status") == "closed":
                 logger.info(f"HTF campaign SL hit: {c.pair} {c.direction}")
                 self._calculate_pnl(c, c.current_sl_price)
-                self._close_campaign("trailing_sl")
+                self._close_campaign(c.pair, "trailing_sl")
                 return
             if sl_status and sl_status.get("status") == "canceled":
                 # SL cancelled externally — re-place
@@ -590,7 +601,7 @@ class CampaignMonitor:
         if contracts <= 0:
             logger.info(f"HTF campaign SL vanished, position closed: {c.pair}")
             self._calculate_pnl(c, c.current_sl_price)
-            self._close_campaign("trailing_sl")
+            self._close_campaign(c.pair, "trailing_sl")
         else:
             logger.warning(f"HTF campaign SL vanished, re-placing: {c.pair}")
             close_side = "sell" if c.direction == "long" else "buy"
@@ -618,11 +629,11 @@ class CampaignMonitor:
         if c.total_size > 0:
             await self._executor.close_position_market(c.pair, close_side, c.total_size)
 
-        self._close_campaign("timeout")
+        self._close_campaign(c.pair, "timeout")
 
-    def _close_campaign(self, reason: str) -> None:
+    def _close_campaign(self, pair: str, reason: str) -> None:
         """Transition campaign to closed and notify."""
-        c = self._campaign
+        c = self._campaigns.get(pair)
         if c is None:
             return
 
@@ -708,31 +719,32 @@ class CampaignMonitor:
             logger.error(f"Failed to persist campaign close: {c.pair} {e}")
 
     def _update_campaign_cache(self) -> None:
-        """Write current campaign state to Redis for dashboard."""
+        """Write all campaign states to Redis for dashboard."""
         if self._data_store is None:
             return
         try:
-            c = self._campaign
-            if c is None or c.phase == "closed":
-                self._data_store.redis.set_bot_state("htf_campaign", "", ttl=600)
-                return
+            active_campaigns = {}
+            for pair, c in self._campaigns.items():
+                if c.phase == "closed":
+                    continue
+                active_campaigns[pair] = {
+                    "campaign_id": c.campaign_id,
+                    "pair": c.pair,
+                    "direction": c.direction,
+                    "phase": c.phase,
+                    "initial_entry_price": c.initial_entry_price,
+                    "actual_initial_entry": c.actual_initial_entry,
+                    "weighted_entry": c.weighted_entry,
+                    "current_sl_price": c.current_sl_price,
+                    "total_size": c.total_size,
+                    "total_margin": c.total_margin,
+                    "adds_count": len(c.adds),
+                    "ai_confidence": c.ai_confidence,
+                    "created_at": c.created_at,
+                    "filled_at": c.filled_at,
+                }
 
-            data = {
-                "campaign_id": c.campaign_id,
-                "pair": c.pair,
-                "direction": c.direction,
-                "phase": c.phase,
-                "initial_entry_price": c.initial_entry_price,
-                "actual_initial_entry": c.actual_initial_entry,
-                "weighted_entry": c.weighted_entry,
-                "current_sl_price": c.current_sl_price,
-                "total_size": c.total_size,
-                "total_margin": c.total_margin,
-                "adds_count": len(c.adds),
-                "ai_confidence": c.ai_confidence,
-                "created_at": c.created_at,
-                "filled_at": c.filled_at,
-            }
-            self._data_store.redis.set_bot_state("htf_campaign", json.dumps(data), ttl=600)
+            cache_val = json.dumps(active_campaigns) if active_campaigns else ""
+            self._data_store.redis.set_bot_state("htf_campaigns", cache_val, ttl=600)
         except Exception as e:
             logger.error(f"Failed to update campaign cache: {e}")

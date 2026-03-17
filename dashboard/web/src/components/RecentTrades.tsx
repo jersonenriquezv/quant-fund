@@ -24,6 +24,23 @@ function fmt(n: number | null | undefined, d: number = 2): string {
   return n.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
 }
 
+function formatDuration(opened: string | null, closed: string | null): string {
+  if (!opened || !closed) return "--";
+  try {
+    const diff = new Date(closed).getTime() - new Date(opened).getTime();
+    if (diff < 0) return "--";
+    const mins = Math.floor(diff / 60000);
+    if (mins < 60) return `${mins}m`;
+    const hours = Math.floor(mins / 60);
+    const remMins = mins % 60;
+    if (hours < 24) return `${hours}h ${remMins}m`;
+    const days = Math.floor(hours / 24);
+    return `${days}d ${hours % 24}h`;
+  } catch {
+    return "--";
+  }
+}
+
 function exitLabel(reason: string | null): string {
   if (!reason) return "";
   const map: Record<string, string> = {
@@ -92,9 +109,9 @@ export function RecentTrades() {
                     <span className="recent-trade-value">{exitLabel(t.exit_reason)}</span>
                   </div>
                   <div className="recent-trade-detail">
-                    <span className="recent-trade-label">AI</span>
+                    <span className="recent-trade-label">Duration</span>
                     <span className="recent-trade-value">
-                      {t.ai_confidence != null ? (t.ai_confidence * 100).toFixed(0) + "%" : "--"}
+                      {formatDuration(t.opened_at, t.closed_at)}
                     </span>
                   </div>
                 </div>

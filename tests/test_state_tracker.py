@@ -47,7 +47,19 @@ class TestTradeLifecycle:
 
     def test_open_position_increments_count(self, tracker):
         assert tracker.get_open_positions_count() == 0
+        tracker.record_trade_opened("BTC/USDT", "long", 50000, int(time.time()), phase="active")
+        assert tracker.get_open_positions_count() == 1
+
+    def test_pending_position_counts_toward_max(self, tracker):
+        """Pending entries count toward max positions to prevent unlimited orders."""
         tracker.record_trade_opened("BTC/USDT", "long", 50000, int(time.time()))
+        assert tracker.get_open_positions_count() == 1  # pending counts
+
+    def test_pending_to_active_via_filled(self, tracker):
+        """record_trade_filled promotes pending → active, count stays 1."""
+        tracker.record_trade_opened("BTC/USDT", "long", 50000, int(time.time()))
+        assert tracker.get_open_positions_count() == 1
+        tracker.record_trade_filled("BTC/USDT", "long")
         assert tracker.get_open_positions_count() == 1
 
     def test_close_position_decrements_count(self, tracker):
@@ -65,8 +77,8 @@ class TestTradeLifecycle:
 
     def test_multiple_positions(self, tracker):
         now = int(time.time())
-        tracker.record_trade_opened("BTC/USDT", "long", 50000, now)
-        tracker.record_trade_opened("ETH/USDT", "short", 3000, now)
+        tracker.record_trade_opened("BTC/USDT", "long", 50000, now, phase="active")
+        tracker.record_trade_opened("ETH/USDT", "short", 3000, now, phase="active")
         assert tracker.get_open_positions_count() == 2
 
         tracker.record_trade_closed("BTC/USDT", "long",0.01, now + 3600)
@@ -218,7 +230,7 @@ class TestTradeCancelled:
 
     def test_cancel_removes_from_open_positions(self, tracker):
         now = int(time.time())
-        tracker.record_trade_opened("ETH/USDT", "short", 2108, now)
+        tracker.record_trade_opened("ETH/USDT", "short", 2108, now, phase="active")
         assert tracker.get_open_positions_count() == 1
 
         tracker.record_trade_cancelled("ETH/USDT", "short")
@@ -249,8 +261,8 @@ class TestDirectionMatching:
     def test_close_matches_correct_direction(self, tracker):
         """With same pair in both directions, close the right one."""
         now = int(time.time())
-        tracker.record_trade_opened("BTC/USDT", "long", 50000, now)
-        tracker.record_trade_opened("BTC/USDT", "short", 50000, now)
+        tracker.record_trade_opened("BTC/USDT", "long", 50000, now, phase="active")
+        tracker.record_trade_opened("BTC/USDT", "short", 50000, now, phase="active")
         assert tracker.get_open_positions_count() == 2
 
         # Close only the long
@@ -264,7 +276,7 @@ class TestDirectionMatching:
     def test_close_wrong_direction_does_not_remove(self, tracker):
         """Closing a direction that doesn't exist should not remove anything."""
         now = int(time.time())
-        tracker.record_trade_opened("BTC/USDT", "long", 50000, now)
+        tracker.record_trade_opened("BTC/USDT", "long", 50000, now, phase="active")
 
         # Try to close a short that doesn't exist
         tracker.record_trade_closed("BTC/USDT", "short", -0.01, now + 3600)

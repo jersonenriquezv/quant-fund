@@ -142,10 +142,19 @@ class RiskService:
     # ================================================================
 
     def on_trade_opened(
-        self, pair: str, direction: str, entry_price: float, timestamp: int
+        self, pair: str, direction: str, entry_price: float, timestamp: int,
+        *, phase: str = "pending",
     ) -> None:
-        """Notify Risk Service that a trade was opened."""
-        self._state.record_trade_opened(pair, direction, entry_price, timestamp)
+        """Notify Risk Service that a trade was opened.
+
+        Args:
+            phase: "pending" for limit orders, "active" for already-filled.
+        """
+        self._state.record_trade_opened(pair, direction, entry_price, timestamp, phase=phase)
+
+    def on_trade_filled(self, pair: str, direction: str) -> None:
+        """Notify Risk Service that a pending entry was filled (now active)."""
+        self._state.record_trade_filled(pair, direction)
 
     def on_trade_closed(
         self, pair: str, direction: str, pnl_pct: float, timestamp: int

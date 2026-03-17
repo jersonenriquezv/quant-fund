@@ -131,7 +131,7 @@ class TestRejections:
         """Too many open positions should reject."""
         now = int(time.time())
         for i in range(settings.MAX_OPEN_POSITIONS):
-            risk.on_trade_opened(f"PAIR{i}/USDT", "long", 50000, now + i)
+            risk.on_trade_opened(f"PAIR{i}/USDT", "long", 50000, now + i, phase="active")
 
         setup = _make_setup(entry=50000, sl=49000, tp2=52000)
         result = risk.check(setup)

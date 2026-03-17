@@ -19,24 +19,6 @@ function timeAgo(ts: number): string {
   return `${h}h ${m}m`;
 }
 
-function ConfidenceBar({ confidence }: { confidence: number }) {
-  const pct = Math.max(0, Math.min(100, confidence * 100));
-  let color: string;
-  if (confidence < 0.4) color = "var(--short)";
-  else if (confidence < 0.6) color = "var(--warning)";
-  else color = "var(--long)";
-
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-      <div className="conf-bar" style={{ flex: 1 }}>
-        <div className="conf-bar-fill" style={{ width: `${pct}%`, background: color }} />
-      </div>
-      <span style={{ fontSize: 10, fontWeight: 600, color, fontVariantNumeric: "tabular-nums" }}>
-        {(confidence * 100).toFixed(0)}%
-      </span>
-    </div>
-  );
-}
 
 function CancelButton({ pair }: { pair: string }) {
   const [confirming, setConfirming] = useState(false);
@@ -125,7 +107,7 @@ function ActivePosition({ pos }: { pos: PositionData }) {
     : null;
 
   return (
-    <div className="position-card animate-in" style={{
+    <div className={`position-card animate-in${pnlPct >= 0 ? " position-card-winning" : ""}`} style={{
       borderColor: isLong ? "rgba(16,185,129,0.15)" : "rgba(239,68,68,0.15)",
     }}>
       {/* Row 1: Pair + direction + setup + time */}
@@ -175,12 +157,8 @@ function ActivePosition({ pos }: { pos: PositionData }) {
         </div>
       </div>
 
-      {/* Row 4: AI confidence + Cancel */}
-      <div className="position-footer" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 2 }}>AI CONFIDENCE</div>
-          <ConfidenceBar confidence={pos.ai_confidence} />
-        </div>
+      {/* Row 4: Cancel */}
+      <div className="position-footer" style={{ display: "flex", justifyContent: "flex-end", alignItems: "center" }}>
         <CancelButton pair={pos.pair} />
       </div>
     </div>

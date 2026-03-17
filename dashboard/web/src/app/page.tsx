@@ -2,17 +2,14 @@
 
 import { Header } from "@/components/Header";
 import { FearGreedPill } from "@/components/FearGreedPill";
-import { PricePanel } from "@/components/PricePanel";
+import { HeroStats } from "@/components/HeroStats";
+import { MarketOverview } from "@/components/MarketOverview";
 import { RiskGauge } from "@/components/RiskGauge";
 import { PositionCard } from "@/components/PositionCard";
 import { PnLChart } from "@/components/PnLChart";
 import { TradeLog } from "@/components/TradeLog";
-import { AILog } from "@/components/AILog";
-import { OrderBlockPanel } from "@/components/OrderBlockPanel";
-import { LiquidationHeatmap } from "@/components/LiquidationHeatmap";
-import { WhaleLog } from "@/components/WhaleLog";
 import { RecentTrades } from "@/components/RecentTrades";
-import { NewsPanel } from "@/components/NewsPanel";
+import { MarketIntel } from "@/components/MarketIntel";
 import { HealthGrid } from "@/components/HealthGrid";
 import { useWebSocket } from "@/lib/hooks";
 
@@ -25,51 +22,38 @@ export default function Dashboard() {
         <FearGreedPill />
       </Header>
 
-      <div className="card price-panel">
-        <PricePanel pair="BTC/USDT" ws={ws} />
+      <div className="card area-hero">
+        <HeroStats />
       </div>
-      <div className="card price-panel">
-        <PricePanel pair="ETH/USDT" ws={ws} />
+
+      <div className="card area-market">
+        <MarketOverview ws={ws} />
       </div>
-      <div className="card risk-gauge">
+
+      <div className="card area-positions">
+        <PositionCard ws={ws} />
+      </div>
+
+      <div className="card area-equity">
+        <PnLChart />
+      </div>
+      <div className="card area-risk">
         <RiskGauge />
       </div>
 
-      <div className="card positions">
-        <PositionCard ws={ws} />
-      </div>
-      <div className="card equity">
-        <PnLChart />
-      </div>
-
-      <div className="card trade-log">
-        <TradeLog />
-      </div>
-      <div className="card ai-log">
-        <AILog />
-      </div>
-
-      <div className="card recent-trades">
+      <div className="card area-recent">
         <RecentTrades />
       </div>
 
-      <div className="card ob-panel">
-        <OrderBlockPanel ws={ws} />
+      <div className="card area-trades">
+        <TradeLog />
       </div>
 
-      <div className="card liq-heatmap">
-        <LiquidationHeatmap />
+      <div className="card area-intel">
+        <MarketIntel ws={ws} />
       </div>
 
-      <div className="card news-panel">
-        <NewsPanel />
-      </div>
-
-      <div className="card whale-log">
-        <WhaleLog />
-      </div>
-
-      <div className="card health-bar">
+      <div className="card area-health">
         <HealthGrid />
       </div>
     </div>

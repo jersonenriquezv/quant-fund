@@ -1,7 +1,7 @@
 "use client";
 
 import { usePolling } from "@/lib/hooks";
-import type { TradeRecord, StatsData } from "@/lib/api";
+import type { TradeRecord } from "@/lib/api";
 
 function fmt(n: number, d: number = 2): string {
   return n.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
@@ -46,7 +46,7 @@ function Sparkline({ trades }: { trades: TradeRecord[] }) {
   const color = lastVal >= 0 ? "var(--long)" : "var(--short)";
 
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} style={{ width: "100%", height: 80 }}>
+    <svg viewBox={`0 0 ${w} ${h}`} style={{ width: "100%", height: 140 }}>
       {/* Zero line */}
       <line x1={padding} y1={zeroY} x2={w - padding} y2={zeroY} stroke="var(--border)" strokeWidth="0.5" strokeDasharray="3,3" />
       {/* Line */}
@@ -63,36 +63,11 @@ function Sparkline({ trades }: { trades: TradeRecord[] }) {
 
 export function PnLChart() {
   const { data: trades } = usePolling<TradeRecord[]>("/trades?limit=50", 10000);
-  const { data: stats } = usePolling<StatsData>("/stats", 10000);
 
   return (
     <div>
       <div className="card-title">Equity Curve</div>
-
       <Sparkline trades={trades ?? []} />
-
-      {stats && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 12px", fontSize: 12, marginTop: 8 }}>
-          <div>
-            <span style={{ color: "var(--text-muted)" }}>Total P&L</span>
-            <div className={`num ${stats.total_pnl_usd >= 0 ? "pnl-positive" : "pnl-negative"}`}>
-              ${fmt(stats.total_pnl_usd)}
-            </div>
-          </div>
-          <div>
-            <span style={{ color: "var(--text-muted)" }}>Win Rate</span>
-            <div className="num">{fmt(stats.win_rate, 1)}%</div>
-          </div>
-          <div>
-            <span style={{ color: "var(--text-muted)" }}>Trades</span>
-            <div className="num">{stats.total_trades}</div>
-          </div>
-          <div>
-            <span style={{ color: "var(--text-muted)" }}>Profit Factor</span>
-            <div className="num">{fmt(stats.profit_factor, 2)}</div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
