@@ -95,8 +95,8 @@ def _make_monitor_mock(pos=None):
 # ================================================================
 
 class TestCounterStructure:
-    def test_long_3_red_candles_closes(self):
-        """3 consecutive red candles while long -> close."""
+    def test_long_5_red_candles_closes(self):
+        """5 consecutive red candles while long -> close."""
         pos = _make_position(direction="long", entry_price=80000.0)
         monitor = _make_monitor_mock(pos)
         guardian = PositionGuardian(monitor)
@@ -105,9 +105,14 @@ class TestCounterStructure:
             _make_candle(79000, 79500),
             _make_candle(79500, 80000),
             _make_candle(80000, 80500),
-            _make_candle(80500, 80200),  # red
-            _make_candle(80200, 79900),  # red
-            _make_candle(79900, 79600),  # red
+            _make_candle(80500, 80300),
+            _make_candle(80300, 80200),
+            _make_candle(80200, 80100),
+            _make_candle(80100, 79900),  # red
+            _make_candle(79900, 79800),  # red
+            _make_candle(79800, 79700),  # red
+            _make_candle(79700, 79600),  # red
+            _make_candle(79600, 79500),  # red — 5 consecutive
         ]
         current = candles[-1]
 
@@ -116,8 +121,8 @@ class TestCounterStructure:
         assert result == "close"
         monitor._close_all_orders_and_market_close.assert_awaited_once()
 
-    def test_short_3_green_candles_closes(self):
-        """3 consecutive green candles while short -> close."""
+    def test_short_5_green_candles_closes(self):
+        """5 consecutive green candles while short -> close."""
         pos = _make_position(direction="short", entry_price=80000.0, sl_price=81000.0)
         monitor = _make_monitor_mock(pos)
         guardian = PositionGuardian(monitor)
@@ -126,9 +131,13 @@ class TestCounterStructure:
             _make_candle(80500, 80000),
             _make_candle(80000, 79500),
             _make_candle(79500, 79000),
-            _make_candle(79000, 79300),  # green
-            _make_candle(79300, 79600),  # green
-            _make_candle(79600, 79900),  # green
+            _make_candle(79000, 79100),
+            _make_candle(79100, 79200),
+            _make_candle(79200, 79300),  # green
+            _make_candle(79300, 79400),  # green
+            _make_candle(79400, 79500),  # green
+            _make_candle(79500, 79700),  # green
+            _make_candle(79700, 79900),  # green — 5 consecutive
         ]
         current = candles[-1]
 
@@ -170,14 +179,19 @@ class TestMomentumDeath:
         monitor = _make_monitor_mock(pos)
         guardian = PositionGuardian(monitor)
 
-        # Reference: big bodies ($500). Recent: tiny bodies ($30).
+        # Reference window (5 candles): big bodies ($500).
+        # Recent window (5 candles): tiny bodies ($10-30). In profit.
         candles = [
+            _make_candle(78000, 78500),
+            _make_candle(78500, 79000),
             _make_candle(79000, 79500),
             _make_candle(79500, 80000),
             _make_candle(80000, 80500),
-            _make_candle(80500, 80530),  # in profit, tiny body
-            _make_candle(80530, 80550),
-            _make_candle(80550, 80560),
+            _make_candle(80500, 80510),  # in profit, tiny body
+            _make_candle(80510, 80520),
+            _make_candle(80520, 80530),
+            _make_candle(80530, 80540),
+            _make_candle(80540, 80550),
         ]
         current = candles[-1]
 
@@ -192,14 +206,18 @@ class TestMomentumDeath:
         monitor = _make_monitor_mock(pos)
         guardian = PositionGuardian(monitor)
 
-        # Reference: big bodies. Recent: tiny bodies, price below entry.
+        # Reference (5): big bodies. Recent (5): tiny bodies, price below entry.
         candles = [
             _make_candle(80500, 80000),
             _make_candle(80000, 79500),
             _make_candle(79500, 79000),
+            _make_candle(79000, 78500),
+            _make_candle(78500, 78000),
             _make_candle(79800, 79810),  # tiny, in loss
             _make_candle(79810, 79820),
             _make_candle(79820, 79830),
+            _make_candle(79830, 79840),
+            _make_candle(79840, 79850),
         ]
         current = candles[-1]
 
@@ -221,13 +239,18 @@ class TestStallDetection:
         guardian = PositionGuardian(monitor)
 
         base = 79900.0  # Below entry = in loss
+        # Reference (5): normal bodies. Recent (5): stalled, tiny range.
         candles = [
+            _make_candle(79800, 80200, high=80300, low=79700),
+            _make_candle(80200, 79800, high=80300, low=79700),
             _make_candle(79800, 80200, high=80300, low=79700),
             _make_candle(80200, 79800, high=80300, low=79700),
             _make_candle(79800, 80200, high=80300, low=79700),
             _make_candle(base, base + 1, high=base + 2, low=base - 2),
             _make_candle(base + 1, base - 1, high=base + 2, low=base - 2),
             _make_candle(base - 1, base, high=base + 2, low=base - 2),
+            _make_candle(base, base + 1, high=base + 2, low=base - 2),
+            _make_candle(base + 1, base, high=base + 2, low=base - 2),
         ]
         current = candles[-1]
 
@@ -247,9 +270,13 @@ class TestStallDetection:
             _make_candle(base, base + 200, high=base + 300, low=base - 100),
             _make_candle(base + 200, base, high=base + 300, low=base - 100),
             _make_candle(base, base + 200, high=base + 300, low=base - 100),
+            _make_candle(base + 200, base, high=base + 300, low=base - 100),
+            _make_candle(base, base + 200, high=base + 300, low=base - 100),
             _make_candle(base, base + 10, high=base + 15, low=base - 5),
             _make_candle(base + 10, base - 5, high=base + 15, low=base - 10),
             _make_candle(base - 5, base + 5, high=base + 15, low=base - 10),
+            _make_candle(base + 5, base + 10, high=base + 15, low=base - 5),
+            _make_candle(base + 10, base + 5, high=base + 15, low=base - 5),
         ]
         current = candles[-1]
 
@@ -271,8 +298,12 @@ class TestAdverseCVD:
         monitor = _make_monitor_mock(pos)
         guardian = PositionGuardian(monitor)
 
-        # Mixed candles to avoid counter-structure
+        # Mixed candles (10+) to avoid counter-structure and momentum death
         candles = [
+            _make_candle(79500, 80000),
+            _make_candle(80000, 79500),
+            _make_candle(79500, 80000),
+            _make_candle(80000, 79500),
             _make_candle(79500, 80000),
             _make_candle(80000, 79500),
             _make_candle(79500, 80000),
@@ -309,6 +340,10 @@ class TestAdverseCVD:
             _make_candle(79500, 80000),
             _make_candle(80000, 79500),
             _make_candle(79500, 80000),
+            _make_candle(80000, 79500),
+            _make_candle(79500, 80000),
+            _make_candle(80000, 79500),
+            _make_candle(79500, 80000),
             _make_candle(80000, 80500),  # in profit
         ]
         current = candles[-1]
@@ -337,6 +372,10 @@ class TestAdverseCVD:
         guardian = PositionGuardian(monitor)
 
         candles = [
+            _make_candle(80500, 80000),
+            _make_candle(80000, 80500),
+            _make_candle(80500, 80000),
+            _make_candle(80000, 80500),
             _make_candle(80500, 80000),
             _make_candle(80000, 80500),
             _make_candle(80500, 80000),
@@ -411,8 +450,12 @@ class TestEdgeCases:
         monitor = _make_monitor_mock(pos)
         guardian = PositionGuardian(monitor)
 
-        # Non-triggering mixed candles, in profit
+        # Non-triggering mixed candles (10+), in profit
         candles = [
+            _make_candle(79500, 80000),
+            _make_candle(80000, 79500),
+            _make_candle(79500, 80000),
+            _make_candle(80000, 79500),
             _make_candle(79500, 80000),
             _make_candle(80000, 79500),
             _make_candle(79500, 80000),

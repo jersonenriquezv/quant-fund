@@ -216,8 +216,9 @@ class Settings:
     # B disabled: 0-7.7% WR, destroys PnL in every run.
     # D_bos disabled: 20-33% WR, net negative in all runs.
     # C, E, F, G pending validation.
+    # D_bos: 20-33% WR backtests, 0% live. B: 0-7.7% WR. Bleeding capital.
     ENABLED_SETUPS: list = field(default_factory=lambda: [
-        "setup_a", "setup_b", "setup_c", "setup_d_choch", "setup_d_bos", "setup_e", "setup_f",
+        "setup_a", "setup_c", "setup_d_choch", "setup_e", "setup_f",
         "setup_h",
     ])
 
@@ -352,14 +353,14 @@ class Settings:
 
     # TP2: cerrar X% a 1:3 RR
     TP2_CLOSE_PCT: float = 0.30  # 30%
-    TP2_RR_RATIO: float = 3.0  # Raised from 2.0 (2026-03-16): 2:1 barely covered fees with tight SLs
+    TP2_RR_RATIO: float = 2.0  # TP2: close at 2:1 RR (restored from 3:1 — bot never hit 3:1 in 17 trades)
 
     # ========================
     # PROGRESSIVE TRAILING SL
     # ========================
     # When enabled, SL trails in 0.5 R:R steps instead of fixed breakeven + tp1.
     # A ceiling TP at TRAIL_CEILING_RR stays on exchange as crash protection.
-    TRAILING_TP_ENABLED: bool = os.getenv("TRAILING_TP_ENABLED", "true").lower() == "true"
+    TRAILING_TP_ENABLED: bool = os.getenv("TRAILING_TP_ENABLED", "false").lower() == "true"  # Disabled: ceiling TP at 5:1 is unreachable for intraday. Legacy mode (real TP at TP2_RR_RATIO) works.
     # R:R increment per trail step (0.5 = trail advances every 0.5 R:R)
     TRAIL_STEP_RR: float = float(os.getenv("TRAIL_STEP_RR", "0.5"))
     # Minimum R:R to activate trailing (1.0 = start at breakeven level)
@@ -672,7 +673,7 @@ class Settings:
     # ========================
     # Feature version — increment when strategy params change in ways that
     # alter feature semantics (e.g. changing OB scoring weights, PD rules).
-    ML_FEATURE_VERSION: int = 2  # v2: progressive trailing + HTF campaigns + wider SL/TP (2026-03-17)
+    ML_FEATURE_VERSION: int = 3  # v3: Setup H momentum metrics + guardian close tracking (2026-03-17)
 
     # ========================
     # LIQUIDATION HEATMAP
@@ -693,9 +694,9 @@ class Settings:
     # Master switch — when enabled, guardian evaluates open positions on every candle
     POSITION_GUARDIAN_ENABLED: bool = os.getenv("POSITION_GUARDIAN_ENABLED", "true").lower() == "true"
     # Number of consecutive counter-direction candles to trigger early close
-    GUARDIAN_COUNTER_CANDLES: int = int(os.getenv("GUARDIAN_COUNTER_CANDLES", "3"))
+    GUARDIAN_COUNTER_CANDLES: int = int(os.getenv("GUARDIAN_COUNTER_CANDLES", "5"))
     # Ratio threshold for momentum death (recent body / reference body)
-    GUARDIAN_MOMENTUM_DECAY_RATIO: float = float(os.getenv("GUARDIAN_MOMENTUM_DECAY_RATIO", "0.3"))
+    GUARDIAN_MOMENTUM_DECAY_RATIO: float = float(os.getenv("GUARDIAN_MOMENTUM_DECAY_RATIO", "0.2"))
     # Minimum price range (as fraction of price) over last N candles to NOT be a stall
     GUARDIAN_STALL_RANGE_PCT: float = float(os.getenv("GUARDIAN_STALL_RANGE_PCT", "0.001"))
     # Whether to use CVD data for adverse divergence check

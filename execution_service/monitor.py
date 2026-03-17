@@ -1280,6 +1280,11 @@ class PositionMonitor:
             if pos.actual_entry_price and pos.filled_size:
                 pnl_usd = pos.actual_entry_price * pos.filled_size * pos.pnl_pct
 
+            # Extract guardian close reason if applicable
+            guardian_reason = None
+            if reason.startswith("guardian_"):
+                guardian_reason = reason[len("guardian_"):]
+
             ok = self._data_store.postgres.update_ml_setup_outcome(
                 setup_id=pos.setup_id,
                 outcome_type=outcome_type,
@@ -1290,6 +1295,7 @@ class PositionMonitor:
                 exit_reason=reason,
                 fill_duration_ms=fill_duration_ms,
                 trade_duration_ms=trade_duration_ms,
+                guardian_reason=guardian_reason,
             )
             self._emit_metric(
                 "ml_outcome_update_ok" if ok else "ml_outcome_update_error", 1, pos.pair

@@ -97,6 +97,15 @@ def extract_setup_features(
     features["cvd_aligned"] = "cvd_aligned" in conf_str
     features["funding_extreme"] = "funding_extreme" in conf_str or "funding_" in conf_str
 
+    # --- Setup H / momentum-specific features ---
+    # Parsed from confluence strings that Setup H adds
+    raw_impulse = _extract_float(conf_str, r"impulse_move_([\d.]+)pct")
+    features["impulse_move_pct"] = raw_impulse / 100.0 if raw_impulse > 0 else None
+    features["impulse_decel_ratio"] = _extract_float(conf_str, r"decel_ratio_([\d.]+)") or None
+    features["impulse_vol_decay_ratio"] = _extract_float(conf_str, r"vol_decay_([\d.]+)") or None
+    features["impulse_directional_purity"] = _extract_float(conf_str, r"directional_purity_([\d.]+)") or None
+    features["has_initiating_ob"] = "initiating_ob" in conf_str
+
     # --- Market state at detection (from snapshot) ---
     # Funding
     features["has_funding"] = False

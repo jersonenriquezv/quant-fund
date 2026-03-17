@@ -552,6 +552,16 @@ class PostgresStore:
                     risk_weekly_dd_pct DOUBLE PRECISION,
                     risk_trades_today INT,
 
+                    -- Setup H / momentum-specific features
+                    impulse_move_pct DOUBLE PRECISION,
+                    impulse_decel_ratio DOUBLE PRECISION,
+                    impulse_vol_decay_ratio DOUBLE PRECISION,
+                    impulse_directional_purity DOUBLE PRECISION,
+                    has_initiating_ob BOOLEAN DEFAULT FALSE,
+
+                    -- Guardian close tracking
+                    guardian_close_reason VARCHAR(30),
+
                     -- Outcome (filled after trade resolves)
                     outcome_type VARCHAR(20),
                     pnl_pct DOUBLE PRECISION,
@@ -829,6 +839,9 @@ class PostgresStore:
                             buy_dominance, fear_greed_score,
                             has_funding, has_oi, has_cvd, has_news, has_whales,
                             whale_count, recent_flush_count, recent_flush_total_usd,
+                            impulse_move_pct, impulse_decel_ratio,
+                            impulse_vol_decay_ratio, impulse_directional_purity,
+                            has_initiating_ob,
                             risk_capital, risk_open_positions,
                             risk_daily_dd_pct, risk_weekly_dd_pct, risk_trades_today
                         ) VALUES (
@@ -849,6 +862,8 @@ class PostgresStore:
                             %s, %s, %s,
                             %s, %s,
                             %s, %s, %s, %s, %s,
+                            %s, %s, %s,
+                            %s, %s,
                             %s, %s, %s,
                             %s, %s,
                             %s, %s, %s
@@ -879,6 +894,10 @@ class PostgresStore:
                             features.get("has_whales"),
                             features.get("whale_count"), features.get("recent_flush_count"),
                             features.get("recent_flush_total_usd"),
+                            features.get("impulse_move_pct"), features.get("impulse_decel_ratio"),
+                            features.get("impulse_vol_decay_ratio"),
+                            features.get("impulse_directional_purity"),
+                            features.get("has_initiating_ob", False),
                             rc.get("risk_capital"), rc.get("risk_open_positions"),
                             rc.get("risk_daily_dd_pct"), rc.get("risk_weekly_dd_pct"),
                             rc.get("risk_trades_today"),
@@ -908,6 +927,7 @@ class PostgresStore:
         fill_duration_ms: int | None = None,
         trade_duration_ms: int | None = None,
         risk_context: dict | None = None,
+        guardian_reason: str | None = None,
     ) -> bool:
         """Update outcome columns for an ml_setup row. Fire-and-forget."""
         for attempt in range(2):
@@ -938,6 +958,9 @@ class PostgresStore:
                 if trade_duration_ms is not None:
                     fields.append("trade_duration_ms = %s")
                     values.append(trade_duration_ms)
+                if guardian_reason is not None:
+                    fields.append("guardian_close_reason = %s")
+                    values.append(guardian_reason)
                 # Risk context can be added at risk check time
                 if risk_context:
                     for key in ("risk_capital", "risk_open_positions",

@@ -89,14 +89,14 @@ class QuickSetupEvaluator:
         else:
             sl_price = entry_price + sl_distance
 
-        # TPs at 1:1 (breakeven trigger), 2:1 (single TP)
+        # TPs from settings (breakeven trigger + single TP)
         risk = abs(entry_price - sl_price)
         if direction == "long":
-            tp1 = entry_price + risk * 1.0
-            tp2 = entry_price + risk * 2.0
+            tp1 = entry_price + risk * settings.TP1_RR_RATIO
+            tp2 = entry_price + risk * settings.TP2_RR_RATIO
         else:
-            tp1 = entry_price - risk * 1.0
-            tp2 = entry_price - risk * 2.0
+            tp1 = entry_price - risk * settings.TP1_RR_RATIO
+            tp2 = entry_price - risk * settings.TP2_RR_RATIO
 
         confluences = [
             f"funding_extreme_{rate*100:.4f}pct",
@@ -223,13 +223,13 @@ class QuickSetupEvaluator:
                          f"({risk_pct*100:.2f}% < {settings.MIN_RISK_DISTANCE_PCT*100:.1f}%)")
             return None
 
-        # TPs at 1:1 (breakeven trigger), 2:1 (single TP)
+        # TPs from settings (breakeven trigger + single TP)
         if direction == "bullish":
-            tp1 = entry_price + risk * 1.0
-            tp2 = entry_price + risk * 2.0
+            tp1 = entry_price + risk * settings.TP1_RR_RATIO
+            tp2 = entry_price + risk * settings.TP2_RR_RATIO
         else:
-            tp1 = entry_price - risk * 1.0
-            tp2 = entry_price - risk * 2.0
+            tp1 = entry_price - risk * settings.TP1_RR_RATIO
+            tp2 = entry_price - risk * settings.TP2_RR_RATIO
 
         # Variant split: setup_d_bos or setup_d_choch for per-variant measurement
         variant = f"setup_d_{latest_break.break_type}"
@@ -369,13 +369,13 @@ class QuickSetupEvaluator:
         if risk <= 0:
             return None
 
-        # TPs at 1:1 (breakeven trigger), 2:1 (single TP)
+        # TPs from settings (breakeven trigger + single TP)
         if direction == "long":
-            tp1 = entry_price + risk * 1.0
-            tp2 = entry_price + risk * 2.0
+            tp1 = entry_price + risk * settings.TP1_RR_RATIO
+            tp2 = entry_price + risk * settings.TP2_RR_RATIO
         else:
-            tp1 = entry_price - risk * 1.0
-            tp2 = entry_price - risk * 2.0
+            tp1 = entry_price - risk * settings.TP1_RR_RATIO
+            tp2 = entry_price - risk * settings.TP2_RR_RATIO
 
         total_liq_usd = long_liq_usd + short_liq_usd
         confluences = [
@@ -476,14 +476,17 @@ class QuickSetupEvaluator:
             )
             return None
 
+        # Compute directional purity for ML features
+        directional_pct = max(bullish_count, bearish_count) / n if n > 0 else 0
+
         # 4b. Exhaustion filter: deceleration check
         # Compare body size of last 2 candles vs first 3 in impulse window
         first_bodies = [abs(c.close - c.open) for c in impulse_candles[:3]]
         last_bodies = [abs(c.close - c.open) for c in impulse_candles[-2:]]
         avg_first_body = sum(first_bodies) / len(first_bodies) if first_bodies else 0
         avg_last_body = sum(last_bodies) / len(last_bodies) if last_bodies else 0
+        decel_ratio = avg_last_body / avg_first_body if avg_first_body > 0 else 1.0
         if avg_first_body > 0:
-            decel_ratio = avg_last_body / avg_first_body
             if decel_ratio < settings.SETUP_H_DECEL_RATIO:
                 logger.debug(
                     f"Setup H [{pair}]: impulse decelerating "
@@ -506,8 +509,8 @@ class QuickSetupEvaluator:
         last_vols = [c.volume for c in impulse_candles[-2:]]
         avg_first_vol = sum(first_vols) / len(first_vols) if first_vols else 0
         avg_last_vol = sum(last_vols) / len(last_vols) if last_vols else 0
+        vol_decay_ratio = avg_last_vol / avg_first_vol if avg_first_vol > 0 else 1.0
         if avg_first_vol > 0:
-            vol_decay_ratio = avg_last_vol / avg_first_vol
             if vol_decay_ratio < settings.SETUP_H_VOL_DECAY_RATIO:
                 logger.debug(
                     f"Setup H [{pair}]: volume fading "
@@ -573,13 +576,13 @@ class QuickSetupEvaluator:
             )
             return None
 
-        # 8. TPs — standard R:R levels for trailing
+        # 8. TPs from settings (breakeven trigger + single TP)
         if direction == "bullish":
-            tp1 = entry_price + risk * 1.0
-            tp2 = entry_price + risk * 3.0
+            tp1 = entry_price + risk * settings.TP1_RR_RATIO
+            tp2 = entry_price + risk * settings.TP2_RR_RATIO
         else:
-            tp1 = entry_price - risk * 1.0
-            tp2 = entry_price - risk * 3.0
+            tp1 = entry_price - risk * settings.TP1_RR_RATIO
+            tp2 = entry_price - risk * settings.TP2_RR_RATIO
 
         # 9. Build confluences
         confluences = [
@@ -589,6 +592,10 @@ class QuickSetupEvaluator:
         ]
         if ob_found:
             confluences.append("initiating_ob")
+        # Exhaustion metrics for ML feature extraction
+        confluences.append(f"decel_ratio_{decel_ratio:.2f}")
+        confluences.append(f"vol_decay_{vol_decay_ratio:.2f}")
+        confluences.append(f"directional_purity_{directional_pct:.2f}")
 
         logger.info(
             f"Setup H found: {pair} {trade_dir} entry={entry_price:.2f} "
