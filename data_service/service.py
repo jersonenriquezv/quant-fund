@@ -86,6 +86,8 @@ class DataService:
         self._last_health_down: set[str] = set()
         # Metrics cleanup counter (runs every ~100 health checks = ~50 min)
         self._health_check_count: int = 0
+        # ML training readiness — alert once when threshold reached
+        self._ml_ready_alerted: bool = False
 
         # Data integrity: global state, circuit breaker, backfill guard
         self._state: DataServiceState = DataServiceState.RECOVERING
@@ -773,6 +775,39 @@ class DataService:
             self._health_check_count += 1
             if self._health_check_count % 100 == 0:
                 self._postgres.cleanup_old_metrics(retention_days=30)
+
+            # ML training readiness check (~every 10 min)
+            if not self._ml_ready_alerted and self._health_check_count % 20 == 0:
+                ml_counts = self._postgres.count_ml_training_outcomes(
+                    min_version=settings.ML_FEATURE_VERSION,
+                )
+                total = ml_counts.get("total", 0)
+                self._emit_metric("ml_training_outcomes", float(total))
+                if total >= 50:
+                    self._ml_ready_alerted = True
+                    logger.info(
+                        f"ML TRAINING READY: {total} labeled outcomes "
+                        f"(v{settings.ML_FEATURE_VERSION}+) — "
+                        f"tp={ml_counts.get('filled_tp', 0)} "
+                        f"sl={ml_counts.get('filled_sl', 0)} "
+                        f"trailing={ml_counts.get('filled_trailing', 0)}"
+                    )
+                    self._emit_metric("ml_training_ready", 1.0)
+                    # Telegram alert
+                    if self._alert_manager:
+                        from shared.alert_manager import AlertPriority
+                        asyncio.create_task(self._alert_manager.alert(
+                            AlertPriority.INFO, "ml_training",
+                            f"🧠 ML Training Ready\n"
+                            f"{total} labeled outcomes (v{settings.ML_FEATURE_VERSION}+)\n"
+                            f"TP: {ml_counts.get('filled_tp', 0)} | "
+                            f"SL: {ml_counts.get('filled_sl', 0)} | "
+                            f"Trail: {ml_counts.get('filled_trailing', 0)}\n"
+                            f"Run: python scripts/feature_importance.py",
+                        ))
+                elif total > 0 and self._health_check_count % 60 == 0:
+                    # Log progress every ~30 min if there's any data
+                    logger.info(f"ML training progress: {total}/50 outcomes (v{settings.ML_FEATURE_VERSION}+)")
 
     # ================================================================
     # Warmup check loop — transitions state to RUNNING

@@ -988,6 +988,31 @@ class PostgresStore:
                 return False
         return False
 
+    def count_ml_training_outcomes(self, min_version: int = 4) -> dict:
+        """Count labeled outcomes suitable for ML training.
+
+        Returns dict with outcome counts and total, e.g.:
+        {"filled_tp": 12, "filled_sl": 8, "filled_trailing": 3, "total": 23}
+        """
+        if not self._ensure_connected():
+            return {"total": 0}
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    """SELECT outcome_type, COUNT(*) FROM ml_setups
+                       WHERE feature_version >= %s
+                       AND outcome_type IN ('filled_tp', 'filled_sl', 'filled_trailing')
+                       GROUP BY outcome_type""",
+                    (min_version,),
+                )
+                rows = cur.fetchall()
+                result = {row[0]: row[1] for row in rows}
+                result["total"] = sum(result.values())
+                return result
+        except Exception as e:
+            logger.error(f"ML training count query failed: {e}")
+            return {"total": 0}
+
     # --- Campaign Storage ---
 
     def insert_campaign(self, campaign) -> int | None:

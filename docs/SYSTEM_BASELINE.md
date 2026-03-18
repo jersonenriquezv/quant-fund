@@ -207,6 +207,8 @@ Reference for VPS sizing when migrating from Nitro 5.
 | H3 | Setup F ≥ Setup B (F = B minus FVG gate) | Backtest: F 58.8% WR vs B 49% when both structural | B disabled, F enabled — compare live |
 | H4 | Restored thresholds (ATR 0.35%, OB vol 1.3) reduce false positives | Audit: relaxed values let noise through | Compare setup frequency and WR vs aggressive period |
 | H5 | HTF undefined blocks too many setups in range markets | ~60% of time no 4H/1H trend defined | If no trades after 1-2 weeks, try HTF_BIAS_REQUIRE_4H=false |
+| H6 | Meta-labeling model (AFML Ch.3) > LLM filter | AI v1 destroyed B, AI v2 89.6% approval = no value | Train classifier on ml_setups v4+ data, replace Claude |
+| H7 | Half-Kelly bet sizing improves risk-adjusted returns | AFML Ch.10: size proportional to calibrated P(profit) | Wire BET_SIZING after calibrated model exists |
 
 ---
 
@@ -221,10 +223,30 @@ Reference for VPS sizing when migrating from Nitro 5.
 | P5 | Same % thresholds applied across all pairs | Medium | BTC at $84K vs DOGE at $0.15 |
 | P6 | Whale flows collected but never used | Low | Data exists, no strategy integration |
 | P7 | Cross-pair correlation not used | Low | BTC/ETH correlation breaks predict regime shifts |
+| P8 | AI service is LLM filter, not trained model | High | AFML: meta-labeling + bet sizing requires calibrated classifier, not Claude. See `docs/audits/ai-service-audit-2026-03-18.md` |
 
 ---
 
-## 7. Changelog
+## 7. ML Feature Versioning
+
+**Current version:** 4 (set in `config/settings.py:ML_FEATURE_VERSION`)
+**Storage:** `ml_setups.feature_version` column in PostgreSQL
+**Query training data:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL`
+
+| Version | Date | Changes | Training Status |
+|---------|------|---------|-----------------|
+| v1 | pre 03-17 | Fixed TP (2:1), legacy trailing, MIN_RISK 0.2%, HTF campaigns OFF | **DO NOT USE** — CVD in contracts (not base currency), OI existence-only, asymmetric funding |
+| v2 | 03-17 | Progressive trailing ON, HTF campaigns ON, TP2 3:1→2:1, MIN_RISK 0.5% | **DO NOT USE** — CVD still in wrong units |
+| v3 | 03-17 to 03-18 | Setup H momentum metrics, guardian close tracking, CVD units fixed | **DO NOT USE** — OB vol=1.0 (disabled filter), ATR=0.20% (noise), funding asymmetric |
+| v4 | 03-18+ | OB vol 1.3, ATR 0.35%, target space 1.4, CVD divergence, OI delta, symmetric funding | **TRAINING READY** — all audit fixes applied |
+
+**When to bump:** Increment `ML_FEATURE_VERSION` whenever strategy params change in ways that alter feature semantics (OB scoring weights, PD rules, confluence logic, threshold changes).
+
+**Minimum for Phase 1 (feature importance):** 50+ labeled outcomes with `feature_version >= 4` (filled_tp + filled_sl + filled_trailing).
+
+---
+
+## 8. Changelog
 
 ### 2026-03-18 — Compute Audit + Health Observability
 **What changed:**

@@ -572,7 +572,16 @@ Collects structured training data for two future classical ML models:
 
 **Health metrics:** `ml_setup_insert_ok/error`, `ml_outcome_update_ok/error` emitted to `bot_metrics` for Grafana monitoring.
 
-**Config:** `ML_FEATURE_VERSION` (int, in settings.py) — increment when strategy params change to segment training data. Current value: 4 (bumped 2026-03-18 strategy audit).
+**Config:** `ML_FEATURE_VERSION` (int, in settings.py) — increment when strategy params change to segment training data.
+
+**Version log:**
+* **v1** (pre 03-17): DO NOT USE for training — CVD in contracts (not base), OI existence-only, asymmetric funding
+* **v2** (03-17): DO NOT USE — CVD still wrong units
+* **v3** (03-17 to 03-18): DO NOT USE — OB vol=1.0 disabled, ATR=0.20% noise, funding asymmetric
+* **v4** (03-18+): TRAINING READY — all audit fixes: CVD divergence, OI delta, symmetric funding, OB vol 1.3, ATR 0.35%
+
+**Training data query:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL`
+**Minimum for model training:** 50+ labeled outcomes (filled_tp + filled_sl + filled_trailing)
 
 **Files:** `shared/ml_features.py` (feature extraction), `data_service/data_store.py` (ml_setups table + CRUD), `main.py` (pipeline instrumentation), `execution_service/monitor.py` (close outcome resolution)
 

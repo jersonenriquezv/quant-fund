@@ -1,6 +1,7 @@
 # AI Service
-> Última actualización: 2026-03-12
-> Estado: implementado but **currently bypassed for all active setups**. setup_a is in `AI_BYPASS_SETUP_TYPES` (89.6% approval = no value). setup_d_bos/setup_d_choch are in `QUICK_SETUP_TYPES` (skip AI by design). Setup B and F are disabled. No Claude API calls in the trading pipeline currently. Code and infrastructure remain for re-enable when recalibrated.
+> Última actualización: 2026-03-18
+> Estado: **BYPASSED** for all active setups. Zero Claude API calls in pipeline. Code remains for future meta-labeling model (AFML Ch. 3). See `docs/audits/ai-service-audit-2026-03-18.md` for full scientific audit.
+> **Roadmap:** LLM filter → trained classifier (meta-labeling) + Half-Kelly bet sizing. Requires 50+ labeled outcomes with `feature_version >= 4` (collecting since 03-18).
 
 ## Qué hace (30 segundos)
 El AI Service es el filtro del sistema. Recibe cada trade setup del Strategy Service y lo pasa por Claude (Sonnet) para que evalúe si el contexto de mercado apoya ejecutarlo. Claude evalúa scoring dimensions (setup quality, market support, contradiction, data sufficiency) usando datos de funding rate, open interest, CVD, liquidaciones, whale movements y precio reciente. Si confidence >= 0.50 y approved=true, el trade pasa al Risk Service. Si no, se descarta.
@@ -242,3 +243,20 @@ Si Claude no está disponible, rechazamos. Un fallback a otro modelo necesita ot
 
 **¿Qué pasa con los "adjustments"?**
 Claude puede sugerir modificar SL/TP. El campo se pasa en `AIDecision.adjustments` (junto con `scores`), pero ni Risk ni Execution leen los ajustes de SL/TP todavía. Planeado para futuro — aplicar ajustes de SL/TP antes de pasar al Execution Service.
+
+## ML Feature Versioning & Training Readiness
+
+**Current version:** `ML_FEATURE_VERSION = 4` (settings.py). Stored per setup in `ml_setups.feature_version`.
+
+| Version | Status | Reason |
+|---------|--------|--------|
+| v1-v3 | **DO NOT USE** | CVD wrong units, OI existence-only, OB vol disabled, ATR too low, funding asymmetric |
+| v4+ | **TRAINING READY** | All service audits applied (data, strategy, risk). Features are accurate. |
+
+**Training query:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL`
+
+**Future architecture (AFML-aligned):**
+1. Feature importance (Ch. 8) → identify which of 40 features predict outcomes
+2. Meta-labeling model (Ch. 3) → classifier replaces Claude, outputs calibrated P(profit)
+3. Bet sizing (Ch. 10) → Half-Kelly on calibrated confidence (`BET_SIZING_ENABLED`, `KELLY_FRACTION=0.5`)
+4. Sample weights (Ch. 4) → uniqueness-weighted training samples
