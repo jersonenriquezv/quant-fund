@@ -145,7 +145,8 @@ class Settings:
     # --- Order Blocks ---
     # Volumen mínimo relativo (vs promedio) para validar un OB
     # Optuna 03-15: 1.2→1.3 (PF 1.05→2.65, walk-forward validated)
-    OB_MIN_VOLUME_RATIO: float = 1.0
+    # Restored from 1.0 (audit 03-18): 1.0 = disabled, every candle qualifies as OB
+    OB_MIN_VOLUME_RATIO: float = 1.3
     # Horas máximas de vida de un OB antes de considerarlo viejo
     # Optuna 03-15: 72→84 (longer OB lifespan, more setups without quality loss)
     OB_MAX_AGE_HOURS: int = 84
@@ -217,6 +218,7 @@ class Settings:
     # D_bos disabled: 20-33% WR, net negative in all runs.
     # C, E, F, G pending validation.
     # D_bos: 20-33% WR backtests, 0% live. B: 0-7.7% WR. Bleeding capital.
+    # Setup B disabled (audit 03-18): 0-7.7% WR, F is strictly better (F = B minus weak FVG gate)
     ENABLED_SETUPS: list = field(default_factory=lambda: [
         "setup_a", "setup_c", "setup_d_choch", "setup_e", "setup_f",
         "setup_h",
@@ -306,10 +308,12 @@ class Settings:
     # --- Expectancy filters (post-detection, pre-AI) ---
     # Minimum ATR(14) as fraction of price. Rejects low-volatility setups.
     # Optuna 03-15: 0.0025→0.0045 (skip dead markets — strong filter)
-    MIN_ATR_PCT: float = float(os.getenv("MIN_ATR_PCT", "0.0020"))  # 0.20%
+    # Restored from 0.20% (audit 03-18): 0.20% lets low-vol noise through
+    MIN_ATR_PCT: float = float(os.getenv("MIN_ATR_PCT", "0.0035"))  # 0.35%
     # Minimum open space to nearest opposing structure as multiple of risk.
     # Optuna 03-15: 1.2→1.4 (require more room to target)
-    MIN_TARGET_SPACE_R: float = float(os.getenv("MIN_TARGET_SPACE_R", "1.0"))
+    # Restored from 1.0 (audit 03-18): 1.0 barely filters, need room for TP
+    MIN_TARGET_SPACE_R: float = float(os.getenv("MIN_TARGET_SPACE_R", "1.4"))
 
     # --- Strategy behavior (profile-controlled) ---
     # If True, LTF structure (CHoCH/BOS) must align with HTF bias direction.
@@ -673,7 +677,7 @@ class Settings:
     # ========================
     # Feature version — increment when strategy params change in ways that
     # alter feature semantics (e.g. changing OB scoring weights, PD rules).
-    ML_FEATURE_VERSION: int = 3  # v3: Setup H momentum metrics + guardian close tracking (2026-03-17)
+    ML_FEATURE_VERSION: int = 4  # v4: audit 03-18 — OB vol 1.3, ATR 0.35%, CVD divergence, OI delta, symmetric funding
 
     # ========================
     # LIQUIDATION HEATMAP

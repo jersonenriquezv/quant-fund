@@ -30,6 +30,10 @@ logger = setup_logger("strategy_setups")
 class SetupEvaluator:
     """Evaluates potential trade setups from detected SMC patterns."""
 
+    def __init__(self):
+        # OI delta tracking: pair → previous OI USD value
+        self._prev_oi: dict[str, float] = {}
+
     def evaluate_setup_a(
         self,
         structure_state: MarketStructureState,
@@ -146,7 +150,7 @@ class SetupEvaluator:
 
         # Volume confirmation
         volume_confirmed, vol_confluences = self._check_volume_confirmation(
-            best_ob, aligned_sweep, market_snapshot
+            best_ob, aligned_sweep, market_snapshot, candles
         )
 
         # Build confluences list
@@ -342,30 +346,10 @@ class SetupEvaluator:
                          f"(obs={len(aligned_obs)} fvgs={len(aligned_fvgs)})")
             return None
 
-        # Volume + CVD confirmation
-        vol_confluences = []
-        if best_ob.volume_ratio >= settings.OB_MIN_VOLUME_RATIO:
-            vol_confluences.append(f"ob_volume_{best_ob.volume_ratio:.1f}x")
-
-        # Check CVD alignment
-        if market_snapshot and market_snapshot.cvd:
-            cvd = market_snapshot.cvd
-            if direction == "bullish" and cvd.cvd_15m > 0:
-                vol_confluences.append("cvd_aligned_bullish")
-            elif direction == "bearish" and cvd.cvd_15m < 0:
-                vol_confluences.append("cvd_aligned_bearish")
-
-        # Check OI trend
-        if market_snapshot and market_snapshot.oi:
-            vol_confluences.append("oi_data_available")
-
-        # Check funding extremes
-        if market_snapshot and market_snapshot.funding:
-            rate = market_snapshot.funding.rate
-            if direction == "bullish" and rate < -0.0001:
-                vol_confluences.append("funding_negative_long_opportunity")
-            elif direction == "bearish" and rate > 0.0003:
-                vol_confluences.append("funding_extreme_positive")
+        # Volume + CVD + OI + funding confirmation (reuse shared method)
+        _, vol_confluences = self._check_volume_confirmation(
+            best_ob, None, market_snapshot, candles
+        )
 
         # Build confluences
         confluences = []
@@ -551,10 +535,10 @@ class SetupEvaluator:
                          f"< {settings.SETUP_F_MIN_OB_SCORE})")
             return None
 
-        # Volume confluence (structural only — no CVD or funding)
-        vol_confluences = []
-        if best_ob.volume_ratio >= settings.OB_MIN_VOLUME_RATIO:
-            vol_confluences.append(f"ob_volume_{best_ob.volume_ratio:.1f}x")
+        # Volume + CVD + OI + funding confirmation (reuse shared method)
+        _, vol_confluences = self._check_volume_confirmation(
+            best_ob, None, market_snapshot, candles
+        )
 
         confluences = []
         confluences.append(f"bos_{latest_bos.direction}")
@@ -688,24 +672,10 @@ class SetupEvaluator:
 
         direction = htf_bias
 
-        # Volume + CVD confirmation
-        vol_confluences = []
-        if best_bb.volume_ratio >= settings.OB_MIN_VOLUME_RATIO:
-            vol_confluences.append(f"bb_volume_{best_bb.volume_ratio:.1f}x")
-
-        if market_snapshot and market_snapshot.cvd:
-            cvd = market_snapshot.cvd
-            if direction == "bullish" and cvd.cvd_15m > 0:
-                vol_confluences.append("cvd_aligned_bullish")
-            elif direction == "bearish" and cvd.cvd_15m < 0:
-                vol_confluences.append("cvd_aligned_bearish")
-
-        if market_snapshot and market_snapshot.funding:
-            rate = market_snapshot.funding.rate
-            if direction == "bullish" and rate < -0.0001:
-                vol_confluences.append("funding_negative_long_opportunity")
-            elif direction == "bearish" and rate > 0.0003:
-                vol_confluences.append("funding_extreme_positive")
+        # Volume + CVD + OI + funding confirmation (reuse shared method)
+        _, vol_confluences = self._check_volume_confirmation(
+            best_bb, None, market_snapshot, candles
+        )
 
         confluences = []
         confluences.append(f"breaker_block_{best_bb.timeframe}")
@@ -795,8 +765,9 @@ class SetupEvaluator:
         ob: OrderBlock,
         sweep: Optional[LiquiditySweep],
         market_snapshot: Optional[MarketSnapshot],
+        candles: Optional[list[Candle]] = None,
     ) -> tuple[bool, list[str]]:
-        """Check volume/institutional confirmation for Setup A.
+        """Check volume/institutional confirmation for setups.
 
         Returns (is_confirmed, list_of_confluence_strings).
         """
@@ -821,21 +792,69 @@ class SetupEvaluator:
             if total_liq > 0:
                 confluences.append(f"oi_flush_usd_{total_liq:.0f}")
 
-        # CVD alignment
-        if market_snapshot and market_snapshot.cvd:
+        # CVD divergence check (replaces simple cvd_15m > 0 boolean)
+        if market_snapshot and market_snapshot.cvd and candles and len(candles) >= 4:
             cvd = market_snapshot.cvd
             direction = ob.direction
-            if direction == "bullish" and cvd.cvd_15m > 0:
+
+            # Compute recent price change (last 3 candles ≈ 15m on 5m TF)
+            price_now = candles[-1].close
+            price_prev = candles[-4].close
+            price_change = (price_now - price_prev) / price_prev if price_prev > 0 else 0
+
+            # Multi-timeframe CVD agreement (5m, 15m, 1h)
+            cvd_mtf_agree = (
+                (cvd.cvd_5m > 0 and cvd.cvd_15m > 0 and cvd.cvd_1h > 0)
+                if direction == "bullish" else
+                (cvd.cvd_5m < 0 and cvd.cvd_15m < 0 and cvd.cvd_1h < 0)
+            )
+
+            # Divergence: price moving against direction but CVD supporting it
+            # This is the strongest CVD signal (absorption / accumulation)
+            cvd_bullish = cvd.cvd_15m > 0
+            cvd_bearish = cvd.cvd_15m < 0
+            if direction == "bullish" and cvd_bullish and price_change < -0.001:
+                confluences.append("cvd_divergence_bullish")
+            elif direction == "bearish" and cvd_bearish and price_change > 0.001:
+                confluences.append("cvd_divergence_bearish")
+            elif cvd_mtf_agree:
+                confluences.append(f"cvd_mtf_aligned_{direction}")
+            elif direction == "bullish" and cvd_bullish:
                 confluences.append("cvd_aligned_bullish")
-            elif direction == "bearish" and cvd.cvd_15m < 0:
+            elif direction == "bearish" and cvd_bearish:
                 confluences.append("cvd_aligned_bearish")
 
-        # Funding extremes
+        # OI direction + price direction (institutional positioning signal)
+        if market_snapshot and market_snapshot.oi:
+            oi = market_snapshot.oi
+            pair = market_snapshot.pair
+            direction = ob.direction
+
+            # Track OI delta between evaluations
+            prev_oi = self._prev_oi.get(pair)
+            if prev_oi is not None and prev_oi > 0:
+                oi_delta_pct = (oi.oi_usd - prev_oi) / prev_oi
+
+                # OI rising + aligned direction = strong trend (new positions opening)
+                if direction == "bullish" and oi_delta_pct > 0.005:
+                    confluences.append(f"oi_rising_{oi_delta_pct*100:.1f}pct")
+                elif direction == "bearish" and oi_delta_pct > 0.005:
+                    confluences.append(f"oi_rising_{oi_delta_pct*100:.1f}pct")
+                # OI dropping significantly = liquidation pressure
+                elif oi_delta_pct < -0.01:
+                    confluences.append(f"oi_dropping_{abs(oi_delta_pct)*100:.1f}pct")
+
+            self._prev_oi[pair] = oi.oi_usd
+
+        # Funding rate — symmetric thresholds
+        # Audit 03-18: was asymmetric (-0.0001 long vs +0.0003 short) without justification.
+        # Now uses FUNDING_EXTREME_THRESHOLD (0.0003) for both directions.
         if market_snapshot and market_snapshot.funding:
             rate = market_snapshot.funding.rate
-            if ob.direction == "bullish" and rate < -0.0001:
+            threshold = settings.FUNDING_EXTREME_THRESHOLD
+            if ob.direction == "bullish" and rate < -threshold:
                 confluences.append("funding_negative_long_opportunity")
-            elif ob.direction == "bearish" and rate > 0.0003:
+            elif ob.direction == "bearish" and rate > threshold:
                 confluences.append("funding_extreme_positive")
 
         confirmed = len(confluences) >= 1

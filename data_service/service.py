@@ -290,6 +290,59 @@ class DataService:
             "running": self._running,
         }
 
+    def _cvd_health_summary(self) -> str:
+        """Build a short CVD status string for health check logs.
+
+        Returns empty string if all pairs are VALID with all windows warm.
+        Otherwise returns something like: " cvd: 3 WARMING_UP(5m) 4 VALID"
+        """
+        from data_service.data_integrity import CVDState
+
+        by_state: dict[str, int] = {}
+        warming_details = []
+
+        for pair in settings.TRADING_PAIRS:
+            state = self._cvd.get_cvd_state(pair)
+            state_name = state.name
+            by_state[state_name] = by_state.get(state_name, 0) + 1
+
+            if state == CVDState.WARMING_UP:
+                warm = self._cvd.get_warm_windows(pair)
+                warming_details.append(warm)
+
+        # All VALID with all windows — nothing to report
+        if by_state.get("VALID", 0) == len(settings.TRADING_PAIRS):
+            # Check if all windows are warm
+            all_full = all(
+                "1h" in self._cvd.get_warm_windows(p)
+                for p in settings.TRADING_PAIRS
+            )
+            if all_full:
+                return ""
+
+        parts = []
+        for state_name, count in sorted(by_state.items()):
+            parts.append(f"{count} {state_name}")
+
+        # Add window detail for warming pairs
+        if warming_details:
+            # Show what's missing
+            pass
+
+        # Count valid pairs missing some windows
+        partial = 0
+        for pair in settings.TRADING_PAIRS:
+            state = self._cvd.get_cvd_state(pair)
+            if state == CVDState.VALID:
+                warm = self._cvd.get_warm_windows(pair)
+                if "1h" not in warm:
+                    partial += 1
+
+        if partial:
+            parts.append(f"{partial} partial(no 1h)")
+
+        return f" cvd=[{', '.join(parts)}]"
+
     # ================================================================
     # Startup
     # ================================================================
@@ -587,12 +640,25 @@ class DataService:
             logger.error(f"Failed to publish whale movements to Redis: {e}")
 
     async def _funding_rate_loop(self) -> None:
-        """Poll funding rates every FUNDING_RATE_INTERVAL seconds."""
+        """Poll funding rates every FUNDING_RATE_INTERVAL seconds.
+
+        Initial fetch is handled by _fetch_initial_indicators() at startup.
+        If initial fetch failed, this loop retries after a short delay (5 min)
+        instead of waiting the full 8h interval.
+        """
         loop = asyncio.get_running_loop()
 
-        while self._running:
+        # Check if initial fetch succeeded — if not, retry sooner
+        any_missing = any(
+            self._redis.get_funding_rate(pair) is None
+            for pair in settings.TRADING_PAIRS
+        )
+        if any_missing:
+            await asyncio.sleep(300)  # Retry in 5 min if initial fetch failed
+        else:
             await asyncio.sleep(settings.FUNDING_RATE_INTERVAL)
 
+        while self._running:
             for pair in settings.TRADING_PAIRS:
                 try:
                     fr = await loop.run_in_executor(
@@ -603,6 +669,8 @@ class DataService:
                         self._postgres.store_funding_rate(fr)
                 except Exception as e:
                     logger.error(f"Funding rate poll failed: pair={pair} error={e}")
+
+            await asyncio.sleep(settings.FUNDING_RATE_INTERVAL)
 
     async def _oi_loop(self) -> None:
         """Poll open interest every OI_CHECK_INTERVAL seconds."""
@@ -676,8 +744,16 @@ class DataService:
             status = self.health()
             disconnected = {k for k, v in status.items() if v is False}
 
+            # Summarize CVD state across pairs
+            cvd_summary = self._cvd_health_summary()
+
             if disconnected:
-                logger.warning(f"Health check: DOWN={list(disconnected)} state={self._state.name}")
+                logger.warning(
+                    f"Health check: DOWN={list(disconnected)} state={self._state.name}"
+                    f"{cvd_summary}"
+                )
+            elif cvd_summary:
+                logger.info(f"Health check: systems OK state={self._state.name}{cvd_summary}")
             else:
                 logger.debug(f"Health check: all systems OK state={self._state.name}")
 

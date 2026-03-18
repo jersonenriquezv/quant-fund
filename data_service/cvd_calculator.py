@@ -13,6 +13,11 @@ CVD = sum of (size if buy, -size if sell) over a period.
 - CVD rising = aggressive buyers dominate (bullish)
 - CVD falling = aggressive sellers dominate (bearish)
 - Price up + CVD down = divergence, reversal signal
+
+Warmup: per-window progressive validation.
+- 5m VALID after 5 min of continuous trades → CVDState transitions to VALID
+- 15m and 1h windows become valid as their spans fill naturally
+- This means setups aren't blocked for 1h waiting for the 1h window
 """
 
 import asyncio
@@ -54,6 +59,11 @@ _WINDOW_5M_MS = 5 * 60 * 1000
 _WINDOW_15M_MS = 15 * 60 * 1000
 _WINDOW_1H_MS = 60 * 60 * 1000
 
+# Per-window warmup thresholds (seconds of continuous trade data required)
+_WARMUP_5M_SEC = 300     # 5 minutes — enough for 5m window
+_WARMUP_15M_SEC = 900    # 15 minutes — enough for 15m window
+_WARMUP_1H_SEC = 3600    # 60 minutes — enough for 1h window
+
 
 @dataclass
 class _RawTrade:
@@ -87,10 +97,14 @@ class CVDCalculator:
         # CVD state machine per pair
         self._cvd_state: dict[str, CVDState] = {}
         self._cvd_invalid_reason: dict[str, str] = {}
+        # Per-window warmup tracking: which windows have completed warmup
+        # Values: set of "5m", "15m", "1h"
+        self._warm_windows: dict[str, set[str]] = {}
         # Initialize all configured pairs to WARMING_UP
         for pair in _INST_IDS:
             self._cvd_state[pair] = CVDState.WARMING_UP
             self._cvd_invalid_reason[pair] = "startup"
+            self._warm_windows[pair] = set()
 
         # Stats
         self._trades_received = 0
@@ -116,6 +130,10 @@ class CVDCalculator:
     def get_cvd_invalid_reason(self, pair: str) -> str:
         """Get the reason CVD is not VALID for a pair."""
         return self._cvd_invalid_reason.get(pair, "unknown")
+
+    def get_warm_windows(self, pair: str) -> set[str]:
+        """Get which CVD windows have completed warmup for a pair."""
+        return self._warm_windows.get(pair, set()).copy()
 
     @property
     def is_connected(self) -> bool:
@@ -169,18 +187,64 @@ class CVDCalculator:
                 self._prune_old_trades(pair, now_ms)
                 self._compute_snapshot(pair, now_ms)
 
-                # Check warmup completion: trades must span >= CVD_WARMUP_SECONDS
+                # Per-window warmup: check each window threshold independently
                 if self._cvd_state.get(pair) == CVDState.WARMING_UP:
                     trades = self._trades.get(pair)
                     if trades and len(trades) >= 2:
                         oldest_ms = trades[0].timestamp
                         span_sec = (now_ms - oldest_ms) / 1000
-                        if span_sec >= settings.CVD_WARMUP_SECONDS:
+                        warm = self._warm_windows.get(pair, set())
+
+                        # Check each window threshold
+                        if "5m" not in warm and span_sec >= _WARMUP_5M_SEC:
+                            warm.add("5m")
+                            self._warm_windows[pair] = warm
+                            # 5m valid → transition to VALID (unblock setups)
                             self._cvd_state[pair] = CVDState.VALID
                             self._cvd_invalid_reason[pair] = ""
                             logger.info(
                                 f"CVD state: WARMING_UP → VALID pair={pair} "
-                                f"span={span_sec:.0f}s trades={len(trades)}"
+                                f"window=5m span={span_sec:.0f}s trades={len(trades)}"
+                            )
+
+                        if "15m" not in warm and span_sec >= _WARMUP_15M_SEC:
+                            warm.add("15m")
+                            self._warm_windows[pair] = warm
+                            logger.info(
+                                f"CVD window warm: pair={pair} window=15m "
+                                f"span={span_sec:.0f}s"
+                            )
+
+                        if "1h" not in warm and span_sec >= _WARMUP_1H_SEC:
+                            warm.add("1h")
+                            self._warm_windows[pair] = warm
+                            logger.info(
+                                f"CVD fully warm: pair={pair} window=1h "
+                                f"span={span_sec:.0f}s (all windows valid)"
+                            )
+
+                # Log 15m/1h milestones even after VALID transition
+                elif self._cvd_state.get(pair) == CVDState.VALID:
+                    trades = self._trades.get(pair)
+                    if trades and len(trades) >= 2:
+                        oldest_ms = trades[0].timestamp
+                        span_sec = (now_ms - oldest_ms) / 1000
+                        warm = self._warm_windows.get(pair, set())
+
+                        if "15m" not in warm and span_sec >= _WARMUP_15M_SEC:
+                            warm.add("15m")
+                            self._warm_windows[pair] = warm
+                            logger.info(
+                                f"CVD window warm: pair={pair} window=15m "
+                                f"span={span_sec:.0f}s"
+                            )
+
+                        if "1h" not in warm and span_sec >= _WARMUP_1H_SEC:
+                            warm.add("1h")
+                            self._warm_windows[pair] = warm
+                            logger.info(
+                                f"CVD fully warm: pair={pair} window=1h "
+                                f"span={span_sec:.0f}s (all windows valid)"
                             )
 
     # ================================================================
@@ -208,6 +272,7 @@ class CVDCalculator:
                     self._snapshots.pop(pair, None)
                     self._cvd_state[pair] = CVDState.WARMING_UP
                     self._cvd_invalid_reason[pair] = "reconnect"
+                    self._warm_windows[pair] = set()
                     logger.info(f"CVD state: INVALID → WARMING_UP pair={pair} (trades flushed)")
             await self._subscribe(ws)
 

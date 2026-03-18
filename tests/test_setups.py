@@ -1159,23 +1159,23 @@ class TestSetupFHardening:
         finally:
             settings.SETUP_F_MIN_OB_SCORE = original
 
-    def test_cvd_not_in_confluences(self):
-        """CVD should not appear in Setup F confluences."""
+    def test_cvd_in_confluences(self):
+        """CVD should appear in Setup F confluences (audit 03-18: enriched signals)."""
         evaluator = SetupEvaluator()
         args = _make_setup_f_args()
         args["market_snapshot"] = make_market_snapshot(cvd_15m=500.0)
         setup = evaluator.evaluate_setup_f(**args)
         assert setup is not None
-        assert not any("cvd" in c for c in setup.confluences)
+        assert any("cvd" in c for c in setup.confluences)
 
-    def test_funding_not_in_confluences(self):
-        """Funding should not appear in Setup F confluences."""
+    def test_funding_in_confluences(self):
+        """Funding should appear in Setup F confluences (audit 03-18: enriched signals)."""
         evaluator = SetupEvaluator()
         args = _make_setup_f_args()
         args["market_snapshot"] = make_market_snapshot(funding_rate=-0.001)
         setup = evaluator.evaluate_setup_f(**args)
         assert setup is not None
-        assert not any("funding" in c for c in setup.confluences)
+        assert any("funding" in c for c in setup.confluences)
 
     def test_entry_too_far_rejected(self):
         """Entry >SETUP_F_MAX_ENTRY_DISTANCE_PCT from current price is rejected."""

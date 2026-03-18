@@ -121,8 +121,9 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Tracks total buy_volume and sell_volume (1h window)
 - Auto-prunes trades older than 1 hour
 - **Contract size normalization:** Trades from OKX are in contracts. Normalized to base currency using `CONTRACT_SIZES` from `data_integrity.py` (BTC: ×0.01, ETH: ×0.1, etc.).
-- **CVD state machine:** Per-pair `CVDState` (WARMING_UP → VALID → INVALID on disconnect → WARMING_UP on reconnect). On reconnect, trade buffer is flushed to prevent stale trades contaminating CVD windows. `get_cvd()` returns `None` when state ≠ VALID. Warmup: trades must span ≥ `CVD_WARMUP_SECONDS` (3600s).
-- Public methods: `get_cvd(pair)` → `CVDSnapshot | None`, `get_cvd_state(pair)` → `CVDState`
+- **CVD state machine:** Per-pair `CVDState` (WARMING_UP → VALID → INVALID on disconnect → WARMING_UP on reconnect). On reconnect, trade buffer is flushed to prevent stale trades contaminating CVD windows. `get_cvd()` returns `None` when state ≠ VALID.
+- **Per-window progressive warmup:** 5m window valid after 5 min of trades (transitions to VALID immediately — unblocks setups), 15m after 15 min, 1h after 60 min. Each milestone logged. `get_warm_windows(pair)` returns set of warm windows. Replaces single `CVD_WARMUP_SECONDS` (was 3600s = blocked all trading for 1h on startup).
+- Public methods: `get_cvd(pair)` → `CVDSnapshot | None`, `get_cvd_state(pair)` → `CVDState`, `get_warm_windows(pair)` → `set[str]`
 
 ### `data_service/oi_flush_detector.py` — OI Flush Detector
 - Detects liquidation cascades from OI drops (>2% in 5 minutes)
@@ -225,7 +226,7 @@ Central hub for data quality types and gating logic:
 - **Snapshot health:** `_compute_health()` uses `FundingRate.fetched_at` (actual fetch time, not exchange event time). Redis health checked — if down, `critical_sources_healthy=False`. `SnapshotHealth` includes `redis_healthy` and `service_state`.
 - **OI loop:** passes current price to `oi_flush_detector.update()` for side attribution.
 - Public methods: `get_latest_candle()`, `get_candles()`, `get_market_snapshot()`, `get_cvd()`, `get_cvd_state()`, `fetch_usdt_balance()`, `state` property
-- Health check loop every 30 seconds — emits `health_status` metric, logs current `state`
+- Health check loop every 30 seconds — emits `health_status` metric, logs current `state`. Includes `_cvd_health_summary()`: shows CVD warmup progress per pair (e.g. `cvd=[3 WARMING_UP, 4 VALID, 2 partial(no 1h)]`). Suppressed when all pairs fully warm.
 - **Metrics:** `data_service_state` (on transition to RUNNING), `ws_reconnect`, `circuit_breaker_tripped`, `gap_backfill_unrecoverable`
 
 ### `main.py` — Entry Point

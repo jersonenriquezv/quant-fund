@@ -25,8 +25,8 @@ The bot runs in **aggressive validation mode** (since 2026-03-15) with 5 active 
 - Entry: configurable depth into OB body (`SETUP_A_ENTRY_PCT`, default 65% — Optuna optimized 2026-03-15)
 - AI filter bypassed (89.6% approval rate = no value added)
 
-**Setup B (secondary) — BOS + FVG + Order Block:** (ENABLED, AI bypassed)
-- Re-enabled 2026-03-15 in aggressive validation mode for data collection.
+**Setup B (secondary) — BOS + FVG + Order Block:** (DISABLED — 2026-03-18 audit)
+- Was re-enabled 2026-03-15 in aggressive validation mode, disabled again per 2026-03-18 strategy audit.
 - Historical WR: 0-7.7% in backtests. Hardened filters applied (BOS age, entry distance, direction fix).
 - AI filter bypassed (AI v1 destroyed it: 49% WR to 21.4% WR).
 
@@ -62,7 +62,7 @@ The bot runs in **aggressive validation mode** (since 2026-03-15) with 5 active 
 - PD override (legacy, superseded by PD_AS_CONFLUENCE): setups with 5+ confluences can trade against PD zone
 - OB selection: composite scoring (volume 35%, freshness 30%, proximity 20%, body size 15%). OB_MIN_BODY_PCT (0.15%) filters micro-OBs.
 - SL-too-close filter in Strategy layer (MIN_RISK_DISTANCE_PCT 0.5%) before building TradeSetup
-- Expectancy filters: MIN_ATR_PCT (0.20% — relaxed for aggressive mode, was 0.45%), MIN_TARGET_SPACE_R (1.0 — relaxed for aggressive mode, was 1.4)
+- Expectancy filters: MIN_ATR_PCT (0.35% — restored 2026-03-18 from Optuna validated value), MIN_TARGET_SPACE_R (1.4 — restored 2026-03-18 from Optuna validated value)
 
 ### 2. AI filter (currently bypassed)
 
@@ -356,9 +356,9 @@ Deterministic Python engine that detects SMC patterns. No AI. Pure rules.
 
 ---
 
-### Setup B (Secondary) — BOS + FVG + Order Block (ENABLED, AI bypassed — aggressive validation mode)
+### Setup B (Secondary) — BOS + FVG + Order Block (DISABLED — 2026-03-18 audit)
 
-Re-enabled 2026-03-15 for data collection. Historical WR: 0-7.7% in backtests. Hardened filters (BOS age, entry distance, direction fix) remain active. AI bypassed (in `AI_BYPASS_SETUP_TYPES`).
+Disabled per 2026-03-18 strategy audit. Was re-enabled 2026-03-15 for data collection. Historical WR: 0-7.7% in backtests. Hardened filters (BOS age, entry distance, direction fix) remain active. AI bypassed (in `AI_BYPASS_SETUP_TYPES`) when re-enabled.
 
 ---
 
@@ -428,9 +428,9 @@ No narrative doctrine. Claude scores 4 dimensions (0-5): setup_quality, market_s
 **What Claude receives (built by `prompt_builder.py`):**
 * The detected setup (type, pair, direction, entry, SL, TP levels, confluences with [SUPPORTING]/[CONTEXT] tags)
 * HTF bias (labeled as "aligned" or "COUNTER-TREND")
-* Current funding rate + neutral interpretation (directional crowding, not narrative)
-* Open Interest (snapshot only — no trend inference)
-* CVD snapshot (buy dominance %)
+* Current funding rate + neutral interpretation (directional crowding, not narrative). Extreme threshold: FUNDING_EXTREME_THRESHOLD (0.0003) applied symmetrically for both long and short.
+* Open Interest (snapshot + delta between evaluations — OI delta used as confluence signal)
+* CVD snapshot (buy dominance %) — divergence check: price direction vs CVD direction, multi-timeframe agreement
 * Recent liquidation cascades (OI proxy — estimated USD from OI drops)
 * Whale movements (net exchange flow, individual movements — no bullish/bearish labels)
 * News sentiment (Fear & Greed + headlines)
@@ -572,7 +572,7 @@ Collects structured training data for two future classical ML models:
 
 **Health metrics:** `ml_setup_insert_ok/error`, `ml_outcome_update_ok/error` emitted to `bot_metrics` for Grafana monitoring.
 
-**Config:** `ML_FEATURE_VERSION` (int, in settings.py) — increment when strategy params change to segment training data.
+**Config:** `ML_FEATURE_VERSION` (int, in settings.py) — increment when strategy params change to segment training data. Current value: 4 (bumped 2026-03-18 strategy audit).
 
 **Files:** `shared/ml_features.py` (feature extraction), `data_service/data_store.py` (ml_setups table + CRUD), `main.py` (pipeline instrumentation), `execution_service/monitor.py` (close outcome resolution)
 
@@ -615,6 +615,8 @@ python scripts/optimize.py --days 60 --trials 50 --walk-forward --jobs 2
 **Last optimization (2026-03-15)**: 20 trials, 30d, PF 1.05→2.65. Walk-forward validated (test PF=3.07 vs baseline PF=0.88). Key changes: SETUP_A_ENTRY_PCT 0.50→0.65, OB_MAX_DISTANCE_PCT 0.08→0.04, MIN_ATR_PCT 0.0025→0.0045. Full param table in `backtest_results/TRACKER.md`.
 
 **Aggressive validation mode (2026-03-15)**: Post-optimization, params further relaxed for maximum trade detection at $20/trade. Goal: data collection, not profit optimization. Changes: ENABLED_SETUPS expanded to 5 types (A, B, D_choch, D_bos, F), MIN_ATR_PCT 0.0045→0.0020, MIN_TARGET_SPACE_R 1.4→1.0, OB_MAX_DISTANCE_PCT 0.04→0.08, OB_PROXIMITY_PCT 0.007→0.010, SETUP_A_MAX_SWEEP_CHOCH_GAP 45→60, SETUP_F_MIN_BOS_DISPLACEMENT_PCT 0.002→0.001, SETUP_F_MIN_CONFLUENCES 3→2, PD_AS_CONFLUENCE false→true. All risk guardrails unchanged.
+
+**Strategy audit (2026-03-18)**: Restored several params to Optuna validated values. Setup B disabled. MIN_ATR_PCT 0.0020→0.0035, MIN_TARGET_SPACE_R 1.0→1.4, OB_MIN_VOLUME_RATIO restored to 1.3. Funding extreme threshold now symmetric (FUNDING_EXTREME_THRESHOLD=0.0003 for both long and short). CVD check upgraded: uses divergence (price direction vs CVD direction) + multi-timeframe agreement instead of simple cvd_15m > 0. OI now tracks delta between evaluations and uses it as confluence instead of existence check only. ML_FEATURE_VERSION bumped 3→4.
 
 ---
 
