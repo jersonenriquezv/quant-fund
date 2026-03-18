@@ -865,6 +865,34 @@ class TestPnlCalculation:
         monitor._calculate_pnl(pos, 2080.0)
         assert pos.actual_exit_price == 2080.0
 
+    def test_pnl_capital_based_with_real_risk(self):
+        """When risk service provides capital, pnl_pct is capital-based."""
+        from risk_service.state_tracker import RiskStateTracker
+        risk = MagicMock()
+        risk._state = RiskStateTracker(capital=100.0)
+        monitor = PositionMonitor(MagicMock(), risk)
+        pos = make_position(direction="long", phase="active")
+        pos.actual_entry_price = 2000.0
+        pos.filled_size = 0.05
+        monitor._calculate_pnl(pos, 2080.0)
+        # pnl_usd = (2080-2000)*0.05 = 4.00, fees ~0.102, net ~3.898
+        # Capital-based: 3.898 / 100.0 = 0.03898
+        assert abs(pos.pnl_pct - 0.03898) < 0.001
+
+    def test_pnl_capital_based_loss(self):
+        """Capital-based loss pnl_pct reflects true account impact."""
+        from risk_service.state_tracker import RiskStateTracker
+        risk = MagicMock()
+        risk._state = RiskStateTracker(capital=108.0)
+        monitor = PositionMonitor(MagicMock(), risk)
+        pos = make_position(direction="long", phase="active")
+        pos.actual_entry_price = 2000.0
+        pos.filled_size = 0.05
+        monitor._calculate_pnl(pos, 1960.0)
+        # pnl_usd = (1960-2000)*0.05 = -2.00, fees ~0.099, net ~-2.099
+        # Capital-based: -2.099 / 108.0 ≈ -0.01943
+        assert abs(pos.pnl_pct - (-2.099 / 108.0)) < 0.001
+
 
 class TestAdjustSLFailure:
     """If new SL placement fails, old SL is kept."""

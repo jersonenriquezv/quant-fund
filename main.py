@@ -220,7 +220,10 @@ async def on_candle_confirmed(candle: Candle) -> None:
     min_size = settings.MIN_ORDER_SIZES.get(setup.pair, 0)
     if min_size > 0:
         capital = _risk_service._state.get_capital()
-        max_margin = capital * settings.TRADE_CAPITAL_PCT
+        if settings.FIXED_TRADE_MARGIN > 0:
+            max_margin = settings.FIXED_TRADE_MARGIN
+        else:
+            max_margin = capital * settings.TRADE_CAPITAL_PCT
         max_notional = max_margin * settings.MAX_LEVERAGE
         max_position = max_notional / setup.entry_price
         if max_position < min_size:

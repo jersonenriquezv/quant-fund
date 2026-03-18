@@ -324,6 +324,41 @@ class TestRedisPersistence:
         t2 = RiskStateTracker(capital=1000.0, redis_store=redis)
         assert t2.get_trades_today_count() == 2
 
+    def test_round_trip_open_positions(self):
+        """Open positions survive restart via Redis."""
+        redis = FakeRedis()
+        t1 = RiskStateTracker(capital=1000.0, redis_store=redis)
+        now = int(time.time())
+        t1.record_trade_opened("BTC/USDT", "long", 50000, now, phase="pending")
+        t1.record_trade_opened("ETH/USDT", "short", 3000, now, phase="active")
+        assert t1.get_open_positions_count() == 2
+
+        # Simulate restart
+        t2 = RiskStateTracker(capital=1000.0, redis_store=redis)
+        assert t2.get_open_positions_count() == 2
+
+    def test_round_trip_open_positions_after_close(self):
+        """Closed positions are removed from Redis persistence."""
+        redis = FakeRedis()
+        t1 = RiskStateTracker(capital=1000.0, redis_store=redis)
+        now = int(time.time())
+        t1.record_trade_opened("BTC/USDT", "long", 50000, now, phase="active")
+        t1.record_trade_opened("ETH/USDT", "short", 3000, now, phase="active")
+        t1.record_trade_closed("BTC/USDT", "long", 0.01, now + 100)
+
+        t2 = RiskStateTracker(capital=1000.0, redis_store=redis)
+        assert t2.get_open_positions_count() == 1
+
+    def test_round_trip_open_positions_empty(self):
+        """No open positions persists as empty list."""
+        redis = FakeRedis()
+        t1 = RiskStateTracker(capital=1000.0, redis_store=redis)
+        # Save state with 0 positions
+        t1._save_to_redis()
+
+        t2 = RiskStateTracker(capital=1000.0, redis_store=redis)
+        assert t2.get_open_positions_count() == 0
+
     def test_round_trip_cooldown(self):
         redis = FakeRedis()
         t1 = RiskStateTracker(capital=1000.0, redis_store=redis)

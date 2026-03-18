@@ -24,13 +24,13 @@
 |-------|--------|------|---------------|
 | A (Sweep+CHoCH+OB) | **ENABLED** | swing, AI bypass | 45-50% |
 | B (BOS+FVG+OB) | **DISABLED** | — | 0-7.7% |
-| C (Funding Squeeze) | **ENABLED** | quick | untested live |
+| C (Funding Squeeze) | **ENABLED** | quick | live, collecting data |
 | D_choch (LTF CHoCH) | **ENABLED** | quick | 75% backtest |
 | D_bos (LTF BOS) | **DISABLED** | — | 20-33% |
-| E (Cascade Reversal) | **ENABLED** | quick | untested live |
+| E (Cascade Reversal) | **ENABLED** | quick | live, collecting data |
 | F (Pure OB Retest) | **ENABLED** | swing, AI bypass | 34-59% |
 | G (Breaker Block) | **DISABLED** | — | unvalidated |
-| H (Momentum/Impulse) | **ENABLED** | quick, AI bypass | untested live |
+| H (Momentum/Impulse) | **ENABLED** | quick, AI bypass | live, collecting data |
 
 ### Risk Guardrails
 | Parameter | Value | Notes |

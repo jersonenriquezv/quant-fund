@@ -1136,7 +1136,13 @@ class PositionMonitor:
         return pos.actual_entry_price
 
     def _calculate_pnl(self, pos: ManagedPosition, exit_price: float) -> None:
-        """Calculate PnL for the full position at exit_price, net of fees."""
+        """Calculate PnL for the full position at exit_price, net of fees.
+
+        pnl_pct is expressed as fraction of tracked capital (account equity),
+        not leveraged notional. This ensures drawdown guardrails measure
+        actual account impact: $2.80 loss on $108 capital = -2.6%, not -2%
+        of $140 notional.
+        """
         if not pos.actual_entry_price or pos.actual_entry_price == 0:
             return
 
@@ -1153,7 +1159,19 @@ class PositionMonitor:
         total_fees = (entry_notional + exit_notional) * settings.TRADING_FEE_RATE
         pnl_usd -= total_fees
 
-        if entry_notional > 0:
+        # Denominator = tracked capital for accurate DD measurement.
+        # Falls back to entry_notional if risk service unavailable.
+        capital = 0.0
+        if self._risk is not None and hasattr(self._risk, '_state'):
+            try:
+                raw = self._risk._state.get_capital()
+                if isinstance(raw, (int, float)):
+                    capital = float(raw)
+            except (TypeError, ValueError, AttributeError):
+                capital = 0.0
+        if capital > 0:
+            pos.pnl_pct = pnl_usd / capital
+        elif entry_notional > 0:
             pos.pnl_pct = pnl_usd / entry_notional
         else:
             pos.pnl_pct = 0.0

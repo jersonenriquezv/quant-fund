@@ -67,9 +67,9 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 ### `risk_service/state_tracker.py` — Estado con persistencia Redis
 - Clase: `RiskStateTracker(capital, redis_store=None)`
 - **Redis persistence**: Si se pasa `redis_store` (de DataService), el estado se persiste en Redis en cada mutación y se restaura al iniciar. Sobrevive reinicios del bot sin perder guardrails.
-  - Keys: `qf:bot:risk_daily_pnl`, `risk_weekly_pnl`, `risk_last_loss_time`, `risk_trades_today`, `risk_state_day`, `risk_state_week`
+  - Keys: `risk_daily_pnl`, `risk_weekly_pnl`, `risk_last_loss_time`, `risk_trades_today`, `risk_state_day`, `risk_state_week`, `risk_open_positions` (JSON array)
   - TTL: 48 horas
-  - Daily values solo se restauran si el día guardado == hoy. Weekly solo si misma semana. Cooldown siempre se restaura (time-based).
+  - Daily values solo se restauran si el día guardado == hoy. Weekly solo si misma semana. Cooldown y open positions siempre se restauran.
   - Si Redis falla al cargar o guardar → degrada silenciosamente (fire-and-forget). El bot NO se detiene.
 - Lifecycle del trade:
   - `record_trade_opened(pair, direction, entry_price, timestamp)`
@@ -145,12 +145,13 @@ No crashea. El trade se registra igual (P&L, cooldown, trades_today), pero no re
 
 ## Limitaciones conocidas
 
-- **Estado persiste via Redis**: daily PnL, weekly PnL, trades today count, y cooldown sobreviven reinicios. Posiciones abiertas (open_positions list) NO se persisten — se reconstruyen via sync_exchange_positions + reconciliation al arrancar.
+- **Estado persiste via Redis**: daily PnL, weekly PnL, trades today count, cooldown, y open positions list sobreviven reinicios. sync_exchange_positions + reconciliation al arrancar complementa la lista restaurada con posiciones del exchange.
 - **Max trade duration (12h)**: Enforceado por el Execution Service (`PositionMonitor` cierra posiciones después de `MAX_TRADE_DURATION_SECONDS`).
 - **Tracking por (pair, direction)**: El cierre matchea por par Y dirección. Si hubiera BTC long + BTC short simultáneo, se cierran independientemente.
 
 ## Cambios recientes
 
+- **2026-03-18** — Risk audit fixes: (1) open positions persisted to Redis as JSON (survives restarts), (2) pnl_pct now capital-based not notional-based (DD guardrails measure real account impact), (3) pre-check in main.py aligned with FIXED_TRADE_MARGIN sizing.
 - **2026-03-11** — Redis persistence for RiskStateTracker. State (daily_pnl, weekly_pnl, trades_today, cooldown) survives bot restarts. 48h TTL, fire-and-forget writes. 8 new tests.
 - **2026-03-10** — `FIXED_TRADE_MARGIN` restored ($20 default). Was accidentally removed on 03-09, causing trades to enter with $3.25 margin instead of $20. Dual-mode: if FIXED_TRADE_MARGIN > 0, uses fixed margin; else falls back to TRADE_CAPITAL_PCT.
 - **2026-03-09** — `FIXED_TRADE_MARGIN` replaced by `TRADE_CAPITAL_PCT` (0.15 = 15% of capital as notional). Position sizing simplified: no more dual-mode (fixed vs risk-based). Leverage always `MAX_LEVERAGE`. `MIN_ORDER_SIZES` updated: BTC 0.01→0.0001, ETH 0.001 added (correct OKX contract sizes).

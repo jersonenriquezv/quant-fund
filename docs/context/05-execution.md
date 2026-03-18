@@ -321,6 +321,7 @@ Fill price mismatch: ETH/USDT expected=1937.22 actual=1990.24 diff=2.74%
 
 `_calculate_pnl(pos, exit_price)` computes net PnL after fees on every exit:
 - `pnl_usd = raw_pnl - (entry_notional + exit_notional) × TRADING_FEE_RATE`
+- `pnl_pct = pnl_usd / capital` — fraction of tracked account capital (from `RiskStateTracker.get_capital()`), not leveraged notional. Ensures DD guardrails measure real account impact. Falls back to `pnl_usd / entry_notional` if risk service unavailable.
 - Stores `actual_exit_price` on ManagedPosition
 - `_persist_trade_close()` writes `actual_exit=pos.actual_exit_price` to PostgreSQL
 
