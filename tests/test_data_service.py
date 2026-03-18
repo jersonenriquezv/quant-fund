@@ -41,7 +41,8 @@ class TestCandleValidation:
 
     def _get_ws_validator(self):
         from data_service.websocket_feeds import OKXWebSocketFeed
-        return OKXWebSocketFeed._validate_candle
+        feed = OKXWebSocketFeed()
+        return feed._validate_candle
 
     @pytest.fixture(params=["exchange", "ws"])
     def validator(self, request):
@@ -294,10 +295,16 @@ class TestCVDCalculation:
         calc = self._make_calculator()
         assert calc.get_cvd("BTC/USDT") is None
 
+    def _set_valid(self, calc, pair):
+        """Set CVD state to VALID so get_cvd() returns snapshots."""
+        from data_service.data_integrity import CVDState
+        calc._cvd_state[pair] = CVDState.VALID
+
     def test_cvd_buys_positive(self):
         calc = self._make_calculator()
+        self._set_valid(calc, "BTC/USDT")
         now_ms = int(time.time() * 1000)
-        # Add buy trades
+        # Add buy trades (raw _RawTrade with final base-currency size)
         calc._trades["BTC/USDT"].append(self._make_trade(now_ms - 1000, 50000, 1.0, "buy"))
         calc._trades["BTC/USDT"].append(self._make_trade(now_ms - 500, 50100, 0.5, "buy"))
         calc._compute_snapshot("BTC/USDT", now_ms)
@@ -310,6 +317,7 @@ class TestCVDCalculation:
 
     def test_cvd_sells_negative(self):
         calc = self._make_calculator()
+        self._set_valid(calc, "BTC/USDT")
         now_ms = int(time.time() * 1000)
         calc._trades["BTC/USDT"].append(self._make_trade(now_ms - 1000, 50000, 2.0, "sell"))
         calc._compute_snapshot("BTC/USDT", now_ms)
@@ -320,6 +328,7 @@ class TestCVDCalculation:
 
     def test_cvd_mixed_net(self):
         calc = self._make_calculator()
+        self._set_valid(calc, "BTC/USDT")
         now_ms = int(time.time() * 1000)
         calc._trades["BTC/USDT"].append(self._make_trade(now_ms - 1000, 50000, 3.0, "buy"))
         calc._trades["BTC/USDT"].append(self._make_trade(now_ms - 500, 50000, 1.0, "sell"))
@@ -333,6 +342,7 @@ class TestCVDCalculation:
     def test_cvd_windows_separate(self):
         """Trades outside 5m window should still appear in 15m and 1h windows."""
         calc = self._make_calculator()
+        self._set_valid(calc, "BTC/USDT")
         now_ms = int(time.time() * 1000)
 
         # Trade 10 min ago — outside 5m, inside 15m and 1h
@@ -368,6 +378,8 @@ class TestCVDCalculation:
 
     def test_pairs_independent(self):
         calc = self._make_calculator()
+        self._set_valid(calc, "BTC/USDT")
+        self._set_valid(calc, "ETH/USDT")
         now_ms = int(time.time() * 1000)
 
         calc._trades["BTC/USDT"].append(self._make_trade(now_ms - 1000, 50000, 5.0, "buy"))
@@ -406,7 +418,7 @@ class TestCVDTradeParsing:
         calc._handle_trades(msg)
         assert len(calc._trades["BTC/USDT"]) == 1
         assert calc._trades["BTC/USDT"][0].side == "buy"
-        assert calc._trades["BTC/USDT"][0].size == 0.01
+        assert calc._trades["BTC/USDT"][0].size == 0.0001  # 0.01 contracts * 0.01 BTC/contract
 
     def test_invalid_side_skipped(self):
         calc = self._make_calculator()

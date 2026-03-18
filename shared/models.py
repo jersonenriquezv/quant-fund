@@ -39,6 +39,7 @@ class FundingRate:
     rate: float             # e.g., 0.0001 = 0.01%
     next_rate: float        # Estimated next funding rate
     next_funding_time: int  # Unix ms
+    fetched_at: int = 0     # Unix ms when actually fetched (0 = legacy/unknown)
 
 
 @dataclass(frozen=True)
@@ -152,6 +153,8 @@ class SnapshotHealth:
     critical_sources_healthy: bool   # True only if ALL critical sources are fresh
     stale_sources: tuple[str, ...]   # Names of stale sources
     missing_sources: tuple[str, ...]  # Names of unavailable sources
+    redis_healthy: bool = True       # False if Redis connection is down
+    service_state: str = "running"   # DataServiceState name (running/recovering/degraded)
 
 
 # ============================================================

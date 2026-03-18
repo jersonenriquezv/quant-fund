@@ -26,6 +26,7 @@ import websockets
 from config.settings import settings
 from shared.logger import setup_logger
 from shared.models import CVDSnapshot
+from data_service.data_integrity import CVDState, CONTRACT_SIZES
 
 logger = setup_logger("data_service")
 
@@ -59,7 +60,7 @@ class _RawTrade:
     """Internal representation of a single trade from OKX."""
     timestamp: int      # Unix ms
     price: float
-    size: float         # In base currency (BTC/ETH)
+    size: float         # In base currency (BTC/ETH), normalized from contracts
     side: str           # "buy" or "sell"
 
 
@@ -83,6 +84,14 @@ class CVDCalculator:
         self._connected = False
         self._reconnect_delay = settings.RECONNECT_INITIAL_DELAY
 
+        # CVD state machine per pair
+        self._cvd_state: dict[str, CVDState] = {}
+        self._cvd_invalid_reason: dict[str, str] = {}
+        # Initialize all configured pairs to WARMING_UP
+        for pair in _INST_IDS:
+            self._cvd_state[pair] = CVDState.WARMING_UP
+            self._cvd_invalid_reason[pair] = "startup"
+
         # Stats
         self._trades_received = 0
 
@@ -93,10 +102,20 @@ class CVDCalculator:
     def get_cvd(self, pair: str) -> CVDSnapshot | None:
         """Get the latest CVD snapshot for a pair.
 
-        Returns None if no trades have been received yet.
+        Returns None if no trades have been received yet or CVD state is not VALID.
         Snapshot is recalculated every 5 seconds.
         """
+        if self._cvd_state.get(pair) != CVDState.VALID:
+            return None
         return self._snapshots.get(pair)
+
+    def get_cvd_state(self, pair: str) -> CVDState:
+        """Get the current CVD state for a pair."""
+        return self._cvd_state.get(pair, CVDState.INVALID)
+
+    def get_cvd_invalid_reason(self, pair: str) -> str:
+        """Get the reason CVD is not VALID for a pair."""
+        return self._cvd_invalid_reason.get(pair, "unknown")
 
     @property
     def is_connected(self) -> bool:
@@ -128,6 +147,13 @@ class CVDCalculator:
                 await self._connect_and_listen()
             except Exception as e:
                 self._connected = False
+                # Invalidate CVD on disconnect — trades are lost during downtime
+                for pair in self._cvd_state:
+                    prev = self._cvd_state[pair]
+                    self._cvd_state[pair] = CVDState.INVALID
+                    self._cvd_invalid_reason[pair] = "disconnect"
+                    if prev != CVDState.INVALID:
+                        logger.warning(f"CVD state: {prev.name} → INVALID pair={pair} reason=disconnect")
                 if not self._running:
                     break
                 logger.warning(f"CVD WebSocket disconnected. Reason: {e}")
@@ -142,6 +168,20 @@ class CVDCalculator:
             for pair in list(self._trades.keys()):
                 self._prune_old_trades(pair, now_ms)
                 self._compute_snapshot(pair, now_ms)
+
+                # Check warmup completion: trades must span >= CVD_WARMUP_SECONDS
+                if self._cvd_state.get(pair) == CVDState.WARMING_UP:
+                    trades = self._trades.get(pair)
+                    if trades and len(trades) >= 2:
+                        oldest_ms = trades[0].timestamp
+                        span_sec = (now_ms - oldest_ms) / 1000
+                        if span_sec >= settings.CVD_WARMUP_SECONDS:
+                            self._cvd_state[pair] = CVDState.VALID
+                            self._cvd_invalid_reason[pair] = ""
+                            logger.info(
+                                f"CVD state: WARMING_UP → VALID pair={pair} "
+                                f"span={span_sec:.0f}s trades={len(trades)}"
+                            )
 
     # ================================================================
     # Internal: connect, subscribe, parse trades
@@ -161,6 +201,14 @@ class CVDCalculator:
             self._reconnect_delay = settings.RECONNECT_INITIAL_DELAY
 
             logger.info("CVD WebSocket connected")
+            # Transition to WARMING_UP on reconnect — flush stale trades
+            for pair in self._cvd_state:
+                if self._cvd_state[pair] == CVDState.INVALID:
+                    self._trades[pair].clear()
+                    self._snapshots.pop(pair, None)
+                    self._cvd_state[pair] = CVDState.WARMING_UP
+                    self._cvd_invalid_reason[pair] = "reconnect"
+                    logger.info(f"CVD state: INVALID → WARMING_UP pair={pair} (trades flushed)")
             await self._subscribe(ws)
 
             async for raw_msg in ws:
@@ -221,21 +269,27 @@ class CVDCalculator:
         if not pair:
             return
 
+        # Contract size multiplier for this pair
+        contract_size = CONTRACT_SIZES.get(pair, 1.0)
+
         for trade_data in msg.get("data", []):
             try:
                 ts = int(trade_data.get("ts", 0))
                 price = float(trade_data.get("px", 0))
-                size = float(trade_data.get("sz", 0))
+                size_contracts = float(trade_data.get("sz", 0))
                 side = trade_data.get("side", "")
 
-                if price <= 0 or size <= 0:
+                if price <= 0 or size_contracts <= 0:
                     continue
 
                 if side not in ("buy", "sell"):
                     continue
 
+                # Normalize from contracts to base currency
+                size_base = size_contracts * contract_size
+
                 self._trades[pair].append(_RawTrade(
-                    timestamp=ts, price=price, size=size, side=side
+                    timestamp=ts, price=price, size=size_base, side=side
                 ))
                 self._trades_received += 1
 

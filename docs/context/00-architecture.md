@@ -84,6 +84,8 @@ Sin esta arquitectura, tendríamos un solo programa gigante donde todo está mez
 - Intraday bloqueado en el par mientras haya campaña activa (y viceversa)
 - Sin TP orders — la campaña sale solo via trailing SL o timeout (7 días)
 
+**Data integrity gate (antes de dedup):** DataService tiene un estado global (`RECOVERING`/`RUNNING`/`DEGRADED`). Ningún setup pasa mientras no sea `RUNNING`. Además, cada setup tiene dependencias de datos específicas (setup_c necesita CVD válido, setup_e necesita OI). Si un dep falta, el setup se bloquea y se registra como `data_blocked` en ML. Position Guardian y HTF campaigns también se bloquean durante RECOVERING.
+
 **Regla clave:** Si CUALQUIER servicio dice NO, el trade se descarta. No hay "pero" ni "tal vez".
 
 **Sistema de alertas (`shared/alert_manager.py`):** AlertManager envuelve TelegramNotifier con prioridades (INFO/WARNING/CRITICAL/EMERGENCY), rate limiting, auto-silenciamiento, y escalamiento EMERGENCY con retry+backoff. Infraestructura de routing completa, pero solo 3 tipos de notificación activos. Configuración en `config/settings.py` (ALERT_*).
@@ -297,7 +299,7 @@ Desde 2026-03-13, el bot registra cada setup detectado con features estructurado
 - `feature_version` (incrementar en `ML_FEATURE_VERSION` cuando cambien params de estrategia)
 
 **Al resolver:**
-- `outcome_type`: filled_tp, filled_sl, filled_trailing, filled_timeout, unfilled_timeout, risk_rejected, deduped, replaced
+- `outcome_type`: filled_tp, filled_sl, filled_trailing, filled_timeout, unfilled_timeout, risk_rejected, deduped, replaced, data_blocked
 - PnL, actual entry/exit, exit_reason, fill_duration_ms, trade_duration_ms
 
 ### Archivos

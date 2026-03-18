@@ -418,10 +418,12 @@ class TestPositionSizing:
         expected_size = (10000 * 0.02) / 500  # 0.4
         assert trade.position_size == pytest.approx(expected_size, rel=0.01)
 
+    @patch.object(settings, 'MIN_RISK_DISTANCE_PCT', 0.001)
     def test_leverage_cap(self):
         """Leverage capped at MAX_LEVERAGE when risk-based size is too large."""
         sim = TradeSimulator(initial_capital=1000)
-        # entry=50000, sl=49850 → distance=$150 (0.3%, passes MIN_RISK_DISTANCE_PCT)
+        # entry=50000, sl=49850 → distance=$150 (0.3%)
+        # MIN_RISK_DISTANCE_PCT patched to 0.1% so this passes
         # risk = 1000 * 0.02 = $20
         # size = 20 / 150 = 0.133 BTC → notional = 6,667 → leverage = 6.67x
         # Capped: leverage=MAX → notional=MAX*1000 → size=MAX*1000/50000
@@ -441,8 +443,8 @@ class TestPositionSizing:
         sim = TradeSimulator(initial_capital=10000)
         candle0 = _candle(timestamp=1000000)
 
-        # Use different pairs to avoid pending replacement
-        pairs = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "DOGE/USDT", "XRP/USDT"]
+        # Use different pairs to avoid pending replacement (need MAX+1 pairs)
+        pairs = [f"PAIR{i}/USDT" for i in range(settings.MAX_OPEN_POSITIONS + 1)]
         for i in range(settings.MAX_OPEN_POSITIONS):
             setup = _setup(pair=pairs[i], entry=49500 - i * 100,
                            sl=49000 - i * 100, timestamp=1000000 + i)

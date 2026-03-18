@@ -21,6 +21,7 @@ from shared.logger import setup_logger
 from shared.models import Candle, AIDecision
 from shared.ml_features import extract_setup_features, extract_risk_context
 from data_service.service import DataService
+from data_service.data_integrity import DataServiceState, can_trade_setup
 from strategy_service import StrategyService
 from ai_service import AIService
 from risk_service import RiskService
@@ -146,10 +147,12 @@ async def on_candle_confirmed(candle: Candle) -> None:
     _publish_strategy_state(candle.pair)
 
     # Position Guardian — evaluate open positions against live market conditions
+    # Only run when data is clean (RUNNING state) to avoid false early closes
     if (settings.POSITION_GUARDIAN_ENABLED
             and _execution_service is not None
             and _execution_service._guardian is not None
-            and _data_service is not None):
+            and _data_service is not None
+            and _data_service.state == DataServiceState.RUNNING):
         try:
             recent = _data_service.get_candles(candle.pair, candle.timeframe, count=20)
             snapshot = _data_service.get_market_snapshot(candle.pair)
@@ -170,6 +173,30 @@ async def on_candle_confirmed(candle: Candle) -> None:
         f"sl={setup.sl_price:.2f} tp1={setup.tp1_price:.2f} "
         f"confluences={setup.confluences}"
     )
+
+    # --- Data integrity gate ---
+    if _data_service is not None and _data_service.state != DataServiceState.RUNNING:
+        logger.info(
+            f"Data gate: service={_data_service.state.name} | "
+            f"{setup.setup_type} {setup.pair}"
+        )
+        _ml_log_setup(setup, candle)
+        _ml_resolve_outcome(setup.setup_id, "data_blocked")
+        return
+
+    if _data_service is not None:
+        snapshot = _data_service.get_market_snapshot(candle.pair)
+        cvd_state = _data_service.get_cvd_state(candle.pair)
+        allowed, reason = can_trade_setup(
+            setup.setup_type, snapshot.health, _data_service.state, cvd_state,
+        )
+        if not allowed:
+            logger.info(
+                f"Data gate: {reason} | {setup.setup_type} {setup.pair}"
+            )
+            _ml_log_setup(setup, candle)
+            _ml_resolve_outcome(setup.setup_id, "data_blocked")
+            return
 
     # Dedup: block identical setups within TTL (covers ALL setup types, not just Claude)
     # NOTE: entry_price intentionally excluded — same pair/direction/type within TTL
@@ -364,6 +391,11 @@ async def _evaluate_htf_pipeline(candle: Candle) -> None:
     if not _campaign_monitor.can_open_new_campaign():
         return
     if _campaign_monitor.has_active_campaign(candle.pair):
+        return
+
+    # Data integrity gate for HTF pipeline
+    if _data_service is not None and _data_service.state != DataServiceState.RUNNING:
+        logger.debug(f"HTF blocked: data service state={_data_service.state.name}")
         return
 
     setup = _strategy_service.evaluate_htf(candle.pair, candle)

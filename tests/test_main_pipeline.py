@@ -14,8 +14,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from shared.models import (
     Candle, TradeSetup, AIDecision, RiskApproval,
-    MarketSnapshot, FundingRate, CVDSnapshot,
+    MarketSnapshot, FundingRate, CVDSnapshot, SnapshotHealth,
 )
+from data_service.data_integrity import DataServiceState, CVDState
 
 
 # Patch setup_logger to return a no-op logger before importing main.
@@ -121,7 +122,19 @@ def _wire_services(
     main._strategy_service = strategy
 
     data = MagicMock()
-    data.get_market_snapshot.return_value = snapshot or _make_snapshot()
+    data.state = DataServiceState.RUNNING
+    data.get_cvd_state.return_value = CVDState.VALID
+    snap = snapshot or _make_snapshot()
+    # Attach a healthy SnapshotHealth so can_trade_setup() passes
+    if snap.health is None:
+        snap.health = SnapshotHealth(
+            sources=(),
+            completeness_pct=1.0,
+            critical_sources_healthy=True,
+            stale_sources=(),
+            missing_sources=(),
+        )
+    data.get_market_snapshot.return_value = snap
     data.redis = MagicMock()
     data.redis.get_bot_state.return_value = None
     data.postgres = MagicMock()

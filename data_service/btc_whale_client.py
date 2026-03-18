@@ -164,6 +164,15 @@ class BtcWhaleClient:
 
         # Check for new transactions since last poll
         last_seen = self._last_seen_tx.get(wallet)
+
+        # First poll for this wallet: seed baseline, don't generate events
+        if last_seen is None:
+            if txs:
+                self._last_seen_tx[wallet] = txs[0].get("txid", "")
+                label = self._wallet_labels.get(wallet.lower(), wallet[:10] + "...")
+                logger.info(f"Baseline seeded for {label}")
+            return
+
         new_txs = []
         for tx in txs[:25]:  # Only check last 25
             txid = tx.get("txid", "")

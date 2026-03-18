@@ -47,7 +47,7 @@ All 5 layers run in the same Python process. The Data Service exposes methods th
 ### `shared/models.py` — Typed Dataclasses
 12 frozen dataclasses shared across all layers:
 - **Candle** — OHLCV with pair, timeframe, confirmed flag
-- **FundingRate** — current rate + next estimated + next funding time
+- **FundingRate** — current rate + next estimated + next funding time + `fetched_at` (actual fetch time, default 0 for backward compat)
 - **OpenInterest** — in contracts, base currency, and USD
 - **CVDSnapshot** — cumulative volume delta for 5m, 15m, 1h windows + buy/sell volume
 - **OIFlushEvent** — from OI flush detector (OI drop >2% = cascade), with side and size_usd
@@ -55,7 +55,7 @@ All 5 layers run in the same Python process. The Data Service exposes methods th
 - **NewsHeadline** — single news headline (title, source, timestamp, category, sentiment). Sentiment is optional ("bullish"/"bearish"/None) derived from CryptoCompare community votes (upvotes vs downvotes).
 - **NewsSentiment** — Fear & Greed score (0-100) + label + recent headlines + fetched_at
 - **SourceFreshness** — per-source freshness status (name, priority, age_ms, is_stale)
-- **SnapshotHealth** — aggregate snapshot health (completeness_pct, critical_sources_healthy, stale/missing sources)
+- **SnapshotHealth** — aggregate snapshot health (completeness_pct, critical_sources_healthy, stale/missing sources, `redis_healthy`, `service_state`)
 - **MarketSnapshot** — wraps funding, OI, CVD, oi_flushes, whales, news_sentiment, health for a pair
 - **TradeSetup** — detected setup from Strategy Service
 - **AIDecision** — Claude's evaluation with confidence score
@@ -105,6 +105,9 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - **Pipeline serialization:** Per-pair `asyncio.Lock` prevents concurrent pipeline runs on the same pair. Exception logging via `task.add_done_callback()`.
 - Callback `on_candle_confirmed` triggers the main pipeline
 - Handles OKX text "pong" keepalive messages
+- **OHLC sanity:** Rejects candles where `low > min(open,close)` or `high < max(open,close)`. Tracks `_bad_candle_counts` per pair/tf.
+- **Live candle tracking:** `_live_candle_count` resets to 0 on each connect. Warmup requires ≥1 live candle before `RUNNING`.
+- **Reconnect callback:** `_on_reconnect_cb` fires after WS reconnect (set by DataService for gap backfill).
 - Reconnection: exponential backoff 1s → 2s → 4s → ... → 60s max
 - **Metrics callback:** Optional `metrics_callback` parameter. Emits `ws_reconnection` metric on each disconnect (for Grafana System Health dashboard).
 
@@ -117,7 +120,9 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - CVD formula: `sum(size if buy, -size if sell)` per window
 - Tracks total buy_volume and sell_volume (1h window)
 - Auto-prunes trades older than 1 hour
-- Public method: `get_cvd(pair)` → `CVDSnapshot | None`
+- **Contract size normalization:** Trades from OKX are in contracts. Normalized to base currency using `CONTRACT_SIZES` from `data_integrity.py` (BTC: ×0.01, ETH: ×0.1, etc.).
+- **CVD state machine:** Per-pair `CVDState` (WARMING_UP → VALID → INVALID on disconnect → WARMING_UP on reconnect). On reconnect, trade buffer is flushed to prevent stale trades contaminating CVD windows. `get_cvd()` returns `None` when state ≠ VALID. Warmup: trades must span ≥ `CVD_WARMUP_SECONDS` (3600s).
+- Public methods: `get_cvd(pair)` → `CVDSnapshot | None`, `get_cvd_state(pair)` → `CVDState`
 
 ### `data_service/oi_flush_detector.py` — OI Flush Detector
 - Detects liquidation cascades from OI drops (>2% in 5 minutes)
@@ -126,7 +131,9 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - When OI drops ≥ `OI_DROP_THRESHOLD_PCT` in `OI_DROP_WINDOW_SECONDS`, generates `OIFlushEvent(source="oi_proxy")`
 - Public API: `get_recent_oi_flushes()`, `get_aggregated_stats()`, `is_connected`
 - **Why:** Binance WebSocket is geo-blocked from Canada. OI proxy detects the same cascades indirectly.
-- **Limitation:** Cannot detect individual liquidations — only aggregate cascades. No directional info (defaults to "long").
+- **Side attribution:** Uses price change to infer which side was liquidated (price drop >0.5% + OI drop → `"long"`, rise → `"short"`, else `"unknown"`). `update()` accepts `current_price` from latest candle.
+- **Snapshot age validation:** Rejects stale snapshots older than `window_ms × OI_SNAPSHOT_MAX_AGE_FACTOR` (default 2.0).
+- **Limitation:** Cannot detect individual liquidations — only aggregate cascades.
 - Auto-prunes events older than 1 hour
 
 ### `data_service/etherscan_client.py` — ETH Whale Wallet Monitor
@@ -139,6 +146,7 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Whale → non-exchange = `transfer_out` (neutral, `exchange` = truncated address)
 - Non-exchange → whale = `transfer_in` (neutral, `exchange` = truncated address)
 - Significance: >100 ETH = "high", >10 ETH = "medium", <10 ETH ignored
+- **First-poll baseline:** On first poll for each wallet (`_last_seen_tx` is None), seeds the tx hash without generating events. Prevents false whale alerts on startup.
 - Rate limit enforced: max 4.5 calls/sec (safely under Etherscan's 5/sec)
 - Creates `WhaleMovement(chain="ETH", wallet_label=label, amount_usd=..., market_price=...)` — USD computed at detection time
 - Log format: `BEARISH|BULLISH|NEUTRAL Whale {action}: {label} → {dest} {amount} ETH (~$USD) [{significance}]`
@@ -157,6 +165,7 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
   - Wallet → non-exchange = `transfer_out` (neutral, sums non-self outputs)
   - Non-exchange → wallet = `transfer_in` (neutral)
 - Significance: >100 BTC = "high", >10 BTC = "medium", <10 BTC ignored
+- **First-poll baseline:** Same as Etherscan — seeds `_last_seen_tx` on first poll, no false events on startup.
 - Rate limit: 0.5s between calls (~10 req/min, safe for public instance)
 - Creates `WhaleMovement(chain="BTC", wallet_label=label, amount_usd=..., market_price=...)` — USD computed at detection time
 - Log format: `BEARISH|BULLISH|NEUTRAL BTC whale {action}: {label} → {dest} {amount} BTC (~$USD) [{significance}]`
@@ -197,27 +206,33 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - **Auto-reconnection:** `_ensure_connected()` checks connection health (sends `SELECT 1`). All DB methods (`store_candles`, `load_candles`, `insert_trade`, `update_trade`, `insert_ai_decision`, `insert_risk_event`, `insert_metric`) retry once on `psycopg2.OperationalError` / `InterfaceError` — sets `_conn = None` and reconnects.
 - **Operational metrics (Grafana):** `insert_metric(name, value, pair, labels)` writes to `bot_metrics` table. `cleanup_old_metrics(retention_days=30)` deletes old rows. Both fire-and-forget.
 
+### `data_service/data_integrity.py` — Data Integrity Module (NEW)
+Central hub for data quality types and gating logic:
+- **`DataServiceState`** enum: `RECOVERING` (startup/reconnect), `RUNNING` (all checks pass), `DEGRADED` (circuit breaker tripped)
+- **`CVDState`** enum: `VALID`, `WARMING_UP`, `INVALID`
+- **`CONTRACT_SIZES`** dict: single source of truth for OKX contract sizes (used by CVD + exchange_client)
+- **`SETUP_DATA_DEPS`** dict: per-setup data dependencies (setup_c needs candles+funding+cvd, setup_e needs candles+oi, rest only need candles)
+- **`can_trade_setup()`**: checks service state + per-setup deps. Returns `(allowed, reason)`.
+- **`validate_candle_continuity()`**: checks timestamps are sequential per timeframe (tolerance 1.5×). Returns `(is_continuous, gap_count)`.
+- **`CircuitBreaker`**: sliding window of reconnect events. Trips after `CIRCUIT_BREAKER_MAX_RECONNECTS` in `CIRCUIT_BREAKER_WINDOW_SECONDS`. Auto-resets after `CIRCUIT_BREAKER_STABLE_SECONDS` of stability.
+
 ### `data_service/service.py` — DataService Facade
-- Wires all 9 sub-modules into a single interface (including NewsClient)
-- **HTF campaign support:** When `HTF_CAMPAIGN_ENABLED=true`, adds "1d" to backfill timeframes so Daily candles are available for campaign bias determination.
-- Public methods: `get_latest_candle()`, `get_candles()`, `get_market_snapshot()`, `get_cvd()`, `fetch_usdt_balance()`, etc.
-- Manages startup (backfill → WebSockets → polling loops) and graceful shutdown
-- On confirmed candle: stores to Redis + PostgreSQL, triggers pipeline callback
-- **Funding/OI/CVD persistence:** Polling loops persist funding rates and OI snapshots to PostgreSQL on every poll. CVD snapshots persisted on every confirmed candle. Building historical data for backtesting Setup C/E.
-- Health check loop every 30 seconds — emits `health_status` metric (1.0=OK, 0.0=degraded) to `bot_metrics`
-- **Metrics cleanup:** Every ~50 min (100 health checks), calls `cleanup_old_metrics(30)` to prune metrics older than 30 days
-- **`_emit_metric()`:** Fire-and-forget metric writer to PostgreSQL `bot_metrics` table. Passed to WebSocket feeds as callback.
-- Uses `asyncio.get_running_loop()` (not deprecated `get_event_loop()`)
-- **Price providers:** `_get_eth_price()` and `_get_btc_price()` return latest 5m candle close, passed to whale clients for USD conversion
-- **Whale data (no Telegram):** Whale movements are collected and stored for AI context + dashboard, but Telegram notifications for whales are disabled. All filtering settings (`WHALE_NOTIFY_EXCHANGE_ONLY`, `WHALE_NOTIFY_MIN_USD`, market maker filter) remain in config for potential future re-enable.
-- **Health check Telegram removed:** Health status still logged + metric emitted, but no Telegram alerts on component down/recovered.
-- **News sentiment polling:** `_news_sentiment_loop()` fetches F&G + headlines every `NEWS_POLL_INTERVAL` (5min). Stores latest `NewsSentiment` in `_latest_sentiment`. Included in `get_market_snapshot()`. Initial fetch on startup, then periodic.
+- Wires all sub-modules into a single interface
+- **Global state machine:** `_state` = RECOVERING → RUNNING → DEGRADED. Starts in RECOVERING. `_check_warmup()` evaluates transition to RUNNING every 10s.
+- **RUNNING requires:** (1) WS connected, (2) ≥`STARTUP_WARMUP_CANDLE_MIN` candles per pair/tf, (3) ≥1 live WS candle, (4) candle continuity validated, (5) circuit breaker not tripped.
+- **Reconnect handler (`_on_ws_reconnect`):** state→RECOVERING, circuit breaker event, gap backfill (up to 500 candles, paginated). If gap > backfill capacity, stays RECOVERING with CRITICAL log.
+- **Backfill idempotency:** `_backfill_in_progress` flag prevents duplicate backfills on rapid reconnects.
+- **Snapshot health:** `_compute_health()` uses `FundingRate.fetched_at` (actual fetch time, not exchange event time). Redis health checked — if down, `critical_sources_healthy=False`. `SnapshotHealth` includes `redis_healthy` and `service_state`.
+- **OI loop:** passes current price to `oi_flush_detector.update()` for side attribution.
+- Public methods: `get_latest_candle()`, `get_candles()`, `get_market_snapshot()`, `get_cvd()`, `get_cvd_state()`, `fetch_usdt_balance()`, `state` property
+- Health check loop every 30 seconds — emits `health_status` metric, logs current `state`
+- **Metrics:** `data_service_state` (on transition to RUNNING), `ws_reconnect`, `circuit_breaker_tripped`, `gap_backfill_unrecoverable`
 
 ### `main.py` — Entry Point
 - Single process, handles SIGINT/SIGTERM for graceful shutdown
 - Creates DataService with pipeline callback
-- **Capital at startup:** Fetches USDT balance from exchange via `data_service.fetch_usdt_balance()`. Falls back to `INITIAL_CAPITAL` setting if fetch fails or returns 0.
-- Pipeline completo: Data → Strategy → AI (bypass/filter) → Risk → Execution (5 capas wired)
+- **Data integrity gate:** After setup detection, before dedup: checks `_data_service.state == RUNNING` and `can_trade_setup()` per-setup deps. Blocked setups logged as `data_blocked` ML outcome. Position Guardian and HTF pipeline also gated on RUNNING state.
+- Pipeline completo: Data → **Data Gate** → Strategy → AI (bypass/filter) → Risk → Execution
 - AI filter currently bypassed for all active setups (setup_a in AI_BYPASS_SETUP_TYPES, setup_d variants in QUICK_SETUP_TYPES)
 - Pipeline dedup cache at entry covers ALL setup types. Risk rejections for structural reasons also cached.
 - **Pipeline metrics:** `_emit_metric()` helper writes to `bot_metrics`. Emits `pipeline_latency_ms` (per candle) and `claude_latency_ms` (per AI evaluation).
@@ -248,6 +263,12 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 | `OI_DROP_THRESHOLD_PCT` | `0.02` (2%) | OI proxy cascade threshold |
 | `OI_DROP_WINDOW_SECONDS` | `300` (5min) | OI proxy measurement window |
 | `RECONNECT_BACKOFF_FACTOR` | `2.0` | Backoff multiplier |
+| `STARTUP_WARMUP_CANDLE_MIN` | `50` | Min candles per pair/tf before RUNNING |
+| `CVD_WARMUP_SECONDS` | `3600` | CVD trade span before VALID (60 min) |
+| `CIRCUIT_BREAKER_MAX_RECONNECTS` | `5` | Reconnects before DEGRADED |
+| `CIRCUIT_BREAKER_WINDOW_SECONDS` | `300` | Sliding window for circuit breaker |
+| `CIRCUIT_BREAKER_STABLE_SECONDS` | `120` | Stability before auto-reset |
+| `OI_SNAPSHOT_MAX_AGE_FACTOR` | `2.0` | Max age multiplier for OI snapshots |
 | `NEWS_SENTIMENT_ENABLED` | `True` | Enable/disable news sentiment fetching |
 | `NEWS_FEAR_GREED_URL` | `https://api.alternative.me/fng/` | Fear & Greed API endpoint |
 | `NEWS_HEADLINES_URL` | `https://min-api.cryptocompare.com/data/v2/news/` | CryptoCompare news API endpoint (free, no key) |

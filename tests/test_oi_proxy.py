@@ -120,8 +120,9 @@ class TestAggregatedStats:
     def test_stats_with_events(self):
         detector = OIFlushDetector()
         ts = int(time.time() * 1000)
-        detector.update(_make_oi("BTC/USDT", 1_000_000, ts))
-        detector.update(_make_oi("BTC/USDT", 950_000, ts + 300_000))
+        # Pass current_price so side attribution works (price drop → "long")
+        detector.update(_make_oi("BTC/USDT", 1_000_000, ts), current_price=50000.0)
+        detector.update(_make_oi("BTC/USDT", 950_000, ts + 300_000), current_price=49000.0)
 
         stats = detector.get_aggregated_stats("BTC/USDT", minutes=60)
         assert stats["total_usd"] == 50_000
@@ -155,6 +156,7 @@ class TestEdgeCases:
         with patch("data_service.oi_flush_detector.settings") as mock_s:
             mock_s.OI_DROP_THRESHOLD_PCT = 0.01  # Lower to 1%
             mock_s.OI_DROP_WINDOW_SECONDS = 300
+            mock_s.OI_SNAPSHOT_MAX_AGE_FACTOR = 2.0
             detector.update(_make_oi("BTC/USDT", 985_000, ts + 300_000))
 
         events = detector.get_recent_oi_flushes("BTC/USDT")

@@ -36,6 +36,9 @@ class OIFlushDetector:
         # Detected OI flush events (pruned to last hour)
         self._events: list[OIFlushEvent] = []
 
+        # Last known price per pair — for side attribution
+        self._last_price: dict[str, float] = {}
+
     # ================================================================
     # Public interface
     # ================================================================
@@ -72,10 +75,14 @@ class OIFlushDetector:
     # Feed — called by DataService._oi_loop()
     # ================================================================
 
-    def update(self, oi: OpenInterest) -> None:
+    def update(self, oi: OpenInterest, current_price: float = 0.0) -> None:
         """Process a new OI snapshot. Detects drops and generates events.
 
         Called every OI_CHECK_INTERVAL (5 min) by DataService.
+
+        Args:
+            oi: New OI snapshot.
+            current_price: Current market price for side attribution.
         """
         pair = oi.pair
 
@@ -90,6 +97,11 @@ class OIFlushDetector:
         # Store new snapshot
         buf.append(oi)
 
+        # Track price for side attribution
+        prev_price = self._last_price.get(pair, 0.0)
+        if current_price > 0:
+            self._last_price[pair] = current_price
+
         if prev is None:
             # Not enough data yet — need at least one prior snapshot
             return
@@ -102,7 +114,7 @@ class OIFlushDetector:
 
         if drop_pct >= settings.OI_DROP_THRESHOLD_PCT:
             estimated_liq_usd = prev.oi_usd - oi.oi_usd
-            self._generate_event(oi, drop_pct, estimated_liq_usd)
+            self._generate_event(oi, drop_pct, estimated_liq_usd, current_price, prev_price)
 
     # ================================================================
     # Internal
@@ -127,22 +139,34 @@ class OIFlushDetector:
                 best_diff = diff
                 best = snap
 
+        # Reject if snapshot is too old (stale data from before a long outage)
+        if best is not None:
+            max_age_ms = window_ms * settings.OI_SNAPSHOT_MAX_AGE_FACTOR
+            if best_diff > max_age_ms:
+                return None
+
         return best
 
     def _generate_event(
-        self, oi: OpenInterest, drop_pct: float, estimated_usd: float
+        self, oi: OpenInterest, drop_pct: float, estimated_usd: float,
+        current_price: float = 0.0, prev_price: float = 0.0,
     ) -> None:
         """Create an OIFlushEvent from an OI drop detection."""
-        # OI drop doesn't tell us which side was liquidated.
-        # Convention: if price likely dropped, longs were liquidated.
-        # Since we don't have price here, mark as "unknown" direction
-        # using "long" as the conservative default (the common case in crypto).
+        # Side attribution: use price movement to infer which side was liquidated
+        side = "unknown"
+        if prev_price > 0 and current_price > 0:
+            price_change_pct = (current_price - prev_price) / prev_price
+            if price_change_pct < -0.005:  # Price dropped >0.5% + OI dropped → longs liquidated
+                side = "long"
+            elif price_change_pct > 0.005:  # Price rose >0.5% + OI dropped → shorts liquidated
+                side = "short"
+
         event = OIFlushEvent(
             timestamp=oi.timestamp,
             pair=oi.pair,
-            side="long",
+            side=side,
             size_usd=estimated_usd,
-            price=0.0,  # Unknown from OI data alone
+            price=current_price,
             source="oi_proxy",
         )
 

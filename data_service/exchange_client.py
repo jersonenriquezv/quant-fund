@@ -20,6 +20,7 @@ import ccxt
 from config.settings import settings
 from shared.logger import setup_logger
 from shared.models import Candle, FundingRate, OpenInterest
+from data_service.data_integrity import CONTRACT_SIZES
 
 logger = setup_logger("data_service")
 
@@ -38,16 +39,9 @@ _PAIR_TO_SYMBOL = {
 # OKX max candles per request
 _MAX_CANDLES_PER_REQUEST = 100
 
-# OKX perpetual contract sizes (base currency per contract)
-_CONTRACT_SIZES = {
-    "BTC/USDT": 0.01,   # 1 contract = 0.01 BTC
-    "ETH/USDT": 0.1,    # 1 contract = 0.1 ETH
-    "SOL/USDT": 1.0,    # 1 contract = 1 SOL
-    "DOGE/USDT": 1000.0, # 1 contract = 1000 DOGE
-    "XRP/USDT": 100.0,  # 1 contract = 100 XRP
-    "LINK/USDT": 1.0,   # 1 contract = 1 LINK
-    "AVAX/USDT": 1.0,   # 1 contract = 1 AVAX
-}
+# Contract sizes imported from data_integrity.py (single source of truth)
+# _CONTRACT_SIZES alias kept for backward compatibility within this module
+_CONTRACT_SIZES = CONTRACT_SIZES
 
 # ccxt expects lowercase timeframes: "5m", "15m", "1h", "4h"
 # OKX API uses "1H"/"4H" but ccxt handles the conversion internally.
@@ -243,6 +237,7 @@ class ExchangeClient:
                 rate=float(rate),
                 next_rate=float(next_rate) if next_rate is not None else 0.0,
                 next_funding_time=int(next_funding_time or 0),
+                fetched_at=int(time.time() * 1000),
             )
 
             logger.info(f"Funding rate fetched: pair={pair} rate={fr.rate:.6f} "

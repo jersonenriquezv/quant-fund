@@ -712,6 +712,21 @@ class Settings:
     # Factor multiplicador para backoff exponencial
     RECONNECT_BACKOFF_FACTOR: float = 2.0
 
+    # ========================
+    # DATA INTEGRITY
+    # ========================
+    # Minimum confirmed candles in memory before allowing trades after startup/reconnect
+    STARTUP_WARMUP_CANDLE_MIN: int = int(os.getenv("STARTUP_WARMUP_CANDLE_MIN", "50"))
+    # Seconds of valid CVD trades before CVD state transitions to VALID
+    CVD_WARMUP_SECONDS: int = int(os.getenv("CVD_WARMUP_SECONDS", "3600"))  # 60 min
+    # Circuit breaker: max reconnects in window before entering DEGRADED
+    CIRCUIT_BREAKER_MAX_RECONNECTS: int = int(os.getenv("CIRCUIT_BREAKER_MAX_RECONNECTS", "5"))
+    CIRCUIT_BREAKER_WINDOW_SECONDS: int = int(os.getenv("CIRCUIT_BREAKER_WINDOW_SECONDS", "300"))
+    # Seconds of stability after trip before auto-reset
+    CIRCUIT_BREAKER_STABLE_SECONDS: int = int(os.getenv("CIRCUIT_BREAKER_STABLE_SECONDS", "120"))
+    # OI snapshot age validation: reject if snapshot is older than window × this factor
+    OI_SNAPSHOT_MAX_AGE_FACTOR: float = float(os.getenv("OI_SNAPSHOT_MAX_AGE_FACTOR", "2.0"))
+
 
 
 

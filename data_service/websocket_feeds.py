@@ -98,6 +98,15 @@ class OKXWebSocketFeed:
         self._reconnect_delay = settings.RECONNECT_INITIAL_DELAY
         self._last_message_time = 0.0
 
+        # OHLC sanity failure tracking
+        self._bad_candle_counts: dict[tuple[str, str], int] = defaultdict(int)
+
+        # Reconnect callback — set by DataService for gap backfill
+        self._on_reconnect_cb = None
+
+        # Track live (WS-received) candle count since last connect
+        self._live_candle_count: int = 0
+
     # ================================================================
     # Public interface — called by other services via direct import
     # ================================================================
@@ -147,6 +156,7 @@ class OKXWebSocketFeed:
     async def start(self) -> None:
         """Start the WebSocket connection with automatic reconnection."""
         self._running = True
+        _first_connect = True
         while self._running:
             try:
                 await self._connect_and_listen()
@@ -157,6 +167,13 @@ class OKXWebSocketFeed:
                 logger.warning(f"OKX WebSocket disconnected. Reason: {e}")
                 if self._metrics_cb:
                     self._metrics_cb("ws_reconnection", 1.0, None, {"feed": "candles"})
+                # Notify DataService of reconnect (skip first connect — that's startup)
+                if not _first_connect and self._on_reconnect_cb:
+                    try:
+                        await self._on_reconnect_cb()
+                    except Exception as cb_err:
+                        logger.error(f"Reconnect callback failed: {cb_err}")
+                _first_connect = False
                 await self._reconnect_backoff()
 
     async def stop(self) -> None:
@@ -184,6 +201,7 @@ class OKXWebSocketFeed:
             self._connected = True
             self._reconnect_delay = settings.RECONNECT_INITIAL_DELAY
             self._last_message_time = time.time()
+            self._live_candle_count = 0
 
             logger.info("OKX WebSocket connected")
             await self._subscribe_all(ws)
@@ -328,6 +346,10 @@ class OKXWebSocketFeed:
             if len(self._candles[key]) > _MAX_CANDLES_IN_MEMORY:
                 self._candles[key] = self._candles[key][-_MAX_CANDLES_IN_MEMORY:]
 
+            self._live_candle_count += 1
+            if self._live_candle_count == 1:
+                logger.info("First live WS candle received since connect")
+
             logger.info(f"Candle confirmed: pair={pair} tf={timeframe} "
                         f"close={c} vol={vol:.4f} ts={ts}")
 
@@ -363,8 +385,7 @@ class OKXWebSocketFeed:
     # Validation
     # ================================================================
 
-    @staticmethod
-    def _validate_candle(pair: str, timeframe: str, ts: int,
+    def _validate_candle(self, pair: str, timeframe: str, ts: int,
                          o: float, h: float, l: float, c: float,
                          vol: float) -> bool:
         """Validate candle per data-engineer rules."""
@@ -382,6 +403,17 @@ class OKXWebSocketFeed:
         if ts > now_ms + 60_000:
             logger.warning(f"WS candle future timestamp discarded: pair={pair} tf={timeframe} "
                            f"ts={ts} diff={ts - now_ms}ms")
+            return False
+
+        # OHLC sanity: high must be >= max(open,close), low must be <= min(open,close)
+        if l > min(o, c) or h < max(o, c):
+            key = (pair, timeframe)
+            self._bad_candle_counts[key] += 1
+            count = self._bad_candle_counts[key]
+            logger.warning(
+                f"OHLC sanity failed: pair={pair} tf={timeframe} "
+                f"O={o} H={h} L={l} C={c} count={count}"
+            )
             return False
 
         return True

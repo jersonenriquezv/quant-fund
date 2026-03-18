@@ -35,6 +35,10 @@ from data_service.etherscan_client import EtherscanClient
 from data_service.btc_whale_client import BtcWhaleClient
 from data_service.data_store import RedisStore, PostgresStore
 from data_service.news_client import NewsClient
+from data_service.data_integrity import (
+    DataServiceState, CVDState, CircuitBreaker,
+    validate_candle_continuity, TIMEFRAME_MS,
+)
 
 logger = setup_logger("data_service")
 
@@ -83,9 +87,30 @@ class DataService:
         # Metrics cleanup counter (runs every ~100 health checks = ~50 min)
         self._health_check_count: int = 0
 
+        # Data integrity: global state, circuit breaker, backfill guard
+        self._state: DataServiceState = DataServiceState.RECOVERING
+        self._circuit_breaker = CircuitBreaker(
+            max_events=settings.CIRCUIT_BREAKER_MAX_RECONNECTS,
+            window_seconds=settings.CIRCUIT_BREAKER_WINDOW_SECONDS,
+            stable_seconds=settings.CIRCUIT_BREAKER_STABLE_SECONDS,
+        )
+        self._backfill_in_progress: bool = False
+
+        # Register reconnect callback for gap backfill
+        self._ws_feed._on_reconnect_cb = self._on_ws_reconnect
+
     # ================================================================
     # Public API — called by Strategy Service and main.py
     # ================================================================
+
+    @property
+    def state(self) -> DataServiceState:
+        """Current global state of the DataService."""
+        return self._state
+
+    def get_cvd_state(self, pair: str) -> CVDState:
+        """Get CVD validity state for a pair."""
+        return self._cvd.get_cvd_state(pair)
 
     def get_latest_candle(self, pair: str, timeframe: str) -> Optional[Candle]:
         """Get the most recent confirmed candle from memory."""
@@ -202,7 +227,11 @@ class DataService:
                 sources.append(SourceFreshness(name=name, priority=priority, age_ms=age, is_stale=age > stale_ms))
 
         # Critical sources
-        _add("funding", "critical", funding.timestamp if funding else None, settings.FUNDING_STALE_MS)
+        # Funding: use fetched_at if available (actual fetch time), fall back to timestamp
+        funding_ts = None
+        if funding:
+            funding_ts = funding.fetched_at if funding.fetched_at > 0 else funding.timestamp
+        _add("funding", "critical", funding_ts, settings.FUNDING_STALE_MS)
         _add("oi", "critical", oi.timestamp if oi else None, settings.OI_STALE_MS)
         _add("cvd", "critical", cvd.timestamp if cvd else None, settings.CVD_STALE_MS)
 
@@ -217,12 +246,19 @@ class DataService:
         missing = tuple(s.name for s in sources if s.age_ms is None)
         critical_ok = all(not s.is_stale for s in sources if s.priority == "critical")
 
+        # Redis health — if Redis is down, critical sources are degraded
+        redis_ok = self._redis.is_connected
+        if not redis_ok:
+            critical_ok = False
+
         return SnapshotHealth(
             sources=tuple(sources),
             completeness_pct=round(completeness, 2),
             critical_sources_healthy=critical_ok,
             stale_sources=stale,
             missing_sources=missing,
+            redis_healthy=redis_ok,
+            service_state=self._state.value,
         )
 
     # ================================================================
@@ -264,9 +300,11 @@ class DataService:
         1. Connect databases
         2. Backfill candles
         3. Launch all WebSockets and polling loops concurrently
+        4. Warmup loop transitions state to RUNNING when ready
         """
         self._running = True
-        logger.info("DataService starting...")
+        self._state = DataServiceState.RECOVERING
+        logger.info(f"DataService starting... state={self._state.name}")
 
         # Step 1: Connect databases
         self._connect_databases()
@@ -289,6 +327,7 @@ class DataService:
             asyncio.create_task(self._oi_loop(), name="oi_loop"),
             asyncio.create_task(self._news_sentiment_loop(), name="news_sentiment"),
             asyncio.create_task(self._health_check_loop(), name="health_check"),
+            asyncio.create_task(self._warmup_check_loop(), name="warmup_check"),
         ]
 
         logger.info(f"DataService started: {len(self._tasks)} background tasks running")
@@ -350,6 +389,11 @@ class DataService:
         Runs in executor to avoid blocking the event loop (ccxt is synchronous).
         Stores results in memory (WebSocket feed) and PostgreSQL.
         """
+        if self._backfill_in_progress:
+            logger.warning("Backfill already in progress — skipping duplicate request")
+            return
+
+        self._backfill_in_progress = True
         loop = asyncio.get_running_loop()
         all_timeframes = settings.HTF_TIMEFRAMES + settings.LTF_TIMEFRAMES
         # Add daily candles for HTF campaign bias when enabled
@@ -386,6 +430,8 @@ class DataService:
                 except Exception as e:
                     logger.error(f"Backfill failed: pair={pair} tf={tf} error={e}")
 
+        self._backfill_in_progress = False
+
     # ================================================================
     # Internal: Initial indicator fetch
     # ================================================================
@@ -405,7 +451,9 @@ class DataService:
                 oi = self._exchange.fetch_open_interest(pair)
                 if oi:
                     self._redis.set_open_interest(oi)
-                    self._oi_proxy.update(oi)
+                    candle = self._ws_feed.get_latest_candle(pair, "5m")
+                    current_price = candle.close if candle else 0.0
+                    self._oi_proxy.update(oi, current_price)
                     self._postgres.store_open_interest(oi)
             except Exception as e:
                 logger.error(f"Initial OI fetch failed: pair={pair} error={e}")
@@ -570,7 +618,10 @@ class DataService:
                     )
                     if oi:
                         self._redis.set_open_interest(oi)
-                        self._oi_proxy.update(oi)
+                        # Get current price for OI flush side attribution
+                        candle = self._ws_feed.get_latest_candle(pair, "5m")
+                        current_price = candle.close if candle else 0.0
+                        self._oi_proxy.update(oi, current_price)
                         self._postgres.store_open_interest(oi)
                 except Exception as e:
                     logger.error(f"OI poll failed: pair={pair} error={e}")
@@ -626,9 +677,9 @@ class DataService:
             disconnected = {k for k, v in status.items() if v is False}
 
             if disconnected:
-                logger.warning(f"Health check: DOWN={list(disconnected)}")
+                logger.warning(f"Health check: DOWN={list(disconnected)} state={self._state.name}")
             else:
-                logger.debug(f"Health check: all systems OK")
+                logger.debug(f"Health check: all systems OK state={self._state.name}")
 
             self._last_health_down = disconnected
 
@@ -639,3 +690,188 @@ class DataService:
             self._health_check_count += 1
             if self._health_check_count % 100 == 0:
                 self._postgres.cleanup_old_metrics(retention_days=30)
+
+    # ================================================================
+    # Warmup check loop — transitions state to RUNNING
+    # ================================================================
+
+    async def _warmup_check_loop(self) -> None:
+        """Runs every 10s. Calls _check_warmup() to evaluate state transitions."""
+        while self._running:
+            await asyncio.sleep(10)
+            self._check_warmup()
+
+    def _check_warmup(self) -> None:
+        """Evaluate warmup conditions and transition state if ready.
+
+        Extracted from the async loop so it can be tested synchronously.
+
+        RUNNING requires:
+        1. WS connected
+        2. >= STARTUP_WARMUP_CANDLE_MIN candles per pair/tf
+        3. At least 1 live WS candle received (not just backfill)
+        4. Candle continuity (no gaps) in the last N candles per pair/tf
+        5. Circuit breaker not tripped
+        """
+        # If DEGRADED (circuit breaker tripped), check for reset
+        if self._state == DataServiceState.DEGRADED:
+            if not self._circuit_breaker.is_tripped:
+                logger.info("Circuit breaker reset — transitioning to RECOVERING")
+                self._state = DataServiceState.RECOVERING
+            return
+
+        if self._state != DataServiceState.RECOVERING:
+            return
+
+        # Check warmup conditions
+        ws_connected = self._ws_feed.is_connected
+        if not ws_connected:
+            return
+
+        # Check candle count + continuity per pair/tf
+        candles_ok = True
+        continuity_ok = True
+        min_count = settings.STARTUP_WARMUP_CANDLE_MIN
+        for pair in settings.TRADING_PAIRS:
+            for tf in settings.LTF_TIMEFRAMES:
+                candles = self._ws_feed.get_candles(pair, tf, min_count)
+                if len(candles) < min_count:
+                    candles_ok = False
+                    break
+
+                # Validate continuity on the last min_count candles
+                is_cont, gap_count = validate_candle_continuity(candles, tf)
+                if not is_cont:
+                    continuity_ok = False
+                    logger.warning(
+                        f"Warmup: candle gaps detected pair={pair} tf={tf} "
+                        f"gaps={gap_count} candles={len(candles)}"
+                    )
+                    break
+            if not candles_ok or not continuity_ok:
+                break
+
+        if not candles_ok or not continuity_ok:
+            return
+
+        # Require at least 1 live WS candle (not just backfilled data)
+        if self._ws_feed._live_candle_count < 1:
+            logger.debug("Warmup: waiting for first live WS candle")
+            return
+
+        # Check circuit breaker not tripped
+        if self._circuit_breaker.is_tripped:
+            self._state = DataServiceState.DEGRADED
+            logger.critical("Circuit breaker tripped — state=DEGRADED")
+            return
+
+        # All checks pass — transition to RUNNING
+        self._state = DataServiceState.RUNNING
+        logger.info("Warmup complete — state=RUNNING")
+        self._emit_metric("data_service_state", 1.0, labels={"state": "running"})
+
+    # ================================================================
+    # WS reconnect handler — gap backfill + circuit breaker
+    # ================================================================
+
+    async def _on_ws_reconnect(self) -> None:
+        """Called by OKXWebSocketFeed after a successful reconnect."""
+        logger.warning("WS reconnect detected — state=RECOVERING")
+        self._state = DataServiceState.RECOVERING
+        self._emit_metric("ws_reconnect", 1.0)
+
+        # Record event in circuit breaker
+        self._circuit_breaker.record_event()
+        if self._circuit_breaker.is_tripped:
+            self._state = DataServiceState.DEGRADED
+            logger.critical(
+                f"Circuit breaker TRIPPED: "
+                f"{settings.CIRCUIT_BREAKER_MAX_RECONNECTS} reconnects in "
+                f"{settings.CIRCUIT_BREAKER_WINDOW_SECONDS}s — state=DEGRADED"
+            )
+            self._emit_metric("circuit_breaker_tripped", 1.0)
+            return
+
+        # Trigger gap backfill (guarded by _backfill_in_progress)
+        await self._gap_backfill()
+
+    async def _gap_backfill(self) -> None:
+        """Backfill candle gaps after a WS reconnect.
+
+        Fetches up to 500 candles per pair/tf (paginated by exchange_client).
+        If the gap is larger than what we can backfill, logs a critical warning
+        and stays in RECOVERING — the warmup continuity check will catch it.
+        """
+        if self._backfill_in_progress:
+            logger.warning("Gap backfill skipped — backfill already in progress")
+            return
+
+        self._backfill_in_progress = True
+        logger.info("Gap backfill starting...")
+        loop = asyncio.get_running_loop()
+        all_timeframes = settings.HTF_TIMEFRAMES + settings.LTF_TIMEFRAMES
+        unrecoverable_gaps = []
+
+        try:
+            for pair in settings.TRADING_PAIRS:
+                for tf in all_timeframes:
+                    try:
+                        last_candle = self._ws_feed.get_latest_candle(pair, tf)
+                        if not last_candle:
+                            continue
+
+                        # Calculate how many candles we're missing
+                        now_ms = int(time.time() * 1000)
+                        tf_ms = TIMEFRAME_MS.get(tf, 300_000)
+                        gap_candles = (now_ms - last_candle.timestamp) // tf_ms
+
+                        if gap_candles <= 0:
+                            continue
+
+                        # Fetch up to 500 candles (exchange_client paginates)
+                        fetch_count = min(int(gap_candles) + 10, 500)
+                        candles = await loop.run_in_executor(
+                            None, self._exchange.backfill_candles, pair, tf, fetch_count
+                        )
+
+                        if not candles:
+                            continue
+
+                        new_candles = [c for c in candles if c.timestamp > last_candle.timestamp]
+                        if not new_candles:
+                            continue
+
+                        self._ws_feed.store_candles(new_candles)
+                        await loop.run_in_executor(
+                            None, self._postgres.store_candles, new_candles
+                        )
+
+                        # Check if backfill covered the gap
+                        is_cont, gap_count = validate_candle_continuity(
+                            self._ws_feed.get_candles(pair, tf, settings.STARTUP_WARMUP_CANDLE_MIN),
+                            tf,
+                        )
+                        if not is_cont:
+                            unrecoverable_gaps.append((pair, tf, gap_count))
+
+                        logger.info(
+                            f"Gap backfill: pair={pair} tf={tf} "
+                            f"gap_est={gap_candles} filled={len(new_candles)} "
+                            f"continuous={is_cont}"
+                        )
+
+                    except Exception as e:
+                        logger.error(f"Gap backfill failed: pair={pair} tf={tf} error={e}")
+
+            if unrecoverable_gaps:
+                logger.critical(
+                    f"Gap backfill: {len(unrecoverable_gaps)} unrecoverable gaps detected. "
+                    f"Staying in RECOVERING until gaps resolve or bot restarts. "
+                    f"Gaps: {unrecoverable_gaps}"
+                )
+                self._emit_metric("gap_backfill_unrecoverable", float(len(unrecoverable_gaps)))
+            else:
+                logger.info("Gap backfill complete — all gaps filled")
+
+        finally:
+            self._backfill_in_progress = False
