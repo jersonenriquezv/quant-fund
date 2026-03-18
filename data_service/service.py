@@ -288,6 +288,7 @@ class DataService:
             "cvd_ws": self._cvd.is_connected,
             "oi_proxy": self._oi_proxy.is_connected,
             "running": self._running,
+            "asyncio_tasks": len(asyncio.all_tasks()),
         }
 
     def _cvd_health_summary(self) -> str:
@@ -758,6 +759,12 @@ class DataService:
                 logger.debug(f"Health check: all systems OK state={self._state.name}")
 
             self._last_health_down = disconnected
+
+            # Asyncio task count — detect task leaks (expected: ~15, warn >25)
+            task_count = len(asyncio.all_tasks())
+            if task_count > 25:
+                logger.warning(f"Health check: high asyncio task count={task_count}")
+            self._emit_metric("asyncio_tasks", float(task_count))
 
             # Emit health metric: 1.0 = all OK, 0.0 = something down
             self._emit_metric("health_status", 0.0 if disconnected else 1.0)

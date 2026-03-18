@@ -226,7 +226,7 @@ Central hub for data quality types and gating logic:
 - **Snapshot health:** `_compute_health()` uses `FundingRate.fetched_at` (actual fetch time, not exchange event time). Redis health checked — if down, `critical_sources_healthy=False`. `SnapshotHealth` includes `redis_healthy` and `service_state`.
 - **OI loop:** passes current price to `oi_flush_detector.update()` for side attribution.
 - Public methods: `get_latest_candle()`, `get_candles()`, `get_market_snapshot()`, `get_cvd()`, `get_cvd_state()`, `fetch_usdt_balance()`, `state` property
-- Health check loop every 30 seconds — emits `health_status` metric, logs current `state`. Includes `_cvd_health_summary()`: shows CVD warmup progress per pair (e.g. `cvd=[3 WARMING_UP, 4 VALID, 2 partial(no 1h)]`). Suppressed when all pairs fully warm.
+- Health check loop every 30 seconds — emits `health_status` + `asyncio_tasks` metrics, logs current `state`. Warns if asyncio task count > 25 (expected ~15, leak detection). Includes `_cvd_health_summary()`: shows CVD warmup progress per pair. `health()` dict includes `asyncio_tasks` count for dashboard visibility.
 - **Metrics:** `data_service_state` (on transition to RUNNING), `ws_reconnect`, `circuit_breaker_tripped`, `gap_backfill_unrecoverable`
 
 ### `main.py` — Entry Point

@@ -141,6 +141,33 @@ Candle confirmed → StrategyService.evaluate()
 | AI filter | Claude Sonnet | BYPASSED for all active setups |
 | CVD warmup | Progressive | 5m→VALID in 5min, 15m in 15min, 1h in 60min |
 
+### Resource Profile (compute audit 03-18)
+Reference for VPS sizing when migrating from Nitro 5.
+
+| Resource | Current Usage | Capacity | Headroom |
+|----------|--------------|----------|----------|
+| **RAM** | ~85 MB (5 MB buffers + Python) | 16 GB | 188× |
+| **CPU** | Pipeline <300ms, mostly idle | 4 cores i5-9300H | 50×+ |
+| **OKX API (market)** | 1.4 req/min | 600 req/min | 430× |
+| **OKX API (trading)** | 104 req/min (8 positions) | 1,800 req/min | 17× |
+| **Disk (PostgreSQL)** | 0.2 MB/day | 190 GB SSD | ~2600 years |
+| **Disk (logs)** | ≤10.5 GB (30d retention) | 190 GB SSD | 18× |
+| **WebSocket** | 2 connections, <<1 Mbps | broadband | n/a |
+| **Asyncio tasks** | ~15 concurrent | event loop idle | n/a |
+
+**Scaling limits (same architecture, no code changes):**
+
+| Pairs | RAM | OKX API | DB Growth | Verdict |
+|-------|-----|---------|-----------|---------|
+| 7 (current) | 85 MB | <2% | 0.2 MB/day | OK |
+| 14 (2×) | ~100 MB | <2% | 0.4 MB/day | OK |
+| 35 (5×) | ~120 MB | <3% | 1 MB/day | OK |
+| 70 (10×) | ~160 MB | <5% | 2 MB/day | OK |
+| 200 | ~400 MB | **17%** | 6 MB/day | **API rate limit watch** |
+
+**Minimum VPS spec for current 7 pairs:** 1 vCPU, 1 GB RAM, 20 GB SSD ($5/mo DigitalOcean/Hetzner).
+**Recommended VPS for 20+ pairs:** 2 vCPU, 2 GB RAM, 40 GB SSD ($12/mo).
+
 ---
 
 ## 4. Backtest Results (Historical)
@@ -198,6 +225,17 @@ Candle confirmed → StrategyService.evaluate()
 ---
 
 ## 7. Changelog
+
+### 2026-03-18 — Compute Audit + Health Observability
+**What changed:**
+- Asyncio task count emitted as `asyncio_tasks` metric every 30s
+- Warning logged if task count > 25 (expected ~15, leak detection)
+- Task count added to `health()` dict for dashboard visibility
+- Resource profile and VPS sizing reference added to SYSTEM_BASELINE
+
+**Why:** Compute audit found system is sustainable (85 MB / <2% API / 15 tasks) but lacked observability for task leaks.
+
+**Expected impact:** No behavior change. Early warning if asyncio tasks leak.
 
 ### 2026-03-18 — Strategy Audit Implementation
 **What changed:**

@@ -9,6 +9,7 @@ If a RedisStore is provided, state is persisted on every mutation and restored
 on init — survives bot restarts without losing guardrail state.
 """
 
+import json
 import time
 from datetime import datetime, date, timezone
 
@@ -213,6 +214,10 @@ class RiskStateTracker:
             self._redis.set_bot_state("risk_trades_today", str(len(self._trades_today)), ttl=ttl)
             self._redis.set_bot_state("risk_state_day", self._current_day.isoformat(), ttl=ttl)
             self._redis.set_bot_state("risk_state_week", str(self._current_week), ttl=ttl)
+            # Persist open positions so max_positions guardrail survives restarts
+            self._redis.set_bot_state(
+                "risk_open_positions", json.dumps(self._open_positions), ttl=ttl
+            )
         except Exception as e:
             logger.warning(f"Failed to save risk state to Redis: {e}")
 
@@ -255,10 +260,19 @@ class RiskStateTracker:
             if last_loss is not None and last_loss != "":
                 self._last_loss_time = int(last_loss)
 
+            # Restore open positions (survives restarts)
+            positions_json = self._redis.get_bot_state("risk_open_positions")
+            if positions_json is not None:
+                try:
+                    self._open_positions = json.loads(positions_json)
+                except (json.JSONDecodeError, TypeError):
+                    self._open_positions = []
+
             logger.info(
                 f"Risk state restored from Redis: "
                 f"daily_pnl={self._daily_pnl_pct:.4f} weekly_pnl={self._weekly_pnl_pct:.4f} "
                 f"trades_today={len(self._trades_today)} "
+                f"open_positions={len(self._open_positions)} "
                 f"last_loss={'set' if self._last_loss_time else 'none'}"
             )
         except Exception as e:
