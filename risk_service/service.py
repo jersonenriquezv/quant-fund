@@ -33,10 +33,15 @@ class RiskService:
     # Main entry point
     # ================================================================
 
-    def check(self, setup: TradeSetup) -> RiskApproval:
+    def check(self, setup: TradeSetup, ai_confidence: float = 1.0) -> RiskApproval:
         """Run all guardrails and calculate position size.
 
         Fails fast — first guardrail failure rejects the trade.
+
+        Args:
+            ai_confidence: AI filter confidence (0.0-1.0). Used for
+                confidence-based bet sizing when BET_SIZING_ENABLED=true.
+                Default 1.0 (full size) for bypassed setups.
         """
         now = int(time.time())
 
@@ -92,6 +97,22 @@ class RiskService:
             notional = capital * settings.TRADE_CAPITAL_PCT
             margin = notional / leverage
             risk_pct = settings.TRADE_CAPITAL_PCT
+
+        # Confidence-based bet sizing (López de Prado, AFML Ch.10).
+        # Half-Kelly: factor = KELLY_FRACTION × (2p - 1) where p = confidence.
+        # Modulates margin up/down based on AI confidence.
+        # Only active when BET_SIZING_ENABLED and confidence < 1.0 (real AI score).
+        if settings.BET_SIZING_ENABLED and ai_confidence < 1.0:
+            raw_factor = settings.KELLY_FRACTION * (2 * ai_confidence - 1)
+            bet_factor = max(settings.BET_SIZE_MIN, min(raw_factor, settings.BET_SIZE_MAX))
+            margin *= bet_factor
+            notional = margin * leverage
+            risk_pct *= bet_factor
+            logger.info(
+                f"Bet sizing: confidence={ai_confidence:.2f} "
+                f"kelly_raw={raw_factor:.3f} factor={bet_factor:.3f} "
+                f"margin=${margin:.2f}"
+            )
 
         position_size = notional / setup.entry_price
 

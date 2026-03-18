@@ -46,10 +46,10 @@ active ──[SL fills]──> closed                (loss, breakeven, or traili
 active ──[price >= tp1 (1:1)]──> SL moves to breakeven
 active ──[price >= midpoint(tp1,tp2) (2:1)]──> SL moves to tp1 (trailing)
 active ──[12h/4h]────> closed                (market close)
-active ──[SL fail]───> emergency_pending     (retry x3)
+active ──[SL fail]───> emergency_pending     (retry x5 with backoff)
 
 emergency_pending ──[retry ok]──> closed
-emergency_pending ──[3 fails]──> emergency_failed  (intervención manual)
+emergency_pending ──[5 fails]──> emergency_failed  (intervención manual, Telegram alert)
 ```
 
 ### Split Entry State Machine (`_check_split_pending`)
@@ -93,7 +93,7 @@ Cuando `is_split_entry == True`, el monitor usa `_check_split_pending()` en vez 
 
 1. **Validación de precios** — Long: `sl < entry < tp2`. Short: `sl > entry > tp2`.
 2. **SL vs market validation** — Antes de colocar la orden, verifica que el SL no esté ya "adentro" del mercado. Short con SL < market → skip (el SL se activaría inmediatamente, OKX rechaza con 51053). Long con SL > market → skip. Fetch ticker para obtener `last` price. Solo en live mode (no sandbox).
-3. **SL placement retries** — 3 intentos con delays 0.3s/0.6s. Si falla → emergency market close.
+3. **SL placement retries** — 3 intentos con delays 0.3s/0.6s. Si falla → emergency market close. **Immediate SL verification** (2s post-placement) catches OKX's documented silent-failure bug where API returns success but SL never activates. If verify fails → re-place; if re-place fails → emergency close.
 4. **TP falla → SL protege** — Antes se hacía emergency close si TP fallaba. Ahora el SL queda activo y es suficiente.
 5. **Ajuste SL: nuevo ANTES de cancelar viejo** — Cero ventana sin protección.
 6. **Notificación a Risk: en PLACE, no en fill.**
@@ -319,8 +319,9 @@ Fill price mismatch: ETH/USDT expected=1937.22 actual=1990.24 diff=2.74%
 
 ## PnL Tracking
 
-`_calculate_pnl(pos, exit_price)` computes net PnL after fees on every exit:
+`_calculate_pnl(pos, exit_price)` computes net PnL after fees and funding on every exit:
 - `pnl_usd = raw_pnl - (entry_notional + exit_notional) × TRADING_FEE_RATE`
+- **Funding cost estimate**: positions crossing 8h OKX settlement windows get `funding_rate × notional × settlements` deducted. Best-effort via last known funding rate from Redis.
 - `pnl_pct = pnl_usd / capital` — fraction of tracked account capital (from `RiskStateTracker.get_capital()`), not leveraged notional. Ensures DD guardrails measure real account impact. Falls back to `pnl_usd / entry_notional` if risk service unavailable.
 - Stores `actual_exit_price` on ManagedPosition
 - `_persist_trade_close()` writes `actual_exit=pos.actual_exit_price` to PostgreSQL

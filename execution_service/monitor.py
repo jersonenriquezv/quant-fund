@@ -531,6 +531,42 @@ class PositionMonitor:
                 self._close_position(pos, "sl_too_close")
                 return
 
+        # Immediate SL verification (2-3s after placement).
+        # OKX has a documented bug where API returns success but SL silently fails.
+        # The 60s periodic check catches long-lived gaps; this catches instant failures.
+        if pos.sl_order_id and not sl_found:
+            await asyncio.sleep(2)
+            verify_algos = await self._executor.find_pending_algo_orders(pos.pair)
+            sl_verified = any(
+                a.get("algoId") == pos.sl_order_id for a in verify_algos
+            )
+            if not sl_verified:
+                logger.warning(
+                    f"Immediate SL verify FAILED: {pos.pair} "
+                    f"algoId={pos.sl_order_id} not found 2s after placement — re-placing"
+                )
+                sl_retry = await self._executor.place_stop_market(
+                    pos.pair, close_side, pos.filled_size, pos.sl_price
+                )
+                if sl_retry:
+                    pos.sl_order_id = sl_retry.get("id")
+                    pos.current_sl_price = pos.sl_price
+                    logger.info(f"SL re-placed successfully: {pos.pair}")
+                else:
+                    logger.error(f"SL re-placement FAILED: {pos.pair} — EMERGENCY CLOSE")
+                    result = await self._executor.close_position_market(
+                        pos.pair, close_side, pos.filled_size
+                    )
+                    if result is None:
+                        pos.phase = "emergency_pending"
+                        pos.emergency_retries = 1
+                        return
+                    close_price = self._extract_close_price(result, pos)
+                    if close_price is not None:
+                        self._calculate_pnl(pos, close_price)
+                    self._close_position(pos, "emergency")
+                    return
+
         pos.phase = "active"
         self._update_positions_cache()
         logger.info(f"Position ACTIVE: {pos.pair} {pos.direction} "
@@ -887,7 +923,17 @@ class PositionMonitor:
     # ================================================================
 
     async def _retry_emergency_close(self, pos: ManagedPosition) -> None:
-        """Retry emergency market close (max 3 attempts)."""
+        """Retry emergency market close with exponential backoff (max 5 attempts).
+
+        Backoff: 5s, 10s, 20s, 40s, 80s between retries.
+        Gives OKX time to recover if degraded, without hammering the API.
+        """
+        # Exponential backoff: wait before retrying (except first retry)
+        if pos.emergency_retries > 1:
+            backoff = min(5 * (2 ** (pos.emergency_retries - 1)), 80)
+            logger.info(f"Emergency backoff: {pos.pair} waiting {backoff}s before retry {pos.emergency_retries}")
+            await asyncio.sleep(backoff)
+
         close_side = "sell" if pos.direction == "long" else "buy"
         result = await self._executor.close_position_market(
             pos.pair, close_side, pos.filled_size
@@ -901,15 +947,19 @@ class PositionMonitor:
             return
 
         pos.emergency_retries += 1
-        if pos.emergency_retries >= 3:
+        if pos.emergency_retries >= 5:
             logger.critical(
-                f"EMERGENCY CLOSE FAILED after 3 retries: {pos.pair} — "
+                f"EMERGENCY CLOSE FAILED after 5 retries: {pos.pair} — "
                 f"requires manual intervention"
             )
+            if self._alert_manager is not None:
+                self._safe_notify(
+                    self._alert_manager.notify_emergency(pos, "Emergency close failed after 5 retries")
+                )
             pos.phase = "emergency_failed"
         else:
             logger.error(
-                f"Emergency close retry {pos.emergency_retries}/3 failed: {pos.pair}"
+                f"Emergency close retry {pos.emergency_retries}/5 failed: {pos.pair}"
             )
 
     # ================================================================
@@ -1040,11 +1090,32 @@ class PositionMonitor:
             await self._executor.cancel_order(pos.tp_order_id, pos.pair)
 
     async def _close_all_orders_and_market_close(self, pos: ManagedPosition) -> None:
-        """Cancel all orders and market close the position (timeout)."""
+        """Cancel all orders and market close the position (timeout).
+
+        Logs spread at exit time to track liquidity conditions.
+        Wide spreads on timeout exits are a systematic drag.
+        """
         # Cancel SL and TP
         if pos.sl_order_id:
             await self._executor.cancel_order(pos.sl_order_id, pos.pair)
         await self._cancel_tp(pos)
+
+        # Log spread before market close (detect low-liquidity exits)
+        try:
+            ticker = await self._executor.fetch_ticker(pos.pair)
+            if ticker:
+                bid = float(ticker.get("bid", 0) or 0)
+                ask = float(ticker.get("ask", 0) or 0)
+                if bid > 0 and ask > 0:
+                    spread_pct = (ask - bid) / bid * 100
+                    if spread_pct > 0.1:
+                        logger.warning(
+                            f"Timeout exit in wide spread: {pos.pair} "
+                            f"bid={bid:.2f} ask={ask:.2f} spread={spread_pct:.3f}%"
+                        )
+                    self._emit_metric("timeout_exit_spread_pct", spread_pct, pos.pair)
+        except Exception:
+            pass
 
         # Market close remaining
         close_side = "sell" if pos.direction == "long" else "buy"
@@ -1158,6 +1229,26 @@ class PositionMonitor:
         exit_notional = exit_price * pos.filled_size
         total_fees = (entry_notional + exit_notional) * settings.TRADING_FEE_RATE
         pnl_usd -= total_fees
+
+        # Estimate funding cost: positions crossing 8h settlement windows
+        # pay/receive funding. Use last known funding rate × notional × settlements.
+        if pos.filled_at and self._data_store is not None:
+            try:
+                hold_seconds = (pos.closed_at or int(time.time())) - pos.filled_at
+                # OKX settles every 8h; estimate number of settlements crossed
+                settlements = hold_seconds // 28800
+                if settlements > 0:
+                    fr = self._data_store.redis.get_funding_rate(pos.pair)
+                    if fr is not None:
+                        funding_rate = float(fr.rate) if hasattr(fr, 'rate') else 0.0
+                        # Positive funding: longs pay shorts. Negative: shorts pay longs.
+                        if pos.direction == "long":
+                            funding_cost = entry_notional * funding_rate * settlements
+                        else:
+                            funding_cost = -entry_notional * funding_rate * settlements
+                        pnl_usd -= funding_cost
+            except Exception:
+                pass  # Best-effort; don't break PnL on funding lookup failure
 
         # Denominator = tracked capital for accurate DD measurement.
         # Falls back to entry_notional if risk service unavailable.

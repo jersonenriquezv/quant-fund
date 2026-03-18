@@ -221,3 +221,61 @@ class TestLifecycle:
         result = risk.check(setup)
         # Rejected by R:R check (zero risk) before reaching position sizer
         assert result.approved is False
+
+
+# ============================================================
+# Bet sizing (confidence-based, AFML Ch.10)
+# ============================================================
+
+class TestBetSizing:
+    """López de Prado half-Kelly bet sizing modulates margin by AI confidence."""
+
+    @pytest.fixture
+    def risk_bet(self, monkeypatch):
+        monkeypatch.setattr(settings, "OKX_SANDBOX", False)
+        monkeypatch.setattr(settings, "FIXED_TRADE_MARGIN", 20.0)
+        monkeypatch.setattr(settings, "BET_SIZING_ENABLED", True)
+        monkeypatch.setattr(settings, "KELLY_FRACTION", 0.5)
+        monkeypatch.setattr(settings, "BET_SIZE_MIN", 0.25)
+        monkeypatch.setattr(settings, "BET_SIZE_MAX", 2.0)
+        return RiskService(capital=5000.0)
+
+    def test_high_confidence_increases_size(self, risk_bet):
+        """Confidence=0.9 → factor=0.5*(2*0.9-1)=0.4 → margin=$8."""
+        setup = _make_setup(entry=50000, sl=49000, tp2=52000)
+        result = risk_bet.check(setup, ai_confidence=0.9)
+        assert result.approved is True
+        # factor = 0.5 * (2*0.9 - 1) = 0.4, margin = 20 * 0.4 = $8
+        expected_notional = 8.0 * settings.MAX_LEVERAGE
+        expected_size = expected_notional / 50000
+        assert result.position_size == pytest.approx(expected_size, rel=0.01)
+
+    def test_low_confidence_hits_floor(self, risk_bet):
+        """Confidence=0.55 → raw factor=0.05 → clamped to BET_SIZE_MIN=0.25."""
+        setup = _make_setup(entry=50000, sl=49000, tp2=52000)
+        result = risk_bet.check(setup, ai_confidence=0.55)
+        assert result.approved is True
+        # raw = 0.5 * (2*0.55 - 1) = 0.05, clamped to 0.25
+        expected_notional = 20.0 * 0.25 * settings.MAX_LEVERAGE
+        expected_size = expected_notional / 50000
+        assert result.position_size == pytest.approx(expected_size, rel=0.01)
+
+    def test_bypassed_confidence_no_sizing(self, risk_bet):
+        """Confidence=1.0 (bypassed AI) → bet sizing skipped, full margin."""
+        setup = _make_setup(entry=50000, sl=49000, tp2=52000)
+        result = risk_bet.check(setup, ai_confidence=1.0)
+        assert result.approved is True
+        # ai_confidence=1.0 → sizing NOT applied (condition: confidence < 1.0)
+        expected_notional = 20.0 * settings.MAX_LEVERAGE
+        expected_size = expected_notional / 50000
+        assert result.position_size == pytest.approx(expected_size, rel=0.01)
+
+    def test_disabled_bet_sizing_ignores_confidence(self, risk_bet, monkeypatch):
+        """BET_SIZING_ENABLED=false → always full margin regardless of confidence."""
+        monkeypatch.setattr(settings, "BET_SIZING_ENABLED", False)
+        setup = _make_setup(entry=50000, sl=49000, tp2=52000)
+        result = risk_bet.check(setup, ai_confidence=0.6)
+        assert result.approved is True
+        expected_notional = 20.0 * settings.MAX_LEVERAGE
+        expected_size = expected_notional / 50000
+        assert result.position_size == pytest.approx(expected_size, rel=0.01)

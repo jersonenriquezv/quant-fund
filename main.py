@@ -258,10 +258,11 @@ async def on_candle_confirmed(candle: Candle) -> None:
             _ml_resolve_outcome(setup.setup_id, "ai_rejected")
             return
 
-    # Layer 4: Risk Service
+    # Layer 4: Risk Service (pass AI confidence for bet sizing)
     approval = None
+    ai_conf = decision.confidence if decision else 1.0
     if _risk_service is not None:
-        approval = _risk_service.check(setup)
+        approval = _risk_service.check(setup, ai_confidence=ai_conf)
         if not approval.approved:
             logger.info(f"Risk rejected: {approval.reason}")
             if _alert_manager:

@@ -81,14 +81,15 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 ### `risk_service/service.py` — Facade (RiskService)
 - Clase: `RiskService(capital: float, data_service=None)`
 - Compone: PositionSizer + Guardrails + RiskStateTracker
-- **Método principal:** `check(setup: TradeSetup) -> RiskApproval`
+- **Método principal:** `check(setup: TradeSetup, ai_confidence: float = 1.0) -> RiskApproval`
   1. Corre los 7 guardrails en orden (fail fast): min risk distance, R:R ratio, cooldown, max trades/day, max positions, daily DD, weekly DD
   2. **Position sizing (dual-mode):**
      - **Modo fijo (default):** Si `FIXED_TRADE_MARGIN > 0`: `margin = $20`, `notional = margin × leverage`, `position_size = notional / entry_price`. Ejemplo: $20 × 7x = $140 notional. `risk_pct = margin / capital`.
      - **Modo porcentaje (fallback):** Si `FIXED_TRADE_MARGIN == 0`: `notional = capital × TRADE_CAPITAL_PCT`, `margin = notional / leverage`, `risk_pct = TRADE_CAPITAL_PCT`.
-  3. Leverage siempre = `MAX_LEVERAGE` (7x). Not dynamically computed from risk% — PositionSizer is only used by backtester.
-  4. Verifica min order size contra `MIN_ORDER_SIZES` por par
-  5. Retorna RiskApproval (approved/rejected con razón)
+  3. **Bet sizing (optional, AFML Ch.10):** Si `BET_SIZING_ENABLED=true` y `ai_confidence < 1.0`: `factor = KELLY_FRACTION × (2p - 1)`, clamped a `[BET_SIZE_MIN, BET_SIZE_MAX]`. Margin se multiplica por factor. Half-Kelly por default. Inactivo cuando AI está bypassed (confidence=1.0).
+  4. Leverage siempre = `MAX_LEVERAGE` (7x). Not dynamically computed from risk% — PositionSizer is only used by backtester.
+  5. Verifica min order size contra `MIN_ORDER_SIZES` por par
+  6. Retorna RiskApproval (approved/rejected con razón)
 - **Para Execution Service (implementado):**
   - `on_trade_opened(pair, direction, entry_price, timestamp)` — llamado al colocar entry order
   - `on_trade_closed(pair, direction, pnl_pct, timestamp)` — llamado al cerrar posición (SL, TP, timeout, emergency). Matchea por `(pair, direction)` para cerrar la posición correcta.
@@ -115,6 +116,10 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 | `MIN_RISK_REWARD_QUICK` | `1.0` | R:R mínimo para quick setups C/D/E |
 | `MIN_RISK_DISTANCE_PCT` | `0.005` (0.5%) | Distancia mínima SL-entry como fracción del precio. Rechaza noise trades. Para ETH@$2000, SL >= $10. Now also checked in Strategy layer (early filter in evaluate_setup_a/evaluate_setup_d) before building TradeSetup. |
 | `MIN_ORDER_SIZES` | `{"BTC/USDT": 0.0001, "ETH/USDT": 0.001}` | Mínimo de tamaño de orden por par (OKX contract-based: BTC min 0.01 contracts × 0.01 ctVal, ETH min 0.01 × 0.1 ctVal). Pre-check en main.py filtra antes de Claude. |
+| `BET_SIZING_ENABLED` | `false` | Activa bet sizing por confianza AI (half-Kelly, AFML Ch.10). Requiere AI filter activo. |
+| `KELLY_FRACTION` | `0.5` | Fracción de Kelly (0.5 = half-Kelly, conservador) |
+| `BET_SIZE_MIN` | `0.25` | Floor: 25% del margin base (confidence muy baja) |
+| `BET_SIZE_MAX` | `2.0` | Ceiling: 200% del margin base (confidence muy alta) |
 
 ## Tests
 

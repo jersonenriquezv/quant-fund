@@ -597,6 +597,18 @@ class Settings:
     # Sandbox: limit order tolerance from mark price (0.05% = fills like a market but with realistic slippage)
     SANDBOX_LIMIT_TOLERANCE_PCT: float = 0.0005
 
+    # ========================
+    # BET SIZING (confidence-based, López de Prado AFML Ch.10)
+    # ========================
+    # When enabled, AI confidence modulates position size (half-Kelly).
+    # Requires AI filter to be active (not bypassed).
+    # margin = FIXED_TRADE_MARGIN × bet_size_factor(confidence)
+    # bet_size_factor = KELLY_FRACTION × (2 × confidence - 1), clamped to [BET_SIZE_MIN, BET_SIZE_MAX]
+    BET_SIZING_ENABLED: bool = os.getenv("BET_SIZING_ENABLED", "false").lower() == "true"
+    KELLY_FRACTION: float = float(os.getenv("KELLY_FRACTION", "0.5"))  # Half-Kelly (conservative)
+    BET_SIZE_MIN: float = float(os.getenv("BET_SIZE_MIN", "0.25"))     # Floor: 25% of base margin
+    BET_SIZE_MAX: float = float(os.getenv("BET_SIZE_MAX", "2.0"))      # Ceiling: 200% of base margin
+
     # Periodic SL verification interval (seconds).
     # Every N seconds, confirm SL algo order still exists on exchange via
     # find_pending_algo_orders(). Catches silent SL drops that fetch_order misses.

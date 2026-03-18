@@ -188,7 +188,7 @@ class TestPipelineHappyPath:
 
         # setup_a is in AI_BYPASS_SETUP_TYPES — Claude not called
         ai.evaluate.assert_not_called()
-        risk.check.assert_called_once_with(setup)
+        risk.check.assert_called_once_with(setup, ai_confidence=1.0)
         execution.execute.assert_called_once()
 
     def test_no_setup_detected_stops_early(self):
