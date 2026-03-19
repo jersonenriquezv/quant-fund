@@ -89,14 +89,15 @@ class QuickSetupEvaluator:
         else:
             sl_price = entry_price + sl_distance
 
-        # TPs from settings (breakeven trigger + single TP)
+        # TPs from settings (breakeven trigger + per-setup TP2)
         risk = abs(entry_price - sl_price)
+        tp2_rr = settings.SETUP_TP2_RR.get("setup_c", settings.TP2_RR_RATIO)
         if direction == "long":
             tp1 = entry_price + risk * settings.TP1_RR_RATIO
-            tp2 = entry_price + risk * settings.TP2_RR_RATIO
+            tp2 = entry_price + risk * tp2_rr
         else:
             tp1 = entry_price - risk * settings.TP1_RR_RATIO
-            tp2 = entry_price - risk * settings.TP2_RR_RATIO
+            tp2 = entry_price - risk * tp2_rr
 
         confluences = [
             f"funding_extreme_{rate*100:.4f}pct",
@@ -224,16 +225,17 @@ class QuickSetupEvaluator:
                          f"({risk_pct*100:.2f}% < {settings.MIN_RISK_DISTANCE_PCT*100:.1f}%)")
             return None
 
-        # TPs from settings (breakeven trigger + single TP)
-        if direction == "bullish":
-            tp1 = entry_price + risk * settings.TP1_RR_RATIO
-            tp2 = entry_price + risk * settings.TP2_RR_RATIO
-        else:
-            tp1 = entry_price - risk * settings.TP1_RR_RATIO
-            tp2 = entry_price - risk * settings.TP2_RR_RATIO
-
         # Variant split: setup_d_bos or setup_d_choch for per-variant measurement
         variant = f"setup_d_{latest_break.break_type}"
+
+        # TPs from settings (breakeven trigger + per-setup TP2)
+        tp2_rr = settings.SETUP_TP2_RR.get(variant, settings.TP2_RR_RATIO)
+        if direction == "bullish":
+            tp1 = entry_price + risk * settings.TP1_RR_RATIO
+            tp2 = entry_price + risk * tp2_rr
+        else:
+            tp1 = entry_price - risk * settings.TP1_RR_RATIO
+            tp2 = entry_price - risk * tp2_rr
 
         confluences = [
             f"{latest_break.break_type}_5m",
@@ -393,13 +395,14 @@ class QuickSetupEvaluator:
                          f"({risk_pct*100:.2f}% < {settings.MIN_RISK_DISTANCE_PCT*100:.1f}%)")
             return None
 
-        # TPs from settings (breakeven trigger + single TP)
+        # TPs from settings (breakeven trigger + per-setup TP2)
+        tp2_rr = settings.SETUP_TP2_RR.get("setup_e", settings.TP2_RR_RATIO)
         if direction == "long":
             tp1 = entry_price + risk * settings.TP1_RR_RATIO
-            tp2 = entry_price + risk * settings.TP2_RR_RATIO
+            tp2 = entry_price + risk * tp2_rr
         else:
             tp1 = entry_price - risk * settings.TP1_RR_RATIO
-            tp2 = entry_price - risk * settings.TP2_RR_RATIO
+            tp2 = entry_price - risk * tp2_rr
 
         total_liq_usd = long_liq_usd + short_liq_usd
         confluences = [
@@ -601,13 +604,14 @@ class QuickSetupEvaluator:
             )
             return None
 
-        # 8. TPs from settings (breakeven trigger + single TP)
+        # 8. TPs from settings (breakeven trigger + per-setup TP2)
+        tp2_rr = settings.SETUP_TP2_RR.get("setup_h", settings.TP2_RR_RATIO)
         if direction == "bullish":
             tp1 = entry_price + risk * settings.TP1_RR_RATIO
-            tp2 = entry_price + risk * settings.TP2_RR_RATIO
+            tp2 = entry_price + risk * tp2_rr
         else:
             tp1 = entry_price - risk * settings.TP1_RR_RATIO
-            tp2 = entry_price - risk * settings.TP2_RR_RATIO
+            tp2 = entry_price - risk * tp2_rr
 
         # 9. Build confluences
         confluences = [

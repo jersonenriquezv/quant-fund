@@ -106,11 +106,12 @@ class Settings:
 
     # Minimum SL distance as fraction of entry price.
     # Rejects noise trades where SL is inside normal price noise.
-    # Should be >= 1x ATR(15m). BTC 15m ATR ≈ 0.3-0.8%, ETH ≈ 0.4-1.0%.
-    # 0.008 = 0.8% → ETH@$2350: SL >= $18.80. BTC@$70K: SL >= $560.
-    # History: 0.2% (initial) → 0.5% (03-16, still noise) → 0.8% (03-19, ~1x ATR floor).
+    # Should be >= 0.5x ATR(15m). BTC 15m ATR ≈ 0.3-0.8%, ETH ≈ 0.4-1.0%.
+    # 0.005 = 0.5% → ETH@$2350: SL >= $11.75. BTC@$84K: SL >= $420.
+    # History: 0.2% (initial) → 0.5% (03-16) → 0.8% (03-19, too aggressive — killed most 15m OBs)
+    #          → 0.5% (03-19, restored — 0.8% blocked valid setups with small OB bodies).
     # Long-term: replace with daily_vol-adaptive threshold (AFML Ch.3 getDailyVol).
-    MIN_RISK_DISTANCE_PCT: float = 0.008
+    MIN_RISK_DISTANCE_PCT: float = 0.005
 
     # Trading fee rate per side (OKX taker: 0.05%)
     # Deducted from PnL: total_fees = (entry_notional + exit_notional) * rate
@@ -374,7 +375,22 @@ class Settings:
 
     # TP2: cerrar X% a 1:3 RR
     TP2_CLOSE_PCT: float = 0.30  # 30%
-    TP2_RR_RATIO: float = 2.0  # TP2: close at 2:1 RR (restored from 3:1 — bot never hit 3:1 in 17 trades)
+    TP2_RR_RATIO: float = 2.0  # Global fallback. Per-setup override below.
+
+    # Per-setup TP2 R:R — overrides TP2_RR_RATIO when setup_type is in this dict.
+    # Rationale: reversal setups (A, E) have more energy than continuation (F) or scalps (D).
+    # Values are starting estimates — backtest + Optuna will calibrate.
+    SETUP_TP2_RR: dict = field(default_factory=lambda: {
+        "setup_a": 2.0,        # Reversal post-sweep — strong energy, 2R achievable
+        "setup_b": 1.5,        # BOS continuation — weaker than A, 2R often unreachable
+        "setup_c": 2.0,        # Extreme funding event — momentum carries
+        "setup_d_choch": 1.5,  # 5m scalp, 4h max — 2R is too far for LTF structure
+        "setup_d_bos": 1.5,    # Same as D_choch
+        "setup_e": 2.0,        # Cascade reversal — post-liquidation bounce has energy
+        "setup_f": 1.5,        # Continuation, no sweep — less energy than A
+        "setup_g": 1.5,        # Breaker retest — similar to F
+        "setup_h": 1.5,        # Momentum — entering late, less room
+    })
 
     # ========================
     # PROGRESSIVE TRAILING SL

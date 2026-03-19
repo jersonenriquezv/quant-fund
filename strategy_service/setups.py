@@ -210,7 +210,7 @@ class SetupEvaluator:
             return None
 
         tp1, tp2 = self._calculate_tp_levels(
-            entry_price, sl_price, direction, liquidity_levels
+            entry_price, sl_price, direction, liquidity_levels, "setup_a"
         )
 
         # Validate R:R to tp2 meets minimum
@@ -406,7 +406,7 @@ class SetupEvaluator:
             return None
 
         tp1, tp2 = self._calculate_tp_levels(
-            entry_price, sl_price, direction, liquidity_levels
+            entry_price, sl_price, direction, liquidity_levels, "setup_b"
         )
 
         # Validate R:R to tp2 meets minimum
@@ -593,7 +593,7 @@ class SetupEvaluator:
             return None
 
         tp1, tp2 = self._calculate_tp_levels(
-            entry_price, sl_price, direction, liquidity_levels
+            entry_price, sl_price, direction, liquidity_levels, "setup_f"
         )
 
         risk = abs(entry_price - sl_price)
@@ -726,7 +726,7 @@ class SetupEvaluator:
             return None
 
         tp1, tp2 = self._calculate_tp_levels(
-            entry_price, sl_price, direction, liquidity_levels
+            entry_price, sl_price, direction, liquidity_levels, "setup_g"
         )
 
         risk = abs(entry_price - sl_price)
@@ -757,20 +757,22 @@ class SetupEvaluator:
         sl: float,
         direction: str,
         liquidity_levels: list[LiquidityLevel],
+        setup_type: str = "",
     ) -> tuple[float, float]:
         """Calculate TP1 and TP2 from entry/SL.
 
-        TP1: settings.TP1_RR_RATIO (1:1 R:R) — breakeven trigger
-        TP2: settings.TP2_RR_RATIO (2:1 R:R) — single TP, 100% close
+        TP1: settings.TP1_RR_RATIO (1:1 R:R) — breakeven trigger (same for all)
+        TP2: per-setup from SETUP_TP2_RR, fallback to TP2_RR_RATIO
         """
         risk = abs(entry - sl)
+        tp2_rr = settings.SETUP_TP2_RR.get(setup_type, settings.TP2_RR_RATIO)
 
         if direction == "bullish":
             tp1 = entry + (risk * settings.TP1_RR_RATIO)
-            tp2 = entry + (risk * settings.TP2_RR_RATIO)
+            tp2 = entry + (risk * tp2_rr)
         else:
             tp1 = entry - (risk * settings.TP1_RR_RATIO)
-            tp2 = entry - (risk * settings.TP2_RR_RATIO)
+            tp2 = entry - (risk * tp2_rr)
 
         return tp1, tp2
 

@@ -116,7 +116,7 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 | `MIN_RISK_REWARD` | `1.2` | R:R mínimo para swing setups A/B (TP2 vs SL) |
 | `MIN_RISK_REWARD_QUICK` | `1.0` | R:R mínimo para quick setups C/D/E |
 | `MIN_RISK_DISTANCE_PCT` | `0.008` (0.8%) | Distancia mínima SL-entry como fracción del precio (~1x ATR 15m floor). Checked in Strategy layer for ALL setups (A, D, E, F, G, H) + Risk guardrails as backup. History: 0.2%→0.5%→0.8%. Long-term: daily_vol-adaptive (AFML Ch.3). |
-| `MIN_ORDER_SIZES` | `{"BTC/USDT": 0.0001, "ETH/USDT": 0.001}` | Mínimo de tamaño de orden por par (OKX contract-based: BTC min 0.01 contracts × 0.01 ctVal, ETH min 0.01 × 0.1 ctVal). Pre-check en main.py filtra antes de Claude. |
+| `MIN_ORDER_SIZES` | 7 pairs: BTC 0.0001, ETH 0.001, SOL 0.01, DOGE 1.0, XRP 1.0, LINK 0.1, AVAX 0.1 | Mínimo de tamaño de orden por par (OKX contract-based). Pre-check en main.py filtra antes de execution. |
 | `BET_SIZING_ENABLED` | `false` | Activa bet sizing por confianza AI (half-Kelly, AFML Ch.10). Requiere AI filter activo. |
 | `KELLY_FRACTION` | `0.5` | Fracción de Kelly (0.5 = half-Kelly, conservador) |
 | `BET_SIZE_MIN` | `0.25` | Floor: 25% del margin base (confidence muy baja) |

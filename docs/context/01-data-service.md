@@ -196,7 +196,8 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - `set_latest_candle()`, `get_latest_candle()`, `pop_cancel_request()`, etc.
 
 **PostgreSQL (historical):**
-- 9 tables: `candles`, `trades`, `ai_decisions`, `risk_events`, `bot_metrics`, `funding_rate_history`, `open_interest_history`, `cvd_history`, `campaigns`
+- 10 tables: `candles`, `trades`, `ai_decisions`, `risk_events`, `bot_metrics`, `funding_rate_history`, `open_interest_history`, `cvd_history`, `campaigns`, `ml_setups`
+- **trades.setup_id** (VARCHAR(20), added 2026-03-19): links trade to `ml_setups` row for ML outcome resolution. Auto-migrated via `ALTER TABLE ADD COLUMN IF NOT EXISTS`.
 - `store_candles()` with batch insert + ON CONFLICT DO NOTHING (dedup)
 - `load_candles()` returns oldest-first ordering
 - Index on `(pair, timeframe, timestamp DESC)` for fast lookups
@@ -250,7 +251,7 @@ Central hub for data quality types and gating logic:
 | `OKX_API_KEY` | `""` | exchange_client — auth |
 | `OKX_SECRET` | `""` | exchange_client — auth |
 | `OKX_PASSPHRASE` | `""` | exchange_client — auth |
-| `TRADING_PAIRS` | `["BTC/USDT", "ETH/USDT"]` | All modules |
+| `TRADING_PAIRS` | `["BTC/USDT", "ETH/USDT", "SOL/USDT", "DOGE/USDT", "XRP/USDT", "LINK/USDT", "AVAX/USDT"]` | All modules |
 | `HTF_TIMEFRAMES` | `["4h", "1h"]` | WS subscriptions |
 | `LTF_TIMEFRAMES` | `["15m", "5m"]` | WS subscriptions |
 | `FUNDING_RATE_INTERVAL` | `28800` (8h) | Polling schedule |

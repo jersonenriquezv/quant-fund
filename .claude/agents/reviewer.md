@@ -32,6 +32,12 @@ Review changes through two lenses: correctness (bugs, safety, data integrity) an
 - If a **critical dependency** fails (exchange API, order placement, risk check), the trade must be rejected
 - If a **non-critical source** fails (news sentiment, whale data, single context signal), the system may continue with degraded confidence and explicit warning — not automatic rejection
 
+### Microstructure Awareness (Lehalle & Laruelle)
+- Orderbook features (OBI, spread, depth) must be captured at setup detection time, not at order placement time — they decay fast
+- Fill speed tracking must measure from order placement to fill, NOT from setup detection to fill
+- Adverse selection risk: if code adds fill probability features, verify they don't inadvertently optimize FOR adverse selection (higher fill prob ↔ worse post-fill returns in crypto perps — Albers et al. 2025)
+- Spread/depth features from Redis cache: verify staleness. L2 data older than 5s is misleading
+
 ### Security
 - No secrets in code (`.env` only)
 - No injection vulnerabilities in dashboard

@@ -1,6 +1,6 @@
 # Strategy Service
-> Última actualización: 2026-03-15
-> Estado: implementado (completo, integrado en main.py). **Aggressive validation mode (2026-03-15):** ENABLED_SETUPS: setup_a, setup_b, setup_d_choch, setup_d_bos, setup_f — 5 tipos activos para maximizar detección y recolección de datos a $20/trade. Setup B re-habilitado (hardened filters activos, AI bypassed). Setup D_bos re-habilitado. Setup F re-habilitado con params relajados. PD_AS_CONFLUENCE=true (PD como confluencia, no gate). Expectancy filters relajados (MIN_ATR_PCT 0.20%, MIN_TARGET_SPACE_R 1.0). Todos los guardrails de riesgo sin cambios.
+> Última actualización: 2026-03-19
+> Estado: implementado. **Post-review (2026-03-19):** ENABLED_SETUPS: setup_a, setup_c, setup_d_choch, setup_e, setup_f — 5 tipos activos. Setup H deshabilitado (11% WR, adverse selection). Setup B deshabilitado (audit 03-18). MIN_RISK_DISTANCE_PCT restaurado a 0.5% (0.8% mataba OBs válidos). **TP2 per-setup** via `SETUP_TP2_RR` dict: reversals (A,C,E) 2.0 R:R, continuations/scalps (B,D,F,G,H) 1.5 R:R. Expectancy filters: MIN_ATR_PCT 0.35%, MIN_TARGET_SPACE_R 1.4 (Optuna validated).
 
 ## Qué hace (30 segundos)
 El Strategy Service es el detective del sistema. Analiza los datos del Data Service buscando patrones de Smart Money Concepts (SMC): rupturas de estructura (BOS/CHoCH), order blocks, fair value gaps, sweeps de liquidez, y zonas premium/discount. Cuando encuentra un setup con suficiente confluencia, genera un `TradeSetup` para evaluación.
@@ -48,7 +48,7 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
   - **Orden temporal obligatorio**: sweep ANTES del CHoCH
   - **Proximidad temporal**: sweep dentro de `SETUP_A_MAX_SWEEP_CHOCH_GAP` candles del CHoCH (60 candles = ~300min en 5m, ~15h en 15m — aggressive mode: was 45)
   - **Entry depth configurable**: `SETUP_A_ENTRY_PCT` (default 0.65, env var override). Shallower entry for higher fill rate (Optuna 03-15: was 0.50).
-  - **SL-too-close early filter**: `MIN_RISK_DISTANCE_PCT` (0.8%) check runs in strategy layer for ALL setups (A, D, E, F, G, H) before building TradeSetup. Also checked in Risk guardrails as backup.
+  - **SL-too-close early filter**: `MIN_RISK_DISTANCE_PCT` (0.5%) check runs in strategy layer for ALL setups (A, D, E, F, G, H) before building TradeSetup. Also checked in Risk guardrails as backup. History: 0.2% → 0.5% → 0.8% (too aggressive, killed valid 15m OBs) → 0.5% restored.
   - **AI bypass**: In `AI_BYPASS_SETUP_TYPES` — AI filter skipped, synthetic AIDecision(confidence=1.0) generated. AI v2 had 89.6% approval rate = no value added.
   - **Backtest 60d aggressive**: 46 trades, 47.8% WR, +$2,510. El bottleneck principal era `no_aligned_sweep` — gap=20 solo producía 11 trades. Gap=40 captura sweeps más lejanos sin degradar calidad.
 - **Setup B** (secundario): BOS + FVG adyacente a OB — **DESHABILITADO** (audit 03-18: 0-7.7% WR, F es estrictamente mejor — F = B sin gate de FVG débil)
@@ -80,7 +80,7 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
   - DEBUG logs en cada early return (HTF undefined, no breakers, no aligned, PD misaligned, no in range, confluences, R:R)
   - Requiere HTF bias alineado con dirección del breaker + PD zone + min 2 confluencias
   - Usa `get_breaker_blocks()` de OrderBlockDetector
-- **Swing setups evalúan 15m + 5m OBs** — `SWING_SETUP_TIMEFRAMES = ["15m", "5m"]` (aggressive mode: was 15m only). OBs de 5m producen SLs más ajustados pero `MIN_RISK_DISTANCE_PCT` (0.8%) filtra los micro-SLs que las comisiones se comen.
+- **Swing setups evalúan solo 15m** — `SWING_SETUP_TIMEFRAMES = ["15m"]`. Detectors corren en 5m también (quick setups D/H los necesitan) pero swing setups (A/B/F/G) solo consideran OBs de 15m. `MIN_RISK_DISTANCE_PCT` (0.5%) filtra micro-SLs.
 - **Zone-based orders** — no requiere proximidad al OB. El bot coloca limit orders al 50% del OB body (configurable via `SETUP_A_ENTRY_PCT`) y espera fill. SL siempre en `ob.low` (long) / `ob.high` (short) — wick-to-wick, independiente del entry.
   - `_find_best_ob()` selecciona by composite scoring via `_score_ob()`: volume (35%), freshness (30%), proximity (20%), body size (15%). Replaces old "highest volume_ratio + tiebreak by timestamp" selector.
   - `_score_ob()` returns -1 (filtered) for OBs below `OB_MIN_BODY_PCT` (0.15%) or beyond `OB_MAX_DISTANCE_PCT` (8%). Otherwise returns 0-1 composite score.
@@ -96,7 +96,7 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
   - **CVD divergence + magnitud**: divergencia precio↓/CVD↑ = señal más fuerte. MTF agreement (5m+15m+1h). Fallback a simple alignment. **Buy/sell dominance tiers**: 55%+ = `buy_dominance_moderate`, 60%+ = `buy_dominance_strong` (thresholds: `BUY_DOMINANCE_MODERATE_PCT`, `BUY_DOMINANCE_STRONG_PCT`)
   - **OI delta graduado**: trackea OI USD entre evaluaciones por pair. 0.5-2% = `oi_rising_mild`, 2-5% = `oi_rising_moderate`, 5%+ = `oi_rising_strong`. Dropping >2% = `oi_dropping_Xpct`. Raw `oi_delta_X.XXpct` siempre incluido para ML. (thresholds: `OI_DELTA_MILD_PCT`, `OI_DELTA_MODERATE_PCT`, `OI_DELTA_STRONG_PCT`)
   - **Funding graduado simétrico**: mild (0.01-0.03%) = 1 confluence CONTEXT, moderate (0.03-0.06%) = SUPPORTING, extreme (0.06%+) = 2 confluences. Labels: `funding_mild_long/short`, `funding_moderate_long/short`, `funding_extreme_long/short`. (thresholds: `FUNDING_MILD_THRESHOLD`, `FUNDING_MODERATE_THRESHOLD`, `FUNDING_EXTREME_THRESHOLD`)
-- Cálculo de TP1 (1:1 R:R, breakeven trigger) y TP2 (3:1 R:R, single TP)
+- Cálculo de TP1 (1:1 R:R, breakeven trigger) y TP2 (**per-setup** via `SETUP_TP2_RR` dict, fallback `TP2_RR_RATIO`=2.0). Reversals (A, C, E): 2.0. Continuations/scalps (B, D, F, G, H): 1.5.
 - **R:R simple** — `abs(tp2 - entry) / abs(entry - sl)` ≥ `MIN_RISK_REWARD`
 - **Validación premium/discount** — equilibrium zone permite trades por defecto (`ALLOW_EQUILIBRIUM_TRADES = True`)
 - **PD override diferido** — el check de PD alignment se difiere hasta después de contar confluencias. Si un setup tiene ≥ `PD_OVERRIDE_MIN_CONFLUENCES` (5) confluencias, puede operar contra la zona PD. Evita lockout total cuando bearish bias + discount zone bloquea todo. Log INFO cuando se activa override.
@@ -120,10 +120,10 @@ Post-detection filters aplicados a cada swing setup (A/B/F/G) antes de retornar:
 ### `strategy_service/quick_setups.py` — Quick Setups (C, D, E, H)
 Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan cuando no hay swing setup (A/B).
 
-- **Setup C — Funding Squeeze: HABILITADO** (aggressive validation mode 2026-03-15). Funding rate extremo + CVD buy dominance alineado + HTF bias. Entry: precio actual. SL: 0.5%. TP1: 1:1 (breakeven trigger), TP2: 3:1 (single TP).
+- **Setup C — Funding Squeeze: HABILITADO** (aggressive validation mode 2026-03-15). Funding rate extremo + CVD buy dominance alineado + HTF bias. Entry: precio actual. SL: 0.5%. TP1: 1:1 (breakeven trigger), TP2: per-setup R:R (single TP).
   - Long: funding < -0.03%, buy dominance > 55%
   - Short: funding > +0.03%, buy dominance < 45%
-- **Setup D — LTF Structure Scalp:** CHoCH o BOS en 5m + OB fresco cerca del precio. No requiere sweep ni FVG. HTF bias + PD zone alineados. Entry: 50% del OB. TP1: 1:1 (breakeven trigger), TP2: 3:1 (single TP). Recibe `market_snapshot` para **CVD alignment** (agrega `cvd_aligned_*` + `buy/sell_dominance_strong` como confluences).
+- **Setup D — LTF Structure Scalp:** CHoCH o BOS en 5m + OB fresco cerca del precio. No requiere sweep ni FVG. HTF bias + PD zone alineados. Entry: 50% del OB. TP1: 1:1 (breakeven trigger), TP2: per-setup R:R (single TP). Recibe `market_snapshot` para **CVD alignment** (agrega `cvd_aligned_*` + `buy/sell_dominance_strong` como confluences).
   - **Split into variants**: `setup_d_bos` and `setup_d_choch` for per-variant performance measurement. Variant determined by `latest_break.break_type`.
   - Both variants are in `QUICK_SETUP_TYPES` — skip AI filter, use short entry timeout (1h).
   - **setup_d_choch: HABILITADO** (75% WR in backtests)
@@ -132,7 +132,7 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
   - **Backtest 60d solo**: 56 trades, 42.9% WR, +$3,596. Sharpe 8.51, PF 2.26, max DD 4.8%.
   - **Backtest 60d combinado A+B+D+F**: 9 trades D, 66.7% WR, +$2,553. Total combinado: 97 trades, 51.5% WR, +$7,558.
   - ETH dominante (47/56 trades solo, 97/97 combinado). BTC 11.1% WR pero solo 9 trades — muestra insuficiente.
-- **Setup E — Cascade Reversal: HABILITADO** (aggressive validation mode 2026-03-15). Caída de OI >2% (cascade proxy) + CVD revertiendo. Long después de cascade de longs, short después de cascade de shorts. Usa OB cercano como anchor o precio actual. TP1: 1:1 (breakeven trigger), TP2: 3:1 (single TP).
+- **Setup E — Cascade Reversal: HABILITADO** (aggressive validation mode 2026-03-15). Caída de OI >2% (cascade proxy) + CVD revertiendo. Long después de cascade de longs, short después de cascade de shorts. Usa OB cercano como anchor o precio actual. TP1: 1:1 (breakeven trigger), TP2: per-setup R:R (single TP).
 - **Setup H — Momentum/Impulse: DESHABILITADO** (2026-03-19). 27 trades live, 11% WR, PF 0.10. Entry at impulse completion = adverse selection (AFML Ch.5). Code kept for recalibration. Was: impulsos direccionales con volumen en 5m/15m, entry at market price, SL at initiating OB.
 
 **Diferencias clave quick vs swing:**

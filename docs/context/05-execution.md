@@ -332,6 +332,12 @@ All exit paths now compute PnL before closing:
 - TP hit, SL hit, breakeven SL, trailing SL (via `_close_position` which calls `_calculate_pnl`)
 - Emergency close, excessive slippage, SL too close, emergency retry, timeout — all extract close price from market close result and call `_calculate_pnl` before `_close_position`
 
+### ML pipeline linkage (2026-03-19)
+- `setup_id` propagado: TradeSetup → ManagedPosition → `insert_trade()` → PostgreSQL `trades.setup_id`. Links trade outcome to `ml_setups` row.
+- `_ml_resolve_close()` llamado en TODOS los exit paths incluyendo `emergency` (antes faltaba).
+- `manual_close` mapeado a `filled_timeout` en ML outcome (no es un outcome distinto — trade cerró sin alcanzar SL/TP).
+- Orphaned trades on restart: `sync_exchange_positions()` resuelve ML outcome como `filled_timeout` si tiene `setup_id`.
+
 ## Limitaciones conocidas
 
 - Estado de posiciones se pierde en restart (SL/TP siguen en exchange, positions re-adopted via sync_exchange_positions)

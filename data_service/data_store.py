@@ -613,6 +613,12 @@ class PostgresStore:
                     daily_vol DOUBLE PRECISION
             """)
 
+            # migration: add setup_id to trades for ML linkage
+            cur.execute("""
+                ALTER TABLE trades ADD COLUMN IF NOT EXISTS
+                    setup_id VARCHAR(20)
+            """)
+
         logger.info("PostgreSQL tables verified/created")
 
     # --- Candle Storage ---
@@ -709,6 +715,7 @@ class PostgresStore:
         ai_confidence: float,
         actual_entry: float | None = None,
         tp3_price: float = 0.0,
+        setup_id: str | None = None,
     ) -> int | None:
         """Insert a new trade record. Returns trade id or None on failure."""
         for attempt in range(2):
@@ -720,12 +727,12 @@ class PostgresStore:
                         """INSERT INTO trades
                            (pair, direction, setup_type, entry_price, sl_price,
                             tp1_price, tp2_price, tp3_price, position_size,
-                            ai_confidence, actual_entry, opened_at, status)
-                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), 'open')
+                            ai_confidence, actual_entry, setup_id, opened_at, status)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), 'open')
                            RETURNING id""",
                         (pair, direction, setup_type, entry_price, sl_price,
                          tp1_price, tp2_price, tp3_price, position_size,
-                         ai_confidence, actual_entry),
+                         ai_confidence, actual_entry, setup_id),
                     )
                     row = cur.fetchone()
                     trade_id = row[0] if row else None
@@ -811,13 +818,13 @@ class PostgresStore:
             try:
                 with self._conn.cursor() as cur:
                     cur.execute(
-                        "SELECT id, pair, direction, entry_price, opened_at "
+                        "SELECT id, pair, direction, entry_price, opened_at, setup_id "
                         "FROM trades WHERE status = 'open'"
                     )
                     rows = cur.fetchall()
                 return [
                     {"id": r[0], "pair": r[1], "direction": r[2],
-                     "entry_price": r[3], "opened_at": r[4]}
+                     "entry_price": r[3], "opened_at": r[4], "setup_id": r[5]}
                     for r in rows
                 ]
             except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:

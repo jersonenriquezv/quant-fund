@@ -956,6 +956,7 @@ class PositionMonitor:
                 self._safe_notify(
                     self._alert_manager.notify_emergency(pos, "Emergency close failed after 5 retries")
                 )
+            self._ml_resolve_close(pos, "emergency")
             pos.phase = "emergency_failed"
         else:
             logger.error(
@@ -1327,6 +1328,7 @@ class PositionMonitor:
                 position_size=pos.filled_size,
                 ai_confidence=pos.ai_confidence,
                 actual_entry=pos.actual_entry_price,
+                setup_id=pos.setup_id,
             )
             pos.db_trade_id = trade_id
         except Exception as e:
@@ -1373,6 +1375,7 @@ class PositionMonitor:
                 "sl_too_close": "filled_timeout",
                 "cancelled": "unfilled_timeout",
                 "replaced": "replaced",
+                "manual_close": "filled_timeout",
                 # Guardian closes — distinct from timeout/SL (active edge-loss exit)
                 "guardian_counter_structure": "filled_guardian",
                 "guardian_momentum_death": "filled_guardian",

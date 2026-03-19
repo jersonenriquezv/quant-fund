@@ -130,11 +130,15 @@ when CVD/OI/funding/derived features are computed
 
 whether computed always or only when needed
 
+when orderbook microstructure features are computed (spread, OBI, depth — Lehalle & Laruelle Ch 1)
+
 Questions:
 
 Are features computed even when no setup is possible?
 
 Are expensive features gated behind candidate setups?
+
+Are L2 orderbook features (OBI, depth_at_entry, spread_bps) computed on every candle or only when a setup is detected? L2 processing is heavier than OHLCV — must be lazy-evaluated after cheap filters pass.
 
 E. Redundant Computation
 

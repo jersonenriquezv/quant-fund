@@ -300,6 +300,8 @@ async def on_candle_confirmed(candle: Candle) -> None:
             f"OB already failed: {setup.pair} entry={setup.entry_price:.2f} "
             f"sl={setup.sl_price:.2f} — skipping"
         )
+        _ml_resolve_outcome(setup.setup_id, "risk_rejected")
+        _setup_dedup_cache[dedup_key] = time.time()
         return
 
     # Layer 5: Execution (or Signal)

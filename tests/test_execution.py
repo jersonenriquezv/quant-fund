@@ -1073,7 +1073,7 @@ class TestOrphanedTradeReconciliation:
         mock_postgres = MagicMock()
         mock_postgres.fetch_open_trades.return_value = [
             {"id": 42, "pair": "ETH/USDT", "direction": "long",
-             "entry_price": 2000.0, "opened_at": None},
+             "entry_price": 2000.0, "opened_at": None, "setup_id": None},
         ]
         mock_postgres.update_trade.return_value = True
 
@@ -1089,6 +1089,32 @@ class TestOrphanedTradeReconciliation:
             exit_reason="orphaned_restart",
             pnl_usd=0.0,
             pnl_pct=0.0,
+        )
+        # No setup_id → ML outcome not resolved
+        mock_postgres.update_ml_setup_outcome.assert_not_called()
+
+    def test_orphaned_trade_resolves_ml_outcome(self):
+        """Orphaned trade with setup_id resolves ml_setups outcome."""
+        service = _make_service()
+        service._monitor.positions = {}
+
+        mock_postgres = MagicMock()
+        mock_postgres.fetch_open_trades.return_value = [
+            {"id": 55, "pair": "BTC/USDT", "direction": "long",
+             "entry_price": 80000.0, "opened_at": None, "setup_id": "abc123def456"},
+        ]
+        mock_postgres.update_trade.return_value = True
+        mock_postgres.update_ml_setup_outcome.return_value = True
+
+        mock_ds = MagicMock()
+        mock_ds.postgres = mock_postgres
+        service._data_service = mock_ds
+
+        asyncio.run(service._reconcile_orphaned_trades())
+
+        mock_postgres.update_ml_setup_outcome.assert_called_once_with(
+            setup_id="abc123def456",
+            outcome_type="filled_timeout",
         )
 
     def test_active_trade_not_reconciled(self):

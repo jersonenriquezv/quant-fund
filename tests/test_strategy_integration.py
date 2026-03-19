@@ -468,9 +468,9 @@ class TestEnabledSetups:
         """Setup F should remain enabled (strictly better than B)."""
         assert "setup_f" in settings.ENABLED_SETUPS
 
-    def test_setup_h_in_enabled(self):
-        """Setup H should remain enabled."""
-        assert "setup_h" in settings.ENABLED_SETUPS
+    def test_setup_h_disabled(self):
+        """Setup H disabled (03-19): 27 trades, 11% WR, PF 0.10. Adverse selection at impulse top."""
+        assert "setup_h" not in settings.ENABLED_SETUPS
 
     def test_disabled_setup_detected_but_discarded(self):
         """StrategyService.evaluate() discards setups not in ENABLED_SETUPS."""

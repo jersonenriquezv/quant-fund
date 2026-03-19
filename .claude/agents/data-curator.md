@@ -235,9 +235,11 @@ GSADF(r0) = sup_{r2 in [r0,1], r1 in [0, r2-r0]} ADF_{r1}^{r2}
 - Feed break detection into regime command and ML feature set.
 - Minimum bubble duration: `L_T = delta * log(T)`.
 
-### 6. Microstructural Features (AFML Ch 19)
+### 6. Microstructural Features (AFML Ch 19 + Lehalle & Laruelle Ch 1)
 
 **Problem:** Standard OHLCV is known to all participants. Microstructural features extract hard-to-replicate information from order flow.
+
+**Reference:** *Market Microstructure in Practice* (2nd Ed., Lehalle & Laruelle, World Scientific 2018) — complements AFML Ch 19 with practical orderbook dynamics and liquidity measurement.
 
 #### Kyle's Lambda
 Price impact per unit of order flow:
@@ -282,6 +284,71 @@ VPIN = (1/n) * sum(|V_buy_tau - V_sell_tau|) / (n * V)
 - OKX trade stream provides individual trades with price, size, and side — raw material for ALL microstructural features.
 - CVD is a crude version of what's possible. VPIN, Kyle's lambda, Roll spread extract much richer information.
 - **Priority by feasibility:** VPIN (directly computable), Kyle's lambda (from tick data), Amihud's lambda (from OHLCV), Roll spread (from close-to-close).
+
+### 7. Orderbook Dynamics & Liquidity Measurement (Lehalle & Laruelle Ch 1)
+
+**Problem:** OHLCV and trade flow are lagging indicators. The orderbook is a leading indicator — it reveals supply/demand BEFORE trades execute.
+
+#### The Four Liquidity Variables (Lehalle & Laruelle 1.4)
+Every market state is described by four interrelated variables:
+1. **Traded volumes** — quantity of executed trades (we track this via OKX trade stream)
+2. **Bid-ask spread** — cost of immediacy (we cache orderbook depth in Redis but don't extract spread features)
+3. **Volatility** — price uncertainty (we track via ATR)
+4. **Quoted quantities** — depth at best bid/ask and deeper levels (available from OKX L2 data)
+
+These four are NOT independent. Lehalle & Laruelle show:
+- Spread widens → volume drops → volatility spikes → depth thins (feedback loop)
+- In crypto: this loop is amplified by leverage + liquidation cascades
+- **Key insight:** Monitoring the spread-volume-depth relationship predicts regime transitions BEFORE price moves
+
+#### Orderbook Imbalance as Directional Signal (Lehalle & Laruelle 1.6, 2nd Ed.)
+```
+OBI = (Q_bid - Q_ask) / (Q_bid + Q_ask)
+```
+Where `Q_bid` = total quantity at top N bid levels, `Q_ask` = same for ask side.
+
+- OBI > 0 → buy pressure (short-term upward) — HFTs profit from this
+- OBI < 0 → sell pressure (short-term downward)
+- OBI magnitude correlates with next-period return magnitude
+
+**Lehalle & Laruelle finding:** OBI predicts 5-30 second returns with statistical significance across equity markets. In crypto perpetuals, this window may be longer due to lower HFT competition.
+
+#### Effective Spread vs Quoted Spread
+```
+Quoted spread = best_ask - best_bid
+Effective spread = 2 * |fill_price - mid_price| * sign(trade_direction)
+```
+Effective > Quoted when large orders walk the book. For our limit orders at OB levels, effective spread at fill time indicates liquidity conditions.
+
+#### Depth Profile Analysis
+Beyond top-of-book:
+```
+Cumulative depth at distance d = sum(quantity_i) for all levels within d% of mid
+```
+- Thin depth at our entry level = higher fill probability but higher adverse selection risk
+- Thick depth = lower fill probability (queue position matters) but better post-fill returns
+- **This is the fundamental fill probability trade-off** (confirmed by Albers et al. 2025 for crypto perpetuals)
+
+#### Spread Decomposition (Lehalle & Laruelle Ch 2)
+The bid-ask spread decomposes into:
+1. **Adverse selection cost** — compensates passive orders for trading against informed flow
+2. **Inventory risk** — compensates for holding directional exposure
+3. **Order processing cost** — exchange fees + infrastructure
+
+For our bot: when we place a limit buy at 65% OB depth, we are a passive participant. The spread decomposition tells us HOW MUCH of our fill is adverse selection vs genuine mean-reversion.
+
+**For this project:**
+- OKX L2 orderbook data already cached in Redis (`orderbook_depth`). Extract structured features from it.
+- **New ML features to extract at setup detection time:**
+  1. `spread_bps` — current quoted spread in basis points
+  2. `obi_top5` — orderbook imbalance at top 5 levels (aligned with trade direction)
+  3. `depth_at_entry` — cumulative depth within 0.1% of our entry price
+  4. `depth_ratio` — depth at entry vs avg depth at top 5 levels (thin = adverse selection risk)
+- **New ML features at fill time (for fill probability model):**
+  5. `fill_speed_seconds` — time from order placement to fill
+  6. `effective_spread_at_fill` — 2 * |fill_price - mid_at_fill|
+- These complement existing CVD features. CVD = net trade flow (lagging). OBI = net quoted flow (leading).
+- **Priority:** `obi_top5` and `spread_bps` first (highest signal-to-noise per Lehalle & Laruelle), then depth features.
 
 ---
 
@@ -357,3 +424,5 @@ VPIN = (1/n) * sum(|V_buy_tau - V_sell_tau|) / (n * V)
 - mlfinpy: `data_structures.get_ema_*_imbalance_bars()`, `labeling.get_events()`, `sampling.bootstrapping.seq_bootstrap()`
 - GitHub: BlackArbsCEO/Adv_Fin_ML_Exercises (complete snippets), mlfinpy.readthedocs.io
 - Papers: Lopez de Prado "The 10 Reasons Most Machine Learning Funds Fail" (SSRN 3104816)
+- Book: Lehalle & Laruelle, "Market Microstructure in Practice" (2nd Ed., 2018) — Ch 1 (orderbook dynamics, four liquidity variables, OBI), Ch 2 (spread decomposition, adverse selection), Appendix A (propagator models)
+- Paper: Albers et al. (2025) — Fill probability vs post-fill returns in crypto perpetuals (SSRN 5074873)

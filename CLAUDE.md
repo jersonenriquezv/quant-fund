@@ -46,15 +46,12 @@ The bot runs in **aggressive validation mode** (since 2026-03-15) with 5 active 
 - BOS + OB, no FVG required. Hardened filters still active.
 - `SETUP_F_MIN_BOS_DISPLACEMENT_PCT`: 0.1% (was 0.2%). `SETUP_F_MIN_CONFLUENCES`: 2 (was 3).
 
-**Setup H — Momentum/Impulse Entry:** (ENABLED, quick setup)
-- Detects volume-driven impulse moves in real-time (5m and 15m).
-- 5 filters: directional impulse (≥60% same-color candles), volume spike (≥1.5x avg), BOS confirmed, minimum move (≥0.3%), HTF bias aligned.
-- Entry: current price (market momentum is happening NOW — not a passive limit).
-- SL: at the initiating OB (structural SL), capped at 3% max distance.
-- TP: progressive trailing (ceiling TP at 5:1, trail in 0.5 R:R steps).
-- Quick setup (1h cooldown between same-pair detections).
+**Setup H — Momentum/Impulse Entry:** (DISABLED — 2026-03-19)
+- Disabled after 28 live trades: 11% WR, PF 0.10. Entry at impulse completion = adverse selection (Lehalle & Laruelle Ch 2).
+- 12 SL, 7 timeout, 0 TP. The "momentum" was already consumed when bot entered.
+- Code kept for recalibration (needs pullback entry, not market entry at impulse top).
 
-**Disabled setups:** Setup C, E, G pending validation.
+**Disabled setups:** Setup B (0-7.7% WR), D_bos (20-33% WR), G (unvalidated), H (11% WR adverse selection).
 
 **Mandatory rules:**
 - Minimum 2 confluences (OB alone = no trade)

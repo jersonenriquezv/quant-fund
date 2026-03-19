@@ -169,6 +169,13 @@ class ExecutionService:
                     pnl_usd=0.0,
                     pnl_pct=0.0,
                 )
+                # Resolve ML setup outcome so label is not lost
+                setup_id = trade.get("setup_id")
+                if setup_id:
+                    self._data_service.postgres.update_ml_setup_outcome(
+                        setup_id=setup_id,
+                        outcome_type="filled_timeout",
+                    )
                 reconciled += 1
                 logger.warning(
                     f"Reconciled orphaned trade: id={trade_id} {pair} "

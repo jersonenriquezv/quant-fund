@@ -3,8 +3,8 @@
 > Source of truth for system state. Updated on every material change.
 > Reflects code reality — if code and doc disagree, fix the doc.
 
-**Last updated:** 2026-03-18
-**ML Feature Version:** 4
+**Last updated:** 2026-03-19
+**ML Feature Version:** 6
 **Bot status:** LIVE (OKX_SANDBOX=false, $108 capital)
 
 ---
@@ -30,7 +30,7 @@
 | E (Cascade Reversal) | **ENABLED** | quick | live, collecting data |
 | F (Pure OB Retest) | **ENABLED** | swing, AI bypass | 34-59% |
 | G (Breaker Block) | **DISABLED** | — | unvalidated |
-| H (Momentum/Impulse) | **ENABLED** | quick, AI bypass | live, collecting data |
+| H (Momentum/Impulse) | **DISABLED** | — | 11% WR, PF 0.10 (28 trades). Adverse selection at impulse top. |
 
 ### Risk Guardrails
 | Parameter | Value | Notes |
@@ -44,7 +44,7 @@
 | COOLDOWN_MINUTES | 5 | after loss |
 | MIN_RISK_REWARD | 1.2 | swing setups |
 | MIN_RISK_REWARD_QUICK | 1.0 | quick setups |
-| MIN_RISK_DISTANCE_PCT | 0.5% | SL-too-close filter |
+| MIN_RISK_DISTANCE_PCT | 0.5% | SL-too-close filter (restored from 0.8% — too aggressive, killed valid 15m OBs) |
 | MAX_SLIPPAGE_PCT | 0.3% | emergency close if exceeded |
 
 ### Strategy Thresholds (Optuna-validated + audit-restored)
