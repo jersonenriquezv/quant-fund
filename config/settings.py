@@ -732,8 +732,11 @@ class Settings:
     GUARDIAN_MOMENTUM_DECAY_RATIO: float = float(os.getenv("GUARDIAN_MOMENTUM_DECAY_RATIO", "0.2"))
     # Minimum price range (as fraction of price) over last N candles to NOT be a stall
     GUARDIAN_STALL_RANGE_PCT: float = float(os.getenv("GUARDIAN_STALL_RANGE_PCT", "0.001"))
-    # Whether to use CVD data for adverse divergence check
-    GUARDIAN_CVD_ENABLED: bool = os.getenv("GUARDIAN_CVD_ENABLED", "true").lower() == "true"
+    # Whether to use CVD data for adverse divergence check.
+    # DISABLED (2026-03-19): closed profitable trades on minor pullbacks without
+    # backtested calibration. SL orders on exchange protect positions. Collect data
+    # first, then re-enable with calibrated thresholds when 50+ trades available.
+    GUARDIAN_CVD_ENABLED: bool = os.getenv("GUARDIAN_CVD_ENABLED", "false").lower() == "true"
 
     # ========================
     # RECONNECTION
