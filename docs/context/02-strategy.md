@@ -89,13 +89,13 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
   - `_is_price_near_ob()` se mantiene para notificaciones de OB summary, pero no bloquea setups
 - **SL direction validation** — `_validate_sl_direction()` en todos los setup types (A/B/F/G). Rechaza si SL está del lado incorrecto del entry (bearish: sl debe ser > entry, bullish: sl debe ser < entry). Fix para bug donde Setup B con FVG encima del OB producía entry > ob.high = SL invertido.
 - Mínimo 2 confluencias obligatorio (no configurable — hardcoded)
-- **`_check_volume_confirmation()`** (audit 03-18: consolidado) — método compartido por todos los setups (A/B/F/G). Checks:
+- **`_check_volume_confirmation()`** — método compartido por todos los swing setups (A/B/F/G). Señales graduadas (v5):
   - OB volume ratio vs `OB_MIN_VOLUME_RATIO` (1.3)
-  - Sweep volume ratio vs `SWEEP_MIN_VOLUME_RATIO`
+  - **Sweep graduado**: 1.5-2.5x = 1 confluence, 2.5-4x = +`sweep_strong`, 4x+ = +`sweep_strong`+`sweep_extreme` (thresholds: `SWEEP_STRONG_VOLUME_RATIO`, `SWEEP_EXTREME_VOLUME_RATIO`)
   - OI flush events (boolean + USD amount)
-  - **CVD divergence** (reemplaza boolean simple `cvd_15m > 0`): compara dirección de precio reciente (últimas 3 candles) vs dirección CVD. Divergencia (precio↓ + CVD↑) = señal más fuerte. Multi-timeframe agreement (5m+15m+1h alineados). Fallback a simple alignment.
-  - **OI delta** (reemplaza check de existencia `oi_data_available`): trackea OI USD entre evaluaciones por pair. OI rising >0.5% = trend confluence. OI dropping >1% = liquidation pressure.
-  - **Funding rate simétrico** (audit 03-18 fix): ambas direcciones usan `FUNDING_EXTREME_THRESHOLD` (0.0003). Antes era asimétrico (-0.0001 long vs +0.0003 short) sin justificación.
+  - **CVD divergence + magnitud**: divergencia precio↓/CVD↑ = señal más fuerte. MTF agreement (5m+15m+1h). Fallback a simple alignment. **Buy/sell dominance tiers**: 55%+ = `buy_dominance_moderate`, 60%+ = `buy_dominance_strong` (thresholds: `BUY_DOMINANCE_MODERATE_PCT`, `BUY_DOMINANCE_STRONG_PCT`)
+  - **OI delta graduado**: trackea OI USD entre evaluaciones por pair. 0.5-2% = `oi_rising_mild`, 2-5% = `oi_rising_moderate`, 5%+ = `oi_rising_strong`. Dropping >2% = `oi_dropping_Xpct`. Raw `oi_delta_X.XXpct` siempre incluido para ML. (thresholds: `OI_DELTA_MILD_PCT`, `OI_DELTA_MODERATE_PCT`, `OI_DELTA_STRONG_PCT`)
+  - **Funding graduado simétrico**: mild (0.01-0.03%) = 1 confluence CONTEXT, moderate (0.03-0.06%) = SUPPORTING, extreme (0.06%+) = 2 confluences. Labels: `funding_mild_long/short`, `funding_moderate_long/short`, `funding_extreme_long/short`. (thresholds: `FUNDING_MILD_THRESHOLD`, `FUNDING_MODERATE_THRESHOLD`, `FUNDING_EXTREME_THRESHOLD`)
 - Cálculo de TP1 (1:1 R:R, breakeven trigger) y TP2 (3:1 R:R, single TP)
 - **R:R simple** — `abs(tp2 - entry) / abs(entry - sl)` ≥ `MIN_RISK_REWARD`
 - **Validación premium/discount** — equilibrium zone permite trades por defecto (`ALLOW_EQUILIBRIUM_TRADES = True`)
@@ -117,13 +117,13 @@ Post-detection filters aplicados a cada swing setup (A/B/F/G) antes de retornar:
 1. **ATR filter** — rechaza si volatilidad (ATR 14 / entry_price) < `MIN_ATR_PCT` (0.35%). Restaurado a valor Optuna (audit 03-18: 0.20% dejaba pasar ruido de baja volatilidad).
 2. **Target space filter** — rechaza si el swing high/low (1H/4H) más cercano en dirección del trade está a menos de `MIN_TARGET_SPACE_R` (1.4) veces el riesgo. Restaurado a valor Optuna (audit 03-18: 1.0 apenas filtraba).
 
-### `strategy_service/quick_setups.py` — Quick Setups (C, D, E)
+### `strategy_service/quick_setups.py` — Quick Setups (C, D, E, H)
 Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan cuando no hay swing setup (A/B).
 
 - **Setup C — Funding Squeeze: HABILITADO** (aggressive validation mode 2026-03-15). Funding rate extremo + CVD buy dominance alineado + HTF bias. Entry: precio actual. SL: 0.5%. TP1: 1:1 (breakeven trigger), TP2: 3:1 (single TP).
   - Long: funding < -0.03%, buy dominance > 55%
   - Short: funding > +0.03%, buy dominance < 45%
-- **Setup D — LTF Structure Scalp:** CHoCH o BOS en 5m + OB fresco cerca del precio. No requiere sweep ni FVG. HTF bias + PD zone alineados. Entry: 50% del OB. TP1: 1:1 (breakeven trigger), TP2: 3:1 (single TP).
+- **Setup D — LTF Structure Scalp:** CHoCH o BOS en 5m + OB fresco cerca del precio. No requiere sweep ni FVG. HTF bias + PD zone alineados. Entry: 50% del OB. TP1: 1:1 (breakeven trigger), TP2: 3:1 (single TP). Recibe `market_snapshot` para **CVD alignment** (agrega `cvd_aligned_*` + `buy/sell_dominance_strong` como confluences).
   - **Split into variants**: `setup_d_bos` and `setup_d_choch` for per-variant performance measurement. Variant determined by `latest_break.break_type`.
   - Both variants are in `QUICK_SETUP_TYPES` — skip AI filter, use short entry timeout (1h).
   - **setup_d_choch: HABILITADO** (75% WR in backtests)
@@ -133,6 +133,7 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
   - **Backtest 60d combinado A+B+D+F**: 9 trades D, 66.7% WR, +$2,553. Total combinado: 97 trades, 51.5% WR, +$7,558.
   - ETH dominante (47/56 trades solo, 97/97 combinado). BTC 11.1% WR pero solo 9 trades — muestra insuficiente.
 - **Setup E — Cascade Reversal: HABILITADO** (aggressive validation mode 2026-03-15). Caída de OI >2% (cascade proxy) + CVD revertiendo. Long después de cascade de longs, short después de cascade de shorts. Usa OB cercano como anchor o precio actual. TP1: 1:1 (breakeven trigger), TP2: 3:1 (single TP).
+- **Setup H — Momentum/Impulse: HABILITADO**. Detecta impulsos direccionales con volumen en 5m y 15m. 5 filtros: ≥60% candles same-color, volume spike ≥1.5x avg, BOS confirmado, impulse ≥0.3%, HTF bias alineado. Entry: precio actual (market). SL: initiating OB o impulse extreme (cap 3%). Filtros de exhaustión: deceleration ratio, extended move, volume decay. Recibe `market_snapshot` para **CVD momentum confirmation** (agrega `cvd_momentum_confirmed` + `buy/sell_dominance_strong`).
 
 **Diferencias clave quick vs swing:**
 - Skip Claude AI filter (los datos SON la señal)
@@ -192,6 +193,18 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 - `CASCADE_CVD_REVERSAL_LONG: float = 0.50` — buy dominance para reversal long (Setup E)
 - `CASCADE_CVD_REVERSAL_SHORT: float = 0.50` — buy dominance para reversal short (Setup E)
 - `CASCADE_MAX_AGE_SECONDS: int = 900` — cascade debe ser <15min (Setup E)
+- **Graduated signal thresholds (v5):**
+- `SWEEP_STRONG_VOLUME_RATIO: float = 2.5` — sweep strong tier (extra confluence)
+- `SWEEP_EXTREME_VOLUME_RATIO: float = 4.0` — sweep extreme tier (2 extra confluences)
+- `OI_DELTA_MILD_PCT: float = 0.005` — OI rising mild (0.5%)
+- `OI_DELTA_MODERATE_PCT: float = 0.02` — OI rising moderate (2%)
+- `OI_DELTA_STRONG_PCT: float = 0.05` — OI rising strong (5%)
+- `BUY_DOMINANCE_MODERATE_PCT: float = 0.55` — buy/sell dominance moderate tier
+- `BUY_DOMINANCE_STRONG_PCT: float = 0.60` — buy/sell dominance strong tier
+- `FUNDING_MILD_THRESHOLD: float = 0.0001` — mild crowding (0.01%)
+- `FUNDING_MODERATE_THRESHOLD: float = 0.0003` — moderate crowding (0.03%, was FUNDING_EXTREME_THRESHOLD)
+- `FUNDING_EXTREME_THRESHOLD: float = 0.0006` — extreme crowding (0.06%)
+- `ML_FEATURE_VERSION: int = 5` — v5: graduated signals
 
 **HTF Campaign settings:**
 - `HTF_CAMPAIGN_ENABLED: bool = False` — master switch para HTF campaigns (env var)
@@ -247,5 +260,5 @@ El backtester soporta `--ai` flag para evaluar swing setups con Claude sobre dat
 - `test_fvg.py` — detección, fill, expiración
 - `test_liquidity.py` — clustering, sweeps, premium/discount, equilibrium band, swept persistence
 - `test_setups.py` — Setup A/B, confluencia, TPs, PD alignment, PD override, PD_AS_CONFLUENCE, SETUP_A_MODE, SL direction validation, simple R:R, OB proximity, temporal ordering, Setup F hardening (BOS age, displacement, OB-BOS gap, OB score, CVD/funding inclusion, entry distance, min confluences), Setup B hardening (BOS age, entry distance, direction bug fix)
-- `test_strategy_integration.py` — Integration tests (audit 03-18): OB volume threshold boundaries, funding symmetry, CVD divergence vs boolean, OI delta tracking, ENABLED_SETUPS gating, rejection reasons (HTF/sweep/CHoCH/PD/OB/confluences), signal hierarchy (core triggers vs confluence), expectancy filters (ATR/target space), Setup B vs F equivalence, confluence counting, quick setup signals (C/H)
-- `test_quick_setups.py` — Setup C/D/E, cooldowns, R:R quick vs swing, AI bypass, data validation, SETUP_D_MIN_DISPLACEMENT_PCT, PD_AS_CONFLUENCE on Setup D
+- `test_strategy_integration.py` — Integration tests: OB volume threshold boundaries, funding graduated tiers (mild/moderate/extreme), CVD divergence vs boolean, OI delta graduated tiers, ENABLED_SETUPS gating, rejection reasons (HTF/sweep/CHoCH/PD/OB/confluences), signal hierarchy (core triggers vs confluence), expectancy filters (ATR/target space), Setup B vs F equivalence, confluence counting, quick setup signals (C/H)
+- `test_quick_setups.py` — Setup C/D/E/H, cooldowns, R:R quick vs swing, AI bypass, data validation, SETUP_D_MIN_DISPLACEMENT_PCT, PD_AS_CONFLUENCE on Setup D, Setup H exhaustion filters

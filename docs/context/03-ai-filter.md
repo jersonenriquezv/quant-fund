@@ -98,7 +98,7 @@ AIDecision { confidence, approved, reasoning (from factors), adjustments (+ scor
 - `build_evaluation_prompt(setup, snapshot, candles_context)` → user prompt con datos concretos
 - `_format_confluences(confluences, direction)` → convierte labels internos a descripción factual con tags [SUPPORTING]/[CONTEXT]
 - Computa R:R simple (reward to tp2 / risk) en el setup section
-- Interpreta funding rate: normal/extreme basado en `FUNDING_EXTREME_THRESHOLD` (0.03%) — neutral language ("directional crowding")
+- Interpreta funding rate graduado: mild (0.01%), moderate (0.03%), extreme (0.06%) — neutral language ("directional crowding"). Thresholds: `FUNDING_MILD/MODERATE/EXTREME_THRESHOLD`
 - OI marcado como snapshot-only (sin tendencia)
 - Whale section: net exchange flow sin labels "bullish/bearish", solo "net withdrawal" / "net deposit"
 - Maneja datos faltantes gracefully ("Not available")
@@ -143,7 +143,9 @@ AIDecision { confidence, approved, reasoning (from factors), adjustments (+ scor
 | `AI_TIMEOUT_SECONDS` | `30.0` | Timeout por request |
 | `AI_TEMPERATURE` | `0.3` | Temperatura (menor = más consistente) |
 | `AI_MAX_TOKENS` | `500` | Tokens máximos de respuesta |
-| `FUNDING_EXTREME_THRESHOLD` | `0.0003` | Threshold para funding "extreme" (0.03%) |
+| `FUNDING_MILD_THRESHOLD` | `0.0001` | Threshold para funding "mild" (0.01%) |
+| `FUNDING_MODERATE_THRESHOLD` | `0.0003` | Threshold para funding "moderate" (0.03%) |
+| `FUNDING_EXTREME_THRESHOLD` | `0.0006` | Threshold para funding "extreme" (0.06%) |
 
 ## Tests
 
@@ -169,7 +171,7 @@ Antes de llamar a Claude API, `main.py:_pre_filter_for_claude()` ejecuta 3 check
 **Nota:** El check de HTF bias conflict fue removido — HTF bias ahora es contexto para Claude, no un hard gate. Esto permite counter-trend setups con estructura LTF clara.
 
 ### Check 1: Funding extreme contra dirección
-- Long + `funding_rate > FUNDING_EXTREME_THRESHOLD` (0.03%) → rechaza
+- Long + `funding_rate > FUNDING_EXTREME_THRESHOLD` (0.06%) → rechaza
 - Short + `funding_rate < -FUNDING_EXTREME_THRESHOLD` → rechaza
 - Si `snapshot.funding` es None → skip
 

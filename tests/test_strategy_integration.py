@@ -247,14 +247,13 @@ class TestOBVolumeRatioThreshold:
 class TestFundingSymmetry:
     """Funding rate thresholds must be symmetric (audit 03-18 fix)."""
 
-    def test_long_funding_uses_extreme_threshold(self):
-        """Bullish setup: funding must be < -FUNDING_EXTREME_THRESHOLD (0.0003)."""
+    def test_long_funding_below_mild_no_confluence(self):
+        """Bullish setup: funding above -FUNDING_MILD_THRESHOLD → no funding confluence."""
         evaluator = SetupEvaluator()
-        threshold = settings.FUNDING_EXTREME_THRESHOLD  # 0.0003
 
-        # Funding at -0.0002 (above -0.0003): should NOT trigger
+        # Funding at -0.00005 (below mild threshold 0.0001): should NOT trigger
         args = _valid_setup_a_args(
-            market_snapshot=_make_snapshot(funding_rate=-0.0002),
+            market_snapshot=_make_snapshot(funding_rate=-0.00005),
         )
         setup = evaluator.evaluate_setup_a(**args)
         if setup is not None:
@@ -289,16 +288,15 @@ class TestFundingSymmetry:
         if setup is not None:
             assert any("funding" in c for c in setup.confluences)
 
-    def test_funding_between_old_asymmetric_thresholds_no_confluence(self):
-        """Funding at -0.00015: old code would trigger for long, new code should NOT."""
+    def test_funding_mild_adds_confluence(self):
+        """Funding at -0.00015: now hits mild tier (>= 0.0001)."""
         evaluator = SetupEvaluator()
-        # -0.00015 is between old threshold (-0.0001) and new threshold (-0.0003)
         args = _valid_setup_a_args(
             market_snapshot=_make_snapshot(funding_rate=-0.00015),
         )
         setup = evaluator.evaluate_setup_a(**args)
         if setup is not None:
-            assert not any("funding" in c for c in setup.confluences)
+            assert any("funding_mild" in c for c in setup.confluences)
 
 
 # ============================================================
@@ -395,7 +393,7 @@ class TestOIDelta:
             assert any("oi_rising" in c for c in setup.confluences)
 
     def test_oi_dropping_adds_confluence(self):
-        """OI decreasing >1% between evaluations adds oi_dropping confluence."""
+        """OI decreasing >2% between evaluations adds oi_dropping confluence."""
         evaluator = SetupEvaluator()
 
         # First call: seeds _prev_oi
@@ -404,9 +402,9 @@ class TestOIDelta:
         )
         evaluator.evaluate_setup_a(**args1)
 
-        # Second call: OI dropped 2%
+        # Second call: OI dropped 3% (must exceed OI_DELTA_MODERATE_PCT = 2%)
         args2 = _valid_setup_a_args(
-            market_snapshot=_make_snapshot(oi_usd=980_000.0),
+            market_snapshot=_make_snapshot(oi_usd=970_000.0),
         )
         setup = evaluator.evaluate_setup_a(**args2)
         if setup is not None:

@@ -127,6 +127,7 @@ class RedisStore:
             "rate": fr.rate,
             "next_rate": fr.next_rate,
             "next_funding_time": fr.next_funding_time,
+            "fetched_at": fr.fetched_at,
         }
         self._client.set(key, json.dumps(data), ex=32400)  # 9h TTL (>8h funding cycle)
 
@@ -559,6 +560,17 @@ class PostgresStore:
                     impulse_directional_purity DOUBLE PRECISION,
                     has_initiating_ob BOOLEAN DEFAULT FALSE,
 
+                    -- Graduated signal tiers (v5+)
+                    sweep_tier VARCHAR(10),
+                    funding_tier VARCHAR(10),
+                    oi_rising_tier VARCHAR(10),
+                    dominance_tier VARCHAR(10),
+                    oi_delta_pct DOUBLE PRECISION,
+
+                    -- Temporal / regime features (v5+)
+                    hour_of_day INT,
+                    atr_pct DOUBLE PRECISION,
+
                     -- Guardian close tracking
                     guardian_close_reason VARCHAR(30),
 
@@ -801,6 +813,57 @@ class PostgresStore:
             except psycopg2.Error as e:
                 logger.error(f"PostgreSQL fetch open trades failed: {e}")
                 return []
+
+    def fetch_closed_trades_pnl(self, since_date: str, capital: float) -> dict:
+        """Fetch aggregate PnL from closed trades since a given date.
+
+        Args:
+            since_date: ISO date string (e.g. '2026-03-19')
+            capital: Current capital for pnl_pct calculation
+
+        Returns dict with daily_pnl_pct, weekly_pnl_pct, trade_count.
+        Used for drawdown reconciliation on restart.
+        """
+        result = {"daily_pnl_pct": 0.0, "weekly_pnl_pct": 0.0, "trade_count": 0}
+        for attempt in range(2):
+            if not self._ensure_connected():
+                return result
+            try:
+                with self._conn.cursor() as cur:
+                    # Daily: trades closed today
+                    cur.execute(
+                        "SELECT COALESCE(SUM(pnl_usd), 0), COUNT(*) "
+                        "FROM trades WHERE status = 'closed' "
+                        "AND closed_at >= %s::date",
+                        (since_date,)
+                    )
+                    row = cur.fetchone()
+                    daily_pnl_usd = float(row[0]) if row else 0.0
+                    trade_count = int(row[1]) if row else 0
+                    result["daily_pnl_pct"] = daily_pnl_usd / capital if capital > 0 else 0.0
+                    result["trade_count"] = trade_count
+
+                    # Weekly: trades closed this ISO week
+                    cur.execute(
+                        "SELECT COALESCE(SUM(pnl_usd), 0) "
+                        "FROM trades WHERE status = 'closed' "
+                        "AND EXTRACT(ISOYEAR FROM closed_at) = EXTRACT(ISOYEAR FROM CURRENT_DATE) "
+                        "AND EXTRACT(WEEK FROM closed_at) = EXTRACT(WEEK FROM CURRENT_DATE)"
+                    )
+                    row = cur.fetchone()
+                    weekly_pnl_usd = float(row[0]) if row else 0.0
+                    result["weekly_pnl_pct"] = weekly_pnl_usd / capital if capital > 0 else 0.0
+
+                return result
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                logger.warning(f"PostgreSQL fetch closed trades pnl error (attempt {attempt+1}): {e}")
+                self._conn = None
+                if attempt == 1:
+                    return result
+            except psycopg2.Error as e:
+                logger.error(f"PostgreSQL fetch closed trades pnl failed: {e}")
+                return result
+        return result
         return []
 
     # --- ML Setup Storage ---
@@ -842,6 +905,9 @@ class PostgresStore:
                             impulse_move_pct, impulse_decel_ratio,
                             impulse_vol_decay_ratio, impulse_directional_purity,
                             has_initiating_ob,
+                            sweep_tier, funding_tier, oi_rising_tier,
+                            dominance_tier, oi_delta_pct,
+                            hour_of_day, atr_pct,
                             risk_capital, risk_open_positions,
                             risk_daily_dd_pct, risk_weekly_dd_pct, risk_trades_today
                         ) VALUES (
@@ -865,6 +931,8 @@ class PostgresStore:
                             %s, %s, %s,
                             %s, %s,
                             %s, %s, %s,
+                            %s, %s, %s,
+                            %s, %s,
                             %s, %s,
                             %s, %s, %s
                         ) ON CONFLICT (setup_id) DO NOTHING""",
@@ -898,6 +966,10 @@ class PostgresStore:
                             features.get("impulse_vol_decay_ratio"),
                             features.get("impulse_directional_purity"),
                             features.get("has_initiating_ob", False),
+                            features.get("sweep_tier"), features.get("funding_tier"),
+                            features.get("oi_rising_tier"),
+                            features.get("dominance_tier"), features.get("oi_delta_pct"),
+                            features.get("hour_of_day"), features.get("atr_pct"),
                             rc.get("risk_capital"), rc.get("risk_open_positions"),
                             rc.get("risk_daily_dd_pct"), rc.get("risk_weekly_dd_pct"),
                             rc.get("risk_trades_today"),

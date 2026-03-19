@@ -114,6 +114,19 @@ class RiskService:
                 f"margin=${margin:.2f}"
             )
 
+        # Hard cap: margin must not exceed MAX_MARGIN_PCT of capital (AFML Ch.10 —
+        # even Half-Kelly can over-bet when BET_SIZE_MAX > 1.0; this prevents a
+        # single position from risking more than the guardrail-intended fraction).
+        max_margin = capital * settings.MAX_MARGIN_PCT_OF_CAPITAL
+        if capital > 0 and margin > max_margin:
+            logger.warning(
+                f"Margin ${margin:.2f} exceeds {settings.MAX_MARGIN_PCT_OF_CAPITAL*100:.0f}% "
+                f"of capital ${capital:.2f} — capping to ${max_margin:.2f}"
+            )
+            margin = max_margin
+            notional = margin * leverage
+            risk_pct = margin / capital
+
         position_size = notional / setup.entry_price
 
         if position_size <= 0 or capital <= 0:

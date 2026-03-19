@@ -621,6 +621,20 @@ class TestRedisRoundtrip:
         assert result.rate == 0.0001
         assert result.next_rate == 0.00015
 
+    def test_funding_rate_fetched_at_roundtrip(self):
+        """fetched_at must survive Redis serialization for accurate staleness checks."""
+        store = self._make_store()
+        fr = FundingRate(
+            timestamp=1000, pair="BTC/USDT",
+            rate=0.0001, next_rate=0.00015,
+            next_funding_time=2000,
+            fetched_at=9999,
+        )
+        store.set_funding_rate(fr)
+        result = store.get_funding_rate("BTC/USDT")
+        assert result is not None
+        assert result.fetched_at == 9999
+
     def test_open_interest_roundtrip(self):
         store = self._make_store()
         oi = OpenInterest(

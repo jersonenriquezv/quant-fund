@@ -107,12 +107,15 @@ class CampaignMonitor:
     # Execute new campaign
     # ================================================================
 
-    async def execute_campaign(self, setup, ai_confidence: float) -> bool:
+    async def execute_campaign(self, setup, ai_confidence: float,
+                               approval=None) -> bool:
         """Create a new campaign and place initial limit entry order.
 
         Args:
             setup: TradeSetup from evaluate_htf()
             ai_confidence: AI confidence score
+            approval: RiskApproval from risk_service.check() — used for
+                position_size and leverage when provided.
 
         Returns True if entry order placed successfully.
         """
@@ -123,10 +126,16 @@ class CampaignMonitor:
             logger.warning("Cannot execute campaign — max campaigns reached")
             return False
 
-        leverage = float(settings.MAX_LEVERAGE)
-        margin = settings.HTF_INITIAL_MARGIN
-        notional = margin * leverage
-        position_size = notional / setup.entry_price
+        leverage = float(approval.leverage if approval else settings.MAX_LEVERAGE)
+        if approval and approval.position_size > 0:
+            # Use risk-approved sizing (respects margin caps and guardrails)
+            position_size = approval.position_size
+            margin = settings.HTF_INITIAL_MARGIN
+            notional = position_size * setup.entry_price
+        else:
+            margin = settings.HTF_INITIAL_MARGIN
+            notional = margin * leverage
+            position_size = notional / setup.entry_price
 
         # Check exchange minimum
         min_size = settings.MIN_ORDER_SIZES.get(setup.pair, 0)
@@ -415,12 +424,37 @@ class CampaignMonitor:
         1. Number of adds < HTF_MAX_ADDS
         2. Campaign is profitable (>= HTF_ADD_MIN_RR from initial entry)
         3. New setup found in same direction on signal timeframe
+        4. Risk guardrails pass (drawdown, cooldown) — AFML Ch.10: position
+           sizing must be governed by the same risk framework as initial entries
         """
         if c.pending_add is not None:
             return  # Already waiting for an add to fill
 
         if len(c.adds) >= settings.HTF_MAX_ADDS:
             return
+
+        # Risk guardrails: drawdown and cooldown must pass before adding exposure.
+        # Max positions is NOT checked — adds increase an existing position, not a new one.
+        if self._risk is not None:
+            import time as _time
+            now = int(_time.time())
+            guardrails = self._risk._guardrails
+            state = self._risk._state
+
+            dd_ok, dd_reason = guardrails.check_daily_drawdown(state.get_daily_dd_pct())
+            if not dd_ok:
+                logger.info(f"HTF add blocked: {dd_reason}")
+                return
+
+            wd_ok, wd_reason = guardrails.check_weekly_drawdown(state.get_weekly_dd_pct())
+            if not wd_ok:
+                logger.info(f"HTF add blocked: {wd_reason}")
+                return
+
+            cd_ok, cd_reason = guardrails.check_cooldown(state.get_last_loss_time(), now)
+            if not cd_ok:
+                logger.info(f"HTF add blocked: {cd_reason}")
+                return
 
         # Check profitability
         if not c.actual_initial_entry or not c.initial_sl_price:

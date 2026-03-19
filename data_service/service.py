@@ -750,13 +750,21 @@ class DataService:
             # Summarize CVD state across pairs
             cvd_summary = self._cvd_health_summary()
 
+            # Per-pair candle staleness (only check when WS is supposedly connected)
+            stale_streams = []
+            if not disconnected or "okx_ws" not in disconnected:
+                stale_streams = self._check_candle_staleness()
+                if stale_streams:
+                    logger.warning(f"Health check: stale candle streams: {stale_streams}")
+
             if disconnected:
                 logger.warning(
                     f"Health check: DOWN={list(disconnected)} state={self._state.name}"
                     f"{cvd_summary}"
                 )
-            elif cvd_summary:
-                logger.info(f"Health check: systems OK state={self._state.name}{cvd_summary}")
+            elif stale_streams or cvd_summary:
+                logger.info(f"Health check: systems OK state={self._state.name}{cvd_summary}"
+                            f"{' stale=' + str(stale_streams) if stale_streams else ''}")
             else:
                 logger.debug(f"Health check: all systems OK state={self._state.name}")
 
@@ -835,7 +843,9 @@ class DataService:
         if self._state == DataServiceState.DEGRADED:
             if not self._circuit_breaker.is_tripped:
                 logger.info("Circuit breaker reset — transitioning to RECOVERING")
+                prev = self._state
                 self._state = DataServiceState.RECOVERING
+                self._fire_state_alert(prev, self._state, "circuit breaker reset")
             return
 
         if self._state != DataServiceState.RECOVERING:
@@ -879,14 +889,18 @@ class DataService:
 
         # Check circuit breaker not tripped
         if self._circuit_breaker.is_tripped:
+            prev = self._state
             self._state = DataServiceState.DEGRADED
             logger.critical("Circuit breaker tripped — state=DEGRADED")
+            self._fire_state_alert(prev, self._state, "circuit breaker tripped")
             return
 
         # All checks pass — transition to RUNNING
+        prev = self._state
         self._state = DataServiceState.RUNNING
         logger.info("Warmup complete — state=RUNNING")
         self._emit_metric("data_service_state", 1.0, labels={"state": "running"})
+        self._fire_state_alert(prev, self._state, "warmup complete")
 
     # ================================================================
     # WS reconnect handler — gap backfill + circuit breaker
@@ -894,9 +908,11 @@ class DataService:
 
     async def _on_ws_reconnect(self) -> None:
         """Called by OKXWebSocketFeed after a successful reconnect."""
+        prev_state = self._state
         logger.warning("WS reconnect detected — state=RECOVERING")
         self._state = DataServiceState.RECOVERING
         self._emit_metric("ws_reconnect", 1.0)
+        await self._alert_state_transition(prev_state, self._state, "WS reconnect")
 
         # Record event in circuit breaker
         self._circuit_breaker.record_event()
@@ -993,3 +1009,66 @@ class DataService:
 
         finally:
             self._backfill_in_progress = False
+
+    # ================================================================
+    # State transition alerts
+    # ================================================================
+
+    def _fire_state_alert(
+        self, prev: DataServiceState, new: DataServiceState, trigger: str,
+    ) -> None:
+        """Schedule state transition alert (safe from sync context)."""
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._alert_state_transition(prev, new, trigger))
+        except RuntimeError:
+            pass  # No event loop (e.g. tests) — skip alert
+
+    async def _alert_state_transition(
+        self, prev: DataServiceState, new: DataServiceState, trigger: str,
+    ) -> None:
+        """Send Telegram alert when DataService state changes."""
+        if prev == new or self._alert_manager is None:
+            return
+        try:
+            from shared.alert_manager import AlertPriority
+            priority = AlertPriority.WARNING
+            if new == DataServiceState.DEGRADED:
+                priority = AlertPriority.CRITICAL
+            elif new == DataServiceState.RUNNING:
+                priority = AlertPriority.INFO
+
+            await self._alert_manager.alert(
+                priority, "data_state",
+                f"Data state: {prev.name} -> {new.name}\nTrigger: {trigger}",
+            )
+        except Exception as e:
+            logger.error(f"State transition alert failed: {e}")
+
+    # ================================================================
+    # Per-pair candle staleness check
+    # ================================================================
+
+    def _check_candle_staleness(self) -> list[str]:
+        """Check each pair/tf for stale candle streams.
+
+        Returns list of warning strings for stale streams.
+        Called from health check loop.
+        """
+        now_ms = int(time.time() * 1000)
+        stale = []
+
+        for pair in settings.TRADING_PAIRS:
+            for tf in settings.LTF_TIMEFRAMES:
+                candle = self._ws_feed.get_latest_candle(pair, tf)
+                if candle is None:
+                    continue
+                tf_ms = TIMEFRAME_MS.get(tf, 300_000)
+                # Stale if no candle in 3x the expected interval
+                max_age_ms = tf_ms * 3
+                age_ms = now_ms - candle.timestamp
+                if age_ms > max_age_ms:
+                    age_min = age_ms / 60_000
+                    stale.append(f"{pair}/{tf} ({age_min:.0f}min)")
+
+        return stale

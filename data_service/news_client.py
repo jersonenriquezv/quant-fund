@@ -142,7 +142,11 @@ class NewsClient:
                     return []
                 body = await resp.json(content_type=None)
 
-            articles = body.get("Data", [])
+            articles = body.get("Data") or []
+            if not isinstance(articles, list):
+                msg = body.get("Message", "unknown")
+                logger.warning(f"CryptoCompare news: unexpected Data for {asset}: {msg}")
+                return []
 
             headlines = []
             for art in articles[:limit]:

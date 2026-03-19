@@ -206,10 +206,40 @@ class PromptBuilder:
             "cvd_aligned_bearish": ("SUPPORTING" if direction == "short" else "CONTEXT",
                                     "CVD 15m negative (sell dominance)"),
             "oi_flush": ("SUPPORTING", "OI flush event detected (OI proxy)"),
+            # Funding tiers — graduated crowding signal
+            "funding_mild_long": ("CONTEXT", "Funding mildly negative (slight short crowding)"),
+            "funding_moderate_long": ("SUPPORTING" if direction == "long" else "CONTEXT",
+                                      "Funding moderately negative (short-side crowding)"),
+            "funding_extreme_long": ("SUPPORTING" if direction == "long" else "CONTEXT",
+                                     "Funding extremely negative (heavy short crowding)"),
+            "funding_mild_short": ("CONTEXT", "Funding mildly positive (slight long crowding)"),
+            "funding_moderate_short": ("SUPPORTING" if direction == "short" else "CONTEXT",
+                                       "Funding moderately positive (long-side crowding)"),
+            "funding_extreme_short": ("SUPPORTING" if direction == "short" else "CONTEXT",
+                                      "Funding extremely positive (heavy long crowding)"),
+            # Legacy labels (backward compat for old trades in DB)
             "funding_negative_long_opportunity": ("SUPPORTING" if direction == "long" else "CONTEXT",
                                                   "Funding rate negative (short-side crowding)"),
             "funding_extreme_positive": ("SUPPORTING" if direction == "short" else "CONTEXT",
                                          "Funding rate extreme positive (long-side crowding)"),
+            # Sweep tiers
+            "sweep_strong": ("SUPPORTING", "Strong sweep volume (2.5-4x average)"),
+            "sweep_extreme": ("SUPPORTING", "Extreme sweep volume (4x+ average)"),
+            # Buy/sell dominance tiers
+            "buy_dominance_strong": ("SUPPORTING" if direction == "long" else "CONTEXT",
+                                     "Strong buy dominance (60%+)"),
+            "buy_dominance_moderate": ("SUPPORTING" if direction == "long" else "CONTEXT",
+                                       "Moderate buy dominance (55%+)"),
+            "sell_dominance_strong": ("SUPPORTING" if direction == "short" else "CONTEXT",
+                                      "Strong sell dominance (60%+)"),
+            "sell_dominance_moderate": ("SUPPORTING" if direction == "short" else "CONTEXT",
+                                        "Moderate sell dominance (55%+)"),
+            # OI delta tiers
+            "oi_rising_mild": ("CONTEXT", "OI rising mildly (0.5-2%)"),
+            "oi_rising_moderate": ("SUPPORTING", "OI rising moderately (2-5%, new positioning)"),
+            "oi_rising_strong": ("SUPPORTING", "OI rising strongly (5%+, heavy institutional activity)"),
+            # CVD momentum
+            "cvd_momentum_confirmed": ("SUPPORTING", "CVD confirms momentum direction"),
             "oi_data_available": ("CONTEXT", "Open interest data present"),
         }
         lines = []
@@ -243,6 +273,12 @@ class PromptBuilder:
                     tag, desc = "SUPPORTING", f"${float(usd):,.0f} in estimated OI flush"
                 except ValueError:
                     tag, desc = "CONTEXT", c
+            elif c.startswith("oi_delta_"):
+                # Raw OI delta — informational for ML, skip in prompt
+                continue
+            elif c.startswith("oi_dropping_"):
+                pct = c.replace("oi_dropping_", "").replace("pct", "")
+                tag, desc = "CONTEXT", f"OI dropping {pct}% (liquidation pressure)"
             elif c in _LABELS:
                 tag, desc = _LABELS[c]
             else:
@@ -267,16 +303,19 @@ class PromptBuilder:
         )
 
     def _interpret_funding(self, rate: float) -> str:
-        threshold = settings.FUNDING_EXTREME_THRESHOLD
-        pct = abs(rate * 100)
-        if rate > threshold:
-            return f"Extreme positive ({pct:.3f}%): directional crowding on long side"
-        elif rate < -threshold:
-            return f"Extreme negative ({pct:.3f}%): directional crowding on short side"
+        abs_rate = abs(rate)
+        pct = abs_rate * 100
+        side = "long" if rate > 0 else "short"
+        if abs_rate >= settings.FUNDING_EXTREME_THRESHOLD:
+            return f"Extreme {('positive' if rate > 0 else 'negative')} ({pct:.3f}%): heavy directional crowding on {side} side"
+        elif abs_rate >= settings.FUNDING_MODERATE_THRESHOLD:
+            return f"Moderate {('positive' if rate > 0 else 'negative')} ({pct:.3f}%): directional crowding on {side} side"
+        elif abs_rate >= settings.FUNDING_MILD_THRESHOLD:
+            return f"Mild {('positive' if rate > 0 else 'negative')} ({pct:.4f}%): slight crowding on {side} side"
         elif rate > 0:
-            return f"Mildly positive ({pct:.4f}%): normal range, no signal"
+            return f"Slightly positive ({pct:.4f}%): normal range, no signal"
         elif rate < 0:
-            return f"Mildly negative ({pct:.4f}%): normal range, no signal"
+            return f"Slightly negative ({pct:.4f}%): normal range, no signal"
         return "Neutral (0%)"
 
     def _build_oi_section(self, snapshot: MarketSnapshot) -> str:

@@ -777,9 +777,14 @@ class SetupEvaluator:
         if ob.volume_ratio >= settings.OB_MIN_VOLUME_RATIO:
             confluences.append(f"ob_volume_{ob.volume_ratio:.1f}x")
 
-        # Sweep volume ratio
+        # Sweep volume ratio — graduated tiers
         if sweep and sweep.volume_ratio >= settings.SWEEP_MIN_VOLUME_RATIO:
             confluences.append(f"sweep_volume_{sweep.volume_ratio:.1f}x")
+            if sweep.volume_ratio >= settings.SWEEP_EXTREME_VOLUME_RATIO:
+                confluences.append("sweep_strong")
+                confluences.append("sweep_extreme")
+            elif sweep.volume_ratio >= settings.SWEEP_STRONG_VOLUME_RATIO:
+                confluences.append("sweep_strong")
 
         # OI flush event
         if sweep and sweep.had_oi_flush:
@@ -824,38 +829,73 @@ class SetupEvaluator:
             elif direction == "bearish" and cvd_bearish:
                 confluences.append("cvd_aligned_bearish")
 
+            # Buy dominance magnitude — graduated tiers
+            total_vol = cvd.buy_volume + cvd.sell_volume
+            if total_vol > 0:
+                buy_dom = cvd.buy_volume / total_vol
+                if direction == "bullish":
+                    if buy_dom >= settings.BUY_DOMINANCE_STRONG_PCT:
+                        confluences.append("buy_dominance_strong")
+                    elif buy_dom >= settings.BUY_DOMINANCE_MODERATE_PCT:
+                        confluences.append("buy_dominance_moderate")
+                else:  # bearish — check sell dominance
+                    sell_dom = 1 - buy_dom
+                    if sell_dom >= settings.BUY_DOMINANCE_STRONG_PCT:
+                        confluences.append("sell_dominance_strong")
+                    elif sell_dom >= settings.BUY_DOMINANCE_MODERATE_PCT:
+                        confluences.append("sell_dominance_moderate")
+
         # OI direction + price direction (institutional positioning signal)
         if market_snapshot and market_snapshot.oi:
             oi = market_snapshot.oi
             pair = market_snapshot.pair
             direction = ob.direction
 
-            # Track OI delta between evaluations
+            # Track OI delta between evaluations — graduated tiers
             prev_oi = self._prev_oi.get(pair)
             if prev_oi is not None and prev_oi > 0:
                 oi_delta_pct = (oi.oi_usd - prev_oi) / prev_oi
 
-                # OI rising + aligned direction = strong trend (new positions opening)
-                if direction == "bullish" and oi_delta_pct > 0.005:
-                    confluences.append(f"oi_rising_{oi_delta_pct*100:.1f}pct")
-                elif direction == "bearish" and oi_delta_pct > 0.005:
-                    confluences.append(f"oi_rising_{oi_delta_pct*100:.1f}pct")
+                # Always record raw delta for ML feature extraction
+                confluences.append(f"oi_delta_{oi_delta_pct*100:.2f}pct")
+
+                # OI rising = new positions opening (institutional activity)
+                if oi_delta_pct >= settings.OI_DELTA_STRONG_PCT:
+                    confluences.append("oi_rising_strong")
+                    confluences.append("oi_rising_moderate")
+                elif oi_delta_pct >= settings.OI_DELTA_MODERATE_PCT:
+                    confluences.append("oi_rising_moderate")
+                elif oi_delta_pct >= settings.OI_DELTA_MILD_PCT:
+                    confluences.append("oi_rising_mild")
                 # OI dropping significantly = liquidation pressure
-                elif oi_delta_pct < -0.01:
+                elif oi_delta_pct < -settings.OI_DELTA_MODERATE_PCT:
                     confluences.append(f"oi_dropping_{abs(oi_delta_pct)*100:.1f}pct")
 
             self._prev_oi[pair] = oi.oi_usd
 
-        # Funding rate — symmetric thresholds
-        # Audit 03-18: was asymmetric (-0.0001 long vs +0.0003 short) without justification.
-        # Now uses FUNDING_EXTREME_THRESHOLD (0.0003) for both directions.
+        # Funding rate — graduated symmetric tiers
+        # Crowded side is vulnerable to forced exits. Higher crowding = stronger signal.
         if market_snapshot and market_snapshot.funding:
             rate = market_snapshot.funding.rate
-            threshold = settings.FUNDING_EXTREME_THRESHOLD
-            if ob.direction == "bullish" and rate < -threshold:
-                confluences.append("funding_negative_long_opportunity")
-            elif ob.direction == "bearish" and rate > threshold:
-                confluences.append("funding_extreme_positive")
+            abs_rate = abs(rate)
+            # Long opportunity: negative funding = shorts crowded
+            if ob.direction == "bullish" and rate < 0:
+                if abs_rate >= settings.FUNDING_EXTREME_THRESHOLD:
+                    confluences.append("funding_extreme_long")
+                    confluences.append("funding_moderate_long")
+                elif abs_rate >= settings.FUNDING_MODERATE_THRESHOLD:
+                    confluences.append("funding_moderate_long")
+                elif abs_rate >= settings.FUNDING_MILD_THRESHOLD:
+                    confluences.append("funding_mild_long")
+            # Short opportunity: positive funding = longs crowded
+            elif ob.direction == "bearish" and rate > 0:
+                if abs_rate >= settings.FUNDING_EXTREME_THRESHOLD:
+                    confluences.append("funding_extreme_short")
+                    confluences.append("funding_moderate_short")
+                elif abs_rate >= settings.FUNDING_MODERATE_THRESHOLD:
+                    confluences.append("funding_moderate_short")
+                elif abs_rate >= settings.FUNDING_MILD_THRESHOLD:
+                    confluences.append("funding_mild_short")
 
         confirmed = len(confluences) >= 1
         return confirmed, confluences

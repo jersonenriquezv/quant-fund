@@ -175,10 +175,10 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Class: `NewsClient(redis_store=None)`
 - Two data sources:
   - **alternative.me** — Fear & Greed Index (0-100 score, free, no API key, running since 2018)
-  - **CryptoCompare** — News headlines (free, no API key required). Endpoint: `https://min-api.cryptocompare.com/data/v2/news/`. Filters by asset category (BTC, ETH). Community votes (upvotes/downvotes) provide per-headline sentiment (bullish/bearish/None).
+  - **CryptoCompare** — News headlines. Endpoint: `https://min-api.cryptocompare.com/data/v2/news/`. Filters by asset category (BTC, ETH). Community votes (upvotes/downvotes) provide per-headline sentiment (bullish/bearish/None). **Nota:** API ahora requiere API key (antes era free). Sin key, `Data` viene como `None` — handler defensivo devuelve `[]` con warning limpio. F&G score (alternative.me) sigue funcionando sin key.
 - Methods:
   - `fetch_fear_greed()` → `tuple[int, str] | None` — score + label ("Extreme Fear", "Fear", "Neutral", "Greed", "Extreme Greed")
-  - `fetch_headlines(asset, limit=5)` → `list[NewsHeadline]` — recent headlines for BTC or ETH from CryptoCompare. Free API, always available (no key needed).
+  - `fetch_headlines(asset, limit=5)` → `list[NewsHeadline]` — recent headlines for BTC or ETH from CryptoCompare. Returns `[]` if API key missing or response malformed.
   - `fetch_sentiment()` → `NewsSentiment | None` — combines F&G + headlines (BTC 3 + ETH 2)
 - Sentiment derivation: `_extract_sentiment(upvotes, downvotes)` — more upvotes = "bullish", more downvotes = "bearish", tied or no votes = None.
 - Redis caching via `set_bot_state`/`get_bot_state`:
@@ -223,10 +223,12 @@ Central hub for data quality types and gating logic:
 - **RUNNING requires:** (1) WS connected, (2) ≥`STARTUP_WARMUP_CANDLE_MIN` candles per pair/tf, (3) ≥1 live WS candle, (4) candle continuity validated, (5) circuit breaker not tripped.
 - **Reconnect handler (`_on_ws_reconnect`):** state→RECOVERING, circuit breaker event, gap backfill (up to 500 candles, paginated). If gap > backfill capacity, stays RECOVERING with CRITICAL log.
 - **Backfill idempotency:** `_backfill_in_progress` flag prevents duplicate backfills on rapid reconnects.
-- **Snapshot health:** `_compute_health()` uses `FundingRate.fetched_at` (actual fetch time, not exchange event time). Redis health checked — if down, `critical_sources_healthy=False`. `SnapshotHealth` includes `redis_healthy` and `service_state`.
+- **Snapshot health:** `_compute_health()` uses `FundingRate.fetched_at` (actual fetch time, not exchange event time). `fetched_at` persisted to Redis (round-trips correctly). Redis health checked — if down, `critical_sources_healthy=False`. `SnapshotHealth` includes `redis_healthy` and `service_state`.
 - **OI loop:** passes current price to `oi_flush_detector.update()` for side attribution.
 - Public methods: `get_latest_candle()`, `get_candles()`, `get_market_snapshot()`, `get_cvd()`, `get_cvd_state()`, `fetch_usdt_balance()`, `state` property
 - Health check loop every 30 seconds — emits `health_status` + `asyncio_tasks` metrics, logs current `state`. Warns if asyncio task count > 25 (expected ~15, leak detection). Includes `_cvd_health_summary()`: shows CVD warmup progress per pair. `health()` dict includes `asyncio_tasks` count for dashboard visibility.
+- **Per-pair candle staleness:** `_check_candle_staleness()` runs in health check loop. Detects when a specific pair/tf stops receiving candles while WS is "connected" (3x expected interval = stale). Catches silently dead subscriptions.
+- **State transition alerts:** `_fire_state_alert()` / `_alert_state_transition()` send Telegram alerts via AlertManager when state changes (RECOVERING→RUNNING=INFO, →DEGRADED=CRITICAL). Safe from both sync and async contexts.
 - **Metrics:** `data_service_state` (on transition to RUNNING), `ws_reconnect`, `circuit_breaker_tripped`, `gap_backfill_unrecoverable`
 
 ### `main.py` — Entry Point

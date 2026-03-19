@@ -130,6 +130,7 @@ class QuickSetupEvaluator:
         active_obs: list[OrderBlock],
         pd_zone: Optional[PremiumDiscountZone],
         candles: list[Candle],
+        snapshot: Optional[MarketSnapshot] = None,
     ) -> Optional[TradeSetup]:
         """Setup D — LTF Structure Scalp.
 
@@ -244,6 +245,22 @@ class QuickSetupEvaluator:
                 confluences.append(f"pd_zone_{pd_zone.zone}")
         elif pd_zone and pd_zone.zone != "undefined":
             confluences.append(f"pd_zone_{pd_zone.zone}")
+
+        # CVD alignment — confirms order flow supports the direction
+        if snapshot and snapshot.cvd:
+            cvd = snapshot.cvd
+            total_vol = cvd.buy_volume + cvd.sell_volume
+            if total_vol > 0:
+                buy_dom = cvd.buy_volume / total_vol
+                if direction == "bullish" and cvd.cvd_15m > 0:
+                    confluences.append("cvd_aligned_bullish")
+                    if buy_dom >= settings.BUY_DOMINANCE_STRONG_PCT:
+                        confluences.append("buy_dominance_strong")
+                elif direction == "bearish" and cvd.cvd_15m < 0:
+                    confluences.append("cvd_aligned_bearish")
+                    sell_dom = 1 - buy_dom
+                    if sell_dom >= settings.BUY_DOMINANCE_STRONG_PCT:
+                        confluences.append("sell_dominance_strong")
 
         logger.info(
             f"Setup D ({latest_break.break_type}) found: {pair} {trade_dir} "
@@ -412,6 +429,7 @@ class QuickSetupEvaluator:
         htf_bias: str,
         structure_state: MarketStructureState,
         candles: list[Candle],
+        snapshot: Optional[MarketSnapshot] = None,
     ) -> Optional[TradeSetup]:
         """Setup H — Momentum/Impulse Entry.
 
@@ -596,6 +614,22 @@ class QuickSetupEvaluator:
         confluences.append(f"decel_ratio_{decel_ratio:.2f}")
         confluences.append(f"vol_decay_{vol_decay_ratio:.2f}")
         confluences.append(f"directional_purity_{directional_pct:.2f}")
+
+        # CVD confirmation — order flow must support impulse direction
+        if snapshot and snapshot.cvd:
+            cvd = snapshot.cvd
+            total_vol = cvd.buy_volume + cvd.sell_volume
+            if total_vol > 0:
+                buy_dom = cvd.buy_volume / total_vol
+                if direction == "bullish" and cvd.cvd_15m > 0:
+                    confluences.append("cvd_momentum_confirmed")
+                    if buy_dom >= settings.BUY_DOMINANCE_STRONG_PCT:
+                        confluences.append("buy_dominance_strong")
+                elif direction == "bearish" and cvd.cvd_15m < 0:
+                    confluences.append("cvd_momentum_confirmed")
+                    sell_dom = 1 - buy_dom
+                    if sell_dom >= settings.BUY_DOMINANCE_STRONG_PCT:
+                        confluences.append("sell_dominance_strong")
 
         logger.info(
             f"Setup H found: {pair} {trade_dir} entry={entry_price:.2f} "

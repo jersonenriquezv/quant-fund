@@ -231,10 +231,12 @@ active ──[timeout 7d]─────────> closed        (max duratio
 - **Duration timeout:** 7 días (vs 12h intraday)
 
 ### Pyramid adds
-- Condiciones: (1) `len(adds) < HTF_MAX_ADDS`, (2) campaign profitable >= `HTF_ADD_MIN_RR` (1.0 R:R), (3) nuevo setup en misma dirección
+- Condiciones: (1) `len(adds) < HTF_MAX_ADDS`, (2) risk guardrails pass (daily DD, weekly DD, cooldown), (3) campaign profitable >= `HTF_ADD_MIN_RR` (1.0 R:R), (4) nuevo setup en misma dirección
+- **Risk guardrails on adds (2026-03-19):** Before placing any add, checks `check_daily_drawdown`, `check_weekly_drawdown`, `check_cooldown` via `_risk._guardrails`. Max positions NOT checked (adds increase existing position, not new).
 - Margen decreciente: add 1 = $15, add 2 = $10, add 3 = $5
 - Después de fill de add: SL se reemplaza para cubrir total_size
 - Add timeout: 4h (después se cancela, campaign sigue)
+- **`execute_campaign` uses RiskApproval** (2026-03-19): accepts optional `approval` param from `risk_service.check()` and uses `approval.position_size` instead of computing its own size.
 
 ### Persistencia
 - **PostgreSQL:** `insert_campaign()` al activarse, `update_campaign()` al cerrarse

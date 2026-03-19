@@ -170,10 +170,22 @@ class Settings:
     EQUAL_LEVEL_TOLERANCE_PCT: float = 0.002  # 0.2% (~$146 for BTC, ~$4.3 for ETH)
     # Volumen mínimo relativo para confirmar un sweep como institucional
     SWEEP_MIN_VOLUME_RATIO: float = 1.5  # 1.5x el promedio
+    # Graduated sweep tiers — higher volume = stronger signal = more confluences
+    SWEEP_STRONG_VOLUME_RATIO: float = 2.5   # 2.5x = strong sweep (adds extra confluence)
+    SWEEP_EXTREME_VOLUME_RATIO: float = 4.0  # 4.0x = extreme sweep (adds 2 extra confluences)
 
     # --- Volume Analysis ---
     # Periodos para calcular volumen promedio
     VOLUME_AVG_PERIODS: int = 20
+
+    # --- OI Delta tiers (% change between evaluations) ---
+    OI_DELTA_MILD_PCT: float = 0.005     # 0.5% — mild institutional positioning
+    OI_DELTA_MODERATE_PCT: float = 0.02  # 2% — moderate new positioning
+    OI_DELTA_STRONG_PCT: float = 0.05    # 5% — strong institutional activity
+
+    # --- CVD / Buy Dominance tiers ---
+    BUY_DOMINANCE_STRONG_PCT: float = 0.60   # 60%+ = strong dominance (extra confluence)
+    BUY_DOMINANCE_MODERATE_PCT: float = 0.55  # 55%+ = moderate dominance
 
     # --- Premium/Discount ---
     # Horas entre recálculos de zonas premium/discount
@@ -282,7 +294,7 @@ class Settings:
     SETUP_F_MIN_CONFLUENCES: int = 2
 
     # Setup C — Funding Squeeze
-    MOMENTUM_FUNDING_THRESHOLD: float = 0.0003  # Same as FUNDING_EXTREME_THRESHOLD
+    MOMENTUM_FUNDING_THRESHOLD: float = 0.0003  # 0.03% — independent threshold for Setup C trigger
     MOMENTUM_CVD_LONG_MIN: float = 0.52          # Buy dominance > 52% for long
     MOMENTUM_CVD_SHORT_MAX: float = 0.48          # Buy dominance < 48% for short
     MOMENTUM_SL_PCT: float = 0.005                # 0.5% SL distance
@@ -345,8 +357,10 @@ class Settings:
     AI_TEMPERATURE: float = 0.3
     # Max tokens for Claude response
     AI_MAX_TOKENS: int = 500
-    # Funding rate threshold for "extreme" interpretation (absolute value)
-    FUNDING_EXTREME_THRESHOLD: float = 0.0003  # 0.03%
+    # Funding rate thresholds — graduated tiers (absolute value)
+    FUNDING_MILD_THRESHOLD: float = 0.0001     # 0.01% — mild directional crowding
+    FUNDING_MODERATE_THRESHOLD: float = 0.0003  # 0.03% — moderate crowding (was FUNDING_EXTREME_THRESHOLD)
+    FUNDING_EXTREME_THRESHOLD: float = 0.0006   # 0.06% — extreme crowding, high reversal risk
 
     # ========================
     # TAKE PROFITS
@@ -608,6 +622,9 @@ class Settings:
     KELLY_FRACTION: float = float(os.getenv("KELLY_FRACTION", "0.5"))  # Half-Kelly (conservative)
     BET_SIZE_MIN: float = float(os.getenv("BET_SIZE_MIN", "0.25"))     # Floor: 25% of base margin
     BET_SIZE_MAX: float = float(os.getenv("BET_SIZE_MAX", "2.0"))      # Ceiling: 200% of base margin
+    # Hard margin cap: max margin per trade as fraction of capital.
+    # Prevents bet sizing from risking more than intended regardless of BET_SIZE_MAX.
+    MAX_MARGIN_PCT_OF_CAPITAL: float = float(os.getenv("MAX_MARGIN_PCT_OF_CAPITAL", "0.25"))  # 25%
 
     # Periodic SL verification interval (seconds).
     # Every N seconds, confirm SL algo order still exists on exchange via
@@ -689,7 +706,7 @@ class Settings:
     # ========================
     # Feature version — increment when strategy params change in ways that
     # alter feature semantics (e.g. changing OB scoring weights, PD rules).
-    ML_FEATURE_VERSION: int = 4  # v4: audit 03-18 — OB vol 1.3, ATR 0.35%, CVD divergence, OI delta, symmetric funding
+    ML_FEATURE_VERSION: int = 5  # v5: graduated signals — sweep tiers, CVD magnitude, OI delta tiers, funding tiers
 
     # ========================
     # LIQUIDATION HEATMAP

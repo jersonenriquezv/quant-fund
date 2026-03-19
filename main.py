@@ -331,7 +331,8 @@ def _ml_log_setup(setup, candle: Candle) -> None:
     try:
         snapshot = _data_service.get_market_snapshot(candle.pair)
         current_price = candle.close
-        features = extract_setup_features(setup, snapshot, current_price)
+        recent_candles = _data_service.get_candles(candle.pair, candle.timeframe, count=20)
+        features = extract_setup_features(setup, snapshot, current_price, recent_candles)
         # Add fields that come from setup but aren't in the feature dict yet
         features["timestamp"] = setup.timestamp
         features["tp1_price"] = setup.tp1_price
@@ -427,9 +428,9 @@ async def _evaluate_htf_pipeline(candle: Candle) -> None:
         logger.info(f"HTF risk rejected: {approval.reason}")
         return
 
-    # Execute campaign
+    # Execute campaign (pass approval so campaign uses risk-approved sizing)
     ai_confidence = decision.confidence if decision else 0.0
-    await _campaign_monitor.execute_campaign(setup, ai_confidence)
+    await _campaign_monitor.execute_campaign(setup, ai_confidence, approval=approval)
 
 
 # ================================================================
@@ -903,6 +904,10 @@ async def main() -> None:
         logger.warning(f"Could not fetch balance — using INITIAL_CAPITAL: ${capital:.2f}")
     _risk_service = RiskService(capital=capital, data_service=_data_service)
 
+    # Reconcile drawdown from PostgreSQL (source of truth for realized PnL).
+    # Catches cases where Redis state was lost or stale after restart.
+    _risk_service._state.reconcile_drawdown_from_db(_data_service.postgres)
+
     # Create ExecutionService — Layer 5
     # on_sl_hit callback marks failed OBs so the same OB doesn't re-trigger
     def _on_sl_hit(pair: str, sl_price: float, entry_price: float) -> None:
@@ -966,7 +971,7 @@ async def main() -> None:
     await _data_service.stop()
 
     # Cancel background tasks
-    for task in [data_task, status_task, liq_task]:
+    for task in [data_task, status_task, liq_task, session_task, dry_spell_task, market_monitor_task]:
         if not task.done():
             task.cancel()
             try:

@@ -337,6 +337,7 @@ class StrategyService:
                 active_obs_5m = self._order_blocks.get_active_obs(pair, "5m")
                 setup = self._quick_setups.evaluate_setup_d(
                     pair, htf_bias, state_5m, active_obs_5m, pd_zone, candles_5m,
+                    snapshot=market_snapshot,
                 )
                 if setup is not None:
                     self._quick_setup_last[(pair, "setup_d")] = now
@@ -360,6 +361,7 @@ class StrategyService:
                 if state is not None and candles:
                     setup = self._quick_setups.evaluate_setup_h(
                         pair, htf_bias, state, candles,
+                        snapshot=market_snapshot,
                     )
                     if setup is not None:
                         self._quick_setup_last[(pair, "setup_h")] = now

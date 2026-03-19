@@ -198,9 +198,16 @@ class TestEvaluationPrompt:
 
     def test_extreme_funding_flagged(self, builder):
         setup = _make_setup()
-        snapshot = _make_snapshot(funding_rate=0.0005)
+        snapshot = _make_snapshot(funding_rate=0.0007)
         prompt = builder.build_evaluation_prompt(setup, snapshot, {})
         assert "Extreme" in prompt
+        assert "crowding" in prompt
+
+    def test_moderate_funding_flagged(self, builder):
+        setup = _make_setup()
+        snapshot = _make_snapshot(funding_rate=0.0005)
+        prompt = builder.build_evaluation_prompt(setup, snapshot, {})
+        assert "Moderate" in prompt
         assert "crowding" in prompt
 
     def test_price_context_included(self, builder):

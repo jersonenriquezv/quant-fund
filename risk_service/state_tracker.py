@@ -196,7 +196,7 @@ class RiskStateTracker:
     # Redis persistence
     # ================================================================
 
-    _REDIS_TTL = 172800  # 48 hours
+    _REDIS_TTL = 604800  # 7 days — must outlast any realistic downtime
 
     def _save_to_redis(self) -> None:
         """Persist risk state to Redis (fire-and-forget)."""
@@ -220,6 +220,68 @@ class RiskStateTracker:
             )
         except Exception as e:
             logger.warning(f"Failed to save risk state to Redis: {e}")
+
+    def reconcile_drawdown_from_db(self, postgres_store) -> None:
+        """Cross-check drawdown from PostgreSQL trade history.
+
+        On restart, Redis may have stale or missing drawdown data. PostgreSQL
+        trades table is the source of truth for realized PnL. If the DB shows
+        a worse drawdown than Redis, use the DB value.
+
+        This follows the principle from AFML Ch.10: risk sizing must reflect
+        actual realized outcomes, not cached approximations.
+        """
+        if postgres_store is None:
+            return
+        try:
+            today = self._current_day.isoformat()
+            pnl = postgres_store.fetch_closed_trades_pnl(today, self._capital)
+            if not pnl:
+                return
+
+            db_daily = pnl["daily_pnl_pct"]
+            db_weekly = pnl["weekly_pnl_pct"]
+            db_count = pnl["trade_count"]
+
+            # Use the worse (more negative) of Redis vs PostgreSQL values.
+            # This ensures drawdown is never under-counted after restart.
+            reconciled = False
+            if db_daily < self._daily_pnl_pct:
+                logger.warning(
+                    f"Drawdown reconciliation: daily PnL Redis={self._daily_pnl_pct:.4f} "
+                    f"DB={db_daily:.4f} — using DB (more conservative)"
+                )
+                self._daily_pnl_pct = db_daily
+                reconciled = True
+
+            if db_weekly < self._weekly_pnl_pct:
+                logger.warning(
+                    f"Drawdown reconciliation: weekly PnL Redis={self._weekly_pnl_pct:.4f} "
+                    f"DB={db_weekly:.4f} — using DB (more conservative)"
+                )
+                self._weekly_pnl_pct = db_weekly
+                reconciled = True
+
+            # Also reconcile trade count if DB has more
+            if db_count > len(self._trades_today):
+                logger.info(
+                    f"Drawdown reconciliation: trades today Redis={len(self._trades_today)} "
+                    f"DB={db_count} — using DB count"
+                )
+                self._trades_today = [{"pair": "reconciled", "pnl_pct": 0, "timestamp": 0}] * db_count
+                reconciled = True
+
+            if reconciled:
+                self._save_to_redis()
+                logger.info(
+                    f"Drawdown reconciled: daily_pnl={self._daily_pnl_pct:.4f} "
+                    f"weekly_pnl={self._weekly_pnl_pct:.4f} trades_today={len(self._trades_today)}"
+                )
+            else:
+                logger.info("Drawdown reconciliation: Redis and DB consistent")
+
+        except Exception as e:
+            logger.warning(f"Drawdown reconciliation failed — using Redis values: {e}")
 
     def _load_from_redis(self) -> None:
         """Restore risk state from Redis on startup."""

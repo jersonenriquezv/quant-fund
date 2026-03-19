@@ -20,6 +20,7 @@ def extract_setup_features(
     setup: TradeSetup,
     snapshot: Optional[MarketSnapshot],
     current_price: float,
+    recent_candles: Optional[list] = None,
 ) -> dict:
     """Extract structured features at setup detection time.
 
@@ -94,8 +95,52 @@ def extract_setup_features(
 
     features["has_oi_flush"] = "oi_flush" in conf_str
     features["oi_flush_usd"] = _extract_float(conf_str, r"oi_flush_usd_(\d+)")
-    features["cvd_aligned"] = "cvd_aligned" in conf_str
-    features["funding_extreme"] = "funding_extreme" in conf_str or "funding_" in conf_str
+    features["cvd_aligned"] = "cvd_aligned" in conf_str or "cvd_momentum_confirmed" in conf_str
+    features["funding_extreme"] = "funding_extreme" in conf_str
+
+    # --- Graduated signal tiers (v5+) ---
+    # Sweep tier
+    if "sweep_extreme" in conf_str:
+        features["sweep_tier"] = "extreme"
+    elif "sweep_strong" in conf_str:
+        features["sweep_tier"] = "strong"
+    elif "sweep_volume_" in conf_str:
+        features["sweep_tier"] = "normal"
+    else:
+        features["sweep_tier"] = None
+
+    # Funding tier
+    if "funding_extreme" in conf_str:
+        features["funding_tier"] = "extreme"
+    elif "funding_moderate" in conf_str:
+        features["funding_tier"] = "moderate"
+    elif "funding_mild" in conf_str:
+        features["funding_tier"] = "mild"
+    else:
+        features["funding_tier"] = None
+
+    # OI delta (numeric) — extracted from oi_delta_X.XXpct confluence
+    features["oi_delta_pct"] = _extract_float(conf_str, r"oi_delta_(-?[\d.]+)pct")
+    if features["oi_delta_pct"] and features["oi_delta_pct"] != 0:
+        features["oi_delta_pct"] = features["oi_delta_pct"] / 100.0  # Convert to fraction
+
+    # OI rising tier
+    if "oi_rising_strong" in conf_str:
+        features["oi_rising_tier"] = "strong"
+    elif "oi_rising_moderate" in conf_str:
+        features["oi_rising_tier"] = "moderate"
+    elif "oi_rising_mild" in conf_str:
+        features["oi_rising_tier"] = "mild"
+    else:
+        features["oi_rising_tier"] = None
+
+    # Buy/sell dominance tier
+    if "buy_dominance_strong" in conf_str or "sell_dominance_strong" in conf_str:
+        features["dominance_tier"] = "strong"
+    elif "buy_dominance_moderate" in conf_str or "sell_dominance_moderate" in conf_str:
+        features["dominance_tier"] = "moderate"
+    else:
+        features["dominance_tier"] = None
 
     # --- Setup H / momentum-specific features ---
     # Parsed from confluence strings that Setup H adds
@@ -158,6 +203,20 @@ def extract_setup_features(
         features["recent_flush_total_usd"] = sum(
             f.size_usd for f in snapshot.recent_oi_flushes
         )
+
+    # --- Temporal / regime features (v5+) ---
+    # Hour of day (UTC) — crypto has strong session patterns (Asia/Europe/US)
+    features["hour_of_day"] = (now_ms // 3_600_000) % 24
+
+    # ATR as % of price — volatility regime indicator
+    # Uses recent candles if provided (20-period ATR)
+    features["atr_pct"] = None
+    if recent_candles and len(recent_candles) >= 14:
+        atr_sum = sum(c.high - c.low for c in recent_candles[-20:])
+        atr_count = min(len(recent_candles), 20)
+        avg_atr = atr_sum / atr_count
+        if current_price > 0:
+            features["atr_pct"] = avg_atr / current_price
 
     return features
 
