@@ -88,10 +88,14 @@ class PositionGuardian:
         if action:
             return action
 
-        if settings.GUARDIAN_CVD_ENABLED and cvd is not None:
-            action = await self._check_adverse_cvd(pos, cvd, in_profit)
-            if action:
-                return action
+        if cvd is not None:
+            if settings.GUARDIAN_CVD_ENABLED:
+                action = await self._check_adverse_cvd(pos, cvd, in_profit)
+                if action:
+                    return action
+            else:
+                # Log-only mode: record what WOULD have triggered for ML analysis
+                self._log_cvd_shadow(pos, cvd, in_profit)
 
         return None
 
@@ -271,3 +275,25 @@ class PositionGuardian:
             logger.error(f"Guardian SL tighten failed for {pos.pair}: {e}")
 
         self.last_actions[pos.pair] = {"action": "tighten_sl", "reason": "momentum_death"}
+
+    def _log_cvd_shadow(self, pos, cvd, in_profit: bool) -> None:
+        """Log-only: record when adverse_cvd WOULD have triggered.
+
+        Used for ML data collection when GUARDIAN_CVD_ENABLED=false.
+        Logs at DEBUG to avoid noise, but data is available for post-analysis.
+        """
+        if in_profit:
+            return
+
+        would_trigger = False
+        if pos.direction == "long" and cvd.cvd_5m < 0:
+            would_trigger = True
+        elif pos.direction == "short" and cvd.cvd_5m > 0:
+            would_trigger = True
+
+        if would_trigger:
+            logger.debug(
+                f"Guardian shadow: adverse_cvd WOULD trigger for {pos.pair} "
+                f"{pos.direction} (CVD_5m={cvd.cvd_5m:.2f}, in_loss=True) "
+                f"— log only, not closing"
+            )
