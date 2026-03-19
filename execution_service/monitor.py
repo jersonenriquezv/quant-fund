@@ -1373,6 +1373,11 @@ class PositionMonitor:
                 "sl_too_close": "filled_timeout",
                 "cancelled": "unfilled_timeout",
                 "replaced": "replaced",
+                # Guardian closes — distinct from timeout/SL (active edge-loss exit)
+                "guardian_counter_structure": "filled_guardian",
+                "guardian_momentum_death": "filled_guardian",
+                "guardian_stall_detection": "filled_guardian",
+                "guardian_adverse_cvd": "filled_guardian",
             }
             outcome_type = outcome_map.get(reason, "filled_timeout")
 
