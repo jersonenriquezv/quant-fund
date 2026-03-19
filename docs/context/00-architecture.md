@@ -292,28 +292,52 @@ Desde 2026-03-13, el bot registra cada setup detectado con features estructurado
 **Al detectar (después de dedup, antes de risk):**
 - Geometría del setup (entry, SL, TP, R:R, risk_distance)
 - Confluences descompuestas (has_sweep, has_choch, ob_volume_ratio, pd_aligned, etc.)
-- Market snapshot (funding, OI, CVD, buy_dominance)
+- Graduated signal tiers (sweep_tier, funding_tier, oi_rising_tier, dominance_tier)
+- Market snapshot (funding, OI delta, buy_dominance, fear_greed)
+- `daily_vol` — AFML Ch.3 getDailyVol(): EWMA std of close-to-close log-returns (span=100). Para normalizar barrier widths en análisis ML.
 - Stale/late entry features (entry_distance_pct, sl_distance_pct, setup_age_minutes)
+- Temporal features (hour_of_day, atr_pct)
 - Missingness flags (has_funding, has_oi, has_cvd, has_news, has_whales)
 - Risk context (capital, open_positions, daily_dd, weekly_dd)
+- Guardian shadow triggers (counter, momentum, stall, cvd) — set during trade lifetime for feature importance
 - `feature_version` (incrementar en `ML_FEATURE_VERSION` cuando cambien params de estrategia)
 
 **Al resolver:**
-- `outcome_type`: filled_tp, filled_sl, filled_trailing, filled_timeout, unfilled_timeout, risk_rejected, deduped, replaced, data_blocked
+- `outcome_type`: filled_tp, filled_sl, filled_trailing, filled_timeout, filled_guardian, unfilled_timeout, risk_rejected, deduped, replaced, data_blocked
 - PnL, actual entry/exit, exit_reason, fill_duration_ms, trade_duration_ms
 
+### Non-stationary features (AFML Ch.5) — excluir del training
+- Precios absolutos (entry_price, sl_price, tp1/tp2_price, current_price_at_detection) → usar risk_distance_pct, entry_distance_pct, rr_ratio
+- `oi_usd` → usar `oi_delta_pct`
+- `cvd_5m/15m/1h` → usar `buy_dominance`
+
+### Triple-barrier labels (AFML Ch.3)
+- filled_tp/trailing → +1 (upper barrier)
+- filled_sl → -1 (lower barrier)
+- filled_timeout/guardian → sign(pnl_pct) (vertical barrier)
+
+### Feature importance script
+`scripts/feature_importance.py` — AFML Ch.7-8 compliant:
+- `max_features=1` for unbiased MDI (AFML Ch.8)
+- `neg_log_loss` scoring for MDA (AFML Ch.9)
+- Sample uniqueness weighting (AFML Ch.4) — concurrent trades share info
+- `--label barrier` mode for triple-barrier labels
+- Kendall tau triangulation between MDI and SFI rankings
+
 ### Archivos
-- `shared/ml_features.py` — extraction functions
+- `shared/ml_features.py` — extraction functions + `_get_daily_vol()` (AFML Ch.3)
 - `shared/models.py` — `TradeSetup.setup_id` (uuid auto-generated)
-- `data_service/data_store.py` — `ml_setups` table, `insert_ml_setup()`, `update_ml_setup_outcome()`
+- `data_service/data_store.py` — `ml_setups` table, `insert_ml_setup()`, `update_ml_setup_outcome()`, `update_ml_guardian_shadow()`
 - `execution_service/models.py` — `ManagedPosition.setup_id`
 - `main.py` — `_ml_log_setup()`, `_ml_resolve_outcome()` (fire-and-forget)
 - `execution_service/monitor.py` — `_ml_resolve_close()` (outcome on trade close/cancel/replace)
-- `config/settings.py` — `ML_FEATURE_VERSION`
+- `scripts/feature_importance.py` — MDI/MDA/SFI with purged k-fold CV
+- `config/settings.py` — `ML_FEATURE_VERSION` (currently 6)
 
 ### Leakage safety
 - Features capturados DESPUÉS de dedup, ANTES de risk check (strategy-time)
 - Risk context separado (safe para fill model, caution para quality model)
+- Guardian shadow flags set DURING trade lifetime (outcome-dependent — exclude from quality model)
 - No se usa información de outcome en features
 
 ### Timeline
@@ -322,6 +346,9 @@ Desde 2026-03-13, el bot registra cada setup detectado con features estructurado
 - Hasta entonces: solo recolección de datos
 
 ## Cambios recientes
+- 2026-03-19: **ML v6 — daily_vol feature + AFML training pipeline.** `_get_daily_vol()` (AFML Ch.3 getDailyVol) computes EWMA std of close-to-close log-returns (span=100). New `daily_vol` column in `ml_setups` with safe ALTER TABLE migration. `scripts/feature_importance.py` rewritten: `max_features=1` for MDI, `neg_log_loss` for MDA, sample uniqueness weighting (AFML Ch.4), triple-barrier labels (`--label barrier`), non-stationary feature exclusion (AFML Ch.5), Kendall tau triangulation. Guardian shadow columns added for future feature importance.
+- 2026-03-19: **Setup H disabled** — 27 trades, 11% WR, PF 0.10. Entry at impulse completion = adverse selection. Code kept for recalibration.
+- 2026-03-19: **Guardian → shadow mode** — All guardian checks log-only (no closes, no SL changes). Triple barrier handles all exits for clean ML labels. Shadow triggers stored in ml_setups for AFML Ch.8 feature importance.
 - 2026-03-15: **Optuna parameter tuning** — Walk-forward validated parameter optimization (PF 1.05→2.65). Key changes: OB_MIN_VOLUME_RATIO 1.2→1.3, OB_MAX_AGE_HOURS 72→84, OB_MIN_BODY_PCT 0.001→0.0015, OB_PROXIMITY_PCT 0.008→0.007, OB_MAX_DISTANCE_PCT 0.08→0.04 (biggest improvement), SETUP_A_ENTRY_PCT 0.50→0.65, SETUP_A_MAX_SWEEP_CHOCH_GAP 40→45, MIN_ATR_PCT 0.0025→0.0045, MIN_TARGET_SPACE_R 1.2→1.4. New `scripts/optimize.py` for automated Optuna optimization.
 - 2026-03-15: **Periodic SL verification** — `_verify_sl_exists()` in PositionMonitor confirms SL algo order exists on exchange every `SL_VERIFY_INTERVAL_SECONDS` (60s) via `find_pending_algo_orders()`. Catches silent SL drops missed by `fetch_order()`. Re-places SL if missing. New `last_sl_verified_ms` field in ManagedPosition.
 - 2026-03-15: **Backtest enhancements** — Timeframe-detail mode (`--detail`) loads 1m candles to resolve ambiguous SL/TP ordering within a candle. Fill probability model (`--fill-prob 0.8`) simulates realistic limit order fill rates with `--seed` for reproducibility. `run_backtest(overrides={})` for Optuna parameter optimization. `_candle_duration_ms()` + binary search for 1m sub-candle lookup. Returns metrics for programmatic use.

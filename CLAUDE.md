@@ -12,7 +12,7 @@ If any layer says NO, the trade does NOT execute.
 
 ## How a Trade Opens (Simple Version)
 
-The bot watches 5m and 15m candles on BTC and ETH. When a candle closes, it passes through 5 filters in sequence — if any one says NO, the trade does not execute.
+The bot watches 5m and 15m candles on 7 crypto pairs (BTC, ETH, SOL, DOGE, XRP, LINK, AVAX). When a candle closes, it passes through 5 filters in sequence — if any one says NO, the trade does not execute.
 
 ### 1. Strategy detects an SMC pattern
 
@@ -123,7 +123,7 @@ ALL dashboard UI changes MUST work on mobile (375px+). The dashboard uses 2 CSS 
 
 * **Language:** Python (entire system)
 * **Exchange:** OKX via ccxt (REST) + native OKX WebSocket
-* **Pairs:** BTC/USDT and ETH/USDT (linear perpetuals). Instrument IDs: BTC-USDT-SWAP, ETH-USDT-SWAP.
+* **Pairs:** 7 linear perpetuals — BTC/USDT, ETH/USDT, SOL/USDT, DOGE/USDT, XRP/USDT, LINK/USDT, AVAX/USDT. OKX instrument IDs use hyphens: BTC-USDT-SWAP, ETH-USDT-SWAP, SOL-USDT-SWAP, etc.
 * **Analysis:** pandas + numpy
 * **AI Filter:** Claude API (Sonnet)
 * **Database:** PostgreSQL (historical) + Redis (real-time cache)
@@ -499,7 +499,7 @@ Note: `PositionSizer` (in `position_sizer.py`) computes dynamic leverage from ri
 
 Executes orders on OKX via ccxt (exchange id: `"okx"`).
 Authentication: API key + secret + passphrase (`OKX_API_KEY`, `OKX_SECRET`, `OKX_PASSPHRASE` in `.env`).
-Instrument format: `"BTC-USDT-SWAP"`, `"ETH-USDT-SWAP"` (OKX convention).
+Instrument format: `"BTC-USDT-SWAP"`, `"ETH-USDT-SWAP"`, `"SOL-USDT-SWAP"`, etc. (OKX convention, 7 pairs total).
 
 **Order flow:**
 1. Receive approved trade from Risk Service (TradeSetup + RiskApproval)

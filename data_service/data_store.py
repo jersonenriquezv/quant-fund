@@ -570,9 +570,18 @@ class PostgresStore:
                     -- Temporal / regime features (v5+)
                     hour_of_day INT,
                     atr_pct DOUBLE PRECISION,
+                    daily_vol DOUBLE PRECISION,
 
                     -- Guardian close tracking
                     guardian_close_reason VARCHAR(30),
+
+                    -- Guardian shadow triggers (AFML feature collection)
+                    -- Set to TRUE the first time each check WOULD have fired
+                    -- during the trade's lifetime. Used for feature importance.
+                    guardian_shadow_counter BOOLEAN DEFAULT FALSE,
+                    guardian_shadow_momentum BOOLEAN DEFAULT FALSE,
+                    guardian_shadow_stall BOOLEAN DEFAULT FALSE,
+                    guardian_shadow_cvd BOOLEAN DEFAULT FALSE,
 
                     -- Outcome (filled after trade resolves)
                     outcome_type VARCHAR(20),
@@ -596,6 +605,12 @@ class PostgresStore:
             cur.execute("""
                 CREATE INDEX IF NOT EXISTS idx_ml_setups_outcome
                 ON ml_setups(outcome_type) WHERE outcome_type IS NOT NULL
+            """)
+
+            # v6 migration: add daily_vol column if missing
+            cur.execute("""
+                ALTER TABLE ml_setups ADD COLUMN IF NOT EXISTS
+                    daily_vol DOUBLE PRECISION
             """)
 
         logger.info("PostgreSQL tables verified/created")
@@ -907,7 +922,7 @@ class PostgresStore:
                             has_initiating_ob,
                             sweep_tier, funding_tier, oi_rising_tier,
                             dominance_tier, oi_delta_pct,
-                            hour_of_day, atr_pct,
+                            hour_of_day, atr_pct, daily_vol,
                             risk_capital, risk_open_positions,
                             risk_daily_dd_pct, risk_weekly_dd_pct, risk_trades_today
                         ) VALUES (
@@ -932,7 +947,7 @@ class PostgresStore:
                             %s, %s,
                             %s, %s, %s,
                             %s, %s, %s,
-                            %s, %s,
+                            %s, %s, %s,
                             %s, %s,
                             %s, %s, %s
                         ) ON CONFLICT (setup_id) DO NOTHING""",
@@ -970,6 +985,7 @@ class PostgresStore:
                             features.get("oi_rising_tier"),
                             features.get("dominance_tier"), features.get("oi_delta_pct"),
                             features.get("hour_of_day"), features.get("atr_pct"),
+                            features.get("daily_vol"),
                             rc.get("risk_capital"), rc.get("risk_open_positions"),
                             rc.get("risk_daily_dd_pct"), rc.get("risk_weekly_dd_pct"),
                             rc.get("risk_trades_today"),
@@ -1059,6 +1075,42 @@ class PostgresStore:
                 logger.error(f"ML setup outcome update failed: setup_id={setup_id} {e}")
                 return False
         return False
+
+    def update_ml_guardian_shadow(
+        self, setup_id: str, check_name: str
+    ) -> bool:
+        """Record that a guardian shadow check WOULD have triggered.
+
+        Sets the corresponding boolean column to TRUE (idempotent).
+        Only writes once per (setup_id, check_name) — subsequent calls are no-ops
+        because the column is already TRUE.
+
+        Args:
+            setup_id: The ML setup ID from ManagedPosition.
+            check_name: One of "counter", "momentum", "stall", "cvd".
+        """
+        column_map = {
+            "counter": "guardian_shadow_counter",
+            "momentum": "guardian_shadow_momentum",
+            "stall": "guardian_shadow_stall",
+            "cvd": "guardian_shadow_cvd",
+        }
+        column = column_map.get(check_name)
+        if not column:
+            return False
+        if not self._ensure_connected():
+            return False
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE ml_setups SET {column} = TRUE "
+                    f"WHERE setup_id = %s AND {column} = FALSE",
+                    (setup_id,),
+                )
+            return True
+        except psycopg2.Error as e:
+            logger.error(f"ML guardian shadow update failed: {setup_id} {check_name} {e}")
+            return False
 
     def count_ml_training_outcomes(self, min_version: int = 4) -> dict:
         """Count labeled outcomes suitable for ML training.

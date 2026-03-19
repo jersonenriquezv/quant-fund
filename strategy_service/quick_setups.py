@@ -386,6 +386,13 @@ class QuickSetupEvaluator:
         if risk <= 0:
             return None
 
+        # Early SL-too-close filter
+        risk_pct = risk / entry_price if entry_price > 0 else 0
+        if risk_pct < settings.MIN_RISK_DISTANCE_PCT:
+            logger.debug(f"Setup E [{pair}]: SL too close "
+                         f"({risk_pct*100:.2f}% < {settings.MIN_RISK_DISTANCE_PCT*100:.1f}%)")
+            return None
+
         # TPs from settings (breakeven trigger + single TP)
         if direction == "long":
             tp1 = entry_price + risk * settings.TP1_RR_RATIO

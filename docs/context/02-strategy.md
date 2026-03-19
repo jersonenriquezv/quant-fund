@@ -48,7 +48,7 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
   - **Orden temporal obligatorio**: sweep ANTES del CHoCH
   - **Proximidad temporal**: sweep dentro de `SETUP_A_MAX_SWEEP_CHOCH_GAP` candles del CHoCH (60 candles = ~300min en 5m, ~15h en 15m — aggressive mode: was 45)
   - **Entry depth configurable**: `SETUP_A_ENTRY_PCT` (default 0.65, env var override). Shallower entry for higher fill rate (Optuna 03-15: was 0.50).
-  - **SL-too-close early filter**: `MIN_RISK_DISTANCE_PCT` (0.5%) check runs in strategy layer (before building TradeSetup), not just in Risk guardrails.
+  - **SL-too-close early filter**: `MIN_RISK_DISTANCE_PCT` (0.8%) check runs in strategy layer for ALL setups (A, D, E, F, G, H) before building TradeSetup. Also checked in Risk guardrails as backup.
   - **AI bypass**: In `AI_BYPASS_SETUP_TYPES` — AI filter skipped, synthetic AIDecision(confidence=1.0) generated. AI v2 had 89.6% approval rate = no value added.
   - **Backtest 60d aggressive**: 46 trades, 47.8% WR, +$2,510. El bottleneck principal era `no_aligned_sweep` — gap=20 solo producía 11 trades. Gap=40 captura sweeps más lejanos sin degradar calidad.
 - **Setup B** (secundario): BOS + FVG adyacente a OB — **DESHABILITADO** (audit 03-18: 0-7.7% WR, F es estrictamente mejor — F = B sin gate de FVG débil)
@@ -80,7 +80,7 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
   - DEBUG logs en cada early return (HTF undefined, no breakers, no aligned, PD misaligned, no in range, confluences, R:R)
   - Requiere HTF bias alineado con dirección del breaker + PD zone + min 2 confluencias
   - Usa `get_breaker_blocks()` de OrderBlockDetector
-- **Swing setups evalúan 15m + 5m OBs** — `SWING_SETUP_TIMEFRAMES = ["15m", "5m"]` (aggressive mode: was 15m only). OBs de 5m producen SLs más ajustados pero `MIN_RISK_DISTANCE_PCT` (0.5%) filtra los micro-SLs que las comisiones se comen.
+- **Swing setups evalúan 15m + 5m OBs** — `SWING_SETUP_TIMEFRAMES = ["15m", "5m"]` (aggressive mode: was 15m only). OBs de 5m producen SLs más ajustados pero `MIN_RISK_DISTANCE_PCT` (0.8%) filtra los micro-SLs que las comisiones se comen.
 - **Zone-based orders** — no requiere proximidad al OB. El bot coloca limit orders al 50% del OB body (configurable via `SETUP_A_ENTRY_PCT`) y espera fill. SL siempre en `ob.low` (long) / `ob.high` (short) — wick-to-wick, independiente del entry.
   - `_find_best_ob()` selecciona by composite scoring via `_score_ob()`: volume (35%), freshness (30%), proximity (20%), body size (15%). Replaces old "highest volume_ratio + tiebreak by timestamp" selector.
   - `_score_ob()` returns -1 (filtered) for OBs below `OB_MIN_BODY_PCT` (0.15%) or beyond `OB_MAX_DISTANCE_PCT` (8%). Otherwise returns 0-1 composite score.
@@ -133,7 +133,7 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
   - **Backtest 60d combinado A+B+D+F**: 9 trades D, 66.7% WR, +$2,553. Total combinado: 97 trades, 51.5% WR, +$7,558.
   - ETH dominante (47/56 trades solo, 97/97 combinado). BTC 11.1% WR pero solo 9 trades — muestra insuficiente.
 - **Setup E — Cascade Reversal: HABILITADO** (aggressive validation mode 2026-03-15). Caída de OI >2% (cascade proxy) + CVD revertiendo. Long después de cascade de longs, short después de cascade de shorts. Usa OB cercano como anchor o precio actual. TP1: 1:1 (breakeven trigger), TP2: 3:1 (single TP).
-- **Setup H — Momentum/Impulse: HABILITADO**. Detecta impulsos direccionales con volumen en 5m y 15m. 5 filtros: ≥60% candles same-color, volume spike ≥1.5x avg, BOS confirmado, impulse ≥0.3%, HTF bias alineado. Entry: precio actual (market). SL: initiating OB o impulse extreme (cap 3%). Filtros de exhaustión: deceleration ratio, extended move, volume decay. Recibe `market_snapshot` para **CVD momentum confirmation** (agrega `cvd_momentum_confirmed` + `buy/sell_dominance_strong`).
+- **Setup H — Momentum/Impulse: DESHABILITADO** (2026-03-19). 27 trades live, 11% WR, PF 0.10. Entry at impulse completion = adverse selection (AFML Ch.5). Code kept for recalibration. Was: impulsos direccionales con volumen en 5m/15m, entry at market price, SL at initiating OB.
 
 **Diferencias clave quick vs swing:**
 - Skip Claude AI filter (los datos SON la señal)
@@ -147,7 +147,7 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 - `evaluate(pair, candle)` — evalúa LTF candles: A → B → F → G → C → D → E, retorna `TradeSetup | None`
 - **`evaluate_htf(pair, candle)`** — evalúa 4H candles para HTF campaigns. Usa Daily candles para bias (en vez de 4H/1H). Corre los mismos detectores SMC en 4H data con params más amplios: OB age 168h (vs 48h), OB distance 10% (vs 5%), FVG age 168h, min risk distance 0.5% (same as intraday). Overrides temporales de settings durante evaluación. Retorna `TradeSetup | None`. Gate: `HTF_ENABLED_SETUPS` (default: A, B, F).
 - **`get_htf_swing_levels(pair)`** — retorna `(swing_highs, swing_lows)` de 4H data. Usado por CampaignMonitor para trailing SL.
-- **`ENABLED_SETUPS` gate** — después de detectar un setup, verifica `setup.setup_type in settings.ENABLED_SETUPS`. Si no está habilitado, logea debug y continúa evaluando el siguiente tipo. **Post-audit (2026-03-18):** `["setup_a", "setup_c", "setup_d_choch", "setup_e", "setup_f", "setup_h"]` — 6 tipos activos. Setup B deshabilitado (audit: F es estrictamente mejor). G pendiente de validación.
+- **`ENABLED_SETUPS` gate** — después de detectar un setup, verifica `setup.setup_type in settings.ENABLED_SETUPS`. Si no está habilitado, logea debug y continúa evaluando el siguiente tipo. **Post-review (2026-03-19):** `["setup_a", "setup_c", "setup_d_choch", "setup_e", "setup_f"]` — 5 tipos activos. Setup B deshabilitado (audit: F es mejor). Setup H deshabilitado (27 trades, 11% WR, PF 0.10). G pendiente de validación.
 - Coordina todos los módulos internos
 - Quick setup cooldown tracking per (pair, setup_type)
 - **Failed OB tracking** — `mark_ob_failed(pair, sl_price, entry_price)` registra en memoria OBs que resultaron en pérdida (PnL < 0). `is_ob_failed(pair, sl_price, entry_price)` consulta el registro antes de ejecutar un nuevo trade: si el OB ya perdió, el setup se descarta. El tracking usa la clave `(pair, sl_price, entry_price)`. Breakeven (PnL = 0%) NO marca el OB como fallido porque el setup parcialmente funcionó. Se resetea en restart.

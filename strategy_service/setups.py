@@ -585,6 +585,13 @@ class SetupEvaluator:
                          f"sl={sl_price:.2f} dir={direction}")
             return None
 
+        # Early SL-too-close filter (avoid pipeline overhead for noise setups)
+        risk_pct = abs(entry_price - sl_price) / entry_price if entry_price > 0 else 0
+        if risk_pct < settings.MIN_RISK_DISTANCE_PCT:
+            logger.debug(f"Setup F [{pair}]: SL too close "
+                         f"({risk_pct*100:.2f}% < {settings.MIN_RISK_DISTANCE_PCT*100:.1f}%)")
+            return None
+
         tp1, tp2 = self._calculate_tp_levels(
             entry_price, sl_price, direction, liquidity_levels
         )
@@ -709,6 +716,13 @@ class SetupEvaluator:
         if not self._validate_sl_direction(entry_price, sl_price, direction):
             logger.debug(f"Setup G [{pair}]: SL inverted — entry={entry_price:.2f} "
                          f"sl={sl_price:.2f} dir={direction}")
+            return None
+
+        # Early SL-too-close filter
+        risk_pct = abs(entry_price - sl_price) / entry_price if entry_price > 0 else 0
+        if risk_pct < settings.MIN_RISK_DISTANCE_PCT:
+            logger.debug(f"Setup G [{pair}]: SL too close "
+                         f"({risk_pct*100:.2f}% < {settings.MIN_RISK_DISTANCE_PCT*100:.1f}%)")
             return None
 
         tp1, tp2 = self._calculate_tp_levels(

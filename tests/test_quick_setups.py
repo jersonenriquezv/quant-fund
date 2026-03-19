@@ -426,7 +426,7 @@ class TestSetupE:
             buy_volume=550, sell_volume=450,
             oi_flushes=[liq],
         )
-        ob = _make_ob(direction="bullish", entry_price=99.5)
+        ob = _make_ob(direction="bullish", entry_price=99.5, low=98.5)
         candles = make_candle_series(base_price=99.5, count=20, timeframe="5m")
 
         result = evaluator.evaluate_setup_e(
@@ -748,7 +748,7 @@ class TestSetupH:
         """Bullish impulse with volume spike + BOS → setup_h long."""
         candles = self._make_impulse_candles(
             direction="bullish", base_price=100.0,
-            impulse_move=0.5, impulse_volume=30.0, normal_volume=10.0,
+            impulse_move=1.2, impulse_volume=30.0, normal_volume=10.0,
         )
         state = _make_structure_state("bos", "bullish")
 
@@ -768,7 +768,7 @@ class TestSetupH:
         """Bearish impulse with volume spike + BOS → setup_h short."""
         candles = self._make_impulse_candles(
             direction="bearish", base_price=100.0,
-            impulse_move=0.5, impulse_volume=30.0, normal_volume=10.0,
+            impulse_move=1.2, impulse_volume=30.0, normal_volume=10.0,
         )
         state = _make_structure_state("bos", "bearish")
 
@@ -929,7 +929,7 @@ class TestSetupH:
         """Healthy impulse with consistent bodies and volume passes all filters."""
         candles = self._make_impulse_candles(
             direction="bullish", base_price=100.0,
-            impulse_move=0.5,  # 0.5% — within 0.3%-1.5% window
+            impulse_move=1.2,  # 1.2% — within 0.3%-1.5% window, SL > 0.8%
             impulse_volume=30.0, normal_volume=10.0,
         )
         state = _make_structure_state("bos", "bullish")
@@ -945,7 +945,7 @@ class TestSetupH:
         """Setup H works on 15m timeframe too."""
         candles = self._make_impulse_candles(
             direction="bullish", timeframe="15m",
-            impulse_volume=30.0, normal_volume=10.0,
+            impulse_move=1.2, impulse_volume=30.0, normal_volume=10.0,
         )
         state = _make_structure_state("bos", "bullish", timeframe="15m")
 

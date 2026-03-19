@@ -87,7 +87,7 @@ class Settings:
     MAX_LEVERAGE: int = int(os.getenv("MAX_LEVERAGE", "7"))
 
     # Drawdown diario máximo antes de apagar el bot
-    MAX_DAILY_DRAWDOWN: float = float(os.getenv("MAX_DAILY_DRAWDOWN", "0.05"))  # 5%
+    MAX_DAILY_DRAWDOWN: float = float(os.getenv("MAX_DAILY_DRAWDOWN", "0.10"))  # 10% — was 5%, raised because $20 trades at 7x on $108 capital hit 5% after ~3 SLs, blocking entire day
 
     # Drawdown semanal máximo antes de pausar hasta el lunes
     MAX_WEEKLY_DRAWDOWN: float = float(os.getenv("MAX_WEEKLY_DRAWDOWN", "0.10"))  # 10%
@@ -106,9 +106,11 @@ class Settings:
 
     # Minimum SL distance as fraction of entry price.
     # Rejects noise trades where SL is inside normal price noise.
-    # 0.005 = 0.5% → ETH@$2350: SL >= $11.75. BTC@$74K: SL >= $370.
-    # Raised from 0.2% (2026-03-16): 0.2% SLs were getting swept in 3-5 min.
-    MIN_RISK_DISTANCE_PCT: float = 0.005
+    # Should be >= 1x ATR(15m). BTC 15m ATR ≈ 0.3-0.8%, ETH ≈ 0.4-1.0%.
+    # 0.008 = 0.8% → ETH@$2350: SL >= $18.80. BTC@$70K: SL >= $560.
+    # History: 0.2% (initial) → 0.5% (03-16, still noise) → 0.8% (03-19, ~1x ATR floor).
+    # Long-term: replace with daily_vol-adaptive threshold (AFML Ch.3 getDailyVol).
+    MIN_RISK_DISTANCE_PCT: float = 0.008
 
     # Trading fee rate per side (OKX taker: 0.05%)
     # Deducted from PnL: total_fees = (entry_notional + exit_notional) * rate
@@ -233,7 +235,8 @@ class Settings:
     # Setup B disabled (audit 03-18): 0-7.7% WR, F is strictly better (F = B minus weak FVG gate)
     ENABLED_SETUPS: list = field(default_factory=lambda: [
         "setup_a", "setup_c", "setup_d_choch", "setup_e", "setup_f",
-        "setup_h",
+        # setup_h disabled (2026-03-19): 27 trades, 11% WR, PF 0.10.
+        # Entry at impulse completion = adverse selection. Code kept for recalibration.
     ])
 
     # Setup A entry depth — fraction of OB body for entry placement.
@@ -706,7 +709,7 @@ class Settings:
     # ========================
     # Feature version — increment when strategy params change in ways that
     # alter feature semantics (e.g. changing OB scoring weights, PD rules).
-    ML_FEATURE_VERSION: int = 5  # v5: graduated signals — sweep tiers, CVD magnitude, OI delta tiers, funding tiers
+    ML_FEATURE_VERSION: int = 6  # v6: daily_vol (AFML Ch.3 getDailyVol), EWMA volatility for barrier normalization
 
     # ========================
     # LIQUIDATION HEATMAP
@@ -722,21 +725,18 @@ class Settings:
     LIQ_CACHE_TTL: int = int(os.getenv("LIQ_CACHE_TTL", "30"))
 
     # ========================
-    # POSITION GUARDIAN — Active position monitoring
+    # POSITION GUARDIAN — Shadow-mode position monitoring (AFML approach)
     # ========================
-    # Master switch — when enabled, guardian evaluates open positions on every candle
+    # SHADOW MODE (2026-03-19): All guardian checks log only — no closes, no SL
+    # changes. Triple barrier (SL/TP/timeout) handles all exits for clean ML labels.
+    # Guardian features collected for future feature importance analysis (AFML Ch. 8).
+    # Re-enable individual checks only after measuring predictive power on 50+ trades.
+    # Master switch — when enabled, guardian evaluates (shadow-logs) on every candle
     POSITION_GUARDIAN_ENABLED: bool = os.getenv("POSITION_GUARDIAN_ENABLED", "true").lower() == "true"
-    # Number of consecutive counter-direction candles to trigger early close
+    # Thresholds kept for shadow evaluation consistency
     GUARDIAN_COUNTER_CANDLES: int = int(os.getenv("GUARDIAN_COUNTER_CANDLES", "5"))
-    # Ratio threshold for momentum death (recent body / reference body)
     GUARDIAN_MOMENTUM_DECAY_RATIO: float = float(os.getenv("GUARDIAN_MOMENTUM_DECAY_RATIO", "0.2"))
-    # Minimum price range (as fraction of price) over last N candles to NOT be a stall
     GUARDIAN_STALL_RANGE_PCT: float = float(os.getenv("GUARDIAN_STALL_RANGE_PCT", "0.001"))
-    # Whether to use CVD data for adverse divergence check.
-    # DISABLED (2026-03-19): closed profitable trades on minor pullbacks without
-    # backtested calibration. SL orders on exchange protect positions. Collect data
-    # first, then re-enable with calibrated thresholds when 50+ trades available.
-    GUARDIAN_CVD_ENABLED: bool = os.getenv("GUARDIAN_CVD_ENABLED", "false").lower() == "true"
 
     # ========================
     # RECONNECTION

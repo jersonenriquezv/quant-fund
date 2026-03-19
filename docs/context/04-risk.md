@@ -6,7 +6,7 @@
 El Risk Service es el guardián del capital. Antes de que cualquier trade se ejecute, pasa por 6 checks obligatorios (guardrails) y un cálculo de tamaño de posición. Si cualquier check falla, el trade NO se ejecuta. Sin excepciones.
 
 ## Por qué existe
-Sin control de riesgo, un solo trade malo puede destruir la cuenta. El Risk Service implementa las reglas de CLAUDE.md: máximo 2% riesgo por trade, 5% drawdown diario, 10% semanal, 7x apalancamiento, y cooldown de 15 min después de pérdida.
+Sin control de riesgo, un solo trade malo puede destruir la cuenta. El Risk Service implementa las reglas de CLAUDE.md: máximo 2% riesgo por trade, 10% drawdown diario, 10% semanal, 7x apalancamiento, y cooldown de 5 min después de pérdida.
 
 ## Cómo funciona (5 minutos)
 
@@ -22,7 +22,7 @@ RiskService.check(setup)
   ├── check cooldown (5 min post-loss)
   ├── check max trades/día (20)
   ├── check max posiciones abiertas (8)
-  ├── check drawdown diario < 5%
+  ├── check drawdown diario < 10%
   ├── check drawdown semanal < 10%
   ├── calcular tamaño posición: (Capital × Risk%) / |Entry - SL|
   └── enforce max leverage (7x)
@@ -56,12 +56,12 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 - Cada método retorna `tuple[bool, str]` (passed, reason)
 - **Sin estado** — funciones puras, reciben valores y retornan veredicto
 - Checks:
-  - `check_min_risk_distance(setup)` — SL distance >= MIN_RISK_DISTANCE_PCT (0.5%) del entry price. Rechaza noise trades donde comisiones comen el profit.
+  - `check_min_risk_distance(setup)` — SL distance >= MIN_RISK_DISTANCE_PCT (0.8%) del entry price. Rechaza noise trades donde comisiones comen el profit. Also checked in strategy layer for all setups as early filter.
   - `check_rr_ratio(setup)` — R:R de TP2 >= MIN_RISK_REWARD (1.2 swing) o MIN_RISK_REWARD_QUICK (1.0 quick setups C/D/E)
   - `check_cooldown(last_loss_time, current_time)` — COOLDOWN_MINUTES (5) elapsed?
   - `check_max_trades_today(count)` — < MAX_TRADES_PER_DAY (20)?
   - `check_max_open_positions(count)` — < MAX_OPEN_POSITIONS (8)?
-  - `check_daily_drawdown(dd_pct)` — < MAX_DAILY_DRAWDOWN (5%)?
+  - `check_daily_drawdown(dd_pct)` — < MAX_DAILY_DRAWDOWN (10%)?
   - `check_weekly_drawdown(dd_pct)` — < MAX_WEEKLY_DRAWDOWN (10%)?
 
 ### `risk_service/state_tracker.py` — Estado con persistencia Redis
@@ -108,14 +108,14 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 | `FIXED_TRADE_MARGIN` | `20` ($20) | Margin fijo por trade en USDT. Notional = margin × leverage. $20 × 5x = $100. Si 0, usa TRADE_CAPITAL_PCT. |
 | `TRADE_CAPITAL_PCT` | `0.15` (15%) | Fallback: % del capital como notional por trade (solo si FIXED_TRADE_MARGIN=0) |
 | `MAX_LEVERAGE` | `7` | Apalancamiento máximo permitido |
-| `MAX_DAILY_DRAWDOWN` | `0.05` (5%) | DD diario máximo antes de pausar |
+| `MAX_DAILY_DRAWDOWN` | `0.10` (10%) | DD diario máximo antes de pausar (raised from 5% — was blocking entire days after 3 SLs on $108 capital) |
 | `MAX_WEEKLY_DRAWDOWN` | `0.10` (10%) | DD semanal máximo antes de pausar |
 | `MAX_OPEN_POSITIONS` | `8` | Posiciones simultáneas máximas (aggressive mode) |
 | `MAX_TRADES_PER_DAY` | `20` | Trades por día máximo (aggressive mode) |
 | `COOLDOWN_MINUTES` | `5` | Minutos de espera post-pérdida (aggressive mode) |
 | `MIN_RISK_REWARD` | `1.2` | R:R mínimo para swing setups A/B (TP2 vs SL) |
 | `MIN_RISK_REWARD_QUICK` | `1.0` | R:R mínimo para quick setups C/D/E |
-| `MIN_RISK_DISTANCE_PCT` | `0.005` (0.5%) | Distancia mínima SL-entry como fracción del precio. Rechaza noise trades. Para ETH@$2000, SL >= $10. Now also checked in Strategy layer (early filter in evaluate_setup_a/evaluate_setup_d) before building TradeSetup. |
+| `MIN_RISK_DISTANCE_PCT` | `0.008` (0.8%) | Distancia mínima SL-entry como fracción del precio (~1x ATR 15m floor). Checked in Strategy layer for ALL setups (A, D, E, F, G, H) + Risk guardrails as backup. History: 0.2%→0.5%→0.8%. Long-term: daily_vol-adaptive (AFML Ch.3). |
 | `MIN_ORDER_SIZES` | `{"BTC/USDT": 0.0001, "ETH/USDT": 0.001}` | Mínimo de tamaño de orden por par (OKX contract-based: BTC min 0.01 contracts × 0.01 ctVal, ETH min 0.01 × 0.1 ctVal). Pre-check en main.py filtra antes de Claude. |
 | `BET_SIZING_ENABLED` | `false` | Activa bet sizing por confianza AI (half-Kelly, AFML Ch.10). Requiere AI filter activo. |
 | `KELLY_FRACTION` | `0.5` | Fracción de Kelly (0.5 = half-Kelly, conservador) |
@@ -159,6 +159,8 @@ No crashea. El trade se registra igual (P&L, cooldown, trades_today), pero no re
 
 ## Cambios recientes
 
+- **2026-03-19** — `MIN_RISK_DISTANCE_PCT` 0.5%→0.8% (~1x ATR 15m floor). SL filter added to Setup F, G, E (was missing — bug). All setups now have strategy-layer SL check.
+- **2026-03-19** — `MAX_DAILY_DRAWDOWN` 5%→10%. Pipeline diagnosis showed 54.7% of setups risk_rejected, primarily due to daily DD limit hit after ~3 SLs ($5-6 loss on $108 = 5.5%). At $20/trade with 7x, the 5% limit was self-reinforcing: losses → blocked → miss recovery setups. Weekly DD (10%) still protects. Daily and weekly are now equal — effectively the daily limit only matters for intra-day catastrophic events.
 - **2026-03-19** — Risk audit fixes: (1) Redis TTL 48h→7d, (2) hard margin cap `MAX_MARGIN_PCT_OF_CAPITAL=25%` prevents bet sizing over-bet, (3) drawdown reconciliation from PostgreSQL on restart, (4) HTF campaign pyramid adds now check DD/weekly DD/cooldown guardrails before placing, (5) campaign `execute_campaign` uses RiskApproval position_size instead of own calculation.
 - **2026-03-18** — Risk audit fixes: (1) open positions persisted to Redis as JSON (survives restarts), (2) pnl_pct now capital-based not notional-based (DD guardrails measure real account impact), (3) pre-check in main.py aligned with FIXED_TRADE_MARGIN sizing.
 - **2026-03-11** — Redis persistence for RiskStateTracker. State (daily_pnl, weekly_pnl, trades_today, cooldown) survives bot restarts. 48h→7d TTL, fire-and-forget writes. 8 new tests.

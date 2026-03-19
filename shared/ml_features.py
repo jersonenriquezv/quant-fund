@@ -9,9 +9,12 @@ Two functions:
 - extract_risk_context(): portfolio-state features (safe for fill model, caution for quality model)
 """
 
+import math
 import re
 import time
 from typing import Optional
+
+import numpy as np
 
 from shared.models import TradeSetup, MarketSnapshot
 
@@ -218,6 +221,11 @@ def extract_setup_features(
         if current_price > 0:
             features["atr_pct"] = avg_atr / current_price
 
+    # Daily volatility — AFML Ch.3 getDailyVol()
+    # EWMA std of close-to-close log-returns, used to normalize barrier widths
+    # for ML label analysis. Does NOT change strategy SL/TP (those are structural).
+    features["daily_vol"] = _get_daily_vol(recent_candles) if recent_candles else None
+
     return features
 
 
@@ -245,6 +253,45 @@ def extract_risk_context(risk_service) -> dict:
 
 
 # --- Internal helpers ---
+
+def _get_daily_vol(candles: list, span: int = 100) -> float | None:
+    """AFML Ch.3 getDailyVol — EWMA std of close-to-close log-returns.
+
+    Adapted for crypto 5m/15m candles: computes log-returns from consecutive
+    closes and applies EWMA with configurable span (default 100, ~35-bar
+    half-life). Returns the most recent EWMA std value as a fraction of price.
+
+    Args:
+        candles: List of Candle objects (oldest first), at least 20.
+        span: EWMA span for exponential weighting (default 100 per AFML).
+
+    Returns:
+        Daily vol as a float (e.g. 0.02 = 2%), or None if insufficient data.
+    """
+    if not candles or len(candles) < 20:
+        return None
+
+    closes = [c.close for c in candles if c.close and c.close > 0]
+    if len(closes) < 20:
+        return None
+
+    # Log-returns
+    log_returns = []
+    for i in range(1, len(closes)):
+        lr = math.log(closes[i] / closes[i - 1])
+        log_returns.append(lr)
+
+    if len(log_returns) < 10:
+        return None
+
+    # EWMA variance (manual — avoids pandas dependency in hot path)
+    alpha = 2.0 / (span + 1)
+    ewma_var = log_returns[0] ** 2  # seed
+    for lr in log_returns[1:]:
+        ewma_var = alpha * (lr ** 2) + (1 - alpha) * ewma_var
+
+    return math.sqrt(ewma_var) if ewma_var > 0 else None
+
 
 def _extract_float(text: str, pattern: str) -> float:
     """Extract a float from text using regex. Returns 0.0 if not found."""
