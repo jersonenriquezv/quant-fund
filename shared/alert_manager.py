@@ -272,6 +272,16 @@ class AlertManager:
         )
         await self.alert(AlertPriority.CRITICAL, "trade_lifecycle", msg)
 
+    async def notify_campaign_opened(self, setup, margin: float, leverage: float) -> None:
+        """HTF campaign order placed — CRITICAL priority."""
+        msg = (
+            f"\U0001f4e4 <b>HTF CAMPAIGN OPENED</b>\n"
+            f"{setup.pair} {setup.direction.upper()} ({setup.setup_type})\n"
+            f"Entry: ${setup.entry_price:,.2f} | SL: ${setup.sl_price:,.2f}\n"
+            f"Margin: ${margin:.2f} | Leverage: {int(leverage)}x"
+        )
+        await self.alert(AlertPriority.CRITICAL, "trade_lifecycle", msg)
+
     async def notify_trade_opened(self, pos) -> None:
         """Trade opened — CRITICAL priority."""
         slippage = ""
@@ -291,10 +301,11 @@ class AlertManager:
         """Trade closed — CRITICAL priority."""
         reason_label = (pos.close_reason or "unknown").upper()
         pnl_emoji = "\U0001f4b0" if pos.pnl_pct >= 0 else "\U0001f534"
+        pnl_usd = getattr(pos, 'pnl_usd', 0.0) or 0.0
         msg = (
             f"{pnl_emoji} <b>TRADE CLOSED — {reason_label}</b>\n"
             f"{pos.pair} {pos.direction.upper()}\n"
-            f"P&amp;L: {pos.pnl_pct*100:+.2f}%"
+            f"P&amp;L: {pos.pnl_pct*100:+.2f}% (${pnl_usd:+.2f})"
         )
         await self.alert(AlertPriority.CRITICAL, "trade_lifecycle", msg)
 

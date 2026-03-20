@@ -213,7 +213,7 @@ class CampaignMonitor:
         # Telegram notification
         if self._alert_manager is not None:
             self._safe_notify(
-                self._alert_manager.notify_order_placed(setup, None)
+                self._alert_manager.notify_campaign_opened(setup, margin, leverage)
             )
 
         return True

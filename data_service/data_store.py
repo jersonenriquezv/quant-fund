@@ -956,7 +956,8 @@ class PostgresStore:
                             %s, %s, %s,
                             %s, %s, %s,
                             %s, %s,
-                            %s, %s, %s
+                            %s, %s, %s,
+                            %s, %s
                         ) ON CONFLICT (setup_id) DO NOTHING""",
                         (
                             setup_id, feature_version, features.get("timestamp", 0),

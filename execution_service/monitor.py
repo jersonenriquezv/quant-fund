@@ -1251,6 +1251,9 @@ class PositionMonitor:
             except Exception:
                 pass  # Best-effort; don't break PnL on funding lookup failure
 
+        # Store absolute USD PnL on position for DB persistence
+        pos.pnl_usd = pnl_usd
+
         # Denominator = tracked capital for accurate DD measurement.
         # Falls back to entry_notional if risk service unavailable.
         capital = 0.0
@@ -1276,7 +1279,7 @@ class PositionMonitor:
 
         logger.info(
             f"Position CLOSED: {pos.pair} {pos.direction} reason={reason} "
-            f"pnl={pos.pnl_pct*100:.2f}%"
+            f"pnl={pos.pnl_pct*100:.2f}% (${pos.pnl_usd:+.2f})"
         )
 
         # Telegram: trade closed (skip cancelled entries — no real trade)
@@ -1342,17 +1345,33 @@ class PositionMonitor:
         if trade_id is None:
             return
         try:
-            # Calculate USD PnL
-            pnl_usd = None
-            if pos.actual_entry_price and pos.filled_size:
-                pnl_usd = pos.actual_entry_price * pos.filled_size * pos.pnl_pct
+            # Use pnl_usd stored directly by _calculate_pnl (avoids re-derivation bugs).
+            # Falls back to raw price calculation if pnl_usd was not set.
+            pnl_usd = pos.pnl_usd if pos.pnl_usd != 0.0 else None
+            if pnl_usd is None and pos.actual_entry_price and pos.filled_size and pos.actual_exit_price:
+                if pos.direction == "long":
+                    pnl_usd = (pos.actual_exit_price - pos.actual_entry_price) * pos.filled_size
+                else:
+                    pnl_usd = (pos.actual_entry_price - pos.actual_exit_price) * pos.filled_size
+                entry_notional = pos.actual_entry_price * pos.filled_size
+                exit_notional = pos.actual_exit_price * pos.filled_size
+                pnl_usd -= (entry_notional + exit_notional) * settings.TRADING_FEE_RATE
+
+            pnl_pct = pos.pnl_pct if pos.pnl_pct != 0.0 else None
+
+            logger.info(
+                f"Persisting trade close: id={trade_id} {pos.pair} "
+                f"entry={pos.actual_entry_price} exit={pos.actual_exit_price} "
+                f"size={pos.filled_size} pnl_pct={pos.pnl_pct:.6f} "
+                f"pnl_usd={pnl_usd}"
+            )
 
             self._data_store.postgres.update_trade(
                 trade_id=trade_id,
                 actual_exit=pos.actual_exit_price,
                 exit_reason=pos.close_reason,
                 pnl_usd=pnl_usd,
-                pnl_pct=pos.pnl_pct,
+                pnl_pct=pnl_pct,
                 status="closed",
             )
         except Exception as e:
@@ -1392,10 +1411,8 @@ class PositionMonitor:
             if pos.closed_at and pos.filled_at:
                 trade_duration_ms = (pos.closed_at - pos.filled_at) * 1000
 
-            # PnL
-            pnl_usd = None
-            if pos.actual_entry_price and pos.filled_size:
-                pnl_usd = pos.actual_entry_price * pos.filled_size * pos.pnl_pct
+            # PnL — use stored value from _calculate_pnl
+            pnl_usd = pos.pnl_usd if pos.pnl_usd != 0.0 else None
 
             # Extract guardian close reason if applicable
             guardian_reason = None
