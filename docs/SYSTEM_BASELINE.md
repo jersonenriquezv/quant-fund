@@ -3,7 +3,7 @@
 > Source of truth for system state. Updated on every material change.
 > Reflects code reality — if code and doc disagree, fix the doc.
 
-**Last updated:** 2026-03-19
+**Last updated:** 2026-03-20
 **ML Feature Version:** 6
 **Bot status:** LIVE (OKX_SANDBOX=false, $108 capital)
 
@@ -247,6 +247,18 @@ Reference for VPS sizing when migrating from Nitro 5.
 ---
 
 ## 8. Changelog
+
+### 2026-03-20 — Fix PnL $0 bug + ml_setups INSERT fix
+**What changed:**
+- `_persist_trade_close` used `pos.pnl_usd` directly instead of re-deriving from `pnl_pct` (formula broke after 3be110a changed denominator from entry_notional to capital)
+- `ManagedPosition.pnl_usd` field added, set by `_calculate_pnl`
+- `ml_setups` INSERT had 65 columns but 63 `%s` placeholders — silent failure on every insert. Fixed.
+- Backfilled PnL for 21 historical trades. Total realized: -$10.31 across 39 trades.
+- Telegram close notifications now show USD PnL.
+
+**Why:** All trades since 3be110a showed `pnl_usd=0` in DB. Drawdown tracker worked (reads from capital %) but trade history was wrong. ml_setups inserts were silently failing.
+
+**Expected impact:** Correct PnL in trades table and Telegram notifications. ml_setups inserts will succeed.
 
 ### 2026-03-18 — Compute Audit + Health Observability
 **What changed:**
