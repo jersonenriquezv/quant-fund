@@ -652,7 +652,13 @@ class PositionMonitor:
                         self._on_sl_hit(pos.pair, pos.sl_price, pos.entry_price)
                     except Exception as e:
                         logger.error(f"on_sl_hit callback error: {pos.pair} {e}")
-                self._close_position(pos, "sl")
+                if pos.trailing_sl_moved:
+                    sl_reason = "trailing_sl"
+                elif pos.breakeven_hit:
+                    sl_reason = "breakeven_sl"
+                else:
+                    sl_reason = "sl"
+                self._close_position(pos, sl_reason)
                 return
             if sl_status and sl_status.get("status") == "canceled":
                 # SL was cancelled — check if position still exists on exchange
@@ -770,7 +776,13 @@ class PositionMonitor:
                     self._on_sl_hit(pos.pair, pos.sl_price, pos.entry_price)
                 except Exception as e:
                     logger.error(f"on_sl_hit callback error: {pos.pair} {e}")
-            self._close_position(pos, "sl")
+            if pos.trailing_sl_moved:
+                sl_reason = "trailing_sl"
+            elif pos.breakeven_hit:
+                sl_reason = "breakeven_sl"
+            else:
+                sl_reason = "sl"
+            self._close_position(pos, sl_reason)
             return
 
         # Position open but SL missing — re-place immediately
@@ -999,7 +1011,13 @@ class PositionMonitor:
                     self._on_sl_hit(pos.pair, pos.sl_price, pos.entry_price)
                 except Exception as e:
                     logger.error(f"on_sl_hit callback error: {pos.pair} {e}")
-            self._close_position(pos, "sl")
+            if pos.trailing_sl_moved:
+                sl_reason = "trailing_sl"
+            elif pos.breakeven_hit:
+                sl_reason = "breakeven_sl"
+            else:
+                sl_reason = "sl"
+            self._close_position(pos, sl_reason)
         else:
             # Position still open but SL order disappeared — re-place SL
             logger.warning(

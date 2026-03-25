@@ -1073,7 +1073,8 @@ class TestOrphanedTradeReconciliation:
         mock_postgres = MagicMock()
         mock_postgres.fetch_open_trades.return_value = [
             {"id": 42, "pair": "ETH/USDT", "direction": "long",
-             "entry_price": 2000.0, "opened_at": None, "setup_id": None},
+             "entry_price": 2000.0, "opened_at": None, "setup_id": None,
+             "sl_price": 1980.0, "actual_entry": 2000.0, "position_size": 0.05},
         ]
         mock_postgres.update_trade.return_value = True
 
@@ -1087,8 +1088,9 @@ class TestOrphanedTradeReconciliation:
             trade_id=42,
             status="closed",
             exit_reason="orphaned_restart",
-            pnl_usd=0.0,
-            pnl_pct=0.0,
+            pnl_usd=(1980.0 - 2000.0) * 0.05,  # -1.0 (SL-based estimate)
+            pnl_pct=(1980.0 - 2000.0) / 2000.0,  # -0.01
+            actual_exit=1980.0,
         )
         # No setup_id → ML outcome not resolved
         mock_postgres.update_ml_setup_outcome.assert_not_called()
@@ -1101,7 +1103,8 @@ class TestOrphanedTradeReconciliation:
         mock_postgres = MagicMock()
         mock_postgres.fetch_open_trades.return_value = [
             {"id": 55, "pair": "BTC/USDT", "direction": "long",
-             "entry_price": 80000.0, "opened_at": None, "setup_id": "abc123def456"},
+             "entry_price": 80000.0, "opened_at": None, "setup_id": "abc123def456",
+             "sl_price": 79000.0, "actual_entry": 80000.0, "position_size": 0.001},
         ]
         mock_postgres.update_trade.return_value = True
         mock_postgres.update_ml_setup_outcome.return_value = True

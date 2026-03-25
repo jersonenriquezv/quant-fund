@@ -3,9 +3,9 @@
 > Source of truth for system state. Updated on every material change.
 > Reflects code reality — if code and doc disagree, fix the doc.
 
-**Last updated:** 2026-03-20
+**Last updated:** 2026-03-25
 **ML Feature Version:** 6
-**Bot status:** LIVE (OKX_SANDBOX=false, $108 capital)
+**Bot status:** LIVE (OKX_SANDBOX=false, ~$90 capital)
 
 ---
 
@@ -217,7 +217,7 @@ Reference for VPS sizing when migrating from Nitro 5.
 | # | Problem | Severity | Notes |
 |---|---------|----------|-------|
 | P1 | SWING_LOOKBACK=5 never tested at other values | Medium | Different values produce completely different market structure |
-| P2 | OB scoring weights arbitrary (35/30/20/15) | Medium | Zero empirical basis |
+| P2 | OB scoring weights (impulse 25/vol 20/fresh 20/prox 15/retest 10/size 10) | Medium | Impulse + retest added 03-25. Weights still need empirical validation via backtest/Optuna. |
 | P3 | 40 ML features collected, 0 models trained | High | System is collecting but not learning |
 | P4 | SETUP_H_MIN_DIRECTIONAL_PCT=0.60 close to random | Low | 3/5 same-color = ~50% by random walk |
 | P5 | Same % thresholds applied across all pairs | Medium | BTC at $84K vs DOGE at $0.15 |
@@ -229,16 +229,18 @@ Reference for VPS sizing when migrating from Nitro 5.
 
 ## 7. ML Feature Versioning
 
-**Current version:** 4 (set in `config/settings.py:ML_FEATURE_VERSION`)
+**Current version:** 6 (set in `config/settings.py:ML_FEATURE_VERSION`)
 **Storage:** `ml_setups.feature_version` column in PostgreSQL
 **Query training data:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL`
 
 | Version | Date | Changes | Training Status |
 |---------|------|---------|-----------------|
-| v1 | pre 03-17 | Fixed TP (2:1), legacy trailing, MIN_RISK 0.2%, HTF campaigns OFF | **DO NOT USE** — CVD in contracts (not base currency), OI existence-only, asymmetric funding |
-| v2 | 03-17 | Progressive trailing ON, HTF campaigns ON, TP2 3:1→2:1, MIN_RISK 0.5% | **DO NOT USE** — CVD still in wrong units |
-| v3 | 03-17 to 03-18 | Setup H momentum metrics, guardian close tracking, CVD units fixed | **DO NOT USE** — OB vol=1.0 (disabled filter), ATR=0.20% (noise), funding asymmetric |
-| v4 | 03-18+ | OB vol 1.3, ATR 0.35%, target space 1.4, CVD divergence, OI delta, symmetric funding | **TRAINING READY** — all audit fixes applied |
+| v1 | pre 03-17 | Fixed TP (2:1), legacy trailing, MIN_RISK 0.2%, HTF campaigns OFF | **DO NOT USE** — CVD in contracts, OI existence-only, asymmetric funding |
+| v2 | 03-17 | Progressive trailing ON, HTF campaigns ON, TP2 3:1→2:1, MIN_RISK 0.5% | **DO NOT USE** — CVD still wrong units |
+| v3 | 03-17 to 03-18 | Setup H momentum, guardian close tracking, CVD units fixed | **DO NOT USE** — OB vol=1.0, ATR=0.20%, funding asymmetric |
+| v4 | 03-18 | OB vol 1.3, ATR 0.35%, target space 1.4, CVD divergence, OI delta, symmetric funding | **TRAINING READY** |
+| v5 | 03-19 | Graduated signal weighting (sweep/CVD/OI/funding by strength, not binary), tier features | **TRAINING READY** |
+| v6 | 03-19+ | daily_vol (AFML Ch.3 getDailyVol), EWMA volatility for barrier normalization | **TRAINING READY** |
 
 **When to bump:** Increment `ML_FEATURE_VERSION` whenever strategy params change in ways that alter feature semantics (OB scoring weights, PD rules, confluence logic, threshold changes).
 
@@ -247,6 +249,41 @@ Reference for VPS sizing when migrating from Nitro 5.
 ---
 
 ## 8. Changelog
+
+### 2026-03-25 — Execution Bug Fixes (SL labeling, orphaned PnL, DB cleanup)
+**What changed:**
+- **SL exit reason labeling** (`monitor.py`): 3 code paths hardcoded `"sl"` for all stop-loss exits, ignoring `breakeven_hit` and `trailing_sl_moved` flags. Now correctly labels `breakeven_sl` and `trailing_sl`. Affects ML outcome mapping (`filled_sl` vs `filled_trailing`).
+- **Orphaned restart PnL** (`service.py`): reconciliation hardcoded `pnl_usd=0.0` without querying exchange. Now estimates PnL from SL price (worst case) and sets `actual_exit`. `fetch_open_trades()` query expanded to include `sl_price`, `actual_entry`, `position_size`.
+- **DB cleanup**: 13 trades with `closed_at < opened_at` (backfill corruption from 03-20) corrected. 7 orphaned trades backfilled with SL-estimated PnL. 3 exit reasons relabeled (#18, #19 → `breakeven_sl`, #23 → `trailing_sl`).
+
+**Corrected performance (40 trades):** Total PnL = -$16.32. Setup H: 28 trades, -$15.96 (disabled 03-19). Setup F: +$0.35 (only profitable setup).
+
+### 2026-03-25 — Shadow Mode (Paper Trading for Data Collection)
+**What changed:**
+- New `SHADOW_MODE_SETUPS` config: setups in this list are detected and ML-logged but NOT executed. A `ShadowMonitor` tracks theoretical outcomes (TP/SL/timeout) from price action.
+- Default: only `setup_f` executes live. All others (`setup_a`, `setup_b`, `setup_c`, `setup_d_choch`, `setup_d_bos`, `setup_e`, `setup_g`, `setup_h`) run in shadow mode.
+- `SHADOW_CAPITAL = $500` — fictional capital for realistic position sizing in shadow trades.
+- Shadow outcomes feed `ml_setups` with the same 40+ features. Additional columns: `shadow_mode`, `shadow_position_size`, `shadow_leverage`, `shadow_margin`, `shadow_spread_at_detection`, `shadow_depth_at_entry`, `shadow_fill_time_ms`, `shadow_fill_candle_volume_ratio`, `shadow_slippage_estimate_pct`.
+- Orderbook snapshot (spread + depth ±0.1%) captured at detection via `fetch_orderbook_snapshot()`.
+- New files: `execution_service/shadow_monitor.py`, public `DataService.get_orderbook_snapshot()`.
+
+**Why:** López de Prado forward-testing approach — collect labeled outcomes for all setup types without risking capital on unvalidated signals. When 200-300 detections per setup type accumulate (est. 2-4 weeks), run feature importance analysis (random forest) to identify which features predict outcome and which are noise.
+
+**Caveats:** Shadow mode assumes perfect fill at theoretical entry (no slippage, no partial fills). Tracked mitigation: orderbook depth, fill candle volume ratio, and slippage estimate are recorded to discount unrealistic fills. Position sizing uses %-risk model (not FIXED_TRADE_MARGIN) — shadow PnL will differ from live PnL at the same capital.
+
+### 2026-03-25 — OB Impulse Score + Retest Counter
+**What changed:**
+- `OrderBlock` enriched with `impulse_score` (0-1) and `retest_count` (int)
+- Impulse score: measures post-OB displacement strength (price move + volume intensity of impulse candles). Computed at detection time.
+- Retest count: tracks how many candles wick into OB zone without mitigating. Updated on every `update()` call. First-touch OBs are stronger.
+- OB scoring weights redistributed: impulse 25%, volume 20%, freshness 20%, proximity 15%, retest penalty 10%, size 10% (was: vol 35%, fresh 30%, prox 20%, size 15%)
+- `_check_volume_confirmation()` adds `ob_impulse_strong` (≥0.6) or `ob_impulse_moderate` (≥0.35) as confluence
+- New settings: `OB_SCORE_IMPULSE_W`, `OB_SCORE_RETEST_W`, `OB_MAX_RETESTS`
+- Applies to ALL setups that use OBs: A, B, D, F, G (via `_score_ob` and `_check_volume_confirmation`)
+
+**Why:** OB scoring had no measure of institutional conviction (strong displacement vs weak drift) or zone absorption (retested OBs weaker). Review identified these as highest-impact improvements for trade quality.
+
+**Expected impact:** Better OB selection — favors OBs with strong institutional displacement, penalizes multi-touch zones. May slightly change which OB is "best" in scenarios with multiple candidates.
 
 ### 2026-03-20 — Fix PnL $0 bug + ml_setups INSERT fix
 **What changed:**

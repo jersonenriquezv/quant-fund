@@ -161,13 +161,38 @@ class ExecutionService:
                 continue  # Position exists on exchange — trade is genuinely open
 
             # No position on exchange → orphaned trade
+            # Try to estimate PnL from SL (most likely exit) instead of hardcoding $0
+            direction = trade.get("direction", "long")
+            entry = trade.get("actual_entry") or trade.get("entry_price") or 0
+            sl = trade.get("sl_price") or 0
+            size = trade.get("position_size") or 0
+
+            pnl_usd = 0.0
+            pnl_pct = 0.0
+            actual_exit = None
+
+            if entry > 0 and sl > 0 and size > 0:
+                # Estimate PnL assuming SL was hit (worst case)
+                if direction == "long":
+                    pnl_usd = (sl - entry) * size
+                    pnl_pct = (sl - entry) / entry
+                else:
+                    pnl_usd = (entry - sl) * size
+                    pnl_pct = (entry - sl) / entry
+                actual_exit = sl
+                logger.info(
+                    f"Orphaned trade id={trade_id} {pair}: "
+                    f"estimated PnL=${pnl_usd:.4f} (SL-based)"
+                )
+
             try:
                 self._data_service.postgres.update_trade(
                     trade_id=trade_id,
                     status="closed",
                     exit_reason="orphaned_restart",
-                    pnl_usd=0.0,
-                    pnl_pct=0.0,
+                    pnl_usd=pnl_usd,
+                    pnl_pct=pnl_pct,
+                    actual_exit=actual_exit,
                 )
                 # Resolve ML setup outcome so label is not lost
                 setup_id = trade.get("setup_id")
@@ -179,7 +204,8 @@ class ExecutionService:
                 reconciled += 1
                 logger.warning(
                     f"Reconciled orphaned trade: id={trade_id} {pair} "
-                    f"{trade['direction']} — no matching exchange position"
+                    f"{direction} — no matching exchange position "
+                    f"(estimated PnL=${pnl_usd:.4f})"
                 )
             except Exception as e:
                 logger.error(f"Failed to reconcile trade id={trade_id}: {e}")

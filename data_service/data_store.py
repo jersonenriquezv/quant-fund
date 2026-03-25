@@ -613,6 +613,20 @@ class PostgresStore:
                     daily_vol DOUBLE PRECISION
             """)
 
+            # Shadow mode migration: columns for theoretical outcome tracking
+            for col_def in [
+                "shadow_mode BOOLEAN DEFAULT FALSE",
+                "shadow_position_size DOUBLE PRECISION",
+                "shadow_leverage DOUBLE PRECISION",
+                "shadow_margin DOUBLE PRECISION",
+                "shadow_spread_at_detection DOUBLE PRECISION",
+                "shadow_depth_at_entry DOUBLE PRECISION",
+                "shadow_fill_time_ms BIGINT",
+                "shadow_fill_candle_volume_ratio DOUBLE PRECISION",
+                "shadow_slippage_estimate_pct DOUBLE PRECISION",
+            ]:
+                cur.execute(f"ALTER TABLE ml_setups ADD COLUMN IF NOT EXISTS {col_def}")
+
             # migration: add setup_id to trades for ML linkage
             cur.execute("""
                 ALTER TABLE trades ADD COLUMN IF NOT EXISTS
@@ -818,13 +832,15 @@ class PostgresStore:
             try:
                 with self._conn.cursor() as cur:
                     cur.execute(
-                        "SELECT id, pair, direction, entry_price, opened_at, setup_id "
+                        "SELECT id, pair, direction, entry_price, opened_at, setup_id, "
+                        "sl_price, actual_entry, position_size "
                         "FROM trades WHERE status = 'open'"
                     )
                     rows = cur.fetchall()
                 return [
                     {"id": r[0], "pair": r[1], "direction": r[2],
-                     "entry_price": r[3], "opened_at": r[4], "setup_id": r[5]}
+                     "entry_price": r[3], "opened_at": r[4], "setup_id": r[5],
+                     "sl_price": r[6], "actual_entry": r[7], "position_size": r[8]}
                     for r in rows
                 ]
             except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
@@ -1083,6 +1099,40 @@ class PostgresStore:
                 logger.error(f"ML setup outcome update failed: setup_id={setup_id} {e}")
                 return False
         return False
+
+    def update_ml_shadow_tracking(
+        self,
+        setup_id: str,
+        shadow_data: dict,
+    ) -> bool:
+        """Update shadow mode tracking columns for an ml_setup row."""
+        if not self._ensure_connected():
+            return False
+        try:
+            fields = []
+            values: list = []
+            allowed = {
+                "shadow_mode", "shadow_position_size", "shadow_leverage",
+                "shadow_margin", "shadow_spread_at_detection",
+                "shadow_depth_at_entry", "shadow_fill_time_ms",
+                "shadow_fill_candle_volume_ratio", "shadow_slippage_estimate_pct",
+            }
+            for key, val in shadow_data.items():
+                if key in allowed and val is not None:
+                    fields.append(f"{key} = %s")
+                    values.append(val)
+            if not fields:
+                return True
+            values.append(setup_id)
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE ml_setups SET {', '.join(fields)} WHERE setup_id = %s",
+                    values,
+                )
+            return True
+        except psycopg2.Error as e:
+            logger.error(f"ML shadow tracking update failed: {setup_id} {e}")
+            return False
 
     def update_ml_guardian_shadow(
         self, setup_id: str, check_name: str
