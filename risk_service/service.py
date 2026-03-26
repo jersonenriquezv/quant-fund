@@ -33,7 +33,10 @@ class RiskService:
     # Main entry point
     # ================================================================
 
-    def check(self, setup: TradeSetup, ai_confidence: float = 1.0, dry_run: bool = False) -> RiskApproval:
+    def check(
+        self, setup: TradeSetup, ai_confidence: float = 1.0,
+        dry_run: bool = False, capital_override: float | None = None,
+    ) -> RiskApproval:
         """Run all guardrails and calculate position size.
 
         Fails fast — first guardrail failure rejects the trade.
@@ -45,6 +48,9 @@ class RiskService:
             dry_run: If True, skip balance fetch, capital mutation, and
                 risk event persistence. Used by shadow mode to evaluate
                 risk without side effects on the live pipeline.
+            capital_override: If set, use this capital instead of querying
+                exchange or state tracker. Used by shadow mode to size
+                positions against SHADOW_CAPITAL ($500 virtual).
         """
         now = int(time.time())
 
@@ -87,8 +93,11 @@ class RiskService:
                 )
 
         # --- Position sizing ---
-        if dry_run:
-            # Shadow mode: use cached capital, no exchange call, no state mutation
+        if capital_override is not None:
+            # Explicit capital (shadow mode uses SHADOW_CAPITAL)
+            capital = capital_override
+        elif dry_run:
+            # dry_run without override: use tracked capital, no exchange call
             capital = self._state.get_capital()
         else:
             # Live: try exchange balance, fall back to tracked

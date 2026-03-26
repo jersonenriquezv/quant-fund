@@ -117,7 +117,7 @@ class OrderExecutor:
         try:
             await self._run_sync(
                 self._exchange.set_margin_mode,
-                settings.MARGIN_MODE, symbol, {"lever": leverage}
+                settings.MARGIN_MODE, symbol, {"lever": str(leverage)}
             )
             logger.info(f"Margin mode set to {settings.MARGIN_MODE}: {pair}")
         except (ccxt.ExchangeError, ccxt.NetworkError) as e:

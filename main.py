@@ -224,10 +224,13 @@ async def on_candle_confirmed(candle: Candle) -> None:
 
     # --- Shadow mode: run full pipeline (risk check) but don't execute ---
     if setup.setup_type in settings.SHADOW_MODE_SETUPS and _shadow_monitor is not None:
-        # Risk check (dry_run=True: no state mutation, no API calls, no persistence)
+        # Risk check (dry_run=True + SHADOW_CAPITAL: sizes against $500 virtual account)
         risk_approval = None
         if _risk_service is not None:
-            risk_approval = _risk_service.check(setup, dry_run=True)
+            risk_approval = _risk_service.check(
+                setup, dry_run=True,
+                capital_override=settings.SHADOW_CAPITAL,
+            )
 
             # Persist risk check result to ml_setups (separate from outcome)
             if _data_service is not None and _data_service.postgres is not None:
@@ -255,14 +258,17 @@ async def on_candle_confirmed(candle: Candle) -> None:
             setup, orderbook=ob_snapshot, risk_approval=risk_approval,
         )
         _setup_dedup_cache[dedup_key] = time.time()
-        logger.info(
-            f"Shadow mode: {setup.setup_type} {setup.pair} {setup.direction} "
-            f"size={risk_approval.position_size:.6f} leverage={risk_approval.leverage:.1f}x "
-            f"— tracking theoretical outcome (not executing)"
-            if risk_approval and risk_approval.approved
-            else f"Shadow mode: {setup.setup_type} {setup.pair} {setup.direction} "
-            f"— tracking (standalone sizing)"
-        )
+        if risk_approval and risk_approval.approved:
+            logger.info(
+                f"Shadow mode: {setup.setup_type} {setup.pair} {setup.direction} "
+                f"size={risk_approval.position_size:.6f} leverage={risk_approval.leverage:.1f}x "
+                f"— tracking (${settings.SHADOW_CAPITAL} virtual)"
+            )
+        else:
+            logger.info(
+                f"Shadow mode: {setup.setup_type} {setup.pair} {setup.direction} "
+                f"— skipped (no valid risk approval)"
+            )
         return
 
     # Pre-check: can this pair meet exchange minimum order size?
@@ -904,14 +910,25 @@ async def _send_liquidation_alert() -> None:
 # ================================================================
 
 def _log_pair_diagnostics(capital: float, postgres) -> None:
-    """Log whether each pair can meet minimum order size at 1% risk.
+    """Log whether each pair can meet minimum order size at current capital.
 
+    Shows both live (real balance) and shadow (virtual capital) viability.
     Uses last candle close from PostgreSQL (no REST call needed).
     """
     risk_pct = settings.RISK_PER_TRADE
-    risk_amount = capital * risk_pct
+    live_risk = capital * risk_pct
+    shadow_capital = settings.SHADOW_CAPITAL
+    shadow_risk = shadow_capital * risk_pct
+    typical_sl_pct = 0.01
 
-    logger.info(f"--- Pair Diagnostic (capital=${capital:.2f}, risk={risk_pct*100:.1f}%) ---")
+    logger.info(
+        f"--- Pair Diagnostic | LIVE: ${capital:.2f} | "
+        f"SHADOW: ${shadow_capital:.0f} virtual | "
+        f"risk={risk_pct*100:.1f}% ---"
+    )
+
+    live_pairs = []
+    shadow_pairs = []
 
     for pair in settings.TRADING_PAIRS:
         min_size = settings.MIN_ORDER_SIZES.get(pair, 0)
@@ -930,29 +947,42 @@ def _log_pair_diagnostics(capital: float, postgres) -> None:
             logger.warning(f"  {pair}: no price data — cannot compute position size")
             continue
 
-        # Typical position: risk_amount / (price * MIN_RISK_DISTANCE_PCT)
-        # Assumes a mid-range SL distance of ~1% for estimation
-        typical_sl_pct = 0.01
         sl_distance = last_price * typical_sl_pct
-        position_size = risk_amount / sl_distance if sl_distance > 0 else 0
-        notional = position_size * last_price
 
-        can_trade = position_size >= min_size
-        status = "OK" if can_trade else "CAPITAL-CONSTRAINED"
+        # Live sizing
+        live_size = live_risk / sl_distance if sl_distance > 0 else 0
+        live_ok = live_size >= min_size
 
+        # Shadow sizing
+        shadow_size = shadow_risk / sl_distance if sl_distance > 0 else 0
+        shadow_ok = shadow_size >= min_size
+
+        if live_ok:
+            live_pairs.append(pair)
+        if shadow_ok:
+            shadow_pairs.append(pair)
+
+        mode = "LIVE" if live_ok else ("SHADOW-ONLY" if shadow_ok else "BLOCKED")
         logger.info(
-            f"  {pair}: price=${last_price:.2f} | "
-            f"1% risk=${risk_amount:.2f} → size={position_size:.6f} "
-            f"(min={min_size}) notional=${notional:.2f} [{status}]"
+            f"  {pair}: ${last_price:.2f} | "
+            f"live={live_size:.6f} shadow={shadow_size:.6f} "
+            f"(min={min_size}) [{mode}]"
         )
 
-        if not can_trade:
-            needed_capital = (min_size * sl_distance) / risk_pct
-            logger.warning(
-                f"  {pair}: need ${needed_capital:.0f} capital for min order "
-                f"at {risk_pct*100:.0f}% risk (have ${capital:.2f})"
-            )
+        if not live_ok and not shadow_ok:
+            needed = (min_size * sl_distance) / risk_pct
+            logger.warning(f"  {pair}: need ${needed:.0f} even for shadow")
 
+    # Summary
+    live_short = [p.replace("/USDT", "") for p in live_pairs]
+    shadow_short = [p.replace("/USDT", "") for p in shadow_pairs if p not in live_pairs]
+    logger.info(
+        f"LIVE-VIABLE: {', '.join(live_short) or 'NONE'} (balance: ${capital:.2f})"
+    )
+    logger.info(
+        f"SHADOW-ONLY: {', '.join(shadow_short) or 'NONE'} "
+        f"(${shadow_capital:.0f} virtual)"
+    )
     logger.info("--- End Pair Diagnostic ---")
 
 
@@ -995,9 +1025,10 @@ def validate_config() -> bool:
     if settings.SHADOW_MODE_SETUPS:
         live_setups = [s for s in settings.ENABLED_SETUPS if s not in settings.SHADOW_MODE_SETUPS]
         logger.info(
-            f"Shadow mode: {settings.SHADOW_MODE_SETUPS} (paper trading, ${settings.SHADOW_CAPITAL} capital)"
+            f"SHADOW: {settings.SHADOW_MODE_SETUPS} "
+            f"(${settings.SHADOW_CAPITAL} virtual)"
         )
-        logger.info(f"Live execution: {live_setups}")
+        logger.info(f"LIVE: {live_setups}")
 
     return ok
 
@@ -1062,10 +1093,10 @@ async def main() -> None:
 
     # Create ShadowMonitor for theoretical outcome tracking
     if settings.SHADOW_MODE_SETUPS:
-        _shadow_monitor = ShadowMonitor(_data_service)
+        _shadow_monitor = ShadowMonitor(_data_service, notifier=_notifier)
         logger.info(
-            f"Shadow Monitor initialized: tracking {settings.SHADOW_MODE_SETUPS} "
-            f"(capital=${settings.SHADOW_CAPITAL})"
+            f"Shadow Monitor initialized: {settings.SHADOW_MODE_SETUPS} "
+            f"(${settings.SHADOW_CAPITAL} virtual)"
         )
 
     # Create CampaignMonitor for HTF position trades (when enabled)

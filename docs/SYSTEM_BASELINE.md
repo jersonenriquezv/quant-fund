@@ -269,6 +269,18 @@ Reference for VPS sizing when migrating from Nitro 5.
 
 **Expected impact:** Smaller but better-calibrated positions. Lower drawdown. Higher-quality trade selection via R:R filter (30 low-R:R setups rejected in backtest). Portfolio heat prevents correlated blowup.
 
+### 2026-03-26 — Shadow Telegram Alerts + HTF Leverage Fix
+**What changed:**
+- Shadow monitor now sends Telegram notifications for 3 lifecycle events: detection (SHADOW TRACKING), theoretical fill (SHADOW FILL), and outcome resolution (SHADOW TP/SL/TIMEOUT/NO_FILL). Shows pair, direction, setup type, prices, R:R, margin, and PnL.
+- `ShadowMonitor` accepts optional `notifier` param, wired in `main.py`.
+- **Bug fix**: `executor.configure_pair()` passed `lever` as int to OKX `set_margin_mode()`. OKX API requires string. All HTF campaign orders were failing silently since campaigns were enabled. Fixed: `{"lever": str(leverage)}`.
+- Shadow mode now sizes against `SHADOW_CAPITAL` ($500 virtual) via `capital_override` param in `risk_service.check()`, instead of using live capital.
+- Startup pair diagnostic now shows both live and shadow viability per pair.
+
+**Why:** Shadow trades were invisible without checking logs. Telegram alerts enable remote monitoring from phone. The leverage bug blocked all HTF campaign execution since the feature was enabled.
+
+**Expected impact:** Shadow alerts on Telegram (~5-15/day depending on market). HTF campaigns will now execute when AI+Risk approve.
+
 ### 2026-03-26 — Shadow Mode Risk Integration (ML_FEATURE_VERSION 7)
 **What changed:**
 - Shadow mode now runs `risk_service.check(dry_run=True)` — same guardrails, same sizing as live pipeline. No state mutation, no API calls, no `risk_events` persistence.
