@@ -225,6 +225,7 @@ class TestTakeProfit:
         assert trade.breakeven_hit is True
         assert trade.current_sl == trade.entry_price  # Breakeven
 
+    @patch.object(settings, 'RISK_PER_TRADE', 0.02)
     def test_breakeven_sl_closes_at_entry(self):
         """After breakeven, SL at entry → PnL ~= -fees only."""
         sim = TradeSimulator(initial_capital=10000)
@@ -406,6 +407,7 @@ class TestTimeout:
 # ================================================================
 
 class TestPositionSizing:
+    @patch.object(settings, 'RISK_PER_TRADE', 0.02)
     def test_basic_sizing(self):
         """Position size = (capital * risk%) / |entry - sl|."""
         sim = TradeSimulator(initial_capital=10000)
@@ -422,6 +424,7 @@ class TestPositionSizing:
         expected_size = (10000 * 0.02) / 500  # 0.4
         assert trade.position_size == pytest.approx(expected_size, rel=0.01)
 
+    @patch.object(settings, 'RISK_PER_TRADE', 0.02)
     @patch.object(settings, 'MIN_RISK_DISTANCE_PCT', 0.001)
     def test_leverage_cap(self):
         """Leverage capped at MAX_LEVERAGE when risk-based size is too large."""
@@ -484,6 +487,7 @@ class TestPositionSizing:
 # ================================================================
 
 class TestPnLComputation:
+    @patch.object(settings, 'RISK_PER_TRADE', 0.02)
     def test_sl_loss_pnl(self):
         """SL hit produces expected loss amount (net of fees)."""
         sim = TradeSimulator(initial_capital=10000)
@@ -506,6 +510,7 @@ class TestPnLComputation:
         expected_loss = -219.9  # raw -$200 + $19.90 fees
         assert trade.pnl_usd == pytest.approx(expected_loss, rel=0.01)
 
+    @patch.object(settings, 'RISK_PER_TRADE', 0.02)
     def test_equity_updates_after_trades(self):
         """Equity reflects cumulative PnL from trades."""
         sim = TradeSimulator(initial_capital=10000)
@@ -584,6 +589,7 @@ class TestShortTrades:
         assert trades[0].exit_reason == "tp"
         assert trades[0].pnl_usd > 0
 
+    @patch.object(settings, 'RISK_PER_TRADE', 0.02)
     def test_short_breakeven_sl_exit(self):
         """Short trade: breakeven SL triggered after tp1 cross."""
         sim = TradeSimulator(initial_capital=10000)
