@@ -284,10 +284,10 @@ Reference for VPS sizing when migrating from Nitro 5.
 ### 2026-03-26 — Shadow Mode Risk Integration (ML_FEATURE_VERSION 7)
 **What changed:**
 - Shadow mode now runs `risk_service.check(dry_run=True)` — same guardrails, same sizing as live pipeline. No state mutation, no API calls, no `risk_events` persistence.
-- Shadow position sizing uses `RiskApproval.position_size` (dynamic % of live capital), replacing standalone `SHADOW_CAPITAL × RISK_PER_TRADE`.
+- Shadow position sizing uses `RiskApproval.position_size` (dynamic % of `SHADOW_CAPITAL` $500 virtual), via `capital_override` param in `risk_service.check()`.
 - New `ml_setups` columns: `risk_approved` (bool), `risk_reject_reason` (text). Risk filtering is now a separate dimension from market outcome — both available for ML.
 - Shadow risk rejections logged as `outcome_type = shadow_risk_rejected`.
-- `SHADOW_CAPITAL` kept as fallback if risk service unavailable.
+- `SHADOW_CAPITAL` fallback in `shadow_monitor.py` removed — if risk service unavailable, shadow tracking is skipped (bad data worse than no data).
 - `ML_FEATURE_VERSION` bumped to 7 (sizing model changed, new columns).
 
 **Why:** Shadow mode needs to mirror the live pipeline exactly for forward-test validity. Standalone sizing produced different position sizes than live, making shadow PnL incomparable.
