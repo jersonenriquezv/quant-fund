@@ -1067,6 +1067,30 @@ def _make_setup_f_args(
     )
 
 
+class TestMaxSLPct:
+    """Test MAX_SL_PCT cap rejects setups with SL too far from entry."""
+
+    def test_sl_within_max_passes(self):
+        """SL distance 2% < MAX_SL_PCT (4%) should pass."""
+        evaluator = SetupEvaluator()
+        assert evaluator._check_sl_distance(100.0, 98.0, "BTC/USDT", "Test") is True
+
+    def test_sl_exceeds_max_rejected(self):
+        """SL distance 5% > MAX_SL_PCT (4%) should be rejected."""
+        evaluator = SetupEvaluator()
+        assert evaluator._check_sl_distance(100.0, 95.0, "BTC/USDT", "Test") is False
+
+    def test_sl_at_exact_max_passes(self):
+        """SL distance exactly 4% should pass (not strictly greater)."""
+        evaluator = SetupEvaluator()
+        assert evaluator._check_sl_distance(100.0, 96.0, "BTC/USDT", "Test") is True
+
+    def test_sl_too_close_rejected(self):
+        """SL distance 0.1% < MIN_RISK_DISTANCE_PCT (0.5%) should be rejected."""
+        evaluator = SetupEvaluator()
+        assert evaluator._check_sl_distance(100.0, 99.9, "BTC/USDT", "Test") is False
+
+
 class TestSetupFHardening:
     """Test Setup F hardening filters."""
 

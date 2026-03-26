@@ -52,12 +52,16 @@ class RiskStateTracker:
     def record_trade_opened(
         self, pair: str, direction: str, entry_price: float, timestamp: int,
         *, phase: str = "pending",
+        sl_price: float = 0.0,
+        position_size: float = 0.0,
     ) -> None:
         """Record a new position opened.
 
         Args:
             phase: "pending" for limit orders not yet filled,
                    "active" for immediately filled positions.
+            sl_price: Stop-loss price for portfolio heat calculation.
+            position_size: Position size in base currency for portfolio heat.
         """
         self._check_date_reset()
         self._open_positions.append({
@@ -66,6 +70,8 @@ class RiskStateTracker:
             "entry_price": entry_price,
             "timestamp": timestamp,
             "phase": phase,
+            "sl_price": sl_price,
+            "position_size": position_size,
         })
         self._save_to_redis()
 
@@ -163,6 +169,20 @@ class RiskStateTracker:
         """Return weekly drawdown as positive fraction (0.0 if profitable)."""
         self._check_date_reset()
         return max(0.0, -self._weekly_pnl_pct)
+
+    def get_portfolio_heat_usd(self) -> float:
+        """Sum of (position_size × |entry - sl|) across all open positions.
+
+        Returns total USD at risk if every open SL triggers simultaneously.
+        """
+        total = 0.0
+        for pos in self._open_positions:
+            sl = pos.get("sl_price", 0.0)
+            size = pos.get("position_size", 0.0)
+            entry = pos.get("entry_price", 0.0)
+            if sl > 0 and size > 0 and entry > 0:
+                total += size * abs(entry - sl)
+        return total
 
     def get_last_loss_time(self) -> int | None:
         return self._last_loss_time

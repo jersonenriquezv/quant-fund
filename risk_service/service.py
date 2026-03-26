@@ -33,7 +33,7 @@ class RiskService:
     # Main entry point
     # ================================================================
 
-    def check(self, setup: TradeSetup, ai_confidence: float = 1.0) -> RiskApproval:
+    def check(self, setup: TradeSetup, ai_confidence: float = 1.0, dry_run: bool = False) -> RiskApproval:
         """Run all guardrails and calculate position size.
 
         Fails fast — first guardrail failure rejects the trade.
@@ -42,6 +42,9 @@ class RiskService:
             ai_confidence: AI filter confidence (0.0-1.0). Used for
                 confidence-based bet sizing when BET_SIZING_ENABLED=true.
                 Default 1.0 (full size) for bypassed setups.
+            dry_run: If True, skip balance fetch, capital mutation, and
+                risk event persistence. Used by shadow mode to evaluate
+                risk without side effects on the live pipeline.
         """
         now = int(time.time())
 
@@ -69,11 +72,12 @@ class RiskService:
         for passed, reason in checks:
             if not passed:
                 logger.warning(f"Trade REJECTED: {reason} | {setup.pair} {setup.direction}")
-                self._persist_risk_event("guardrail_rejected", {
-                    "pair": setup.pair,
-                    "direction": setup.direction,
-                    "reason": reason,
-                })
+                if not dry_run:
+                    self._persist_risk_event("guardrail_rejected", {
+                        "pair": setup.pair,
+                        "direction": setup.direction,
+                        "reason": reason,
+                    })
                 return RiskApproval(
                     approved=False,
                     position_size=0.0,
@@ -83,30 +87,59 @@ class RiskService:
                 )
 
         # --- Position sizing ---
-        capital = self._state.get_capital()
-        leverage = float(settings.MAX_LEVERAGE)
+        if dry_run:
+            # Shadow mode: use cached capital, no exchange call, no state mutation
+            capital = self._state.get_capital()
+        else:
+            # Live: try exchange balance, fall back to tracked
+            capital = self._query_account_balance()
+            if capital is None:
+                capital = self._state.get_capital()
+            else:
+                self._state.set_capital(capital)
 
-        if settings.FIXED_TRADE_MARGIN > 0:
-            # Fixed margin mode: margin is fixed USDT, notional = margin × leverage.
-            # e.g. $20 margin × 5x = $100 notional.
+        risk_pct = settings.RISK_PER_TRADE
+        sl_distance = abs(setup.entry_price - setup.sl_price)
+
+        # Dynamic sizing: size = (capital * risk_pct) / sl_distance
+        # Leverage derived from resulting notional. Falls back to flat margin
+        # if PositionSizer raises (should not happen — guardrails already checked).
+        try:
+            position_size, leverage = self._sizer.calculate(
+                entry=setup.entry_price,
+                sl=setup.sl_price,
+                capital=capital,
+                risk_pct=risk_pct,
+            )
+            risk_amount = capital * risk_pct
+            notional = position_size * setup.entry_price
+            # In isolated margin mode, margin = notional / leverage.
+            # For risk-based sizing, the actual $ at risk is already capped
+            # by risk_pct × capital regardless of margin requirements.
+            margin = notional / leverage if leverage > 1.0 else notional
+        except ValueError:
+            # Fallback to flat margin (entry==sl already caught by guardrails,
+            # but defensive in case of floating point edge cases)
+            logger.warning(
+                f"PositionSizer failed for {setup.pair} — "
+                f"falling back to FIXED_TRADE_MARGIN=${settings.FIXED_TRADE_MARGIN}"
+            )
+            leverage = float(settings.MAX_LEVERAGE)
             margin = settings.FIXED_TRADE_MARGIN
             notional = margin * leverage
-            risk_pct = margin / capital if capital > 0 else 0.0
-        else:
-            # Percentage mode: notional = capital × pct.
-            notional = capital * settings.TRADE_CAPITAL_PCT
-            margin = notional / leverage
-            risk_pct = settings.TRADE_CAPITAL_PCT
+            position_size = notional / setup.entry_price
+            risk_amount = margin
 
         # Confidence-based bet sizing (López de Prado, AFML Ch.10).
         # Half-Kelly: factor = KELLY_FRACTION × (2p - 1) where p = confidence.
-        # Modulates margin up/down based on AI confidence.
+        # Scales position size proportionally to conviction.
         # Only active when BET_SIZING_ENABLED and confidence < 1.0 (real AI score).
         if settings.BET_SIZING_ENABLED and ai_confidence < 1.0:
             raw_factor = settings.KELLY_FRACTION * (2 * ai_confidence - 1)
             bet_factor = max(settings.BET_SIZE_MIN, min(raw_factor, settings.BET_SIZE_MAX))
-            margin *= bet_factor
-            notional = margin * leverage
+            position_size *= bet_factor
+            notional = position_size * setup.entry_price
+            margin = notional / leverage if leverage > 1.0 else notional
             risk_pct *= bet_factor
             logger.info(
                 f"Bet sizing: confidence={ai_confidence:.2f} "
@@ -114,20 +147,39 @@ class RiskService:
                 f"margin=${margin:.2f}"
             )
 
-        # Hard cap: margin must not exceed MAX_MARGIN_PCT of capital (AFML Ch.10 —
+        # Hard cap: risk amount must not exceed MAX_MARGIN_PCT of capital (AFML Ch.10 —
         # even Half-Kelly can over-bet when BET_SIZE_MAX > 1.0; this prevents a
         # single position from risking more than the guardrail-intended fraction).
-        max_margin = capital * settings.MAX_MARGIN_PCT_OF_CAPITAL
-        if capital > 0 and margin > max_margin:
+        # With PositionSizer, the actual $ at risk = risk_pct × capital, which is
+        # already bounded by RISK_PER_TRADE. This cap only bites when bet sizing
+        # pushes risk_pct above the limit.
+        max_risk = capital * settings.MAX_MARGIN_PCT_OF_CAPITAL
+        actual_risk = capital * risk_pct
+        if capital > 0 and actual_risk > max_risk:
             logger.warning(
-                f"Margin ${margin:.2f} exceeds {settings.MAX_MARGIN_PCT_OF_CAPITAL*100:.0f}% "
-                f"of capital ${capital:.2f} — capping to ${max_margin:.2f}"
+                f"Risk ${actual_risk:.2f} exceeds {settings.MAX_MARGIN_PCT_OF_CAPITAL*100:.0f}% "
+                f"of capital ${capital:.2f} — capping to ${max_risk:.2f}"
             )
-            margin = max_margin
-            notional = margin * leverage
-            risk_pct = margin / capital
+            risk_pct = settings.MAX_MARGIN_PCT_OF_CAPITAL
+            # Re-run sizer with capped risk
+            try:
+                position_size, leverage = self._sizer.calculate(
+                    entry=setup.entry_price,
+                    sl=setup.sl_price,
+                    capital=capital,
+                    risk_pct=risk_pct,
+                )
+                notional = position_size * setup.entry_price
+                margin = notional / leverage if leverage > 1.0 else notional
+            except ValueError:
+                pass  # Should not happen — already passed guardrails
 
-        position_size = notional / setup.entry_price
+        logger.info(
+            f"Position sizing [{setup.pair}]: balance=${capital:.2f} "
+            f"risk_pct={risk_pct*100:.1f}% risk_amount=${capital*risk_pct:.2f} "
+            f"sl_distance={sl_distance:.2f} ({sl_distance/setup.entry_price*100:.2f}%) "
+            f"size={position_size:.6f} leverage={leverage:.1f}x margin=${margin:.2f}"
+        )
 
         if position_size <= 0 or capital <= 0:
             logger.warning(f"Trade REJECTED: position sizing error: capital={capital}")
@@ -157,10 +209,34 @@ class RiskService:
                 reason=reason,
             )
 
+        # --- Portfolio heat check (after sizing — needs position_size) ---
+        new_trade_heat = position_size * sl_distance
+        current_heat = self._state.get_portfolio_heat_usd()
+        heat_passed, heat_reason = self._guardrails.check_portfolio_heat(
+            current_heat, new_trade_heat, capital
+        )
+        if not heat_passed:
+            logger.warning(f"Trade REJECTED: {heat_reason} | {setup.pair} {setup.direction}")
+            if not dry_run:
+                self._persist_risk_event("guardrail_rejected", {
+                    "pair": setup.pair,
+                    "direction": setup.direction,
+                    "reason": heat_reason,
+                })
+            return RiskApproval(
+                approved=False,
+                position_size=0.0,
+                leverage=0.0,
+                risk_pct=0.0,
+                reason=heat_reason,
+            )
+
         logger.info(
             f"Trade APPROVED: {setup.pair} {setup.direction} | "
             f"size={position_size:.6f} leverage={leverage:.1f}x "
-            f"margin=${margin:.2f} notional=${notional:.2f}"
+            f"margin=${margin:.2f} notional=${notional:.2f} "
+            f"risk_pct={risk_pct*100:.1f}% "
+            f"heat=${current_heat + new_trade_heat:.2f}/{capital * settings.MAX_PORTFOLIO_HEAT_PCT:.2f}"
         )
 
         return RiskApproval(
@@ -178,13 +254,20 @@ class RiskService:
     def on_trade_opened(
         self, pair: str, direction: str, entry_price: float, timestamp: int,
         *, phase: str = "pending",
+        sl_price: float = 0.0,
+        position_size: float = 0.0,
     ) -> None:
         """Notify Risk Service that a trade was opened.
 
         Args:
             phase: "pending" for limit orders, "active" for already-filled.
+            sl_price: Stop-loss price for portfolio heat tracking.
+            position_size: Position size in base currency for portfolio heat tracking.
         """
-        self._state.record_trade_opened(pair, direction, entry_price, timestamp, phase=phase)
+        self._state.record_trade_opened(
+            pair, direction, entry_price, timestamp,
+            phase=phase, sl_price=sl_price, position_size=position_size,
+        )
 
     def on_trade_filled(self, pair: str, direction: str) -> None:
         """Notify Risk Service that a pending entry was filled (now active)."""
@@ -207,6 +290,22 @@ class RiskService:
     def update_capital(self, amount: float) -> None:
         """Update tracked capital (e.g. from exchange balance query)."""
         self._state.set_capital(amount)
+
+    def _query_account_balance(self) -> float | None:
+        """Query live USDT balance from OKX. Returns None on failure."""
+        if self._data_service is None:
+            return None
+        try:
+            exchange = getattr(self._data_service, 'exchange', None)
+            if exchange is None:
+                return None
+            balance = exchange.fetch_usdt_balance()
+            if balance is not None and balance > 0:
+                return balance
+            return None
+        except Exception as e:
+            logger.warning(f"Balance query failed — using tracked capital: {e}")
+            return None
 
     def _persist_risk_event(self, event_type: str, details: dict) -> None:
         """Write risk event to PostgreSQL (fire-and-forget)."""

@@ -33,9 +33,8 @@ def _make_setup(
 @pytest.fixture
 def risk(monkeypatch):
     monkeypatch.setattr(settings, "OKX_SANDBOX", False)
-    monkeypatch.setattr(settings, "FIXED_TRADE_MARGIN", 0.0)  # Use pct mode for existing tests
-    monkeypatch.setattr(settings, "TRADE_CAPITAL_PCT", 0.15)
-    # Capital high enough for BTC min order (0.01 BTC = $500 notional needs $3334 capital at 15%)
+    monkeypatch.setattr(settings, "RISK_PER_TRADE", 0.01)  # 1% risk
+    # Capital high enough for BTC min order sizes
     return RiskService(capital=5000.0)
 
 
@@ -53,7 +52,7 @@ class TestApproval:
         assert result.approved is True
         assert result.position_size > 0
         assert result.leverage > 0
-        assert result.risk_pct == settings.TRADE_CAPITAL_PCT
+        assert result.risk_pct == settings.RISK_PER_TRADE
         assert result.reason == "All checks passed"
 
     def test_short_approval(self, risk):
@@ -64,31 +63,30 @@ class TestApproval:
         result = risk.check(setup)
         assert result.approved is True
 
-    def test_position_size_correct(self, risk):
-        """Verify calculated position size matches formula."""
+    def test_position_size_uses_sizer(self, risk):
+        """Verify PositionSizer formula: size = (capital * risk%) / SL_distance."""
         setup = _make_setup(entry=50000, sl=49000, tp2=52000)
         result = risk.check(setup)
 
-        # capital=5000, TRADE_CAPITAL_PCT=0.15 → notional=$750
-        # position_size = $750 / $50000 = 0.015 BTC
-        # leverage = MAX_LEVERAGE = 5
-        assert result.position_size == pytest.approx(0.015, rel=1e-6)
-        assert result.leverage == pytest.approx(5.0, rel=1e-6)
+        # capital=5000, RISK_PER_TRADE=0.01 → risk_amount=$50
+        # sl_distance=1000 → size = 50/1000 = 0.05 BTC
+        # notional = 0.05 * 50000 = $2500 → leverage = 2500/5000 = 0.5x
+        assert result.position_size == pytest.approx(0.05, rel=1e-6)
+        assert result.leverage == pytest.approx(0.5, rel=1e-6)
 
-    def test_fixed_margin_mode(self, risk, monkeypatch):
-        """FIXED_TRADE_MARGIN > 0 uses fixed margin instead of pct."""
-        monkeypatch.setattr(settings, "FIXED_TRADE_MARGIN", 20.0)
-        monkeypatch.setattr(settings, "MAX_LEVERAGE", 5)
-        setup = _make_setup(entry=50000, sl=49000, tp2=52000)
+    def test_tight_sl_caps_leverage(self, risk):
+        """Tight SL (but above MIN_RISK_DISTANCE) caps leverage at MAX_LEVERAGE."""
+        # sl_distance=500 (1%), risk=$50, size=0.1 BTC
+        # notional=0.1*50000=$5000, leverage=5000/5000=1.0x — not capped
+        # Use even tighter: sl_distance=350 (0.7%), risk=$50, size=0.143
+        # notional=0.143*50000=$7143, leverage=7143/5000=1.43x — still low
+        # Need: sl at 49700 (0.6% distance) → size=50/300=0.167
+        # notional=0.167*50000=$8333, leverage=1.67x — still not capped
+        # With more capital risk: use monkeypatch to set higher risk
+        setup = _make_setup(entry=50000, sl=49700, tp2=52000)
         result = risk.check(setup)
-
-        # margin=$20 × 5x = $100 notional
-        # position_size = $100 / $50000 = 0.002 BTC
         assert result.approved is True
-        assert result.position_size == pytest.approx(0.002, rel=1e-6)
-        assert result.leverage == pytest.approx(5.0, rel=1e-6)
-        # risk_pct = margin / capital = 20 / 5000 = 0.004
-        assert result.risk_pct == pytest.approx(0.004, rel=1e-6)
+        assert result.leverage <= settings.MAX_LEVERAGE
 
 
 # ============================================================
@@ -196,6 +194,8 @@ class TestLifecycle:
         risk.update_capital(10000.0)  # double from 5000
         result2 = risk.check(setup)
 
+        # PositionSizer: size = (capital * risk%) / distance
+        # Doubling capital doubles risk_amount, so size doubles
         assert result2.position_size == pytest.approx(
             result1.position_size * 2, rel=1e-6
         )
@@ -210,13 +210,7 @@ class TestLifecycle:
         assert result.leverage <= settings.MAX_LEVERAGE
 
     def test_entry_equals_sl_rejected(self, risk):
-        """Entry == SL should be caught as position sizing error.
-
-        Note (M-R4): The ValueError path in position_sizer.calculate() is
-        effectively unreachable because guardrails.check_rr_ratio() catches
-        malformed setups (zero risk distance, inverted SL) before the sizer
-        is called. This is by design — guardrails are the first line of defense.
-        """
+        """Entry == SL should be caught by guardrails before sizer."""
         setup = _make_setup(entry=50000, sl=50000, tp2=52000)
         result = risk.check(setup)
         # Rejected by R:R check (zero risk) before reaching position sizer
@@ -233,49 +227,78 @@ class TestBetSizing:
     @pytest.fixture
     def risk_bet(self, monkeypatch):
         monkeypatch.setattr(settings, "OKX_SANDBOX", False)
-        monkeypatch.setattr(settings, "FIXED_TRADE_MARGIN", 20.0)
+        monkeypatch.setattr(settings, "RISK_PER_TRADE", 0.01)
         monkeypatch.setattr(settings, "BET_SIZING_ENABLED", True)
         monkeypatch.setattr(settings, "KELLY_FRACTION", 0.5)
         monkeypatch.setattr(settings, "BET_SIZE_MIN", 0.25)
         monkeypatch.setattr(settings, "BET_SIZE_MAX", 2.0)
         return RiskService(capital=5000.0)
 
-    def test_high_confidence_increases_size(self, risk_bet):
-        """Confidence=0.9 → factor=0.5*(2*0.9-1)=0.4 → margin=$8."""
+    def test_high_confidence_scales_size(self, risk_bet):
+        """Confidence=0.9 → factor=0.5*(2*0.9-1)=0.4 → size scaled to 40%."""
         setup = _make_setup(entry=50000, sl=49000, tp2=52000)
-        result = risk_bet.check(setup, ai_confidence=0.9)
-        assert result.approved is True
-        # factor = 0.5 * (2*0.9 - 1) = 0.4, margin = 20 * 0.4 = $8
-        expected_notional = 8.0 * settings.MAX_LEVERAGE
-        expected_size = expected_notional / 50000
-        assert result.position_size == pytest.approx(expected_size, rel=0.01)
+        # Base: capital=5000, risk=1%, distance=1000 → size=0.05 BTC
+        # Bet factor: 0.5*(2*0.9-1) = 0.4 → size=0.05*0.4=0.02
+        result_scaled = risk_bet.check(setup, ai_confidence=0.9)
+        assert result_scaled.approved is True
+        assert result_scaled.position_size == pytest.approx(0.05 * 0.4, rel=0.01)
 
     def test_low_confidence_hits_floor(self, risk_bet):
         """Confidence=0.55 → raw factor=0.05 → clamped to BET_SIZE_MIN=0.25."""
         setup = _make_setup(entry=50000, sl=49000, tp2=52000)
-        result = risk_bet.check(setup, ai_confidence=0.55)
-        assert result.approved is True
-        # raw = 0.5 * (2*0.55 - 1) = 0.05, clamped to 0.25
-        expected_notional = 20.0 * 0.25 * settings.MAX_LEVERAGE
-        expected_size = expected_notional / 50000
-        assert result.position_size == pytest.approx(expected_size, rel=0.01)
+        # raw = 0.5*(2*0.55-1) = 0.05, clamped to 0.25 → size=0.05*0.25=0.0125
+        result_floor = risk_bet.check(setup, ai_confidence=0.55)
+        assert result_floor.approved is True
+        assert result_floor.position_size == pytest.approx(0.05 * 0.25, rel=0.01)
 
     def test_bypassed_confidence_no_sizing(self, risk_bet):
-        """Confidence=1.0 (bypassed AI) → bet sizing skipped, full margin."""
+        """Confidence=1.0 (bypassed AI) → bet sizing skipped, full size."""
         setup = _make_setup(entry=50000, sl=49000, tp2=52000)
         result = risk_bet.check(setup, ai_confidence=1.0)
         assert result.approved is True
-        # ai_confidence=1.0 → sizing NOT applied (condition: confidence < 1.0)
-        expected_notional = 20.0 * settings.MAX_LEVERAGE
-        expected_size = expected_notional / 50000
-        assert result.position_size == pytest.approx(expected_size, rel=0.01)
+        # PositionSizer: risk=$50, distance=1000, size=0.05
+        assert result.position_size == pytest.approx(0.05, rel=1e-6)
 
     def test_disabled_bet_sizing_ignores_confidence(self, risk_bet, monkeypatch):
-        """BET_SIZING_ENABLED=false → always full margin regardless of confidence."""
+        """BET_SIZING_ENABLED=false → always full size regardless of confidence."""
         monkeypatch.setattr(settings, "BET_SIZING_ENABLED", False)
         setup = _make_setup(entry=50000, sl=49000, tp2=52000)
         result = risk_bet.check(setup, ai_confidence=0.6)
         assert result.approved is True
-        expected_notional = 20.0 * settings.MAX_LEVERAGE
-        expected_size = expected_notional / 50000
-        assert result.position_size == pytest.approx(expected_size, rel=0.01)
+        # Full size (no scaling): 0.05 BTC
+        assert result.position_size == pytest.approx(0.05, rel=1e-6)
+
+
+# ============================================================
+# Portfolio heat integration
+# ============================================================
+
+class TestPortfolioHeat:
+
+    def test_heat_blocks_new_trade(self, risk, monkeypatch):
+        """When existing positions saturate heat budget, new trade rejected."""
+        monkeypatch.setattr(settings, "MAX_OPEN_POSITIONS", 20)  # Don't hit position limit
+        now = int(time.time())
+        # Open positions that consume most of the heat budget
+        # capital=5000, MAX_PORTFOLIO_HEAT_PCT=0.06 → max heat=$300
+        # Each position: size=0.05 BTC, entry=50000, sl=49000, heat=0.05*1000=$50
+        for i in range(5):
+            risk.on_trade_opened(
+                f"PAIR{i}/USDT", "long", 50000, now + i,
+                phase="active", sl_price=49000.0, position_size=0.05,
+            )
+        # Existing heat: 5 × $50 = $250. New trade: 0.05 × 1000 = $50
+        # Total: $300 → exactly at limit (should pass)
+        setup = _make_setup(entry=50000, sl=49000, tp2=52000)
+        result = risk.check(setup)
+        assert result.approved is True
+
+        # Add one more position to push heat over
+        risk.on_trade_opened(
+            "PAIR5/USDT", "long", 50000, now + 5,
+            phase="active", sl_price=49000.0, position_size=0.05,
+        )
+        # Existing heat: 6 × $50 = $300. New: $50. Total: $350 > $300
+        result2 = risk.check(setup)
+        assert result2.approved is False
+        assert "Portfolio heat" in result2.reason

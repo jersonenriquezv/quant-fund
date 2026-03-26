@@ -32,8 +32,8 @@ class Guardrails:
     def check_rr_ratio(self, setup: TradeSetup) -> tuple[bool, str]:
         """Check that TP2 reward/risk >= minimum R:R.
 
-        Uses MIN_RISK_REWARD_QUICK (1.0) for quick setups (C/D/E),
-        MIN_RISK_REWARD (1.5) for swing setups (A/B).
+        Uses MIN_RISK_REWARD_QUICK (1.5) for quick setups (C/D/E),
+        MIN_RISK_REWARD (2.0) for swing setups (A/B/F/G).
         """
         risk = abs(setup.entry_price - setup.sl_price)
         if risk == 0:
@@ -99,3 +99,34 @@ class Guardrails:
         if dd_pct >= settings.MAX_WEEKLY_DRAWDOWN:
             return False, f"Weekly DD {dd_pct*100:.1f}% >= limit {settings.MAX_WEEKLY_DRAWDOWN*100:.1f}%"
         return True, f"Weekly DD {dd_pct*100:.1f}% OK"
+
+    def check_portfolio_heat(
+        self,
+        current_heat_usd: float,
+        new_trade_heat_usd: float,
+        capital: float,
+    ) -> tuple[bool, str]:
+        """Check that total portfolio heat (existing + new trade) doesn't exceed limit.
+
+        Portfolio heat = sum of (position_size × |entry - SL|) for all open positions.
+        If total exceeds MAX_PORTFOLIO_HEAT_PCT of capital, reject.
+
+        Args:
+            current_heat_usd: Sum of $ at risk across existing open positions.
+            new_trade_heat_usd: $ at risk for the proposed new trade.
+            capital: Current account capital.
+        """
+        if capital <= 0:
+            return False, "Capital is zero — cannot evaluate portfolio heat"
+
+        total_heat = current_heat_usd + new_trade_heat_usd
+        heat_pct = total_heat / capital
+        max_pct = settings.MAX_PORTFOLIO_HEAT_PCT
+
+        if heat_pct > max_pct:
+            return False, (
+                f"Portfolio heat ${total_heat:.2f} ({heat_pct*100:.1f}%) "
+                f"exceeds {max_pct*100:.0f}% of capital ${capital:.2f} "
+                f"(existing=${current_heat_usd:.2f} + new=${new_trade_heat_usd:.2f})"
+            )
+        return True, f"Portfolio heat {heat_pct*100:.1f}% OK"

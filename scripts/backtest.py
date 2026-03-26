@@ -526,13 +526,15 @@ class TradeSimulator:
         if self.equity <= 0:
             return False
 
-        # Min risk distance
+        # Min/max risk distance
         distance = abs(setup.entry_price - setup.sl_price)
         if distance == 0:
             return self._reject("Zero risk distance")
         risk_pct = distance / setup.entry_price
         if risk_pct < settings.MIN_RISK_DISTANCE_PCT:
             return self._reject("SL too close to entry")
+        if risk_pct > settings.MAX_SL_PCT:
+            return self._reject(f"SL too far ({risk_pct*100:.1f}% > {settings.MAX_SL_PCT*100:.0f}%)")
 
         # R:R check
         reward = abs(setup.tp2_price - setup.entry_price)
@@ -576,6 +578,18 @@ class TradeSimulator:
             leverage = float(settings.MAX_LEVERAGE)
             notional = self.equity * leverage
             position_size = notional / setup.entry_price
+
+        # Portfolio heat check — sum of (size × sl_distance) across all open positions
+        current_heat = sum(
+            t.position_size * abs(t.entry_price - t.sl_price)
+            for t in list(self.pending.values()) + self.active
+        )
+        new_heat = position_size * distance
+        max_heat = self.equity * settings.MAX_PORTFOLIO_HEAT_PCT
+        if max_heat > 0 and (current_heat + new_heat) > max_heat:
+            return self._reject(
+                f"Portfolio heat (${current_heat + new_heat:.2f} > ${max_heat:.2f})"
+            )
 
         # Entry timeout
         if setup.setup_type in QUICK_SETUP_TYPES:

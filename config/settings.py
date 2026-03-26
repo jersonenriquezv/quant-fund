@@ -81,7 +81,7 @@ class Settings:
     INITIAL_CAPITAL: float = float(os.getenv("INITIAL_CAPITAL", "100"))
 
     # Máximo % del capital que puedes perder en un solo trade
-    RISK_PER_TRADE: float = float(os.getenv("RISK_PER_TRADE", "0.02"))  # 2%
+    RISK_PER_TRADE: float = float(os.getenv("RISK_PER_TRADE", "0.01"))  # 1%
 
     # Máximo apalancamiento permitido
     MAX_LEVERAGE: int = int(os.getenv("MAX_LEVERAGE", "7"))
@@ -102,7 +102,7 @@ class Settings:
     COOLDOWN_MINUTES: int = int(os.getenv("COOLDOWN_MINUTES", "5"))
 
     # Mínimo Risk/Reward ratio para aceptar un trade
-    MIN_RISK_REWARD: float = 1.2
+    MIN_RISK_REWARD: float = 2.0
 
     # Minimum SL distance as fraction of entry price.
     # Rejects noise trades where SL is inside normal price noise.
@@ -112,6 +112,14 @@ class Settings:
     #          → 0.5% (03-19, restored — 0.8% blocked valid setups with small OB bodies).
     # Long-term: replace with daily_vol-adaptive threshold (AFML Ch.3 getDailyVol).
     MIN_RISK_DISTANCE_PCT: float = 0.005
+    # Maximum SL distance as fraction of entry price.
+    # Rejects setups where the OB is so large that SL > 4% from entry.
+    # Caps risk per trade regardless of position sizing.
+    MAX_SL_PCT: float = float(os.getenv("MAX_SL_PCT", "0.04"))  # 4%
+
+    # Maximum portfolio heat — sum of (position_size × sl_distance) across all
+    # open positions + new trade. Limits total $ at risk if all SLs hit at once.
+    MAX_PORTFOLIO_HEAT_PCT: float = float(os.getenv("MAX_PORTFOLIO_HEAT_PCT", "0.06"))  # 6%
 
     # Trading fee rate per side (OKX taker: 0.05%)
     # Deducted from PnL: total_fees = (entry_notional + exit_notional) * rate
@@ -157,10 +165,14 @@ class Settings:
     # Optuna 03-15: 0.001→0.0015 (filters more micro-OBs)
     OB_MIN_BODY_PCT: float = 0.0015
     # OB scoring weights (must sum to 1.0)
-    OB_SCORE_VOLUME_W: float = 0.35
-    OB_SCORE_FRESHNESS_W: float = 0.30
-    OB_SCORE_PROXIMITY_W: float = 0.20
-    OB_SCORE_SIZE_W: float = 0.15
+    OB_SCORE_VOLUME_W: float = 0.20
+    OB_SCORE_FRESHNESS_W: float = 0.20
+    OB_SCORE_PROXIMITY_W: float = 0.15
+    OB_SCORE_SIZE_W: float = 0.10
+    OB_SCORE_IMPULSE_W: float = 0.25     # Post-OB displacement strength (institutional footprint)
+    OB_SCORE_RETEST_W: float = 0.10      # Penalty for multi-touch OBs (absorbed liquidity)
+    # Max retests before OB is considered fully absorbed (score=0 at this count)
+    OB_MAX_RETESTS: int = 4
 
     # --- Fair Value Gaps ---
     # Tamaño mínimo del FVG como % del precio
@@ -261,7 +273,7 @@ class Settings:
     # QUICK SETUPS (C, D, E) — Data-driven, shorter duration
     # ========================
     # Minimum R:R for quick setups (lower than swing setups)
-    MIN_RISK_REWARD_QUICK: float = 1.0
+    MIN_RISK_REWARD_QUICK: float = 1.5
     # Max trade duration for quick setups (4 hours in seconds)
     MAX_TRADE_DURATION_QUICK: int = 14400
     # Cooldown per (pair, setup_type) for quick setups (1 hour)
@@ -381,15 +393,15 @@ class Settings:
     # Rationale: reversal setups (A, E) have more energy than continuation (F) or scalps (D).
     # Values are starting estimates — backtest + Optuna will calibrate.
     SETUP_TP2_RR: dict = field(default_factory=lambda: {
-        "setup_a": 2.0,        # Reversal post-sweep — strong energy, 2R achievable
-        "setup_b": 1.5,        # BOS continuation — weaker than A, 2R often unreachable
+        "setup_a": 2.5,        # Reversal post-sweep — strong energy, targeting higher
+        "setup_b": 2.0,        # BOS continuation — must meet MIN_RISK_REWARD (2.0)
         "setup_c": 2.0,        # Extreme funding event — momentum carries
-        "setup_d_choch": 1.5,  # 5m scalp, 4h max — 2R is too far for LTF structure
+        "setup_d_choch": 1.5,  # 5m scalp, 4h max — meets MIN_RISK_REWARD_QUICK (1.5)
         "setup_d_bos": 1.5,    # Same as D_choch
         "setup_e": 2.0,        # Cascade reversal — post-liquidation bounce has energy
-        "setup_f": 1.5,        # Continuation, no sweep — less energy than A
-        "setup_g": 1.5,        # Breaker retest — similar to F
-        "setup_h": 1.5,        # Momentum — entering late, less room
+        "setup_f": 2.0,        # Continuation — must meet MIN_RISK_REWARD (2.0)
+        "setup_g": 2.0,        # Breaker retest — must meet MIN_RISK_REWARD (2.0)
+        "setup_h": 2.0,        # Momentum — must meet MIN_RISK_REWARD if re-enabled
     })
 
     # ========================
@@ -721,11 +733,29 @@ class Settings:
     DD_WARNING_THRESHOLD: float = 0.66
 
     # ========================
+    # SHADOW MODE — Paper trading for data collection (López de Prado forward-test)
+    # ========================
+    # Setups in this list are detected and logged with full features but NOT executed.
+    # A background monitor tracks theoretical outcome (TP/SL/timeout) from price action.
+    # Feeds ml_setups with labeled outcomes for future feature importance analysis.
+    # Setups NOT in this list execute normally through the live pipeline.
+    SHADOW_MODE_SETUPS: list = field(default_factory=lambda: [
+        "setup_a", "setup_b", "setup_c", "setup_d_choch", "setup_d_bos",
+        "setup_e", "setup_g", "setup_h",
+    ])
+    # Fictional capital for shadow mode position sizing ($500 USDT).
+    # Shadow R:R and position sizes reflect realistic trades you'd take later.
+    SHADOW_CAPITAL: float = float(os.getenv("SHADOW_CAPITAL", "500"))
+    # Shadow mode timeout (hours) — max time to wait for theoretical fill + outcome
+    SHADOW_ENTRY_TIMEOUT_HOURS: int = int(os.getenv("SHADOW_ENTRY_TIMEOUT_HOURS", "24"))
+    SHADOW_TRADE_TIMEOUT_HOURS: int = int(os.getenv("SHADOW_TRADE_TIMEOUT_HOURS", "12"))
+
+    # ========================
     # ML INSTRUMENTATION
     # ========================
     # Feature version — increment when strategy params change in ways that
     # alter feature semantics (e.g. changing OB scoring weights, PD rules).
-    ML_FEATURE_VERSION: int = 6  # v6: daily_vol (AFML Ch.3 getDailyVol), EWMA volatility for barrier normalization
+    ML_FEATURE_VERSION: int = 7  # v7: shadow uses risk_service sizing (not standalone), risk_approved/risk_reject_reason columns
 
     # ========================
     # LIQUIDATION HEATMAP

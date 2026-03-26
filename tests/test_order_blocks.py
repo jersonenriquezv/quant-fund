@@ -238,6 +238,141 @@ class TestOBMitigation:
         assert len(obs) == 0
 
 
+class TestOBImpulseScore:
+    """Test impulse score computation for OBs."""
+
+    def test_strong_impulse_gets_high_score(self):
+        """OB followed by large displacement + high volume candles → high impulse score."""
+        detector = OrderBlockDetector()
+
+        candles = []
+        for i in range(15):
+            if i == 8:
+                # OB candle: red, body=2 (102→100), volume=20
+                c = make_candle(open=102.0, high=103.0, low=99.0,
+                                close=100.0, volume=20.0, timestamp=i * 1000)
+            elif i == 9:
+                # Strong impulse candle: big green, high volume
+                c = make_candle(open=101.0, high=110.0, low=100.5,
+                                close=109.0, volume=30.0, timestamp=i * 1000)
+            elif i == 10:
+                # Break candle continues impulse
+                c = make_candle(open=109.0, high=115.0, low=108.0,
+                                close=114.0, volume=25.0, timestamp=i * 1000)
+            else:
+                c = make_candle(open=100.0, high=101.0, low=99.0,
+                                close=100.5, volume=10.0, timestamp=i * 1000)
+            candles.append(c)
+
+        brk = _make_break("bullish", candle_index=10, timestamp=10000)
+        obs = detector.update(candles, [brk], "BTC/USDT", "15m", 15000)
+
+        assert len(obs) == 1
+        # OB body = 2, displacement to high=115 from close=100 = 15 → 15/(2*3)=2.5 capped at 1.0
+        # Volume: avg impulse ~27.5 vs avg ~12.7 → ratio ~2.2 → 2.2/3=0.73
+        assert obs[0].impulse_score > 0.5
+
+    def test_weak_impulse_gets_low_score(self):
+        """OB followed by small candles with normal volume → low impulse score."""
+        detector = OrderBlockDetector()
+
+        candles = []
+        for i in range(15):
+            if i == 8:
+                # OB candle: red, body=2, volume=20 (passes vol filter)
+                c = make_candle(open=102.0, high=103.0, low=99.0,
+                                close=100.0, volume=20.0, timestamp=i * 1000)
+            elif i in (9, 10):
+                # Weak drift candles: tiny move, normal volume
+                c = make_candle(open=100.5, high=101.0, low=100.0,
+                                close=100.8, volume=10.0, timestamp=i * 1000)
+            else:
+                c = make_candle(open=100.0, high=101.0, low=99.0,
+                                close=100.5, volume=10.0, timestamp=i * 1000)
+            candles.append(c)
+
+        brk = _make_break("bullish", candle_index=10, timestamp=10000)
+        obs = detector.update(candles, [brk], "BTC/USDT", "15m", 15000)
+
+        assert len(obs) == 1
+        # Tiny displacement, normal volume → low score
+        assert obs[0].impulse_score < 0.3
+
+
+class TestOBRetestCount:
+    """Test retest counting for OBs."""
+
+    def test_retest_counted_on_wick_into_zone(self):
+        """Candle wicking into OB zone without closing through → retest counted."""
+        detector = OrderBlockDetector()
+
+        # OB body_high=102 — default candles must stay above 102 to not count as retests
+        candles = []
+        for i in range(15):
+            if i == 8:
+                # OB candle: body_high=102, body_low=100, low(wick)=98
+                c = make_candle(open=102.0, high=103.0, low=98.0,
+                                close=100.0, volume=20.0, timestamp=i * 1000)
+            elif i == 10:
+                # Break candle
+                c = make_candle(open=104.0, high=112.0, low=103.0,
+                                close=111.0, volume=10.0, timestamp=i * 1000)
+            else:
+                # Default candles: low=103 stays above OB body_high=102
+                c = make_candle(open=105.0, high=106.0, low=103.0,
+                                close=105.5, volume=10.0, timestamp=i * 1000)
+            candles.append(c)
+
+        brk = _make_break("bullish", candle_index=10, timestamp=10000)
+        obs = detector.update(candles, [brk], "BTC/USDT", "15m", 15000)
+        assert len(obs) == 1
+
+        # Add candles that wick into OB zone (low <= body_high=102)
+        # but close above OB low (98) → retest, not mitigation
+        retest_candles = candles + [
+            make_candle(open=105.0, high=106.0, low=101.0, close=104.0,
+                        volume=10.0, timestamp=16000),
+            make_candle(open=104.0, high=105.0, low=100.5, close=103.0,
+                        volume=10.0, timestamp=17000),
+        ]
+
+        obs = detector.update(retest_candles, [], "BTC/USDT", "15m", 18000)
+        assert len(obs) == 1
+        assert obs[0].retest_count == 2
+
+    def test_no_retest_when_price_stays_above_zone(self):
+        """Candles that stay above OB zone → retest_count = 0."""
+        detector = OrderBlockDetector()
+
+        candles = []
+        for i in range(15):
+            if i == 8:
+                # OB candle: body_high=102, body_low=100
+                c = make_candle(open=102.0, high=103.0, low=99.0,
+                                close=100.0, volume=20.0, timestamp=i * 1000)
+            elif i == 10:
+                c = make_candle(open=104.0, high=112.0, low=103.0,
+                                close=111.0, volume=10.0, timestamp=i * 1000)
+            else:
+                # Default candles: low=103 stays above OB body_high=102
+                c = make_candle(open=105.0, high=106.0, low=103.0,
+                                close=105.5, volume=10.0, timestamp=i * 1000)
+            candles.append(c)
+
+        brk = _make_break("bullish", candle_index=10, timestamp=10000)
+        obs = detector.update(candles, [brk], "BTC/USDT", "15m", 15000)
+
+        # Add candles well above OB zone
+        no_retest_candles = candles + [
+            make_candle(open=110.0, high=112.0, low=108.0, close=111.0,
+                        volume=10.0, timestamp=16000),
+        ]
+
+        obs = detector.update(no_retest_candles, [], "BTC/USDT", "15m", 17000)
+        assert len(obs) == 1
+        assert obs[0].retest_count == 0
+
+
 class TestOBDeduplication:
     """Test that OBs are not duplicated on repeated calls."""
 

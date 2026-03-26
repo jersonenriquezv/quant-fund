@@ -119,6 +119,7 @@ class ExecutionService:
                 self._risk.on_trade_opened(
                     pair, direction, entry_price, int(time.time()),
                     phase="active",
+                    sl_price=sl_price, position_size=size,
                 )
 
             logger.info(
@@ -415,7 +416,8 @@ class ExecutionService:
         # Notify Risk Service — on PLACE, not fill (prevents exceeding max positions)
         if self._risk is not None:
             self._risk.on_trade_opened(
-                setup.pair, setup.direction, setup.entry_price, int(time.time())
+                setup.pair, setup.direction, setup.entry_price, int(time.time()),
+                sl_price=setup.sl_price, position_size=approval.position_size,
             )
 
         # Create managed position and register with monitor

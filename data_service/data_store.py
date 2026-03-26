@@ -627,10 +627,46 @@ class PostgresStore:
             ]:
                 cur.execute(f"ALTER TABLE ml_setups ADD COLUMN IF NOT EXISTS {col_def}")
 
+            # v7 migration: risk check result columns for shadow mode analysis
+            for col_def in [
+                "risk_approved BOOLEAN",
+                "risk_reject_reason TEXT",
+            ]:
+                cur.execute(f"ALTER TABLE ml_setups ADD COLUMN IF NOT EXISTS {col_def}")
+
             # migration: add setup_id to trades for ML linkage
             cur.execute("""
                 ALTER TABLE trades ADD COLUMN IF NOT EXISTS
                     setup_id VARCHAR(20)
+            """)
+
+            # Trade journal migration: add risk/sizing columns to trades
+            for col_def in [
+                "margin_used DOUBLE PRECISION",
+                "risk_usd DOUBLE PRECISION",
+                "r_multiple DOUBLE PRECISION",
+                "rejection_reason TEXT",
+                "notes TEXT",
+            ]:
+                cur.execute(f"ALTER TABLE trades ADD COLUMN IF NOT EXISTS {col_def}")
+
+            # Trade rejections table — logs every rejected setup for pipeline analysis
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS trade_rejections (
+                    id SERIAL PRIMARY KEY,
+                    timestamp TIMESTAMP DEFAULT NOW(),
+                    pair VARCHAR(20) NOT NULL,
+                    direction VARCHAR(5),
+                    setup_type VARCHAR(20),
+                    reason TEXT NOT NULL,
+                    sl_distance_pct DOUBLE PRECISION,
+                    rr_ratio DOUBLE PRECISION,
+                    oi_delta DOUBLE PRECISION
+                )
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_rejections_pair_ts
+                ON trade_rejections(pair, timestamp DESC)
             """)
 
         logger.info("PostgreSQL tables verified/created")
@@ -771,6 +807,9 @@ class PostgresStore:
         pnl_usd: float | None = None,
         pnl_pct: float | None = None,
         status: str | None = None,
+        r_multiple: float | None = None,
+        margin_used: float | None = None,
+        risk_usd: float | None = None,
     ) -> bool:
         """Update an existing trade record. Only sets non-None fields."""
         if trade_id is None:
@@ -793,6 +832,15 @@ class PostgresStore:
         if pnl_pct is not None:
             fields.append("pnl_pct = %s")
             values.append(pnl_pct)
+        if r_multiple is not None:
+            fields.append("r_multiple = %s")
+            values.append(r_multiple)
+        if margin_used is not None:
+            fields.append("margin_used = %s")
+            values.append(margin_used)
+        if risk_usd is not None:
+            fields.append("risk_usd = %s")
+            values.append(risk_usd)
         if status is not None:
             fields.append("status = %s")
             values.append(status)
@@ -903,6 +951,136 @@ class PostgresStore:
                 return result
         return result
         return []
+
+    # --- Trade Rejections ---
+
+    def insert_trade_rejection(
+        self,
+        pair: str,
+        direction: str,
+        setup_type: str,
+        reason: str,
+        sl_distance_pct: float | None = None,
+        rr_ratio: float | None = None,
+        oi_delta: float | None = None,
+    ) -> None:
+        """Log a rejected trade setup to trade_rejections table."""
+        for attempt in range(2):
+            if not self._ensure_connected():
+                return
+            try:
+                with self._conn.cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO trade_rejections
+                           (pair, direction, setup_type, reason,
+                            sl_distance_pct, rr_ratio, oi_delta)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                        (pair, direction, setup_type, reason,
+                         sl_distance_pct, rr_ratio, oi_delta),
+                    )
+                self._conn.commit()
+                return
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                logger.warning(f"PostgreSQL trade rejection insert error (attempt {attempt+1}): {e}")
+                self._conn = None
+            except psycopg2.Error as e:
+                logger.error(f"PostgreSQL trade rejection insert failed: {e}")
+                try:
+                    self._conn.rollback()
+                except Exception:
+                    pass
+                return
+
+    def get_journal_summary(self, last_n_days: int = 7) -> dict:
+        """Get trade journal summary for the last N days.
+
+        Returns:
+            dict with win_rate, avg_r, total_pnl, trades_by_pair,
+            trades_by_setup, rejection_summary.
+        """
+        result = {
+            "total_trades": 0, "wins": 0, "losses": 0,
+            "win_rate": 0.0, "avg_r": 0.0, "total_pnl": 0.0,
+            "trades_by_pair": {}, "trades_by_setup": {},
+            "rejection_summary": {},
+        }
+        for attempt in range(2):
+            if not self._ensure_connected():
+                return result
+            try:
+                with self._conn.cursor() as cur:
+                    since = f"NOW() - INTERVAL '{last_n_days} days'"
+
+                    # Aggregate trade stats
+                    cur.execute(f"""
+                        SELECT COUNT(*),
+                               SUM(CASE WHEN pnl_usd > 0 THEN 1 ELSE 0 END),
+                               SUM(CASE WHEN pnl_usd <= 0 THEN 1 ELSE 0 END),
+                               COALESCE(SUM(pnl_usd), 0),
+                               COALESCE(AVG(r_multiple), 0)
+                        FROM trades
+                        WHERE status = 'closed' AND closed_at >= {since}
+                    """)
+                    row = cur.fetchone()
+                    if row and row[0] > 0:
+                        result["total_trades"] = int(row[0])
+                        result["wins"] = int(row[1] or 0)
+                        result["losses"] = int(row[2] or 0)
+                        result["total_pnl"] = round(float(row[3]), 2)
+                        result["avg_r"] = round(float(row[4]), 3)
+                        result["win_rate"] = round(result["wins"] / result["total_trades"] * 100, 1)
+
+                    # By pair
+                    cur.execute(f"""
+                        SELECT pair, COUNT(*),
+                               SUM(CASE WHEN pnl_usd > 0 THEN 1 ELSE 0 END),
+                               COALESCE(SUM(pnl_usd), 0)
+                        FROM trades
+                        WHERE status = 'closed' AND closed_at >= {since}
+                        GROUP BY pair ORDER BY pair
+                    """)
+                    for row in cur.fetchall():
+                        result["trades_by_pair"][row[0]] = {
+                            "count": int(row[1]),
+                            "wins": int(row[2] or 0),
+                            "pnl": round(float(row[3]), 2),
+                        }
+
+                    # By setup type
+                    cur.execute(f"""
+                        SELECT setup_type, COUNT(*),
+                               SUM(CASE WHEN pnl_usd > 0 THEN 1 ELSE 0 END),
+                               COALESCE(SUM(pnl_usd), 0)
+                        FROM trades
+                        WHERE status = 'closed' AND closed_at >= {since}
+                        GROUP BY setup_type ORDER BY setup_type
+                    """)
+                    for row in cur.fetchall():
+                        result["trades_by_setup"][row[0]] = {
+                            "count": int(row[1]),
+                            "wins": int(row[2] or 0),
+                            "pnl": round(float(row[3]), 2),
+                        }
+
+                    # Rejection summary
+                    cur.execute(f"""
+                        SELECT reason, COUNT(*)
+                        FROM trade_rejections
+                        WHERE timestamp >= {since}
+                        GROUP BY reason ORDER BY COUNT(*) DESC
+                        LIMIT 20
+                    """)
+                    for row in cur.fetchall():
+                        result["rejection_summary"][row[0]] = int(row[1])
+
+                return result
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                logger.warning(f"PostgreSQL journal summary error (attempt {attempt+1}): {e}")
+                self._conn = None
+            except psycopg2.Error as e:
+                logger.error(f"PostgreSQL journal summary failed: {e}")
+                return result
+        return result
 
     # --- ML Setup Storage ---
 
@@ -1099,6 +1277,24 @@ class PostgresStore:
                 logger.error(f"ML setup outcome update failed: setup_id={setup_id} {e}")
                 return False
         return False
+
+    def update_ml_risk_check(
+        self, setup_id: str, approved: bool, reason: str | None = None
+    ) -> bool:
+        """Record risk check result for an ml_setup row."""
+        if not self._ensure_connected():
+            return False
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE ml_setups SET risk_approved = %s, risk_reject_reason = %s "
+                    "WHERE setup_id = %s",
+                    (approved, reason if not approved else None, setup_id),
+                )
+            return True
+        except psycopg2.Error as e:
+            logger.error(f"ML risk check update failed: {setup_id} {e}")
+            return False
 
     def update_ml_shadow_tracking(
         self,

@@ -37,6 +37,8 @@ class OrderBlock:
     mitigated: bool             # True if price closed through full OB
     associated_break: StructureBreak  # The structure break this OB is tied to
     break_timestamp: int = 0    # Timestamp of the candle that broke structure (for mitigation guard)
+    impulse_score: float = 0.0  # 0-1, strength of post-OB displacement (volume + price move)
+    retest_count: int = 0       # How many times price has wicked into the OB zone without mitigating
 
 
 class OrderBlockDetector:
@@ -101,6 +103,9 @@ class OrderBlockDetector:
                 self._breaker_blocks[key].append(bb)
                 existing_bb_ts.add(bb.timestamp)
 
+        # Update retest counts for active OBs
+        self._count_retests(self._active_obs[key], candles)
+
         # Prune mitigated and expired OBs
         age_hours = max_age_hours if max_age_hours is not None else settings.OB_MAX_AGE_HOURS
         max_age_ms = age_hours * 3600 * 1000
@@ -157,13 +162,13 @@ class OrderBlockDetector:
             if brk.direction == "bullish":
                 # Looking for last RED candle (close < open)
                 if c.close < c.open:
-                    ob = self._create_ob(c, brk, pair, timeframe, avg_volume)
+                    ob = self._create_ob(c, brk, pair, timeframe, avg_volume, candles, i)
                     if ob is not None:
                         return ob
             else:
                 # Looking for last GREEN candle (close >= open)
                 if c.close >= c.open:
-                    ob = self._create_ob(c, brk, pair, timeframe, avg_volume)
+                    ob = self._create_ob(c, brk, pair, timeframe, avg_volume, candles, i)
                     if ob is not None:
                         return ob
 
@@ -176,6 +181,8 @@ class OrderBlockDetector:
         pair: str,
         timeframe: str,
         avg_volume: float,
+        candles: list[Candle] | None = None,
+        ob_index: int = -1,
     ) -> Optional[OrderBlock]:
         """Create an OrderBlock from a candle, applying volume filter."""
         volume_ratio = (
@@ -197,6 +204,11 @@ class OrderBlockDetector:
         else:
             entry_price = body_high - body_range * 0.50
 
+        # Compute impulse score from candles after the OB
+        impulse = self._compute_impulse_score(
+            candles, ob_index, brk, avg_volume
+        ) if candles is not None and ob_index >= 0 else 0.0
+
         return OrderBlock(
             timestamp=candle.timestamp,
             pair=pair,
@@ -212,7 +224,90 @@ class OrderBlockDetector:
             mitigated=False,
             associated_break=brk,
             break_timestamp=brk.timestamp,
+            impulse_score=impulse,
         )
+
+    def _compute_impulse_score(
+        self,
+        candles: list[Candle],
+        ob_index: int,
+        brk: StructureBreak,
+        avg_volume: float,
+    ) -> float:
+        """Measure displacement strength of the impulse move after the OB candle.
+
+        Scores 0-1 based on two components (50/50):
+        - Price displacement: how far the impulse moved relative to the OB body
+        - Volume intensity: avg volume of impulse candles vs overall average
+
+        Looks at up to 5 candles from OB to the structure break (the impulse).
+        """
+        if ob_index < 0 or avg_volume <= 0:
+            return 0.0
+
+        # Impulse candles: from OB+1 up to (and including) the break candle
+        break_idx = brk.candle_index
+        start = ob_index + 1
+        end = min(break_idx + 1, len(candles))
+        # Cap at 5 candles to avoid dilution from long drifts
+        impulse_candles = candles[start:end][:5]
+
+        if not impulse_candles:
+            return 0.0
+
+        ob_body = abs(candles[ob_index].open - candles[ob_index].close)
+        if ob_body <= 0:
+            return 0.0
+
+        # Price displacement: total move from OB close to impulse extreme
+        ob_close = candles[ob_index].close
+        if brk.direction == "bullish":
+            extreme = max(c.high for c in impulse_candles)
+            displacement = extreme - ob_close
+        else:
+            extreme = min(c.low for c in impulse_candles)
+            displacement = ob_close - extreme
+
+        # Normalize: 3x OB body displacement = score 1.0
+        disp_score = min(max(displacement / (ob_body * 3.0), 0.0), 1.0)
+
+        # Volume intensity: avg impulse volume vs overall avg
+        impulse_avg_vol = sum(c.volume for c in impulse_candles) / len(impulse_candles)
+        vol_ratio = impulse_avg_vol / avg_volume
+        # 3x avg volume = score 1.0
+        vol_score = min(vol_ratio / 3.0, 1.0)
+
+        return disp_score * 0.5 + vol_score * 0.5
+
+    def _count_retests(self, obs: list[OrderBlock],
+                       candles: list[Candle]) -> None:
+        """Count how many times price wicked into each OB zone without mitigating.
+
+        A retest = candle low touches bullish OB zone (low <= body_high)
+        or candle high touches bearish OB zone (high >= body_low),
+        but candle does NOT close through the OB (not mitigated).
+        Only counts candles after the structure break.
+        """
+        for ob in obs:
+            if ob.mitigated:
+                continue
+
+            skip_ts = ob.break_timestamp if ob.break_timestamp else ob.timestamp
+            count = 0
+            for candle in candles:
+                if candle.timestamp <= skip_ts:
+                    continue
+
+                if ob.direction == "bullish":
+                    # Price wicked down into bullish OB zone
+                    if candle.low <= ob.body_high and candle.close > ob.low:
+                        count += 1
+                else:
+                    # Price wicked up into bearish OB zone
+                    if candle.high >= ob.body_low and candle.close < ob.high:
+                        count += 1
+
+            ob.retest_count = count
 
     def _compute_avg_volume(self, candles: list[Candle]) -> float:
         """Compute average volume over VOLUME_AVG_PERIODS candles."""

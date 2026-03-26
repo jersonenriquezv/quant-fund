@@ -1,6 +1,6 @@
 # Risk Service
-> Última actualización: 2026-03-12
-> Estado: implementado (completo, integrado en main.py). Dual-mode position sizing: FIXED_TRADE_MARGIN ($20 default) o TRADE_CAPITAL_PCT (15% fallback). MIN_RISK_DISTANCE_PCT (0.5%) also checked in Strategy layer as early filter. Leverage always MAX_LEVERAGE (7x), not dynamic.
+> Última actualización: 2026-03-26
+> Estado: implementado. Dynamic position sizing via PositionSizer: `size = (capital × 1%) / SL_distance`. Leverage dynamic (capped at 7x). Portfolio heat tracking (6% max). MAX_SL_PCT (4%) cap. R:R minimums: swing 2.0, quick 1.5. Trade journal in PostgreSQL (trade_rejections table + r_multiple on trades).
 
 ## Qué hace (30 segundos)
 El Risk Service es el guardián del capital. Antes de que cualquier trade se ejecute, pasa por 6 checks obligatorios (guardrails) y un cálculo de tamaño de posición. Si cualquier check falla, el trade NO se ejecuta. Sin excepciones.
@@ -15,17 +15,21 @@ Sin control de riesgo, un solo trade malo puede destruir la cuenta. El Risk Serv
 TradeSetup (del Strategy Service)
   │
   ▼
-RiskService.check(setup)
+RiskService.check(setup, ai_confidence, dry_run)
   │
   ├── check min risk distance >= 0.5% (SL no demasiado cerca de entry)
-  ├── check R:R ratio >= 1.2 (usa TP2 vs entry/SL)
+  ├── check R:R ratio >= 2.0 swing / 1.5 quick (usa TP2 vs entry/SL)
   ├── check cooldown (5 min post-loss)
   ├── check max trades/día (20)
   ├── check max posiciones abiertas (8)
   ├── check drawdown diario < 10%
   ├── check drawdown semanal < 10%
-  ├── calcular tamaño posición: (Capital × Risk%) / |Entry - SL|
-  └── enforce max leverage (7x)
+  ├── query OKX balance (fallback: tracked capital)
+  ├── PositionSizer: size = (capital × 1%) / |Entry - SL|, leverage capped at 7x
+  ├── optional: bet sizing (half-Kelly × confidence)
+  ├── hard cap: risk_pct ≤ MAX_MARGIN_PCT_OF_CAPITAL (25%)
+  ├── check exchange min order size
+  └── check portfolio heat: existing + new ≤ 6% of capital
   │
   ▼
 RiskApproval { approved, position_size, leverage, risk_pct, reason }
@@ -48,7 +52,7 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 
 ### `risk_service/position_sizer.py` — Calculadora de posición
 - Clase: `PositionSizer`
-- **Risk-based sizing (PositionSizer):** `position_size = (capital × risk_pct) / abs(entry - sl)`. Leverage: `(position_size × entry) / capital`. Si leverage > MAX_LEVERAGE (7x), recorta la posición. Note: PositionSizer computes dynamic leverage from risk%, but RiskService.check() uses fixed `MAX_LEVERAGE` directly (see below).
+- **Risk-based sizing (PositionSizer):** `position_size = (capital × risk_pct) / abs(entry - sl)`. Leverage: `(position_size × entry) / capital`. Si leverage > MAX_LEVERAGE (7x), recorta la posición. Now wired into live pipeline via `RiskService.check()`.
 - Validaciones: entry == sl → error, capital ≤ 0 → error, risk ≤ 0 → error
 
 ### `risk_service/guardrails.py` — 6 checks puros
@@ -56,13 +60,14 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 - Cada método retorna `tuple[bool, str]` (passed, reason)
 - **Sin estado** — funciones puras, reciben valores y retornan veredicto
 - Checks:
-  - `check_min_risk_distance(setup)` — SL distance >= MIN_RISK_DISTANCE_PCT (0.8%) del entry price. Rechaza noise trades donde comisiones comen el profit. Also checked in strategy layer for all setups as early filter.
-  - `check_rr_ratio(setup)` — R:R de TP2 >= MIN_RISK_REWARD (1.2 swing) o MIN_RISK_REWARD_QUICK (1.0 quick setups C/D/E)
+  - `check_min_risk_distance(setup)` — SL distance >= MIN_RISK_DISTANCE_PCT (0.5%) del entry price. Also checked in strategy layer via `_check_sl_distance()`.
+  - `check_rr_ratio(setup)` — R:R de TP2 >= MIN_RISK_REWARD (2.0 swing) o MIN_RISK_REWARD_QUICK (1.5 quick setups C/D/E)
   - `check_cooldown(last_loss_time, current_time)` — COOLDOWN_MINUTES (5) elapsed?
   - `check_max_trades_today(count)` — < MAX_TRADES_PER_DAY (20)?
   - `check_max_open_positions(count)` — < MAX_OPEN_POSITIONS (8)?
   - `check_daily_drawdown(dd_pct)` — < MAX_DAILY_DRAWDOWN (10%)?
   - `check_weekly_drawdown(dd_pct)` — < MAX_WEEKLY_DRAWDOWN (10%)?
+  - `check_portfolio_heat(current_heat_usd, new_trade_heat_usd, capital)` — total heat ≤ MAX_PORTFOLIO_HEAT_PCT (6%) of capital. Run after position sizing (needs position_size).
 
 ### `risk_service/state_tracker.py` — Estado con persistencia Redis
 - Clase: `RiskStateTracker(capital, redis_store=None)`
@@ -71,8 +76,9 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
   - TTL: 48 horas
   - Daily values solo se restauran si el día guardado == hoy. Weekly solo si misma semana. Cooldown y open positions siempre se restauran.
   - Si Redis falla al cargar o guardar → degrada silenciosamente (fire-and-forget). El bot NO se detiene.
+- `get_portfolio_heat_usd()` — sum of (position_size × |entry - sl|) across all open positions. Used by `check_portfolio_heat` guardrail.
 - Lifecycle del trade:
-  - `record_trade_opened(pair, direction, entry_price, timestamp)`
+  - `record_trade_opened(pair, direction, entry_price, timestamp, sl_price, position_size)` — stores SL and size for heat calculation
   - `record_trade_closed(pair, direction, pnl_pct, timestamp)` — matchea por `(pair, direction)`. Actualiza DD, activa cooldown si pérdida.
 - `record_trade_cancelled(pair, direction)` — removes cancelled pending entry from open positions without counting as a trade or affecting P&L.
 - Getters para guardrails: `get_trades_today_count()`, `get_open_positions_count()`, `get_daily_dd_pct()`, `get_weekly_dd_pct()`, `get_last_loss_time()`
@@ -81,18 +87,18 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 ### `risk_service/service.py` — Facade (RiskService)
 - Clase: `RiskService(capital: float, data_service=None)`
 - Compone: PositionSizer + Guardrails + RiskStateTracker
-- **Método principal:** `check(setup: TradeSetup, ai_confidence: float = 1.0) -> RiskApproval`
+- **Método principal:** `check(setup: TradeSetup, ai_confidence: float = 1.0, dry_run: bool = False) -> RiskApproval`
+  - `dry_run=True`: Shadow mode — skips balance fetch, capital mutation, and risk event persistence.
   1. Corre los 7 guardrails en orden (fail fast): min risk distance, R:R ratio, cooldown, max trades/day, max positions, daily DD, weekly DD
-  2. **Position sizing (dual-mode):**
-     - **Modo fijo (default):** Si `FIXED_TRADE_MARGIN > 0`: `margin = $20`, `notional = margin × leverage`, `position_size = notional / entry_price`. Ejemplo: $20 × 7x = $140 notional. `risk_pct = margin / capital`.
-     - **Modo porcentaje (fallback):** Si `FIXED_TRADE_MARGIN == 0`: `notional = capital × TRADE_CAPITAL_PCT`, `margin = notional / leverage`, `risk_pct = TRADE_CAPITAL_PCT`.
-  3. **Bet sizing (optional, AFML Ch.10):** Si `BET_SIZING_ENABLED=true` y `ai_confidence < 1.0`: `factor = KELLY_FRACTION × (2p - 1)`, clamped a `[BET_SIZE_MIN, BET_SIZE_MAX]`. Margin se multiplica por factor. Half-Kelly por default. Inactivo cuando AI está bypassed (confidence=1.0).
-  4. **Hard margin cap (AFML Ch.10):** Después de bet sizing, `margin` se limita a `MAX_MARGIN_PCT_OF_CAPITAL` (25%) del capital. Previene que `BET_SIZE_MAX > 1.0` produzca posiciones desproporcionadas. Con $108 capital, max margin = $27.
-  5. Leverage siempre = `MAX_LEVERAGE` (7x). Not dynamically computed from risk% — PositionSizer is only used by backtester.
-  5. Verifica min order size contra `MIN_ORDER_SIZES` por par
-  6. Retorna RiskApproval (approved/rejected con razón)
+  2. **Balance query:** Fetches live USDT balance from OKX via `_query_account_balance()`. Falls back to tracked capital if query fails. Updates tracked capital on success.
+  3. **Dynamic position sizing via PositionSizer:** `position_size = (capital × RISK_PER_TRADE) / SL_distance`. Leverage derived from notional, capped at MAX_LEVERAGE. Falls back to FIXED_TRADE_MARGIN flat sizing if PositionSizer raises.
+  4. **Bet sizing (optional, AFML Ch.10):** Si `BET_SIZING_ENABLED=true` y `ai_confidence < 1.0`: scales position_size by Kelly factor. Inactivo cuando AI está bypassed (confidence=1.0).
+  5. **Hard risk cap:** `risk_pct` capped at `MAX_MARGIN_PCT_OF_CAPITAL` (25%). Re-runs PositionSizer with capped risk if exceeded.
+  6. Verifica min order size contra `MIN_ORDER_SIZES` por par
+  7. **Portfolio heat check:** Sums (size × SL_distance) across all open positions + new trade. Rejects if > `MAX_PORTFOLIO_HEAT_PCT` (6%) of capital.
+  8. Retorna RiskApproval (approved/rejected con razón)
 - **Para Execution Service (implementado):**
-  - `on_trade_opened(pair, direction, entry_price, timestamp)` — llamado al colocar entry order
+  - `on_trade_opened(pair, direction, entry_price, timestamp, sl_price, position_size)` — llamado al colocar entry order. Passes SL and size for portfolio heat tracking.
   - `on_trade_closed(pair, direction, pnl_pct, timestamp)` — llamado al cerrar posición (SL, TP, timeout, emergency). Matchea por `(pair, direction)` para cerrar la posición correcta.
   - `on_trade_cancelled(pair, direction)` — llamado cuando un pending entry es cancelado (nunca llenó). Remueve de open positions sin contar como trade ni afectar P&L.
   - `update_capital(amount)` — disponible para futuro sync con balance del exchange
@@ -105,31 +111,30 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 
 | Setting | Default | Descripción |
 |---|---|---|
-| `FIXED_TRADE_MARGIN` | `20` ($20) | Margin fijo por trade en USDT. Notional = margin × leverage. $20 × 5x = $100. Si 0, usa TRADE_CAPITAL_PCT. |
-| `TRADE_CAPITAL_PCT` | `0.15` (15%) | Fallback: % del capital como notional por trade (solo si FIXED_TRADE_MARGIN=0) |
-| `MAX_LEVERAGE` | `7` | Apalancamiento máximo permitido |
-| `MAX_DAILY_DRAWDOWN` | `0.10` (10%) | DD diario máximo antes de pausar (raised from 5% — was blocking entire days after 3 SLs on $108 capital) |
-| `MAX_WEEKLY_DRAWDOWN` | `0.10` (10%) | DD semanal máximo antes de pausar |
-| `MAX_OPEN_POSITIONS` | `8` | Posiciones simultáneas máximas (aggressive mode) |
-| `MAX_TRADES_PER_DAY` | `20` | Trades por día máximo (aggressive mode) |
-| `COOLDOWN_MINUTES` | `5` | Minutos de espera post-pérdida (aggressive mode) |
-| `MIN_RISK_REWARD` | `1.2` | R:R mínimo para swing setups A/B (TP2 vs SL) |
-| `MIN_RISK_REWARD_QUICK` | `1.0` | R:R mínimo para quick setups C/D/E |
-| `MIN_RISK_DISTANCE_PCT` | `0.008` (0.8%) | Distancia mínima SL-entry como fracción del precio (~1x ATR 15m floor). Checked in Strategy layer for ALL setups (A, D, E, F, G, H) + Risk guardrails as backup. History: 0.2%→0.5%→0.8%. Long-term: daily_vol-adaptive (AFML Ch.3). |
-| `MIN_ORDER_SIZES` | 7 pairs: BTC 0.0001, ETH 0.001, SOL 0.01, DOGE 1.0, XRP 1.0, LINK 0.1, AVAX 0.1 | Mínimo de tamaño de orden por par (OKX contract-based). Pre-check en main.py filtra antes de execution. |
-| `BET_SIZING_ENABLED` | `false` | Activa bet sizing por confianza AI (half-Kelly, AFML Ch.10). Requiere AI filter activo. |
-| `KELLY_FRACTION` | `0.5` | Fracción de Kelly (0.5 = half-Kelly, conservador) |
-| `BET_SIZE_MIN` | `0.25` | Floor: 25% del margin base (confidence muy baja) |
-| `BET_SIZE_MAX` | `2.0` | Ceiling: 200% del margin base (confidence muy alta) |
-| `MAX_MARGIN_PCT_OF_CAPITAL` | `0.25` (25%) | Hard cap: margin max por trade como fracción del capital. Previene over-bet con bet sizing. |
+| `RISK_PER_TRADE` | `0.01` (1%) | % of capital risked per trade. PositionSizer: size = (capital × 1%) / SL_distance |
+| `MAX_LEVERAGE` | `7` | Cap on PositionSizer leverage output |
+| `MAX_DAILY_DRAWDOWN` | `0.10` (10%) | DD diario máximo |
+| `MAX_WEEKLY_DRAWDOWN` | `0.10` (10%) | DD semanal máximo |
+| `MAX_OPEN_POSITIONS` | `8` | Posiciones simultáneas máximas |
+| `MAX_TRADES_PER_DAY` | `20` | Trades por día máximo |
+| `COOLDOWN_MINUTES` | `5` | Minutos de espera post-pérdida |
+| `MIN_RISK_REWARD` | `2.0` | R:R mínimo para swing setups (was 1.2) |
+| `MIN_RISK_REWARD_QUICK` | `1.5` | R:R mínimo para quick setups (was 1.0) |
+| `MIN_RISK_DISTANCE_PCT` | `0.005` (0.5%) | Distancia mínima SL-entry. Checked in Strategy layer via `_check_sl_distance()` + Risk guardrails. |
+| `MAX_SL_PCT` | `0.04` (4%) | Distancia máxima SL-entry. Rejects large-OB setups with unbounded risk. |
+| `MAX_PORTFOLIO_HEAT_PCT` | `0.06` (6%) | Max sum of (size × SL_distance) across all open positions + new trade |
+| `FIXED_TRADE_MARGIN` | `20` ($20) | Fallback only — used if PositionSizer raises |
+| `MIN_ORDER_SIZES` | 7 pairs: BTC 0.0001, ETH 0.001, SOL 0.01, DOGE 1.0, XRP 1.0, LINK 0.1, AVAX 0.1 | OKX contract minimums |
+| `BET_SIZING_ENABLED` | `false` | Half-Kelly bet sizing by AI confidence (AFML Ch.10). Inactive when AI bypassed. |
+| `MAX_MARGIN_PCT_OF_CAPITAL` | `0.25` (25%) | Hard cap: risk_pct per trade. Prevents over-bet with bet sizing. |
 
 ## Tests
 
-81 tests en 4 archivos:
+Tests en 4 archivos:
 - `test_position_sizer.py` — fórmula, leverage cap, edge cases
-- `test_guardrails.py` (23) — cada regla pass/fail/boundary/edge
-- `test_state_tracker.py` (35) — lifecycle, DD, cooldown, date reset, year boundary, direction matching, trade cancelled (4 tests), Redis persistence round-trip (8 tests)
-- `test_risk_service.py` (14) — check() integración: approvals, rejections, lifecycle, entry==SL, leverage capped
+- `test_guardrails.py` — cada regla pass/fail/boundary/edge, portfolio heat (4 tests)
+- `test_state_tracker.py` — lifecycle, DD, cooldown, date reset, Redis persistence
+- `test_risk_service.py` — check() integración: dynamic sizing, bet sizing, portfolio heat, lifecycle
 
 Última corrida: 81 passed, 0 failed
 
@@ -159,6 +164,7 @@ No crashea. El trade se registra igual (P&L, cooldown, trades_today), pero no re
 
 ## Cambios recientes
 
+- **2026-03-26** — Risk overhaul: PositionSizer wired into live (was flat $20). R:R raised (swing 2.0, quick 1.5). MAX_SL_PCT=4% cap. Portfolio heat 6%. Trade journal (trade_rejections table, r_multiple on close). Startup pair diagnostic.
 - **2026-03-19** — `MIN_RISK_DISTANCE_PCT` 0.5%→0.8% (~1x ATR 15m floor). SL filter added to Setup F, G, E (was missing — bug). All setups now have strategy-layer SL check.
 - **2026-03-19** — `MAX_DAILY_DRAWDOWN` 5%→10%. Pipeline diagnosis showed 54.7% of setups risk_rejected, primarily due to daily DD limit hit after ~3 SLs ($5-6 loss on $108 = 5.5%). At $20/trade with 7x, the 5% limit was self-reinforcing: losses → blocked → miss recovery setups. Weekly DD (10%) still protects. Daily and weekly are now equal — effectively the daily limit only matters for intra-day catastrophic events.
 - **2026-03-19** — Risk audit fixes: (1) Redis TTL 48h→7d, (2) hard margin cap `MAX_MARGIN_PCT_OF_CAPITAL=25%` prevents bet sizing over-bet, (3) drawdown reconciliation from PostgreSQL on restart, (4) HTF campaign pyramid adds now check DD/weekly DD/cooldown guardrails before placing, (5) campaign `execute_campaign` uses RiskApproval position_size instead of own calculation.

@@ -3,8 +3,8 @@
 > Source of truth for system state. Updated on every material change.
 > Reflects code reality — if code and doc disagree, fix the doc.
 
-**Last updated:** 2026-03-25
-**ML Feature Version:** 6
+**Last updated:** 2026-03-26
+**ML Feature Version:** 7
 **Bot status:** LIVE (OKX_SANDBOX=false, ~$90 capital)
 
 ---
@@ -35,17 +35,20 @@
 ### Risk Guardrails
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| FIXED_TRADE_MARGIN | $20 | × 7x leverage = $140 notional |
-| MAX_LEVERAGE | 7x | |
+| RISK_PER_TRADE | 1% | Dynamic sizing via PositionSizer (was: flat $20 margin) |
+| MAX_LEVERAGE | 7x | Cap on PositionSizer output |
 | MAX_OPEN_POSITIONS | 8 | |
 | MAX_TRADES_PER_DAY | 20 | |
-| MAX_DAILY_DRAWDOWN | 5% | |
+| MAX_DAILY_DRAWDOWN | 10% | was 5%, raised for $20/$108 capital ratio |
 | MAX_WEEKLY_DRAWDOWN | 10% | |
 | COOLDOWN_MINUTES | 5 | after loss |
-| MIN_RISK_REWARD | 1.2 | swing setups |
-| MIN_RISK_REWARD_QUICK | 1.0 | quick setups |
-| MIN_RISK_DISTANCE_PCT | 0.5% | SL-too-close filter (restored from 0.8% — too aggressive, killed valid 15m OBs) |
+| MIN_RISK_REWARD | 2.0 | swing setups (was 1.2) |
+| MIN_RISK_REWARD_QUICK | 1.5 | quick setups (was 1.0) |
+| MIN_RISK_DISTANCE_PCT | 0.5% | SL-too-close filter |
+| MAX_SL_PCT | 4% | SL-too-far cap — rejects setups with OB SL > 4% |
+| MAX_PORTFOLIO_HEAT_PCT | 6% | Sum of (size × SL_distance) across all positions |
 | MAX_SLIPPAGE_PCT | 0.3% | emergency close if exceeded |
+| FIXED_TRADE_MARGIN | $20 | Fallback only (if PositionSizer fails) |
 
 ### Strategy Thresholds (Optuna-validated + audit-restored)
 | Parameter | Value | Source |
@@ -89,7 +92,7 @@
 | Parameter | Value |
 |-----------|-------|
 | TP1_RR_RATIO | 1.0 (breakeven trigger) |
-| TP2_RR_RATIO | 2.0 (single TP, 100% close) |
+| SETUP_TP2_RR | A=2.5, B/F/G/H=2.0, C/E=2.0, D=1.5 |
 | TRAILING_TP_ENABLED | false |
 | MAX_TRADE_DURATION | 12h swing / 4h quick |
 | ENTRY_TIMEOUT | 24h swing / 1h quick |
@@ -229,7 +232,7 @@ Reference for VPS sizing when migrating from Nitro 5.
 
 ## 7. ML Feature Versioning
 
-**Current version:** 6 (set in `config/settings.py:ML_FEATURE_VERSION`)
+**Current version:** 7 (set in `config/settings.py:ML_FEATURE_VERSION`)
 **Storage:** `ml_setups.feature_version` column in PostgreSQL
 **Query training data:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL`
 
@@ -241,6 +244,7 @@ Reference for VPS sizing when migrating from Nitro 5.
 | v4 | 03-18 | OB vol 1.3, ATR 0.35%, target space 1.4, CVD divergence, OI delta, symmetric funding | **TRAINING READY** |
 | v5 | 03-19 | Graduated signal weighting (sweep/CVD/OI/funding by strength, not binary), tier features | **TRAINING READY** |
 | v6 | 03-19+ | daily_vol (AFML Ch.3 getDailyVol), EWMA volatility for barrier normalization | **TRAINING READY** |
+| v7 | 03-25+ | Shadow mode risk_approved/risk_reject_reason columns, OB impulse/retest scoring | **TRAINING READY** |
 
 **When to bump:** Increment `ML_FEATURE_VERSION` whenever strategy params change in ways that alter feature semantics (OB scoring weights, PD rules, confluence logic, threshold changes).
 
@@ -249,6 +253,32 @@ Reference for VPS sizing when migrating from Nitro 5.
 ---
 
 ## 8. Changelog
+
+### 2026-03-26 — Risk Management Overhaul + Trade Journal
+**What changed:**
+- **Dynamic position sizing**: PositionSizer now wired into live pipeline. `size = (capital × 1%) / SL_distance`. Replaces flat $20 margin. Queries OKX balance before each trade, falls back to tracked capital.
+- **R:R minimums raised**: swing 1.2→2.0, quick 1.0→1.5. TP2 R:R raised: A=2.5, B/F/G/H=2.0, D=1.5.
+- **MAX_SL_PCT=4%**: Rejects setups where SL > 4% from entry. `_check_sl_distance()` consolidates min+max SL checks across all 7 setup types.
+- **Portfolio heat**: `MAX_PORTFOLIO_HEAT_PCT=6%`. Sum of (size × SL_distance) across all open positions. Checked after position sizing, before approval.
+- **OB impulse score + retest count**: OB scoring weights: impulse 25%, volume 20%, freshness 20%, proximity 15%, retest 10%, size 10%. `impulse_score` measures post-OB displacement. `retest_count` penalizes multi-touch OBs.
+- **Trade journal in PostgreSQL**: `trades` table gains `margin_used`, `risk_usd`, `r_multiple`, `rejection_reason`, `notes`. New `trade_rejections` table. `get_journal_summary()` query helper.
+- **Startup pair diagnostic**: Logs per-pair capital adequacy (1% risk vs min order size) at startup.
+- **Backtest**: MAX_SL_PCT + portfolio heat checks added to TradeSimulator.
+
+**Why:** Audit identified 5 gaps: no correlation awareness, no aggregate notional cap, no portfolio heat, flat sizing ignoring volatility, no SL upper bound. Backtest comparison (30d): same PnL ($7.54 vs $7.22), max DD halved (3.5% vs 7.3%), avg R-multiple doubled (0.29 vs 0.14), PF improved (1.51 vs 1.23).
+
+**Expected impact:** Smaller but better-calibrated positions. Lower drawdown. Higher-quality trade selection via R:R filter (30 low-R:R setups rejected in backtest). Portfolio heat prevents correlated blowup.
+
+### 2026-03-26 — Shadow Mode Risk Integration (ML_FEATURE_VERSION 7)
+**What changed:**
+- Shadow mode now runs `risk_service.check(dry_run=True)` — same guardrails, same sizing as live pipeline. No state mutation, no API calls, no `risk_events` persistence.
+- Shadow position sizing uses `RiskApproval.position_size` (dynamic % of live capital), replacing standalone `SHADOW_CAPITAL × RISK_PER_TRADE`.
+- New `ml_setups` columns: `risk_approved` (bool), `risk_reject_reason` (text). Risk filtering is now a separate dimension from market outcome — both available for ML.
+- Shadow risk rejections logged as `outcome_type = shadow_risk_rejected`.
+- `SHADOW_CAPITAL` kept as fallback if risk service unavailable.
+- `ML_FEATURE_VERSION` bumped to 7 (sizing model changed, new columns).
+
+**Why:** Shadow mode needs to mirror the live pipeline exactly for forward-test validity. Standalone sizing produced different position sizes than live, making shadow PnL incomparable.
 
 ### 2026-03-25 — Execution Bug Fixes (SL labeling, orphaned PnL, DB cleanup)
 **What changed:**

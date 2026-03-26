@@ -306,6 +306,45 @@ class ExchangeClient:
             logger.error(f"OI exchange error: pair={pair}. Error: {e}")
             return None
 
+    def fetch_orderbook_snapshot(self, pair: str, depth: int = 5) -> dict | None:
+        """Fetch L2 orderbook snapshot for spread and depth estimation.
+
+        Returns dict with best_bid, best_ask, spread, depth_bid_usd, depth_ask_usd
+        (cumulative USD within ±0.1% of mid price). Returns None on failure.
+        """
+        try:
+            symbol = self._ccxt_symbol(pair)
+            book = self._market_exchange.fetch_order_book(symbol, limit=depth)
+            bids = book.get("bids", [])
+            asks = book.get("asks", [])
+            if not bids or not asks:
+                return None
+
+            best_bid = bids[0][0]
+            best_ask = asks[0][0]
+            mid = (best_bid + best_ask) / 2
+            spread = (best_ask - best_bid) / mid if mid > 0 else 0
+
+            # Cumulative depth within ±0.1% of mid
+            threshold = mid * 0.001
+            depth_bid_usd = sum(
+                p * q for p, q in bids if p >= mid - threshold
+            )
+            depth_ask_usd = sum(
+                p * q for p, q in asks if p <= mid + threshold
+            )
+
+            return {
+                "best_bid": best_bid,
+                "best_ask": best_ask,
+                "spread": spread,
+                "depth_bid_usd": depth_bid_usd,
+                "depth_ask_usd": depth_ask_usd,
+            }
+        except (ccxt.NetworkError, ccxt.RateLimitExceeded, ccxt.ExchangeError) as e:
+            logger.debug(f"Orderbook fetch failed: pair={pair} {e}")
+            return None
+
     # ================================================================
     # Historical funding rates — for backtest backfill
     # ================================================================

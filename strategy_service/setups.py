@@ -148,6 +148,9 @@ class SetupEvaluator:
                          f"(price={current_price:.2f} obs={len(aligned_obs)})")
             return None
 
+        logger.debug(f"Setup A [{pair}]: best OB impulse={best_ob.impulse_score:.2f} "
+                     f"retests={best_ob.retest_count} vol={best_ob.volume_ratio:.1f}x")
+
         # Volume confirmation
         volume_confirmed, vol_confluences = self._check_volume_confirmation(
             best_ob, aligned_sweep, market_snapshot, candles
@@ -202,11 +205,8 @@ class SetupEvaluator:
                          f"sl={sl_price:.2f} dir={direction}")
             return None
 
-        # Early SL-too-close filter (avoid pipeline overhead for junk setups)
-        risk_pct = abs(entry_price - sl_price) / entry_price if entry_price > 0 else 0
-        if risk_pct < settings.MIN_RISK_DISTANCE_PCT:
-            logger.debug(f"Setup A [{pair}]: SL too close "
-                         f"({risk_pct*100:.2f}% < {settings.MIN_RISK_DISTANCE_PCT*100:.1f}%)")
+        # SL distance filter (too close = noise, too far = unbounded risk)
+        if not self._check_sl_distance(entry_price, sl_price, pair, "Setup A"):
             return None
 
         tp1, tp2 = self._calculate_tp_levels(
@@ -529,6 +529,9 @@ class SetupEvaluator:
             logger.debug(f"Setup F [{pair}]: no OBs within range (aligned={len(aligned_obs)})")
             return None
 
+        logger.debug(f"Setup F [{pair}]: best OB impulse={best_ob.impulse_score:.2f} "
+                     f"retests={best_ob.retest_count} score={best_score:.3f}")
+
         # OB composite score minimum
         if best_score < settings.SETUP_F_MIN_OB_SCORE:
             logger.debug(f"Setup F [{pair}]: OB score too low ({best_score:.3f} "
@@ -585,11 +588,8 @@ class SetupEvaluator:
                          f"sl={sl_price:.2f} dir={direction}")
             return None
 
-        # Early SL-too-close filter (avoid pipeline overhead for noise setups)
-        risk_pct = abs(entry_price - sl_price) / entry_price if entry_price > 0 else 0
-        if risk_pct < settings.MIN_RISK_DISTANCE_PCT:
-            logger.debug(f"Setup F [{pair}]: SL too close "
-                         f"({risk_pct*100:.2f}% < {settings.MIN_RISK_DISTANCE_PCT*100:.1f}%)")
+        # SL distance filter (too close = noise, too far = unbounded risk)
+        if not self._check_sl_distance(entry_price, sl_price, pair, "Setup F"):
             return None
 
         tp1, tp2 = self._calculate_tp_levels(
@@ -718,11 +718,8 @@ class SetupEvaluator:
                          f"sl={sl_price:.2f} dir={direction}")
             return None
 
-        # Early SL-too-close filter
-        risk_pct = abs(entry_price - sl_price) / entry_price if entry_price > 0 else 0
-        if risk_pct < settings.MIN_RISK_DISTANCE_PCT:
-            logger.debug(f"Setup G [{pair}]: SL too close "
-                         f"({risk_pct*100:.2f}% < {settings.MIN_RISK_DISTANCE_PCT*100:.1f}%)")
+        # SL distance filter (too close = noise, too far = unbounded risk)
+        if not self._check_sl_distance(entry_price, sl_price, pair, "Setup G"):
             return None
 
         tp1, tp2 = self._calculate_tp_levels(
@@ -792,6 +789,12 @@ class SetupEvaluator:
         # OB volume ratio
         if ob.volume_ratio >= settings.OB_MIN_VOLUME_RATIO:
             confluences.append(f"ob_volume_{ob.volume_ratio:.1f}x")
+
+        # OB impulse quality — strong institutional displacement after OB
+        if ob.impulse_score >= 0.6:
+            confluences.append(f"ob_impulse_strong_{ob.impulse_score:.2f}")
+        elif ob.impulse_score >= 0.35:
+            confluences.append(f"ob_impulse_moderate_{ob.impulse_score:.2f}")
 
         # Sweep volume ratio — graduated tiers
         if sweep and sweep.volume_ratio >= settings.SWEEP_MIN_VOLUME_RATIO:
@@ -1011,7 +1014,7 @@ class SetupEvaluator:
         current_price: float,
         max_distance: float | None = None,
     ) -> float:
-        """Score an OB by volume, freshness, proximity, and body size.
+        """Score an OB by volume, freshness, proximity, body size, impulse, and retests.
 
         Returns -1 if OB should be filtered out (too small, too far).
         Otherwise returns a 0-1 composite score.
@@ -1047,11 +1050,20 @@ class SetupEvaluator:
         size_score = min((body_pct - settings.OB_MIN_BODY_PCT) / 0.02, 1.0)
         size_score = max(0.0, size_score)
 
+        # Impulse score (0-1): strong post-OB displacement = institutional footprint
+        impulse_score = ob.impulse_score
+
+        # Retest penalty (0-1): first touch = 1.0, degrades toward 0.0 at OB_MAX_RETESTS
+        max_retests = settings.OB_MAX_RETESTS
+        retest_score = max(0.0, 1.0 - (ob.retest_count / max_retests)) if max_retests > 0 else 1.0
+
         return (
             vol_score * settings.OB_SCORE_VOLUME_W
             + fresh_score * settings.OB_SCORE_FRESHNESS_W
             + prox_score * settings.OB_SCORE_PROXIMITY_W
             + size_score * settings.OB_SCORE_SIZE_W
+            + impulse_score * settings.OB_SCORE_IMPULSE_W
+            + retest_score * settings.OB_SCORE_RETEST_W
         )
 
     def _find_best_ob(
@@ -1136,3 +1148,27 @@ class SetupEvaluator:
             return ob.low   # SL below OB low
         else:
             return ob.high  # SL above OB high
+
+    def _check_sl_distance(
+        self, entry_price: float, sl_price: float, pair: str, setup_name: str
+    ) -> bool:
+        """Check SL distance is within [MIN_RISK_DISTANCE_PCT, MAX_SL_PCT].
+
+        Returns True if valid, False if should be rejected.
+        """
+        if entry_price <= 0:
+            return False
+        risk_pct = abs(entry_price - sl_price) / entry_price
+        if risk_pct < settings.MIN_RISK_DISTANCE_PCT:
+            logger.debug(
+                f"{setup_name} [{pair}]: SL too close "
+                f"({risk_pct*100:.2f}% < {settings.MIN_RISK_DISTANCE_PCT*100:.1f}%)"
+            )
+            return False
+        if risk_pct > settings.MAX_SL_PCT:
+            logger.debug(
+                f"{setup_name} [{pair}]: SL too far "
+                f"({risk_pct*100:.2f}% > {settings.MAX_SL_PCT*100:.1f}%)"
+            )
+            return False
+        return True

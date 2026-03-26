@@ -107,6 +107,8 @@ class TestEntryFill:
         mock_settings.TP2_CLOSE_PCT = 0.30
         mock_settings.MAX_TRADE_DURATION_SECONDS = 43200
         mock_settings.MIN_RISK_DISTANCE_PCT = 0.001
+        mock_settings.MAX_SL_PCT = 0.04
+        mock_settings.MAX_PORTFOLIO_HEAT_PCT = 0.06
         mock_settings.MIN_RISK_REWARD = 1.5
         mock_settings.MIN_RISK_REWARD_QUICK = 1.0
         mock_settings.COOLDOWN_MINUTES = 30
@@ -365,6 +367,8 @@ class TestTimeout:
         mock_settings.TP1_CLOSE_PCT = 0.50
         mock_settings.TP2_CLOSE_PCT = 0.30
         mock_settings.MIN_RISK_DISTANCE_PCT = 0.001
+        mock_settings.MAX_SL_PCT = 0.04
+        mock_settings.MAX_PORTFOLIO_HEAT_PCT = 0.06
         mock_settings.MIN_RISK_REWARD = 1.5
         mock_settings.MIN_RISK_REWARD_QUICK = 1.0
         mock_settings.COOLDOWN_MINUTES = 30
@@ -438,21 +442,40 @@ class TestPositionSizing:
         expected_size = (1000 * settings.MAX_LEVERAGE) / 50000
         assert trade.position_size == pytest.approx(expected_size, rel=0.01)
 
-    def test_max_open_positions(self):
+    @patch("scripts.backtest.settings")
+    def test_max_open_positions(self, mock_settings):
         """Rejects setup when MAX_OPEN_POSITIONS reached."""
+        mock_settings.MAX_OPEN_POSITIONS = 3
+        mock_settings.RISK_PER_TRADE = 0.02
+        mock_settings.MAX_LEVERAGE = 5
+        mock_settings.MIN_RISK_DISTANCE_PCT = 0.001
+        mock_settings.MAX_SL_PCT = 0.04
+        # High heat limit so max_positions triggers first, not heat
+        mock_settings.MAX_PORTFOLIO_HEAT_PCT = 1.0
+        mock_settings.MIN_RISK_REWARD = 1.5
+        mock_settings.MIN_RISK_REWARD_QUICK = 1.0
+        mock_settings.COOLDOWN_MINUTES = 0
+        mock_settings.MAX_TRADES_PER_DAY = 100
+        mock_settings.MAX_DAILY_DRAWDOWN = 0.10
+        mock_settings.MAX_WEEKLY_DRAWDOWN = 0.20
+        mock_settings.TRADING_FEE_RATE = 0.0005
+        mock_settings.ENTRY_TIMEOUT_SECONDS = 86400
+        mock_settings.ENTRY_TIMEOUT_QUICK_SECONDS = 3600
+        mock_settings.TP1_CLOSE_PCT = 0.50
+        mock_settings.TP2_CLOSE_PCT = 0.30
+        mock_settings.MAX_TRADE_DURATION_SECONDS = 43200
+
         sim = TradeSimulator(initial_capital=10000)
         candle0 = _candle(timestamp=1000000)
 
-        # Use different pairs to avoid pending replacement (need MAX+1 pairs)
-        pairs = [f"PAIR{i}/USDT" for i in range(settings.MAX_OPEN_POSITIONS + 1)]
-        for i in range(settings.MAX_OPEN_POSITIONS):
+        pairs = [f"PAIR{i}/USDT" for i in range(4)]
+        for i in range(3):
             setup = _setup(pair=pairs[i], entry=49500 - i * 100,
                            sl=49000 - i * 100, timestamp=1000000 + i)
-            assert sim.on_setup(setup, candle0) is True
+            assert sim.on_setup(setup, candle0) is True, f"Setup {i} rejected"
 
-        # Next one should be rejected (different pair)
-        extra = _setup(pair=pairs[settings.MAX_OPEN_POSITIONS],
-                       entry=48000, sl=47500, timestamp=1000000 + 100)
+        # 4th should be rejected by max positions
+        extra = _setup(pair=pairs[3], entry=48000, sl=47500, timestamp=1000000 + 100)
         assert sim.on_setup(extra, candle0) is False
 
 
@@ -779,6 +802,8 @@ class TestExecutionFunnel:
         mock_settings.RISK_PER_TRADE = 0.02
         mock_settings.MAX_LEVERAGE = 5
         mock_settings.MIN_RISK_DISTANCE_PCT = 0.001
+        mock_settings.MAX_SL_PCT = 0.04
+        mock_settings.MAX_PORTFOLIO_HEAT_PCT = 0.06
         mock_settings.MIN_RISK_REWARD = 1.5
         mock_settings.MIN_RISK_REWARD_QUICK = 1.0
         mock_settings.COOLDOWN_MINUTES = 0

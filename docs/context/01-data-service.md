@@ -196,8 +196,10 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - `set_latest_candle()`, `get_latest_candle()`, `pop_cancel_request()`, etc.
 
 **PostgreSQL (historical):**
-- 10 tables: `candles`, `trades`, `ai_decisions`, `risk_events`, `bot_metrics`, `funding_rate_history`, `open_interest_history`, `cvd_history`, `campaigns`, `ml_setups`
-- **trades.setup_id** (VARCHAR(20), added 2026-03-19): links trade to `ml_setups` row for ML outcome resolution. Auto-migrated via `ALTER TABLE ADD COLUMN IF NOT EXISTS`.
+- 11 tables: `candles`, `trades`, `ai_decisions`, `risk_events`, `bot_metrics`, `funding_rate_history`, `open_interest_history`, `cvd_history`, `campaigns`, `ml_setups`, `trade_rejections`
+- **trades** columns added (03-26): `margin_used`, `risk_usd`, `r_multiple`, `rejection_reason`, `notes`, `setup_id`. `r_multiple` computed on close by `PositionMonitor._persist_trade_close()`.
+- **trade_rejections** table (03-26): logs every risk-rejected setup (`pair`, `direction`, `setup_type`, `reason`, `sl_distance_pct`, `rr_ratio`, `oi_delta`). Written by `main.py._log_trade_rejection()`.
+- **`get_journal_summary(last_n_days)`**: Aggregates from trades + trade_rejections: win_rate, avg_r, total_pnl, trades_by_pair, trades_by_setup, rejection_summary.
 - `store_candles()` with batch insert + ON CONFLICT DO NOTHING (dedup)
 - `load_candles()` returns oldest-first ordering
 - Index on `(pair, timeframe, timestamp DESC)` for fast lookups

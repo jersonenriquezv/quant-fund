@@ -1384,6 +1384,14 @@ class PositionMonitor:
                 f"pnl_usd={pnl_usd}"
             )
 
+            # Compute R-multiple: pnl / risk_amount
+            r_multiple = None
+            risk_usd = None
+            if pos.filled_size and pos.actual_entry_price and pos.sl_price:
+                risk_usd = pos.filled_size * abs(pos.actual_entry_price - pos.sl_price)
+                if risk_usd > 0 and pnl_usd is not None:
+                    r_multiple = pnl_usd / risk_usd
+
             self._data_store.postgres.update_trade(
                 trade_id=trade_id,
                 actual_exit=pos.actual_exit_price,
@@ -1391,6 +1399,8 @@ class PositionMonitor:
                 pnl_usd=pnl_usd,
                 pnl_pct=pnl_pct,
                 status="closed",
+                r_multiple=r_multiple,
+                risk_usd=risk_usd,
             )
         except Exception as e:
             logger.error(f"Failed to persist trade close: {pos.pair} {e}")

@@ -1,6 +1,6 @@
 # Strategy Service
-> Última actualización: 2026-03-19
-> Estado: implementado. **Post-review (2026-03-19):** ENABLED_SETUPS: setup_a, setup_c, setup_d_choch, setup_e, setup_f — 5 tipos activos. Setup H deshabilitado (11% WR, adverse selection). Setup B deshabilitado (audit 03-18). MIN_RISK_DISTANCE_PCT restaurado a 0.5% (0.8% mataba OBs válidos). **TP2 per-setup** via `SETUP_TP2_RR` dict: reversals (A,C,E) 2.0 R:R, continuations/scalps (B,D,F,G,H) 1.5 R:R. Expectancy filters: MIN_ATR_PCT 0.35%, MIN_TARGET_SPACE_R 1.4 (Optuna validated).
+> Última actualización: 2026-03-26
+> Estado: implementado. OB impulse score + retest counter in scoring. `_check_sl_distance()` consolidates MIN (0.5%) + MAX (4%) SL checks across all setups. TP2 per-setup raised: A=2.5, B/F/G/H=2.0, D=1.5. Shadow mode for paper-trading non-live setups.
 
 ## Qué hace (30 segundos)
 El Strategy Service es el detective del sistema. Analiza los datos del Data Service buscando patrones de Smart Money Concepts (SMC): rupturas de estructura (BOS/CHoCH), order blocks, fair value gaps, sweeps de liquidez, y zonas premium/discount. Cuando encuentra un setup con suficiente confluencia, genera un `TradeSetup` para evaluación.
@@ -24,6 +24,8 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
 - Validación: volumen >1.5x promedio, máximo 48h de edad (overrideable via `max_age_hours` param — HTF campaigns use 168h/7 days)
 - Deduplicación por break asociado
 - **`break_timestamp`:** Cada OB almacena el timestamp de la vela que rompió estructura. La mitigación solo evalúa velas posteriores al `break_timestamp`, evitando que la propia vela de ruptura (o anteriores) invalide el OB prematuramente.
+- **`impulse_score`** (0-1): Calculado al detectar el OB. Mide la fuerza del desplazamiento post-OB (las velas de impulso entre el OB y el structure break). Dos componentes 50/50: desplazamiento de precio (normalizado a 3x OB body = 1.0) y intensidad de volumen (avg impulse vol / avg vol, 3x = 1.0). Máximo 5 candles evaluadas. OBs con impulso fuerte (≥0.6) agregan `ob_impulse_strong` como confluencia; moderado (≥0.35) agrega `ob_impulse_moderate`.
+- **`retest_count`** (int): Actualizado en cada `update()`. Cuenta cuántas velas han wicado dentro de la zona del OB sin mitigarlo (close no atraviesa el OB). Solo cuenta velas posteriores al `break_timestamp`. First-touch OBs son más fuertes — la liquidez institucional se absorbe con cada retest.
 - **Breaker Blocks:** Cuando un OB es mitigado (precio cierra a través de él), se crea un breaker block con dirección invertida. Bullish OB mitigado → bearish breaker (resistencia). Bearish OB mitigado → bullish breaker (soporte). Almacenados en `_breaker_blocks` dict, accesibles via `get_breaker_blocks(pair, timeframe)`. Expiran después de `OB_MAX_AGE_HOURS`.
 
 ### `strategy_service/fvg.py` — Fair Value Gaps
@@ -48,7 +50,7 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
   - **Orden temporal obligatorio**: sweep ANTES del CHoCH
   - **Proximidad temporal**: sweep dentro de `SETUP_A_MAX_SWEEP_CHOCH_GAP` candles del CHoCH (60 candles = ~300min en 5m, ~15h en 15m — aggressive mode: was 45)
   - **Entry depth configurable**: `SETUP_A_ENTRY_PCT` (default 0.65, env var override). Shallower entry for higher fill rate (Optuna 03-15: was 0.50).
-  - **SL-too-close early filter**: `MIN_RISK_DISTANCE_PCT` (0.5%) check runs in strategy layer for ALL setups (A, D, E, F, G, H) before building TradeSetup. Also checked in Risk guardrails as backup. History: 0.2% → 0.5% → 0.8% (too aggressive, killed valid 15m OBs) → 0.5% restored.
+  - **SL distance filter**: `_check_sl_distance()` checks both MIN (0.5%) and MAX (4%) SL distance for ALL setups (A, B, D, E, F, G, H) before building TradeSetup. Also checked in Risk guardrails as backup.
   - **AI bypass**: In `AI_BYPASS_SETUP_TYPES` — AI filter skipped, synthetic AIDecision(confidence=1.0) generated. AI v2 had 89.6% approval rate = no value added.
   - **Backtest 60d aggressive**: 46 trades, 47.8% WR, +$2,510. El bottleneck principal era `no_aligned_sweep` — gap=20 solo producía 11 trades. Gap=40 captura sweeps más lejanos sin degradar calidad.
 - **Setup B** (secundario): BOS + FVG adyacente a OB — **DESHABILITADO** (audit 03-18: 0-7.7% WR, F es estrictamente mejor — F = B sin gate de FVG débil)
@@ -82,8 +84,8 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
   - Usa `get_breaker_blocks()` de OrderBlockDetector
 - **Swing setups evalúan solo 15m** — `SWING_SETUP_TIMEFRAMES = ["15m"]`. Detectors corren en 5m también (quick setups D/H los necesitan) pero swing setups (A/B/F/G) solo consideran OBs de 15m. `MIN_RISK_DISTANCE_PCT` (0.5%) filtra micro-SLs.
 - **Zone-based orders** — no requiere proximidad al OB. El bot coloca limit orders al 50% del OB body (configurable via `SETUP_A_ENTRY_PCT`) y espera fill. SL siempre en `ob.low` (long) / `ob.high` (short) — wick-to-wick, independiente del entry.
-  - `_find_best_ob()` selecciona by composite scoring via `_score_ob()`: volume (35%), freshness (30%), proximity (20%), body size (15%). Replaces old "highest volume_ratio + tiebreak by timestamp" selector.
-  - `_score_ob()` returns -1 (filtered) for OBs below `OB_MIN_BODY_PCT` (0.15%) or beyond `OB_MAX_DISTANCE_PCT` (8%). Otherwise returns 0-1 composite score.
+  - `_find_best_ob()` selecciona by composite scoring via `_score_ob()`: impulse (25%), volume (20%), freshness (20%), proximity (15%), retest penalty (10%), body size (10%). Replaces old "highest volume_ratio + tiebreak by timestamp" selector.
+  - `_score_ob()` returns -1 (filtered) for OBs below `OB_MIN_BODY_PCT` (0.15%) or beyond `OB_MAX_DISTANCE_PCT` (8%). Otherwise returns 0-1 composite score. Retest penalty: linear decay from 1.0 (first touch) to 0.0 at `OB_MAX_RETESTS` (4).
   - `OB_MIN_BODY_PCT` (0.15%) filters micro-OBs that produce tiny SLs eaten by commissions
   - `_is_ob_within_range()` filtra OBs más allá de `OB_MAX_DISTANCE_PCT` (8%) del precio actual
   - `_is_price_near_ob()` se mantiene para notificaciones de OB summary, pero no bloquea setups
@@ -91,12 +93,13 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
 - Mínimo 2 confluencias obligatorio (no configurable — hardcoded)
 - **`_check_volume_confirmation()`** — método compartido por todos los swing setups (A/B/F/G). Señales graduadas (v5):
   - OB volume ratio vs `OB_MIN_VOLUME_RATIO` (1.3)
+  - **OB impulse quality**: `impulse_score >= 0.6` → `ob_impulse_strong` confluence, `>= 0.35` → `ob_impulse_moderate`
   - **Sweep graduado**: 1.5-2.5x = 1 confluence, 2.5-4x = +`sweep_strong`, 4x+ = +`sweep_strong`+`sweep_extreme` (thresholds: `SWEEP_STRONG_VOLUME_RATIO`, `SWEEP_EXTREME_VOLUME_RATIO`)
   - OI flush events (boolean + USD amount)
   - **CVD divergence + magnitud**: divergencia precio↓/CVD↑ = señal más fuerte. MTF agreement (5m+15m+1h). Fallback a simple alignment. **Buy/sell dominance tiers**: 55%+ = `buy_dominance_moderate`, 60%+ = `buy_dominance_strong` (thresholds: `BUY_DOMINANCE_MODERATE_PCT`, `BUY_DOMINANCE_STRONG_PCT`)
   - **OI delta graduado**: trackea OI USD entre evaluaciones por pair. 0.5-2% = `oi_rising_mild`, 2-5% = `oi_rising_moderate`, 5%+ = `oi_rising_strong`. Dropping >2% = `oi_dropping_Xpct`. Raw `oi_delta_X.XXpct` siempre incluido para ML. (thresholds: `OI_DELTA_MILD_PCT`, `OI_DELTA_MODERATE_PCT`, `OI_DELTA_STRONG_PCT`)
   - **Funding graduado simétrico**: mild (0.01-0.03%) = 1 confluence CONTEXT, moderate (0.03-0.06%) = SUPPORTING, extreme (0.06%+) = 2 confluences. Labels: `funding_mild_long/short`, `funding_moderate_long/short`, `funding_extreme_long/short`. (thresholds: `FUNDING_MILD_THRESHOLD`, `FUNDING_MODERATE_THRESHOLD`, `FUNDING_EXTREME_THRESHOLD`)
-- Cálculo de TP1 (1:1 R:R, breakeven trigger) y TP2 (**per-setup** via `SETUP_TP2_RR` dict, fallback `TP2_RR_RATIO`=2.0). Reversals (A, C, E): 2.0. Continuations/scalps (B, D, F, G, H): 1.5.
+- Cálculo de TP1 (1:1 R:R, breakeven trigger) y TP2 (**per-setup** via `SETUP_TP2_RR` dict, fallback `TP2_RR_RATIO`=2.0). A=2.5, B/F/G/H=2.0, C/E=2.0, D=1.5.
 - **R:R simple** — `abs(tp2 - entry) / abs(entry - sl)` ≥ `MIN_RISK_REWARD`
 - **Validación premium/discount** — equilibrium zone permite trades por defecto (`ALLOW_EQUILIBRIUM_TRADES = True`)
 - **PD override diferido** — el check de PD alignment se difiere hasta después de contar confluencias. Si un setup tiene ≥ `PD_OVERRIDE_MIN_CONFLUENCES` (5) confluencias, puede operar contra la zona PD. Evita lockout total cuando bearish bias + discount zone bloquea todo. Log INFO cuando se activa override.
@@ -163,7 +166,8 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 - `OB_PROXIMITY_PCT: float = 0.010` — 1.0% del precio como margen de proximidad al OB (aggressive mode: was 0.7% post-Optuna)
 - `OB_MAX_DISTANCE_PCT: float = 0.08` — 8% máximo de distancia del precio al OB para zone-based orders (aggressive mode: reverted to 8%, Optuna had narrowed to 4%)
 - `OB_MIN_BODY_PCT: float = 0.0015` — 0.15% minimum OB body size as fraction of price (Optuna 03-15: was 0.1%)
-- `OB_SCORE_VOLUME_W / FRESHNESS_W / PROXIMITY_W / SIZE_W` — composite OB scoring weights (0.35 / 0.30 / 0.20 / 0.15, must sum to 1.0)
+- `OB_SCORE_IMPULSE_W / VOLUME_W / FRESHNESS_W / PROXIMITY_W / RETEST_W / SIZE_W` — composite OB scoring weights (0.25 / 0.20 / 0.20 / 0.15 / 0.10 / 0.10, must sum to 1.0)
+- `OB_MAX_RETESTS: int = 4` — retest count at which OB retest score reaches 0 (fully absorbed)
 - `SETUP_A_ENTRY_PCT: float = 0.65` — fraction of OB body for Setup A entry placement (Optuna 03-15: was 0.50, higher fill rate)
 - `SETUP_A_MODE: str = "both"` — Setup A CHoCH/HTF alignment mode: "continuation", "reversal", or "both" (env var)
 - `SETUP_A_MAX_SWEEP_CHOCH_GAP: int = 60` — máximo candles entre sweep y CHoCH (aggressive mode: was 45 post-Optuna)
@@ -256,7 +260,7 @@ El backtester soporta `--ai` flag para evaluar swing setups con Claude sobre dat
 ## Tests
 101 tests en 6 archivos:
 - `test_market_structure.py` — swings, BOS, CHoCH, single break per candle
-- `test_order_blocks.py` — detección, volumen, expiración, mitigación
+- `test_order_blocks.py` — detección, volumen, expiración, mitigación, impulse score, retest count
 - `test_fvg.py` — detección, fill, expiración
 - `test_liquidity.py` — clustering, sweeps, premium/discount, equilibrium band, swept persistence
 - `test_setups.py` — Setup A/B, confluencia, TPs, PD alignment, PD override, PD_AS_CONFLUENCE, SETUP_A_MODE, SL direction validation, simple R:R, OB proximity, temporal ordering, Setup F hardening (BOS age, displacement, OB-BOS gap, OB score, CVD/funding inclusion, entry distance, min confluences), Setup B hardening (BOS age, entry distance, direction bug fix)

@@ -27,6 +27,7 @@ from ai_service import AIService
 from risk_service import RiskService
 from execution_service import ExecutionService
 from execution_service.campaign_monitor import CampaignMonitor
+from execution_service.shadow_monitor import ShadowMonitor
 from shared.notifier import TelegramNotifier
 from shared.alert_manager import AlertManager
 from data_service.liquidation_estimator import estimate_liquidation_levels
@@ -45,6 +46,7 @@ _ai_service: AIService | None = None
 _risk_service: RiskService | None = None
 _execution_service: ExecutionService | None = None
 _campaign_monitor: CampaignMonitor | None = None
+_shadow_monitor: ShadowMonitor | None = None
 _notifier: TelegramNotifier | None = None
 _alert_manager: AlertManager | None = None
 
@@ -105,6 +107,10 @@ async def on_candle_confirmed(candle: Candle) -> None:
 
     if _strategy_service is None:
         return
+
+    # Shadow monitor: evaluate all tracked shadow positions against this candle
+    if _shadow_monitor is not None:
+        _shadow_monitor.check_candle(candle.pair, candle)
 
     # ============================================================
     # HTF Campaign path — 4H candles trigger campaign evaluation
@@ -216,6 +222,49 @@ async def on_candle_confirmed(candle: Candle) -> None:
     # --- ML: capture feature snapshot AFTER dedup (dedup adds no ML value) ---
     _ml_log_setup(setup, candle)
 
+    # --- Shadow mode: run full pipeline (risk check) but don't execute ---
+    if setup.setup_type in settings.SHADOW_MODE_SETUPS and _shadow_monitor is not None:
+        # Risk check (dry_run=True: no state mutation, no API calls, no persistence)
+        risk_approval = None
+        if _risk_service is not None:
+            risk_approval = _risk_service.check(setup, dry_run=True)
+
+            # Persist risk check result to ml_setups (separate from outcome)
+            if _data_service is not None and _data_service.postgres is not None:
+                _data_service.postgres.update_ml_risk_check(
+                    setup.setup_id,
+                    approved=risk_approval.approved,
+                    reason=risk_approval.reason,
+                )
+
+            if not risk_approval.approved:
+                logger.info(
+                    f"Shadow risk rejected: {setup.setup_type} {setup.pair} "
+                    f"{setup.direction} — {risk_approval.reason}"
+                )
+                _ml_resolve_outcome(setup.setup_id, "shadow_risk_rejected")
+                _setup_dedup_cache[dedup_key] = time.time()
+                return
+
+        # Fetch orderbook snapshot for fill quality estimation
+        ob_snapshot = None
+        if _data_service is not None:
+            ob_snapshot = _data_service.get_orderbook_snapshot(setup.pair)
+
+        _shadow_monitor.add_shadow(
+            setup, orderbook=ob_snapshot, risk_approval=risk_approval,
+        )
+        _setup_dedup_cache[dedup_key] = time.time()
+        logger.info(
+            f"Shadow mode: {setup.setup_type} {setup.pair} {setup.direction} "
+            f"size={risk_approval.position_size:.6f} leverage={risk_approval.leverage:.1f}x "
+            f"— tracking theoretical outcome (not executing)"
+            if risk_approval and risk_approval.approved
+            else f"Shadow mode: {setup.setup_type} {setup.pair} {setup.direction} "
+            f"— tracking (standalone sizing)"
+        )
+        return
+
     # Pre-check: can this pair meet exchange minimum order size?
     min_size = settings.MIN_ORDER_SIZES.get(setup.pair, 0)
     if min_size > 0:
@@ -275,6 +324,8 @@ async def on_candle_confirmed(candle: Candle) -> None:
                 "direction": setup.direction,
                 "reason": approval.reason,
             })
+            # Log to trade_rejections table for journal analysis
+            _log_trade_rejection(setup, approval.reason or "unknown")
             # ML: resolve with risk context at rejection time
             _ml_resolve_outcome(
                 setup.setup_id, "risk_rejected",
@@ -593,6 +644,26 @@ def _persist_risk_event(event_type: str, details: dict) -> None:
         logger.error(f"Failed to persist risk event: {e}")
 
 
+def _log_trade_rejection(setup, reason: str) -> None:
+    """Log a rejected trade to the trade_rejections table (fire-and-forget)."""
+    if _data_service is None:
+        return
+    try:
+        sl_dist = abs(setup.entry_price - setup.sl_price) / setup.entry_price if setup.entry_price > 0 else None
+        risk = abs(setup.entry_price - setup.sl_price)
+        rr = abs(setup.tp2_price - setup.entry_price) / risk if risk > 0 else None
+        _data_service.postgres.insert_trade_rejection(
+            pair=setup.pair,
+            direction=setup.direction,
+            setup_type=setup.setup_type,
+            reason=reason,
+            sl_distance_pct=sl_dist,
+            rr_ratio=rr,
+        )
+    except Exception as e:
+        logger.error(f"Failed to log trade rejection: {e}")
+
+
 # ================================================================
 # Daily summary loop (replaces hourly status — available on Grafana)
 # ================================================================
@@ -829,6 +900,63 @@ async def _send_liquidation_alert() -> None:
 
 
 # ================================================================
+# Startup pair diagnostic
+# ================================================================
+
+def _log_pair_diagnostics(capital: float, postgres) -> None:
+    """Log whether each pair can meet minimum order size at 1% risk.
+
+    Uses last candle close from PostgreSQL (no REST call needed).
+    """
+    risk_pct = settings.RISK_PER_TRADE
+    risk_amount = capital * risk_pct
+
+    logger.info(f"--- Pair Diagnostic (capital=${capital:.2f}, risk={risk_pct*100:.1f}%) ---")
+
+    for pair in settings.TRADING_PAIRS:
+        min_size = settings.MIN_ORDER_SIZES.get(pair, 0)
+
+        # Get last known price from DB
+        last_price = 0.0
+        if postgres is not None:
+            try:
+                candles = postgres.load_candles(pair, "15m", count=1)
+                if candles:
+                    last_price = candles[-1].close
+            except Exception:
+                pass
+
+        if last_price <= 0:
+            logger.warning(f"  {pair}: no price data — cannot compute position size")
+            continue
+
+        # Typical position: risk_amount / (price * MIN_RISK_DISTANCE_PCT)
+        # Assumes a mid-range SL distance of ~1% for estimation
+        typical_sl_pct = 0.01
+        sl_distance = last_price * typical_sl_pct
+        position_size = risk_amount / sl_distance if sl_distance > 0 else 0
+        notional = position_size * last_price
+
+        can_trade = position_size >= min_size
+        status = "OK" if can_trade else "CAPITAL-CONSTRAINED"
+
+        logger.info(
+            f"  {pair}: price=${last_price:.2f} | "
+            f"1% risk=${risk_amount:.2f} → size={position_size:.6f} "
+            f"(min={min_size}) notional=${notional:.2f} [{status}]"
+        )
+
+        if not can_trade:
+            needed_capital = (min_size * sl_distance) / risk_pct
+            logger.warning(
+                f"  {pair}: need ${needed_capital:.0f} capital for min order "
+                f"at {risk_pct*100:.0f}% risk (have ${capital:.2f})"
+            )
+
+    logger.info("--- End Pair Diagnostic ---")
+
+
+# ================================================================
 # Config validation
 # ================================================================
 
@@ -864,6 +992,13 @@ def validate_config() -> bool:
             f"max_adds={settings.HTF_MAX_ADDS}"
         )
 
+    if settings.SHADOW_MODE_SETUPS:
+        live_setups = [s for s in settings.ENABLED_SETUPS if s not in settings.SHADOW_MODE_SETUPS]
+        logger.info(
+            f"Shadow mode: {settings.SHADOW_MODE_SETUPS} (paper trading, ${settings.SHADOW_CAPITAL} capital)"
+        )
+        logger.info(f"Live execution: {live_setups}")
+
     return ok
 
 
@@ -880,7 +1015,7 @@ async def main() -> None:
         logger.error("Config validation failed. Exiting.")
         sys.exit(1)
 
-    global _data_service, _strategy_service, _ai_service, _risk_service, _execution_service, _campaign_monitor, _notifier, _alert_manager
+    global _data_service, _strategy_service, _ai_service, _risk_service, _execution_service, _campaign_monitor, _shadow_monitor, _notifier, _alert_manager
 
     # Create Telegram notifier + AlertManager wrapper
     _notifier = TelegramNotifier(settings.TELEGRAM_BOT_TOKEN, settings.TELEGRAM_CHAT_ID)
@@ -906,6 +1041,9 @@ async def main() -> None:
         logger.warning(f"Could not fetch balance — using INITIAL_CAPITAL: ${capital:.2f}")
     _risk_service = RiskService(capital=capital, data_service=_data_service)
 
+    # Startup pair diagnostic — check capital vs min order requirements
+    _log_pair_diagnostics(capital, _data_service.postgres)
+
     # Reconcile drawdown from PostgreSQL (source of truth for realized PnL).
     # Catches cases where Redis state was lost or stale after restart.
     _risk_service._state.reconcile_drawdown_from_db(_data_service.postgres)
@@ -921,6 +1059,14 @@ async def main() -> None:
         on_sl_hit=_on_sl_hit
     )
     await _execution_service.start()
+
+    # Create ShadowMonitor for theoretical outcome tracking
+    if settings.SHADOW_MODE_SETUPS:
+        _shadow_monitor = ShadowMonitor(_data_service)
+        logger.info(
+            f"Shadow Monitor initialized: tracking {settings.SHADOW_MODE_SETUPS} "
+            f"(capital=${settings.SHADOW_CAPITAL})"
+        )
 
     # Create CampaignMonitor for HTF position trades (when enabled)
     if settings.HTF_CAMPAIGN_ENABLED and _execution_service._executor is not None:

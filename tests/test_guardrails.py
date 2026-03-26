@@ -42,20 +42,20 @@ def _make_setup(
 class TestRRRatio:
 
     def test_good_rr_passes(self, g):
-        """TP2=52000, entry=50000, SL=49000 → R:R = 2.0 >= 1.5."""
+        """TP2=52000, entry=50000, SL=49000 → R:R = 2.0 >= 2.0."""
         setup = _make_setup(entry=50000, sl=49000, tp2=52000)
         passed, reason = g.check_rr_ratio(setup)
         assert passed is True
 
     def test_exact_minimum_passes(self, g):
-        """R:R = exactly 1.5 should pass."""
-        setup = _make_setup(entry=50000, sl=49000, tp2=51500)
+        """R:R = exactly 2.0 should pass."""
+        setup = _make_setup(entry=50000, sl=49000, tp2=52000)
         passed, _ = g.check_rr_ratio(setup)
         assert passed is True
 
     def test_below_minimum_fails(self, g):
-        """R:R = 1.0 < 1.5 should fail."""
-        setup = _make_setup(entry=50000, sl=49000, tp2=51000)
+        """R:R = 1.5 < 2.0 should fail."""
+        setup = _make_setup(entry=50000, sl=49000, tp2=51500)
         passed, reason = g.check_rr_ratio(setup)
         assert passed is False
         assert "below minimum" in reason
@@ -170,3 +170,40 @@ class TestDrawdown:
     def test_weekly_dd_above_limit(self, g):
         passed, _ = g.check_weekly_drawdown(0.10)
         assert passed is False
+
+
+# ============================================================
+# Portfolio heat
+# ============================================================
+
+class TestPortfolioHeat:
+
+    def test_no_existing_heat_passes(self, g):
+        """New trade with no open positions should pass."""
+        passed, _ = g.check_portfolio_heat(
+            current_heat_usd=0.0, new_trade_heat_usd=50.0, capital=1000.0
+        )
+        assert passed is True
+
+    def test_heat_within_limit_passes(self, g):
+        """Existing $40 + new $15 = $55 < 6% of $1000 = $60."""
+        passed, _ = g.check_portfolio_heat(
+            current_heat_usd=40.0, new_trade_heat_usd=15.0, capital=1000.0
+        )
+        assert passed is True
+
+    def test_heat_exceeds_limit_rejected(self, g):
+        """Existing $50 + new $15 = $65 > 6% of $1000 = $60."""
+        passed, reason = g.check_portfolio_heat(
+            current_heat_usd=50.0, new_trade_heat_usd=15.0, capital=1000.0
+        )
+        assert passed is False
+        assert "Portfolio heat" in reason
+        assert "exceeds" in reason
+
+    def test_heat_at_exact_limit_passes(self, g):
+        """Exactly at 6% should pass (not strictly greater)."""
+        passed, _ = g.check_portfolio_heat(
+            current_heat_usd=50.0, new_trade_heat_usd=10.0, capital=1000.0
+        )
+        assert passed is True

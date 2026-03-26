@@ -218,11 +218,8 @@ class QuickSetupEvaluator:
         if risk <= 0:
             return None
 
-        # Early SL-too-close filter
-        risk_pct = risk / entry_price if entry_price > 0 else 0
-        if risk_pct < settings.MIN_RISK_DISTANCE_PCT:
-            logger.debug(f"Setup D [{pair}]: SL too close "
-                         f"({risk_pct*100:.2f}% < {settings.MIN_RISK_DISTANCE_PCT*100:.1f}%)")
+        # SL distance filter (too close = noise, too far = unbounded risk)
+        if not self._ob_scorer._check_sl_distance(entry_price, sl_price, pair, "Setup D"):
             return None
 
         # Variant split: setup_d_bos or setup_d_choch for per-variant measurement
@@ -388,11 +385,8 @@ class QuickSetupEvaluator:
         if risk <= 0:
             return None
 
-        # Early SL-too-close filter
-        risk_pct = risk / entry_price if entry_price > 0 else 0
-        if risk_pct < settings.MIN_RISK_DISTANCE_PCT:
-            logger.debug(f"Setup E [{pair}]: SL too close "
-                         f"({risk_pct*100:.2f}% < {settings.MIN_RISK_DISTANCE_PCT*100:.1f}%)")
+        # SL distance filter (too close = noise, too far = unbounded risk)
+        if not self._ob_scorer._check_sl_distance(entry_price, sl_price, pair, "Setup E"):
             return None
 
         # TPs from settings (breakeven trigger + per-setup TP2)
@@ -595,13 +589,8 @@ class QuickSetupEvaluator:
         if risk <= 0:
             return None
 
-        # SL-too-close filter
-        risk_pct = risk / entry_price if entry_price > 0 else 0
-        if risk_pct < settings.MIN_RISK_DISTANCE_PCT:
-            logger.debug(
-                f"Setup H [{pair}]: SL too close "
-                f"({risk_pct*100:.2f}% < {settings.MIN_RISK_DISTANCE_PCT*100:.1f}%)"
-            )
+        # SL distance filter (too close = noise, too far = unbounded risk)
+        if not self._ob_scorer._check_sl_distance(entry_price, sl_price, pair, "Setup H"):
             return None
 
         # 8. TPs from settings (breakeven trigger + per-setup TP2)
