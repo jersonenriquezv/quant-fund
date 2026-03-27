@@ -173,7 +173,7 @@ class StrategyService:
 
             # ============================================================
             # Step 4: Evaluate setups — A first, then B
-            # Only enabled setups are returned (settings.ENABLED_SETUPS)
+            # Allow enabled OR shadow-mode setups through (main.py routes shadow to ShadowMonitor)
             # ============================================================
             setup = self._setups.evaluate_setup_a(
                 structure_state=ltf_state,
@@ -188,8 +188,8 @@ class StrategyService:
             )
 
             if setup is not None:
-                if setup.setup_type not in settings.ENABLED_SETUPS:
-                    logger.debug(f"Setup A detected but disabled (not in ENABLED_SETUPS)")
+                if setup.setup_type not in settings.ENABLED_SETUPS and setup.setup_type not in settings.SHADOW_MODE_SETUPS:
+                    logger.debug(f"Setup A detected but disabled (not in ENABLED_SETUPS or SHADOW_MODE_SETUPS)")
                     setup = None
                 else:
                     reject = self._apply_expectancy_filters(setup, candles_15m, state_4h, state_1h)
@@ -217,8 +217,8 @@ class StrategyService:
             )
 
             if setup is not None:
-                if setup.setup_type not in settings.ENABLED_SETUPS:
-                    logger.debug(f"Setup B detected but disabled (not in ENABLED_SETUPS)")
+                if setup.setup_type not in settings.ENABLED_SETUPS and setup.setup_type not in settings.SHADOW_MODE_SETUPS:
+                    logger.debug(f"Setup B detected but disabled (not in ENABLED_SETUPS or SHADOW_MODE_SETUPS)")
                     setup = None
                 else:
                     reject = self._apply_expectancy_filters(setup, candles_15m, state_4h, state_1h)
@@ -246,8 +246,8 @@ class StrategyService:
             )
 
             if setup is not None:
-                if setup.setup_type not in settings.ENABLED_SETUPS:
-                    logger.debug(f"Setup F detected but disabled (not in ENABLED_SETUPS)")
+                if setup.setup_type not in settings.ENABLED_SETUPS and setup.setup_type not in settings.SHADOW_MODE_SETUPS:
+                    logger.debug(f"Setup F detected but disabled (not in ENABLED_SETUPS or SHADOW_MODE_SETUPS)")
                     setup = None
                 else:
                     reject = self._apply_expectancy_filters(setup, candles_15m, state_4h, state_1h)
@@ -275,8 +275,8 @@ class StrategyService:
             )
 
             if setup is not None:
-                if setup.setup_type not in settings.ENABLED_SETUPS:
-                    logger.debug(f"Setup G detected but disabled (not in ENABLED_SETUPS)")
+                if setup.setup_type not in settings.ENABLED_SETUPS and setup.setup_type not in settings.SHADOW_MODE_SETUPS:
+                    logger.debug(f"Setup G detected but disabled (not in ENABLED_SETUPS or SHADOW_MODE_SETUPS)")
                     setup = None
                 else:
                     reject = self._apply_expectancy_filters(setup, candles_15m, state_4h, state_1h)
@@ -298,7 +298,7 @@ class StrategyService:
             pair, htf_bias, candles_5m, candles_15m, market_snapshot, pd_zone,
         )
         if quick_setup is not None:
-            if quick_setup.setup_type not in settings.ENABLED_SETUPS:
+            if quick_setup.setup_type not in settings.ENABLED_SETUPS and quick_setup.setup_type not in settings.SHADOW_MODE_SETUPS:
                 logger.debug(f"{quick_setup.setup_type} detected but disabled")
             else:
                 return quick_setup
