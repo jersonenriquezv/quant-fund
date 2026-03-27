@@ -16,7 +16,9 @@ PG_DSN = (
     f"/{os.getenv('POSTGRES_DB', 'quant_fund')}"
 )
 
-REDIS_URL = f"redis://{os.getenv('REDIS_HOST', 'localhost')}:{os.getenv('REDIS_PORT', '6379')}"
+_REDIS_PASS = os.getenv('REDIS_PASSWORD', '')
+_REDIS_AUTH = f":{_REDIS_PASS}@" if _REDIS_PASS else ""
+REDIS_URL = f"redis://{_REDIS_AUTH}{os.getenv('REDIS_HOST', 'localhost')}:{os.getenv('REDIS_PORT', '6379')}"
 
 pg_pool: asyncpg.Pool | None = None
 redis_client: aioredis.Redis | None = None

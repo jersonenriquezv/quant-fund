@@ -27,6 +27,7 @@ class RiskService:
         self._state = RiskStateTracker(capital, redis_store=redis_store)
         self._data_service = data_service
         self._persist_failures: int = 0
+        self._balance_ever_fetched: bool = False
         logger.info(f"Risk Service initialized with capital=${capital:.2f}")
 
     # ================================================================
@@ -104,7 +105,15 @@ class RiskService:
             capital = self._query_account_balance()
             if capital is None:
                 capital = self._state.get_capital()
+                if not self._balance_ever_fetched and capital == settings.INITIAL_CAPITAL:
+                    return RiskApproval(
+                        approved=False,
+                        reason="Never fetched live balance — refusing to size from INITIAL_CAPITAL",
+                        position_size=0.0, leverage=0, margin=0.0,
+                        risk_amount=0.0, risk_pct=0.0,
+                    )
             else:
+                self._balance_ever_fetched = True
                 self._state.set_capital(capital)
 
         risk_pct = settings.RISK_PER_TRADE

@@ -61,6 +61,7 @@ class RedisStore:
             self._client = redis.Redis(
                 host=settings.REDIS_HOST,
                 port=settings.REDIS_PORT,
+                password=settings.REDIS_PASSWORD or None,
                 decode_responses=True,
                 socket_connect_timeout=5,
             )
