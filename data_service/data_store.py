@@ -1251,11 +1251,12 @@ class PostgresStore:
                 if guardian_reason is not None:
                     fields.append("guardian_close_reason = %s")
                     values.append(guardian_reason)
-                # Risk context can be added at risk check time
+                # Risk context — SAFETY: only whitelisted column names are used in SQL
+                _RISK_COLUMNS = frozenset({"risk_capital", "risk_open_positions",
+                                           "risk_daily_dd_pct", "risk_weekly_dd_pct",
+                                           "risk_trades_today"})
                 if risk_context:
-                    for key in ("risk_capital", "risk_open_positions",
-                                "risk_daily_dd_pct", "risk_weekly_dd_pct",
-                                "risk_trades_today"):
+                    for key in _RISK_COLUMNS:
                         if key in risk_context:
                             fields.append(f"{key} = %s")
                             values.append(risk_context[key])

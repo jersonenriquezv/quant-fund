@@ -4,7 +4,7 @@ loguru==0.7.3
 redis==7.2.1
 psycopg2-binary==2.9.11
 python-dotenv==1.2.2
-requests==2.32.5
+requests>=2.33.0
 pandas==3.0.1
 numpy==2.4.2
 httpx==0.28.1
