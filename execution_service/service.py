@@ -119,7 +119,7 @@ class ExecutionService:
                 self._risk.on_trade_opened(
                     pair, direction, entry_price, int(time.time()),
                     phase="active",
-                    sl_price=sl_price, position_size=size,
+                    sl_price=0.0, position_size=base_size,
                 )
 
             logger.info(
@@ -238,24 +238,23 @@ class ExecutionService:
             )
             return False
 
-        # Validate SL/TP price ordering (skip in sandbox — prices are remapped)
-        if not settings.OKX_SANDBOX:
-            if setup.direction == "long":
-                if not (setup.sl_price < setup.entry_price < setup.tp2_price):
-                    logger.error(
-                        f"Invalid price ordering for LONG: "
-                        f"sl={setup.sl_price} entry={setup.entry_price} "
-                        f"tp={setup.tp2_price}"
-                    )
-                    return False
-            else:
-                if not (setup.sl_price > setup.entry_price > setup.tp2_price):
-                    logger.error(
-                        f"Invalid price ordering for SHORT: "
-                        f"sl={setup.sl_price} entry={setup.entry_price} "
-                        f"tp={setup.tp2_price}"
-                    )
-                    return False
+        # Validate SL/TP price ordering (always — catches logic bugs in any mode)
+        if setup.direction == "long":
+            if not (setup.sl_price < setup.entry_price < setup.tp2_price):
+                logger.error(
+                    f"Invalid price ordering for LONG: "
+                    f"sl={setup.sl_price} entry={setup.entry_price} "
+                    f"tp={setup.tp2_price}"
+                )
+                return False
+        else:
+            if not (setup.sl_price > setup.entry_price > setup.tp2_price):
+                logger.error(
+                    f"Invalid price ordering for SHORT: "
+                    f"sl={setup.sl_price} entry={setup.entry_price} "
+                    f"tp={setup.tp2_price}"
+                )
+                return False
 
         # Check if already managing a position for this pair
         if setup.pair in self._monitor.positions:

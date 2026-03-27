@@ -17,6 +17,9 @@ class CancelResponse(BaseModel):
 @router.post("/trades/{pair}/cancel", response_model=CancelResponse)
 async def cancel_trade(pair: str):
     """Request cancellation of a position. Writes to Redis; the bot's monitor picks it up."""
+    from config.settings import settings
+    if pair not in settings.TRADING_PAIRS:
+        raise HTTPException(400, f"Unknown pair: {pair}")
     await queries.set_cancel_request(pair)
     return CancelResponse(status="requested", pair=pair)
 

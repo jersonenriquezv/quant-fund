@@ -809,6 +809,18 @@ class Settings:
     # OI snapshot age validation: reject if snapshot is older than window × this factor
     OI_SNAPSHOT_MAX_AGE_FACTOR: float = float(os.getenv("OI_SNAPSHOT_MAX_AGE_FACTOR", "2.0"))
 
+    def __post_init__(self):
+        """Validate guardrail bounds — prevent .env typos from nuking the account."""
+        if not (0 < self.RISK_PER_TRADE <= 0.05):
+            raise ValueError(f"RISK_PER_TRADE={self.RISK_PER_TRADE} out of safe range (0, 0.05]")
+        if not (1 <= self.MAX_LEVERAGE <= 20):
+            raise ValueError(f"MAX_LEVERAGE={self.MAX_LEVERAGE} out of safe range [1, 20]")
+        if not (0 < self.MAX_DAILY_DRAWDOWN <= 0.25):
+            raise ValueError(f"MAX_DAILY_DRAWDOWN={self.MAX_DAILY_DRAWDOWN} out of safe range (0, 0.25]")
+        if not (0 < self.MAX_WEEKLY_DRAWDOWN <= 0.30):
+            raise ValueError(f"MAX_WEEKLY_DRAWDOWN={self.MAX_WEEKLY_DRAWDOWN} out of safe range (0, 0.30]")
+        if not (1 <= self.MAX_OPEN_POSITIONS <= 20):
+            raise ValueError(f"MAX_OPEN_POSITIONS={self.MAX_OPEN_POSITIONS} out of safe range [1, 20]")
 
 
 
