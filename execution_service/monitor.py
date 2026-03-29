@@ -531,7 +531,7 @@ class PositionMonitor:
                 self._close_position(pos, "sl_too_close")
                 return
 
-        # Immediate SL verification (2-3s after placement).
+        # Immediate SL/TP verification (2-3s after placement).
         # OKX has a documented bug where API returns success but SL silently fails.
         # The 60s periodic check catches long-lived gaps; this catches instant failures.
         if pos.sl_order_id and not sl_found:
@@ -567,11 +567,37 @@ class PositionMonitor:
                     self._close_position(pos, "emergency")
                     return
 
+        # Immediate TP verification — confirm TP order exists on exchange.
+        # TP is not life-threatening (SL protects capital), but a missing TP
+        # means profits rely entirely on trailing SL or timeout.
+        if pos.tp_order_id and not tp_found:
+            if not (pos.sl_order_id and not sl_found):
+                # Only sleep if we didn't already sleep for SL verification above
+                await asyncio.sleep(2)
+            tp_verified = await self._find_attached_tp(pos)
+            if not tp_verified:
+                logger.warning(
+                    f"Immediate TP verify FAILED: {pos.pair} "
+                    f"orderId={pos.tp_order_id} not found — re-placing"
+                )
+                tp_retry = await self._executor.place_take_profit(
+                    pos.pair, close_side, pos.filled_size, pos.tp2_price
+                )
+                if tp_retry:
+                    pos.tp_order_id = tp_retry.get("id")
+                    logger.info(f"TP re-placed successfully: {pos.pair} tp_order_id={pos.tp_order_id}")
+                else:
+                    logger.error(
+                        f"TP re-placement FAILED: {pos.pair} — "
+                        f"position continues with SL only (no TP on exchange)"
+                    )
+
         pos.phase = "active"
         self._update_positions_cache()
         logger.info(f"Position ACTIVE: {pos.pair} {pos.direction} "
-                     f"entry={pos.actual_entry_price} size={pos.filled_size:.6f} "
+                     f"entry={pos.actual_entry_price:.2f} size={pos.filled_size:.6f} "
                      f"sl={pos.current_sl_price:.2f} tp={pos.tp2_price:.2f} "
+                     f"sl_order_id={pos.sl_order_id} tp_order_id={pos.tp_order_id} "
                      f"sl_attached={sl_found} tp_attached={tp_found}")
 
         # Notify Risk Service: pending → active

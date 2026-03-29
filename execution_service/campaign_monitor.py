@@ -146,8 +146,8 @@ class CampaignMonitor:
             )
             return False
 
-        # Configure pair
-        configured = await self._executor.configure_pair(setup.pair, int(leverage))
+        # Configure pair — OKX requires leverage >= 1
+        configured = await self._executor.configure_pair(setup.pair, max(1, int(leverage)))
         if not configured:
             logger.error(f"HTF campaign: failed to configure {setup.pair}")
             return False
@@ -303,10 +303,22 @@ class CampaignMonitor:
                     break
 
         if not sl_found:
-            # Place SL manually
-            sl_order = await self._executor.place_stop_market(
-                c.pair, close_side, filled_size, c.initial_sl_price
-            )
+            # Place SL manually — 3 attempts before emergency close
+            sl_order = None
+            for attempt in range(3):
+                sl_order = await self._executor.place_stop_market(
+                    c.pair, close_side, filled_size, c.initial_sl_price
+                )
+                if sl_order is not None:
+                    break
+                if attempt < 2:
+                    delay = 0.3 * (attempt + 1)
+                    logger.warning(
+                        f"HTF campaign SL attempt {attempt + 1}/3 failed, "
+                        f"retrying in {delay}s: {c.pair}"
+                    )
+                    await asyncio.sleep(delay)
+
             if sl_order is None:
                 logger.error(f"HTF campaign: SL placement FAILED — emergency close: {c.pair}")
                 result = await self._executor.close_position_market(
@@ -317,6 +329,33 @@ class CampaignMonitor:
             c.sl_order_id = sl_order.get("id")
             c.current_sl_price = c.initial_sl_price
 
+        # Immediate SL verification — confirm SL exists on exchange
+        if c.sl_order_id and not sl_found:
+            await asyncio.sleep(2)
+            verify_algos = await self._executor.find_pending_algo_orders(c.pair)
+            sl_verified = any(
+                a.get("algoId") == c.sl_order_id for a in verify_algos
+            )
+            if not sl_verified:
+                logger.warning(
+                    f"HTF campaign SL verify FAILED: {c.pair} "
+                    f"algoId={c.sl_order_id} not found — re-placing"
+                )
+                sl_retry = await self._executor.place_stop_market(
+                    c.pair, close_side, filled_size, c.initial_sl_price
+                )
+                if sl_retry:
+                    c.sl_order_id = sl_retry.get("id")
+                    c.current_sl_price = c.initial_sl_price
+                    logger.info(f"HTF campaign SL re-placed: {c.pair}")
+                else:
+                    logger.error(f"HTF campaign SL re-place FAILED — emergency close: {c.pair}")
+                    await self._executor.close_position_market(
+                        c.pair, close_side, filled_size
+                    )
+                    self._close_campaign(c.pair, "emergency")
+                    return
+
         c.phase = "active"
         self._update_campaign_cache()
         self._persist_campaign_open(c)
@@ -324,7 +363,8 @@ class CampaignMonitor:
         logger.info(
             f"HTF campaign ACTIVE: {c.pair} {c.direction} "
             f"entry={actual_price:.2f} size={filled_size:.6f} "
-            f"sl={c.current_sl_price:.2f} campaign_id={c.campaign_id}"
+            f"sl={c.current_sl_price:.2f} sl_order_id={c.sl_order_id} "
+            f"sl_attached={sl_found} campaign_id={c.campaign_id}"
         )
 
     # ================================================================

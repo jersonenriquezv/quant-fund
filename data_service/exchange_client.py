@@ -328,10 +328,10 @@ class ExchangeClient:
             # Cumulative depth within ±0.1% of mid
             threshold = mid * 0.001
             depth_bid_usd = sum(
-                p * q for p, q in bids if p >= mid - threshold
+                level[0] * level[1] for level in bids if level[0] >= mid - threshold
             )
             depth_ask_usd = sum(
-                p * q for p, q in asks if p <= mid + threshold
+                level[0] * level[1] for level in asks if level[0] <= mid + threshold
             )
 
             return {

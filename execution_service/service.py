@@ -294,8 +294,8 @@ class ExecutionService:
                 )
                 return False
 
-        # Configure pair (margin mode + leverage)
-        leverage = int(approval.leverage)
+        # Configure pair (margin mode + leverage) — OKX requires leverage >= 1
+        leverage = max(1, int(approval.leverage))
         configured = await self._executor.configure_pair(setup.pair, leverage)
         if not configured:
             logger.error(f"Failed to configure pair: {setup.pair}")
@@ -454,16 +454,21 @@ class ExecutionService:
 
         if is_split:
             logger.info(
-                f"Split trade submitted: {setup.pair} {setup.direction} "
+                f"Trade submitted: {setup.pair} {setup.direction} "
                 f"entry1={setup.entry_price:.2f} entry2={setup.entry2_price:.2f} "
                 f"half_size={half_size:.6f} leverage={leverage}x "
+                f"sl={sl_price:.2f} tp={tp_price:.2f} "
+                f"entry_order_id={order.get('id')} "
+                f"entry2_order_id={order2.get('id') if order2 else None} "
                 f"ai_conf={ai_confidence:.2f}"
             )
         else:
             logger.info(
                 f"Trade submitted: {setup.pair} {setup.direction} "
                 f"entry={setup.entry_price:.2f} size={approval.position_size:.6f} "
-                f"leverage={leverage}x ai_conf={ai_confidence:.2f}"
+                f"leverage={leverage}x sl={sl_price:.2f} tp={tp_price:.2f} "
+                f"entry_order_id={order.get('id')} "
+                f"ai_conf={ai_confidence:.2f}"
             )
         return True
 
