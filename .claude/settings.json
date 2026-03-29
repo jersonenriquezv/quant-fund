@@ -14,5 +14,18 @@
       "Bash(mkdir*)",
       "Bash(source*)"
     ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash(git commit*)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jer/quant-fund/scripts/check-critical-commit.sh"
+          }
+        ]
+      }
+    ]
   }
 }
