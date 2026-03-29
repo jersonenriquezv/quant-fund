@@ -29,6 +29,23 @@ class Guardrails:
             )
         return True, f"Risk distance {risk_pct*100:.2f}% OK"
 
+    def check_max_sl_distance(self, setup: TradeSetup) -> tuple[bool, str]:
+        """Check that SL distance does not exceed MAX_SL_PCT of entry.
+
+        Defense in depth — strategy already filters this, but risk service
+        must enforce it independently to catch manual/adopted positions
+        and any code path that bypasses strategy validation.
+        """
+        if setup.entry_price == 0:
+            return False, "Entry price is zero"
+        risk_pct = abs(setup.entry_price - setup.sl_price) / setup.entry_price
+        if risk_pct > settings.MAX_SL_PCT:
+            return False, (
+                f"SL distance {risk_pct*100:.2f}% exceeds maximum "
+                f"{settings.MAX_SL_PCT*100:.1f}%"
+            )
+        return True, f"SL distance {risk_pct*100:.2f}% OK"
+
     def check_rr_ratio(self, setup: TradeSetup) -> tuple[bool, str]:
         """Check that TP2 reward/risk >= minimum R:R.
 

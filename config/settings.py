@@ -667,7 +667,7 @@ class Settings:
     # HTF CAMPAIGN TRADING — Position trades on 4H timeframe
     # ========================
     # Master switch — disabled by default, enable via env var after testing
-    HTF_CAMPAIGN_ENABLED: bool = os.getenv("HTF_CAMPAIGN_ENABLED", "true").lower() == "true"
+    HTF_CAMPAIGN_ENABLED: bool = os.getenv("HTF_CAMPAIGN_ENABLED", "false").lower() == "true"
     # Timeframe for setup detection (OB/FVG/sweep detection)
     HTF_CAMPAIGN_SIGNAL_TF: str = "4h"
     # Timeframe for trend bias (Daily)
