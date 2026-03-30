@@ -1,5 +1,5 @@
 # Arquitectura del Sistema
-> Última actualización: 2026-03-15
+> Última actualización: 2026-03-30
 > Estado: **5/5 capas implementadas** — pipeline completo Data → Strategy → Risk → Execution. AI filter currently bypassed for all active setups (setup_a in AI_BYPASS_SETUP_TYPES, setup_d variants in QUICK_SETUP_TYPES). ENABLED_SETUPS: setup_a, setup_d_choch. Setup B (0-7.7% WR), D_bos (20-33% WR) and F (34.8% WR) disabled. OB selector upgraded with composite scoring. PnL tracking con fee deduction (0.05% per side). Signal mode disponible (`SIGNAL_ONLY=true`). **ML instrumentation** active: `ml_setups` table captures structured features at detection + outcomes at close.
 
 ## Qué hace (para entenderlo rápido)
@@ -85,6 +85,10 @@ Sin esta arquitectura, tendríamos un solo programa gigante donde todo está mez
 - Sin TP orders — la campaña sale solo via trailing SL o timeout (7 días)
 
 **Data integrity gate (antes de dedup):** DataService tiene un estado global (`RECOVERING`/`RUNNING`/`DEGRADED`). Ningún setup pasa mientras no sea `RUNNING`. Además, cada setup tiene dependencias de datos específicas (setup_c necesita CVD válido, setup_e necesita OI). Si un dep falta, el setup se bloquea y se registra como `data_blocked` en ML. Position Guardian y HTF campaigns también se bloquean durante RECOVERING.
+
+**Regime gate (después de data gate, antes de dedup):** Si Fear & Greed Index < `REGIME_EXTREME_FEAR_GATE` (20), se rechazan TODOS los setups (cualquier dirección). Outcome ML: `regime_extreme_fear`. Diagnóstico 2026-03-30: 14/14 trades con HTF alineado perdieron a F&G=8.
+
+**Shadow dedup (en `ShadowMonitor.add_shadow()`):** Además del dedup de pipeline (1h TTL por pair/direction/setup_type), el shadow monitor rechaza si ya existe una posición shadow activa (filled o unfilled) para el mismo combo. Evita tracking duplicado + notificaciones Telegram repetidas.
 
 **Regla clave:** Si CUALQUIER servicio dice NO, el trade se descarta. No hay "pero" ni "tal vez".
 
@@ -303,7 +307,7 @@ Desde 2026-03-13, el bot registra cada setup detectado con features estructurado
 - `feature_version` (incrementar en `ML_FEATURE_VERSION` cuando cambien params de estrategia)
 
 **Al resolver:**
-- `outcome_type`: filled_tp, filled_sl, filled_trailing, filled_timeout, filled_guardian, unfilled_timeout, risk_rejected, deduped, replaced, data_blocked
+- `outcome_type`: filled_tp, filled_sl, filled_trailing, filled_timeout, filled_guardian, unfilled_timeout, risk_rejected, deduped, replaced, data_blocked, shadow_tp, shadow_sl, shadow_no_fill, shadow_risk_rejected, shadow_dedup, regime_extreme_fear
 - PnL, actual entry/exit, exit_reason, fill_duration_ms, trade_duration_ms
 
 ### Non-stationary features (AFML Ch.5) — excluir del training

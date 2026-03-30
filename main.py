@@ -181,6 +181,7 @@ async def on_candle_confirmed(candle: Candle) -> None:
     )
 
     # --- Data integrity gate ---
+    snapshot = None
     if _data_service is not None and _data_service.state != DataServiceState.RUNNING:
         logger.info(
             f"Data gate: service={_data_service.state.name} | "
@@ -202,6 +203,18 @@ async def on_candle_confirmed(candle: Candle) -> None:
             )
             _ml_log_setup(setup, candle)
             _ml_resolve_outcome(setup.setup_id, "data_blocked")
+            return
+
+    # --- Regime gate: reject ALL setups in systemic crisis ---
+    if snapshot is not None and snapshot.news_sentiment is not None:
+        fg_score = snapshot.news_sentiment.score
+        if fg_score < settings.REGIME_EXTREME_FEAR_GATE:
+            logger.info(
+                f"Regime gate: F&G={fg_score} < {settings.REGIME_EXTREME_FEAR_GATE} "
+                f"(systemic crisis) | {setup.setup_type} {setup.pair} {setup.direction}"
+            )
+            _ml_log_setup(setup, candle)
+            _ml_resolve_outcome(setup.setup_id, "regime_extreme_fear")
             return
 
     # Dedup: block identical setups within TTL (covers ALL setup types, not just Claude)
@@ -254,10 +267,14 @@ async def on_candle_confirmed(candle: Candle) -> None:
         if _data_service is not None:
             ob_snapshot = _data_service.get_orderbook_snapshot(setup.pair)
 
-        _shadow_monitor.add_shadow(
+        accepted = _shadow_monitor.add_shadow(
             setup, orderbook=ob_snapshot, risk_approval=risk_approval,
         )
         _setup_dedup_cache[dedup_key] = time.time()
+        if not accepted:
+            # Shadow dedup rejected — resolve ML row so it doesn't stay pending
+            _ml_resolve_outcome(setup.setup_id, "shadow_dedup")
+            return
         if risk_approval and risk_approval.approved:
             logger.info(
                 f"Shadow mode: {setup.setup_type} {setup.pair} {setup.direction} "

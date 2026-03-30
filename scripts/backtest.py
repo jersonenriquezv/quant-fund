@@ -288,7 +288,13 @@ def _pre_filter_for_claude(setup, snapshot) -> str | None:
             if setup.direction == "short" and rate < -threshold:
                 return f"Funding extreme against short ({rate*100:.4f}% < -{threshold*100:.4f}%)"
 
-    # Check 2: Fear & Greed extreme against trade direction
+    # Check 2a: Hard regime gate — reject ALL directions in extreme fear
+    if snapshot.news_sentiment is not None:
+        fg = snapshot.news_sentiment.score
+        if fg < settings.REGIME_EXTREME_FEAR_GATE:
+            return f"Regime gate: F&G={fg} < {settings.REGIME_EXTREME_FEAR_GATE} (systemic crisis)"
+
+    # Check 2b: Fear & Greed extreme against trade direction
     if snapshot.news_sentiment is not None:
         fg = snapshot.news_sentiment.score
         if setup.direction == "long" and fg < settings.NEWS_EXTREME_FEAR_THRESHOLD:

@@ -192,6 +192,7 @@ class StrategyService:
                     logger.debug(f"Setup A detected but disabled (not in ENABLED_SETUPS or SHADOW_MODE_SETUPS)")
                     setup = None
                 else:
+                    setup = self._apply_atr_sl_floor(setup, candles_15m)
                     reject = self._apply_expectancy_filters(setup, candles_15m, state_4h, state_1h)
                     if reject:
                         logger.info(f"Expectancy filter rejected: {setup.pair} {setup.setup_type} — {reject}")
@@ -221,6 +222,7 @@ class StrategyService:
                     logger.debug(f"Setup B detected but disabled (not in ENABLED_SETUPS or SHADOW_MODE_SETUPS)")
                     setup = None
                 else:
+                    setup = self._apply_atr_sl_floor(setup, candles_15m)
                     reject = self._apply_expectancy_filters(setup, candles_15m, state_4h, state_1h)
                     if reject:
                         logger.info(f"Expectancy filter rejected: {setup.pair} {setup.setup_type} — {reject}")
@@ -250,6 +252,7 @@ class StrategyService:
                     logger.debug(f"Setup F detected but disabled (not in ENABLED_SETUPS or SHADOW_MODE_SETUPS)")
                     setup = None
                 else:
+                    setup = self._apply_atr_sl_floor(setup, candles_15m)
                     reject = self._apply_expectancy_filters(setup, candles_15m, state_4h, state_1h)
                     if reject:
                         logger.info(f"Expectancy filter rejected: {setup.pair} {setup.setup_type} — {reject}")
@@ -279,6 +282,7 @@ class StrategyService:
                     logger.debug(f"Setup G detected but disabled (not in ENABLED_SETUPS or SHADOW_MODE_SETUPS)")
                     setup = None
                 else:
+                    setup = self._apply_atr_sl_floor(setup, candles_15m)
                     reject = self._apply_expectancy_filters(setup, candles_15m, state_4h, state_1h)
                     if reject:
                         logger.info(f"Expectancy filter rejected: {setup.pair} {setup.setup_type} — {reject}")
@@ -546,6 +550,58 @@ class StrategyService:
     def get_htf_bias(self, pair: str) -> str:
         """Get the cached HTF bias for a pair."""
         return self._cached_htf_bias.get(pair, "undefined")
+
+    def _apply_atr_sl_floor(
+        self, setup: TradeSetup, candles: list[Candle],
+    ) -> TradeSetup:
+        """Widen SL to ATR floor if structural SL is too tight.
+
+        SL = max(structural_SL, entry ± ATR_SL_FLOOR_MULTIPLIER × ATR(14)).
+        This prevents noise stop-outs in ranging markets while keeping the
+        structural SL when it's already wider than the ATR floor.
+        """
+        from dataclasses import replace
+
+        atr = self._compute_atr(candles, 14)
+        if atr is None or atr <= 0 or setup.entry_price <= 0:
+            return setup
+
+        min_sl_distance = atr * settings.ATR_SL_FLOOR_MULTIPLIER
+        current_sl_distance = abs(setup.entry_price - setup.sl_price)
+
+        if current_sl_distance >= min_sl_distance:
+            return setup  # structural SL is already wider
+
+        # Widen SL to ATR floor
+        if setup.direction == "long":
+            new_sl = setup.entry_price - min_sl_distance
+        else:
+            new_sl = setup.entry_price + min_sl_distance
+
+        # Recalculate TPs based on new risk distance (preserve R:R)
+        new_risk = min_sl_distance
+        rr1 = settings.TP1_RR_RATIO
+        rr2 = settings.SETUP_TP2_RR.get(setup.setup_type, settings.TP2_RR_RATIO)
+        if setup.direction == "long":
+            new_tp1 = setup.entry_price + new_risk * rr1
+            new_tp2 = setup.entry_price + new_risk * rr2
+        else:
+            new_tp1 = setup.entry_price - new_risk * rr1
+            new_tp2 = setup.entry_price - new_risk * rr2
+
+        logger.info(
+            f"ATR SL floor: {setup.setup_type} {setup.pair} SL widened "
+            f"{current_sl_distance/setup.entry_price*100:.2f}% → "
+            f"{min_sl_distance/setup.entry_price*100:.2f}% "
+            f"({settings.ATR_SL_FLOOR_MULTIPLIER}× ATR={atr:.4f})"
+        )
+
+        return replace(
+            setup,
+            sl_price=new_sl,
+            tp1_price=new_tp1,
+            tp2_price=new_tp2,
+        )
 
     def _apply_expectancy_filters(
         self, setup: TradeSetup, candles: list[Candle],

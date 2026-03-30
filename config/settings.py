@@ -113,6 +113,10 @@ class Settings:
     #          → 0.5% (03-19, restored — 0.8% blocked valid setups with small OB bodies).
     # Long-term: replace with daily_vol-adaptive threshold (AFML Ch.3 getDailyVol).
     MIN_RISK_DISTANCE_PCT: float = 0.005
+    # ATR-based SL floor — SL must be at least ATR_SL_FLOOR_MULTIPLIER × ATR(14).
+    # If structural SL (OB wick) is tighter, widen to this floor.
+    # Diagnostic 2026-03-30: avg SL was 2.97× ATR and 14/14 got stopped by noise.
+    ATR_SL_FLOOR_MULTIPLIER: float = float(os.getenv("ATR_SL_FLOOR_MULTIPLIER", "3.0"))
     # Maximum SL distance as fraction of entry price.
     # Rejects setups where the OB is so large that SL > 4% from entry.
     # Caps risk per trade regardless of position sizing.
@@ -613,6 +617,11 @@ class Settings:
     NEWS_HEADLINES_CACHE_TTL: int = 300                  # 5 minutes
     NEWS_EXTREME_FEAR_THRESHOLD: int = 5                # F&G < 5 → reject longs (only systemic crashes)
     NEWS_EXTREME_GREED_THRESHOLD: int = 85              # F&G > 85 → reject shorts
+    # Hard regime gate — reject ALL setups (any direction) when F&G < threshold.
+    # Only for systemic crises (Luna/FTX-level). Normal fear is contrarian signal
+    # per SMC thesis — institutions accumulate when retail panics.
+    # Other fixes (ATR SL floor, structural confluence, setup_h disabled) handle quality.
+    REGIME_EXTREME_FEAR_GATE: int = int(os.getenv("REGIME_EXTREME_FEAR_GATE", "10"))
 
     # ========================
     # SIGNAL MODE — semi-manual trading
@@ -742,7 +751,9 @@ class Settings:
     # Setups NOT in this list execute normally through the live pipeline.
     SHADOW_MODE_SETUPS: list = field(default_factory=lambda: [
         "setup_a", "setup_b", "setup_c", "setup_d_choch", "setup_d_bos",
-        "setup_e", "setup_g", "setup_h",
+        "setup_e", "setup_g",
+        # "setup_h" — disabled 2026-03-30: 12/14 aligned-HTF shadow losses,
+        # chases impulse tips without OB retest. Needs pullback redesign.
     ])
     # Fictional capital for shadow mode position sizing ($500 USDT).
     # Shadow R:R and position sizes reflect realistic trades you'd take later.
@@ -756,7 +767,7 @@ class Settings:
     # ========================
     # Feature version — increment when strategy params change in ways that
     # alter feature semantics (e.g. changing OB scoring weights, PD rules).
-    ML_FEATURE_VERSION: int = 7  # v7: shadow uses risk_service sizing (not standalone), risk_approved/risk_reject_reason columns
+    ML_FEATURE_VERSION: int = 8  # v8: confluence_count = structural only (BOS/CHoCH/FVG/OB/sweep/breaker), regime gate, ATR SL floor
 
     # ========================
     # LIQUIDATION HEATMAP

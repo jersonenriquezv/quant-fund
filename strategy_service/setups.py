@@ -554,10 +554,14 @@ class SetupEvaluator:
                 confluences.append(f"pd_zone_{pd_zone.zone}")
         confluences.extend(vol_confluences)
 
-        # Setup F-specific minimum confluences (higher than generic 2)
-        if len(confluences) < settings.SETUP_F_MIN_CONFLUENCES:
-            logger.debug(f"Setup F [{pair}]: insufficient confluences "
-                         f"({len(confluences)}<{settings.SETUP_F_MIN_CONFLUENCES}: {confluences})")
+        # Setup F-specific minimum confluences (structural only)
+        structural_count = sum(
+            1 for c in confluences
+            if any(c.startswith(p) for p in self._STRUCTURAL_PREFIXES)
+        )
+        if structural_count < settings.SETUP_F_MIN_CONFLUENCES:
+            logger.debug(f"Setup F [{pair}]: insufficient structural confluences "
+                         f"({structural_count}<{settings.SETUP_F_MIN_CONFLUENCES}: {confluences})")
             return None
 
         # Deferred PD check with confluence override (hard gate mode only)
@@ -919,9 +923,21 @@ class SetupEvaluator:
         confirmed = len(confluences) >= 1
         return confirmed, confluences
 
+    # Structural confluence prefixes — only these count toward minimum.
+    # Metrics (funding, CVD, OI, volume ratios, impulse stats) are captured
+    # separately as ML features and should not inflate the confluence gate.
+    _STRUCTURAL_PREFIXES = (
+        "liquidity_sweep", "choch", "bos", "order_block", "fvg",
+        "breaker_block", "initiating_ob", "bos_confirmed", "pd_zone",
+    )
+
     def _check_confluence_minimum(self, confluences: list[str]) -> bool:
-        """Minimum 2 confirmations required. Non-negotiable per CLAUDE.md."""
-        return len(confluences) >= 2
+        """Minimum 2 structural confirmations required. Non-negotiable per CLAUDE.md."""
+        structural = sum(
+            1 for c in confluences
+            if any(c.startswith(p) for p in self._STRUCTURAL_PREFIXES)
+        )
+        return structural >= 2
 
     def _check_pd_alignment(
         self,

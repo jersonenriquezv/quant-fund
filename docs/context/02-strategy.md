@@ -1,6 +1,6 @@
 # Strategy Service
-> Última actualización: 2026-03-26
-> Estado: implementado. OB impulse score + retest counter in scoring. `_check_sl_distance()` consolidates MIN (0.5%) + MAX (4%) SL checks across all setups. TP2 per-setup raised: A=2.5, B/F/G/H=2.0, D=1.5. Shadow mode for paper-trading non-live setups.
+> Última actualización: 2026-03-30
+> Estado: implementado. Confluence counting = structural only (BOS/CHoCH/FVG/OB/sweep/breaker/pd_zone — metrics don't count). ATR SL floor: SL widened to max(structural, 3× ATR(14)). Setup H disabled from shadow (impulse chaser). Regime gate F&G < 20.
 
 ## Qué hace (30 segundos)
 El Strategy Service es el detective del sistema. Analiza los datos del Data Service buscando patrones de Smart Money Concepts (SMC): rupturas de estructura (BOS/CHoCH), order blocks, fair value gaps, sweeps de liquidez, y zonas premium/discount. Cuando encuentra un setup con suficiente confluencia, genera un `TradeSetup` para evaluación.
@@ -90,7 +90,7 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
   - `_is_ob_within_range()` filtra OBs más allá de `OB_MAX_DISTANCE_PCT` (8%) del precio actual
   - `_is_price_near_ob()` se mantiene para notificaciones de OB summary, pero no bloquea setups
 - **SL direction validation** — `_validate_sl_direction()` en todos los setup types (A/B/F/G). Rechaza si SL está del lado incorrecto del entry (bearish: sl debe ser > entry, bullish: sl debe ser < entry). Fix para bug donde Setup B con FVG encima del OB producía entry > ob.high = SL invertido.
-- Mínimo 2 confluencias obligatorio (no configurable — hardcoded)
+- Mínimo 2 confluencias **estructurales** obligatorio (no configurable — hardcoded). Solo cuentan: BOS, CHoCH, FVG, order_block, liquidity_sweep, breaker_block, pd_zone, initiating_ob, bos_confirmed. Métricas (CVD, OI, funding, volume ratios, impulse stats) se capturan como features ML separados pero NO inflan el gate.
 - **`_check_volume_confirmation()`** — método compartido por todos los swing setups (A/B/F/G). Señales graduadas (v5):
   - OB volume ratio vs `OB_MIN_VOLUME_RATIO` (1.3)
   - **OB impulse quality**: `impulse_score >= 0.6` → `ob_impulse_strong` confluence, `>= 0.35` → `ob_impulse_moderate`

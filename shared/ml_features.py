@@ -55,7 +55,16 @@ def extract_setup_features(
     risk = abs(setup.entry_price - setup.sl_price)
     features["risk_distance_pct"] = risk / setup.entry_price if setup.entry_price > 0 else 0
     features["rr_ratio"] = abs(setup.tp2_price - setup.entry_price) / risk if risk > 0 else 0
-    features["confluence_count"] = len(setup.confluences)
+    # Structural confluence count — only market structure items, not metrics.
+    # Metrics (funding, CVD, OI, impulse stats) are captured as separate features.
+    _STRUCTURAL_PREFIXES = (
+        "liquidity_sweep", "choch", "bos", "order_block", "fvg",
+        "breaker_block", "initiating_ob", "bos_confirmed", "pd_zone",
+    )
+    features["confluence_count"] = sum(
+        1 for c in (setup.confluences or [])
+        if any(str(c).startswith(p) for p in _STRUCTURAL_PREFIXES)
+    )
     features["current_price_at_detection"] = current_price
 
     # Entry distance — most predictive for fill probability

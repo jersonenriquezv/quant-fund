@@ -378,13 +378,17 @@ class TestSLValidation:
 class TestConfluence:
     """Test minimum confluence requirement."""
 
-    def test_minimum_2_confluences_required(self):
-        """Setup must have at least 2 confluences (non-negotiable)."""
+    def test_minimum_2_structural_confluences_required(self):
+        """Setup must have at least 2 structural confluences (non-negotiable)."""
         evaluator = SetupEvaluator()
-        assert evaluator._check_confluence_minimum(["one"]) is False
-        assert evaluator._check_confluence_minimum(["one", "two"]) is True
-        assert evaluator._check_confluence_minimum(["a", "b", "c"]) is True
+        # Structural: bos, choch, fvg, order_block, liquidity_sweep, breaker_block, pd_zone
+        assert evaluator._check_confluence_minimum(["bos_bullish"]) is False
+        assert evaluator._check_confluence_minimum(["bos_bullish", "order_block_15m"]) is True
+        assert evaluator._check_confluence_minimum(["choch_bearish", "fvg_5m", "pd_zone_discount"]) is True
         assert evaluator._check_confluence_minimum([]) is False
+        # Metrics don't count toward structural minimum
+        assert evaluator._check_confluence_minimum(["cvd_aligned_bullish", "ob_volume_2.3x"]) is False
+        assert evaluator._check_confluence_minimum(["bos_bearish", "cvd_aligned_bearish"]) is False
 
 
 # ============================================================

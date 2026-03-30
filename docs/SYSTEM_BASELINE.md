@@ -3,9 +3,9 @@
 > Source of truth for system state. Updated on every material change.
 > Reflects code reality — if code and doc disagree, fix the doc.
 
-**Last updated:** 2026-03-26
-**ML Feature Version:** 7
-**Bot status:** LIVE (OKX_SANDBOX=false, ~$90 capital)
+**Last updated:** 2026-03-30
+**ML Feature Version:** 8
+**Bot status:** LIVE (OKX_SANDBOX=false, ~$86 capital)
 
 ---
 
@@ -30,7 +30,7 @@
 | E (Cascade Reversal) | **ENABLED** | quick | live, collecting data |
 | F (Pure OB Retest) | **ENABLED** | swing, AI bypass | 34-59% |
 | G (Breaker Block) | **DISABLED** | — | unvalidated |
-| H (Momentum/Impulse) | **DISABLED** | — | 11% WR, PF 0.10 (28 trades). Adverse selection at impulse top. |
+| H (Momentum/Impulse) | **DISABLED** (live+shadow) | — | 11% WR live, 0/12 aligned shadow. Chases impulse tips without OB retest. Needs pullback redesign. |
 
 ### Risk Guardrails
 | Parameter | Value | Notes |
@@ -45,7 +45,9 @@
 | MIN_RISK_REWARD | 2.0 | swing setups (was 1.2) |
 | MIN_RISK_REWARD_QUICK | 1.5 | quick setups (was 1.0) |
 | MIN_RISK_DISTANCE_PCT | 0.5% | SL-too-close filter |
+| ATR_SL_FLOOR_MULTIPLIER | 3.0 | SL widened to 3× ATR(14) if structural SL is tighter |
 | MAX_SL_PCT | 4% | SL-too-far cap — rejects setups with OB SL > 4% |
+| REGIME_EXTREME_FEAR_GATE | 10 | F&G < 10 → reject ALL setups (systemic crisis only) |
 | MAX_PORTFOLIO_HEAT_PCT | 6% | Sum of (size × SL_distance) across all positions |
 | MAX_SLIPPAGE_PCT | 0.3% | emergency close if exceeded |
 | FIXED_TRADE_MARGIN | $20 | Fallback only (if PositionSizer fails) |
@@ -105,12 +107,14 @@
 Candle confirmed → StrategyService.evaluate()
   ├── HTF bias undefined? → BLOCK (all setups)
   ├── Swing setups (15m only): A → B → F → G
-  │     Each: detect pattern → PD check → OB selection → volume confirmation → confluence ≥ 2
-  │     Post-detection: ATR filter → target space filter
-  ├── Quick setups (5m): C → D → E → H (with per-type cooldown)
+  │     Each: detect pattern → PD check → OB selection → volume confirmation
+  │     → structural confluence ≥ 2 (metrics don't count)
+  │     Post-detection: ATR SL floor (widen to 3× ATR if tight) → ATR filter → target space filter
+  ├── Quick setups (5m): C → D → E (with per-type cooldown)
   └── TradeSetup produced
-        ├── ENABLED_SETUPS check → discard if not in list
-        ├── Dedup cache (1h TTL)
+        ├── ENABLED_SETUPS / SHADOW_MODE_SETUPS check
+        ├── Data integrity gate → regime gate (F&G < 20 → BLOCK all)
+        ├── Dedup cache (1h TTL) + shadow dedup (active position check)
         ├── AI filter → BYPASSED for all active setups (synthetic approval)
         ├── Risk Service → guardrails, position sizing
         └── Execution Service → limit order + SL + TP
@@ -129,7 +133,7 @@ Candle confirmed → StrategyService.evaluate()
 | PD zone | Confluence | Demoted from hard gate (PD_AS_CONFLUENCE=true) |
 | OB volume | Confluence | Restored: 1.3x minimum (was 1.0 = disabled) |
 | Whale flows | Logging only | Collected, never used in decisions |
-| Fear & Greed | Pre-filter | F&G < 5 or > 85 (almost never triggers) |
+| Fear & Greed | **Hard gate** + pre-filter | F&G < 10 → reject ALL (systemic crisis). Also: < 5 reject longs, > 85 reject shorts |
 
 ---
 
@@ -182,6 +186,8 @@ Reference for VPS sizing when migrating from Nitro 5.
 | 03-10 | AI v1 | 54 | 44.4% | +$2,104 | 1.45 | 3.44 | AI destroyed B |
 | 03-15 | Pre-Optuna | 26 | 42.3% | +$123 | 1.05 | — | |
 | 03-15 | Optuna best (30d) | 17 | 58.8% | +$1,683 | 2.65 | — | Walk-forward: PF 3.07 |
+| 03-30 | Pre-diagnostic (30d) | 104 | 36.5% | -$717 | 0.87 | -1.38 | Setup H = 74 trades, -$1,144 |
+| 03-30 | Post-diagnostic (30d) | 18 | 61.1% | +$885 | 2.63 | 9.30 | H disabled, regime gate, ATR SL floor, confluence fix |
 
 ### Per-Setup Performance (60d baseline, no AI)
 | Setup | Trades | WR | PnL | Status |
@@ -232,9 +238,9 @@ Reference for VPS sizing when migrating from Nitro 5.
 
 ## 7. ML Feature Versioning
 
-**Current version:** 7 (set in `config/settings.py:ML_FEATURE_VERSION`)
+**Current version:** 8 (set in `config/settings.py:ML_FEATURE_VERSION`)
 **Storage:** `ml_setups.feature_version` column in PostgreSQL
-**Query training data:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL`
+**Query training data:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL AND outcome_type NOT IN ('shadow_dedup', 'data_blocked', 'shadow_risk_rejected', 'risk_rejected', 'regime_extreme_fear')`
 
 | Version | Date | Changes | Training Status |
 |---------|------|---------|-----------------|
@@ -245,6 +251,7 @@ Reference for VPS sizing when migrating from Nitro 5.
 | v5 | 03-19 | Graduated signal weighting (sweep/CVD/OI/funding by strength, not binary), tier features | **TRAINING READY** |
 | v6 | 03-19+ | daily_vol (AFML Ch.3 getDailyVol), EWMA volatility for barrier normalization | **TRAINING READY** |
 | v7 | 03-25+ | Shadow mode risk_approved/risk_reject_reason columns, OB impulse/retest scoring | **TRAINING READY** |
+| v8 | 03-30+ | confluence_count = structural only (BOS/CHoCH/FVG/OB/sweep/breaker), regime gate, ATR SL floor | **TRAINING READY** |
 
 **When to bump:** Increment `ML_FEATURE_VERSION` whenever strategy params change in ways that alter feature semantics (OB scoring weights, PD rules, confluence logic, threshold changes).
 
@@ -253,6 +260,19 @@ Reference for VPS sizing when migrating from Nitro 5.
 ---
 
 ## 8. Changelog
+
+### 2026-03-30 — Shadow Diagnostic: Setup H Disabled, Regime Gate, Confluence Fix, ATR SL Floor
+**What changed:**
+- **Setup H disabled from shadow mode**: 12/14 aligned-HTF shadow losses were setup_h. Chases impulse tips at current price instead of waiting for OB retest. Only 1 structural confluence (BOS) inflated to 6-9 by impulse metrics. Kept in codebase for redesign with pullback requirement.
+- **Regime gate (F&G < 20)**: Hard gate rejects ALL setups (any direction) when Fear & Greed < 20. Diagnostic: 14/14 trades lost at F&G=8. Market structure is unreliable in extreme fear. `REGIME_EXTREME_FEAR_GATE=20`, env-var overridable.
+- **Structural-only confluence counting**: `confluence_count` and `_check_confluence_minimum()` now only count structural items (BOS, CHoCH, FVG, OB, sweep, breaker, pd_zone). Metrics (CVD, OI, funding, volume ratios, impulse stats) are captured as separate ML features but don't inflate the ≥2 gate. With corrected counting, all 14 shadow losses had only 0-1 structural confluences.
+- **ATR SL floor**: SL widened to `max(structural_SL, 3× ATR(14))`. If OB-based SL is tighter than 3× ATR, the SL moves out and TPs recalculate to preserve R:R. Diagnostic: avg SL was 2.97× ATR → all 14 got stopped by noise. 7/14 would have hit TP2 with wider SL.
+- **Shadow dedup fix**: `ShadowMonitor.add_shadow()` now rejects if an active shadow already exists for the same (pair, direction, setup_type). Previously, the 1h pipeline dedup TTL expired before shadow resolution, creating duplicate tracking + duplicate Telegram notifications. 552 orphan `ml_setups` rows cleaned up.
+- **ML_FEATURE_VERSION bumped to 8** for confluence_count semantic change.
+
+**Why:** Shadow data diagnostic (63 resolved setups, 18 unique filled trades) showed 0/14 aligned-HTF WR. Root causes: setup_h adverse selection, no regime filter, inflated confluence counts, SL within noise range. Backtest confirmed: old code -$717 (36.5% WR, PF 0.87), new code +$885 (61.1% WR, PF 2.63).
+
+**Expected impact:** Fewer but higher-quality shadow trades. Zero trades during extreme fear (F&G < 20). Wider SLs with proportionally wider TPs. Shadow data collection continues for setups A/B/C/D/E/G.
 
 ### 2026-03-26 — Risk Management Overhaul + Trade Journal
 **What changed:**

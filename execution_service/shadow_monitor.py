@@ -78,16 +78,33 @@ class ShadowMonitor:
         self, setup: TradeSetup,
         orderbook: dict | None = None,
         risk_approval=None,
-    ) -> None:
+    ) -> bool:
         """Register a shadow setup for theoretical tracking.
 
         Args:
             risk_approval: RiskApproval from risk_service.check(dry_run=True).
                 Must be provided with valid position_size. If risk service is
                 unavailable, shadow tracking is skipped (bad data > no data).
+
+        Returns:
+            True if the setup was accepted for tracking, False if skipped.
         """
         if setup.setup_id in self._positions:
-            return
+            return False
+
+        # Dedup: skip if we already have an active (unfilled or tracking)
+        # shadow for the same pair/direction/setup_type.  The 1h pipeline
+        # dedup TTL expires before shadow positions resolve, so without this
+        # the same trade idea gets re-tracked (and re-notified) repeatedly.
+        for pos in self._positions.values():
+            if (pos.pair == setup.pair
+                    and pos.direction == setup.direction
+                    and pos.setup_type == setup.setup_type):
+                logger.debug(
+                    f"Shadow dedup: {setup.setup_type} {setup.pair} "
+                    f"{setup.direction} — already tracking {pos.setup_id}"
+                )
+                return False
 
         # Require risk_approval — standalone sizing removed to prevent
         # data quality issues (wrong capital, missing guardrails)
@@ -96,12 +113,12 @@ class ShadowMonitor:
                 f"Shadow: no valid risk_approval for {setup.setup_id}, "
                 f"skipping (risk service unavailable or rejected)"
             )
-            return
+            return False
 
         risk = abs(setup.entry_price - setup.sl_price)
         if risk <= 0 or setup.entry_price <= 0:
             logger.warning(f"Shadow: invalid risk for {setup.setup_id}, skipping")
-            return
+            return False
 
         # Sanity: verify TP/SL direction matches trade direction
         if setup.direction == "long":
@@ -110,14 +127,14 @@ class ShadowMonitor:
                     f"Shadow: invalid prices for long {setup.setup_id} "
                     f"entry={setup.entry_price} tp2={setup.tp2_price} sl={setup.sl_price}"
                 )
-                return
+                return False
         else:
             if setup.tp2_price >= setup.entry_price or setup.sl_price <= setup.entry_price:
                 logger.warning(
                     f"Shadow: invalid prices for short {setup.setup_id} "
                     f"entry={setup.entry_price} tp2={setup.tp2_price} sl={setup.sl_price}"
                 )
-                return
+                return False
 
         position_size = risk_approval.position_size
         leverage = risk_approval.leverage
@@ -172,6 +189,7 @@ class ShadowMonitor:
         )
 
         self._notify_detection(pos)
+        return True
 
     def check_candle(self, pair: str, candle) -> None:
         """Evaluate all shadow positions for this pair against a new candle.
