@@ -350,7 +350,7 @@ class Settings:
 
     # --- Strategy behavior (profile-controlled) ---
     # If True, LTF structure (CHoCH/BOS) must align with HTF bias direction.
-    REQUIRE_HTF_LTF_ALIGNMENT: bool = False
+    REQUIRE_HTF_LTF_ALIGNMENT: bool = True
     # If True, trades in the equilibrium zone (around 50% of range) are blocked.
     ALLOW_EQUILIBRIUM_TRADES: bool = True
     # If True, 4H trend must be defined for HTF bias. If False, 1H alone is enough.

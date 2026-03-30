@@ -11,6 +11,7 @@ from data_service.data_integrity import (
     DataServiceState,
     CVDState,
     SETUP_DATA_DEPS,
+    UNIVERSAL_DEPS,
     can_trade_setup,
     CircuitBreaker,
     CONTRACT_SIZES,
@@ -55,9 +56,17 @@ class TestCanTradeSetup:
         assert allowed is True
         assert reason == ""
 
-    def test_recovering_state_blocks_all(self):
+    def test_recovering_allows_candle_only_setups(self):
+        """Candle-only setups (setup_a, setup_b, setup_f) pass during RECOVERING."""
         allowed, reason = can_trade_setup(
             "setup_a", _make_health(), DataServiceState.RECOVERING, CVDState.VALID,
+        )
+        assert allowed is True
+
+    def test_recovering_blocks_non_candle_setups(self):
+        """Setups needing non-candle data (setup_c) are blocked during RECOVERING."""
+        allowed, reason = can_trade_setup(
+            "setup_c", _make_health(), DataServiceState.RECOVERING, CVDState.VALID,
         )
         assert allowed is False
         assert "RECOVERING" in reason
@@ -625,15 +634,18 @@ class TestStateTransitions:
 
     # --- Setup gating respects data dependencies ---
 
-    def test_gating_blocks_during_recovering(self):
-        """No setup can trade during RECOVERING regardless of health."""
+    def test_gating_during_recovering(self):
+        """RECOVERING blocks non-candle setups but allows candle-only setups."""
         health = _make_health()
-        for setup_type in SETUP_DATA_DEPS:
+        for setup_type, deps in SETUP_DATA_DEPS.items():
             allowed, reason = can_trade_setup(
                 setup_type, health, DataServiceState.RECOVERING, CVDState.VALID,
             )
-            assert allowed is False, f"{setup_type} should be blocked during RECOVERING"
-            assert "RECOVERING" in reason, f"{setup_type} reason should mention RECOVERING, got: {reason}"
+            if deps.issubset(UNIVERSAL_DEPS):
+                assert allowed is True, f"{setup_type} (candle-only) should pass RECOVERING"
+            else:
+                assert allowed is False, f"{setup_type} should be blocked during RECOVERING"
+                assert "RECOVERING" in reason
 
     def test_gating_allows_candle_only_during_running(self):
         """Candle-only setups (A/B/D/F/H) can trade during RUNNING even with stale non-deps."""
@@ -916,13 +928,16 @@ class TestWarmupIntegration:
         svc._check_warmup()
         assert svc._state == DataServiceState.RECOVERING
 
-        # Gating blocks all setups because state is RECOVERING
-        for setup_type in SETUP_DATA_DEPS:
+        # Gating blocks non-candle setups during RECOVERING, allows candle-only
+        for setup_type, deps in SETUP_DATA_DEPS.items():
             allowed, reason = can_trade_setup(
                 setup_type, _make_health(), svc._state, CVDState.VALID,
             )
-            assert allowed is False, f"{setup_type} should be blocked"
-            assert "RECOVERING" in reason, f"{setup_type} reason should mention RECOVERING, got: {reason}"
+            if deps.issubset(UNIVERSAL_DEPS):
+                assert allowed is True, f"{setup_type} (candle-only) should pass RECOVERING"
+            else:
+                assert allowed is False, f"{setup_type} should be blocked"
+                assert "RECOVERING" in reason
 
     # --- Test 6: RUNNING → new reconnect → RECOVERING → RUNNING again ---
 

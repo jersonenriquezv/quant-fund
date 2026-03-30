@@ -86,9 +86,15 @@ def can_trade_setup(
     Returns:
         (allowed, reason) — if not allowed, reason explains why.
     """
-    # Global state check
-    if service_state != DataServiceState.RUNNING:
+    # Global state check — DEGRADED blocks everything.
+    # RECOVERING allows candle-only setups (WebSocket still delivers candles).
+    if service_state == DataServiceState.DEGRADED:
         return False, f"service {service_state.name}"
+
+    if service_state == DataServiceState.RECOVERING:
+        deps = SETUP_DATA_DEPS.get(setup_type, UNIVERSAL_DEPS)
+        if not deps.issubset(UNIVERSAL_DEPS):
+            return False, f"service {service_state.name} (needs non-candle deps)"
 
     # Get deps for this setup type
     deps = SETUP_DATA_DEPS.get(setup_type, UNIVERSAL_DEPS)

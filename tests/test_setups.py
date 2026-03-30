@@ -668,8 +668,8 @@ class TestZoneBasedOB:
 class TestBidirectionalTrading:
     """Test counter-trend setups (LTF opposes HTF)."""
 
-    def test_counter_trend_setup_a_allowed(self):
-        """Setup A with bullish CHoCH + bearish HTF should be created."""
+    def test_counter_trend_setup_a_blocked(self):
+        """Setup A with bullish CHoCH + bearish HTF is blocked (REQUIRE_HTF_LTF_ALIGNMENT=True)."""
         evaluator = SetupEvaluator()
         state = _make_structure_state(
             trend="bullish", break_type="choch", break_direction="bullish",
@@ -692,15 +692,13 @@ class TestBidirectionalTrading:
             structure_state=state, active_obs=obs,
             recent_sweeps=sweeps, pd_zone=pd,
             market_snapshot=snapshot, candles=candles,
-            pair="BTC/USDT", htf_bias="bearish",  # Counter-trend
+            pair="BTC/USDT", htf_bias="bearish",  # Counter-trend → blocked
             liquidity_levels=[],
         )
-        assert setup is not None
-        assert setup.direction == "long"
-        assert setup.htf_bias == "bearish"
+        assert setup is None
 
-    def test_counter_trend_setup_b_allowed(self):
-        """Setup B with bullish BOS + bearish HTF should be created."""
+    def test_counter_trend_setup_b_blocked(self):
+        """Setup B with bullish BOS + bearish HTF is blocked (REQUIRE_HTF_LTF_ALIGNMENT=True)."""
         evaluator = SetupEvaluator()
         state = _make_structure_state(
             trend="bullish", break_type="bos", break_direction="bullish",
@@ -716,12 +714,10 @@ class TestBidirectionalTrading:
             structure_state=state, active_obs=obs,
             active_fvgs=fvgs, pd_zone=pd,
             market_snapshot=snapshot, candles=candles,
-            pair="BTC/USDT", htf_bias="bearish",  # Counter-trend
+            pair="BTC/USDT", htf_bias="bearish",  # Counter-trend → blocked
             liquidity_levels=[],
         )
-        assert setup is not None
-        assert setup.direction == "long"
-        assert setup.htf_bias == "bearish"
+        assert setup is None
 
 
 # ============================================================
@@ -981,11 +977,13 @@ class TestSetupAMode:
         finally:
             settings.SETUP_A_MODE = original
 
-    def test_both_mode_allows_all(self):
-        """both (default): allows aligned and counter-trend."""
+    def test_both_mode_still_respects_alignment_flag(self):
+        """both mode with REQUIRE_HTF_LTF_ALIGNMENT=True blocks counter-trend."""
         evaluator = SetupEvaluator()
-        original = settings.SETUP_A_MODE
+        original_mode = settings.SETUP_A_MODE
+        original_align = settings.REQUIRE_HTF_LTF_ALIGNMENT
         settings.SETUP_A_MODE = "both"
+        settings.REQUIRE_HTF_LTF_ALIGNMENT = True
         try:
             aligned = evaluator.evaluate_setup_a(
                 **self._make_valid_setup_a_args("bullish", "bullish")
@@ -994,9 +992,10 @@ class TestSetupAMode:
                 **self._make_valid_setup_a_args("bullish", "bearish")
             )
             assert aligned is not None
-            assert counter is not None
+            assert counter is None  # Blocked by alignment flag
         finally:
-            settings.SETUP_A_MODE = original
+            settings.SETUP_A_MODE = original_mode
+            settings.REQUIRE_HTF_LTF_ALIGNMENT = original_align
 
 
 # ============================================================

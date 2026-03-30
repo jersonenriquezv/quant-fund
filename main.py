@@ -182,15 +182,6 @@ async def on_candle_confirmed(candle: Candle) -> None:
 
     # --- Data integrity gate ---
     snapshot = None
-    if _data_service is not None and _data_service.state != DataServiceState.RUNNING:
-        logger.info(
-            f"Data gate: service={_data_service.state.name} | "
-            f"{setup.setup_type} {setup.pair}"
-        )
-        _ml_log_setup(setup, candle)
-        _ml_resolve_outcome(setup.setup_id, "data_blocked")
-        return
-
     if _data_service is not None:
         snapshot = _data_service.get_market_snapshot(candle.pair)
         cvd_state = _data_service.get_cvd_state(candle.pair)
