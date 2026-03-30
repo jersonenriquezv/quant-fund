@@ -1,5 +1,5 @@
 # Data Service
-> Last updated: 2026-03-11 (news headlines switched from CryptoPanic to CryptoCompare — free, no API key)
+> Last updated: 2026-03-30 (RECOVERING gate allows candle-only setups)
 > Status: implemented (complete, running in Docker). Audited — 4 CRITICAL fixes applied. Whale tracking with USD enrichment, 3-tier Telegram notifications, new whale wallets (Trump, Jump Trading, a16z, FTX/Alameda, UK Gov BTC). News sentiment (Fear & Greed + headlines) as new data layer. HTF campaigns: 1D candle support + campaigns table.
 
 ## What it does (30 seconds)
@@ -237,7 +237,7 @@ Central hub for data quality types and gating logic:
 ### `main.py` — Entry Point
 - Single process, handles SIGINT/SIGTERM for graceful shutdown
 - Creates DataService with pipeline callback
-- **Data integrity gate:** After setup detection, before dedup: checks `_data_service.state == RUNNING` and `can_trade_setup()` per-setup deps. Blocked setups logged as `data_blocked` ML outcome. Position Guardian and HTF pipeline also gated on RUNNING state.
+- **Data integrity gate:** After setup detection, before dedup: single `can_trade_setup()` call handles both global state and per-setup deps. DEGRADED blocks all. RECOVERING allows candle-only setups (A/B/D/F/H) since WebSocket delivers candles; blocks setups needing non-candle deps (C, E). Blocked setups logged as `data_blocked` ML outcome. Position Guardian and HTF pipeline also gated on RUNNING state.
 - Pipeline completo: Data → **Data Gate** → Strategy → AI (bypass/filter) → Risk → Execution
 - AI filter currently bypassed for all active setups (setup_a in AI_BYPASS_SETUP_TYPES, setup_d variants in QUICK_SETUP_TYPES)
 - Pipeline dedup cache at entry covers ALL setup types. Risk rejections for structural reasons also cached.

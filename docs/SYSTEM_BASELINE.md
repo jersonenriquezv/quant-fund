@@ -106,6 +106,7 @@
 ```
 Candle confirmed → StrategyService.evaluate()
   ├── HTF bias undefined? → BLOCK (all setups)
+  ├── LTF direction != HTF bias? → BLOCK (REQUIRE_HTF_LTF_ALIGNMENT=True)
   ├── Swing setups (15m only): A → B → F → G
   │     Each: detect pattern → PD check → OB selection → volume confirmation
   │     → structural confluence ≥ 2 (metrics don't count)
@@ -113,7 +114,8 @@ Candle confirmed → StrategyService.evaluate()
   ├── Quick setups (5m): C → D → E (with per-type cooldown)
   └── TradeSetup produced
         ├── ENABLED_SETUPS / SHADOW_MODE_SETUPS check
-        ├── Data integrity gate → regime gate (F&G < 20 → BLOCK all)
+        ├── Data integrity gate (DEGRADED blocks all; RECOVERING allows candle-only setups)
+        ├── Regime gate (F&G < 20 → BLOCK all)
         ├── Dedup cache (1h TTL) + shadow dedup (active position check)
         ├── AI filter → BYPASSED for all active setups (synthetic approval)
         ├── Risk Service → guardrails, position sizing
@@ -261,6 +263,15 @@ Reference for VPS sizing when migrating from Nitro 5.
 
 ## 8. Changelog
 
+### 2026-03-30 — HTF Alignment Enforced + RECOVERING Gate Fix
+**What changed:**
+- **`REQUIRE_HTF_LTF_ALIGNMENT=True`**: Setups A/B/F now require LTF structure direction (CHoCH/BOS) to match HTF bias. Counter-trend trades blocked.
+- **Data gate: RECOVERING allows candle-only setups**: Previously, `service=RECOVERING` blocked ALL setups. Now candle-only setups (A/B/D/F/H) bypass the global RECOVERING gate since WebSocket still delivers candles. Setups needing non-candle deps (C=funding+CVD, E=OI) remain blocked. Removed duplicate Gate 1 in `main.py`; all filtering goes through `can_trade_setup()`.
+
+**Why:** Shadow diagnostic showed 17/17 SL on counter-trend setup_a (all long against bearish HTF). Also, 62 setup_a detections on 03-25 lost to `data_blocked` during a 3h RECOVERING window — setup_a only needs candles, which were flowing fine via WebSocket.
+
+**Expected impact:** Cleaner ML shadow data (no more counter-trend noise). Fewer data_blocked losses during recovery episodes.
+
 ### 2026-03-30 — Shadow Diagnostic: Setup H Disabled, Regime Gate, Confluence Fix, ATR SL Floor
 **What changed:**
 - **Setup H disabled from shadow mode**: 12/14 aligned-HTF shadow losses were setup_h. Chases impulse tips at current price instead of waiting for OB retest. Only 1 structural confluence (BOS) inflated to 6-9 by impulse metrics. Kept in codebase for redesign with pullback requirement.
@@ -323,7 +334,7 @@ Reference for VPS sizing when migrating from Nitro 5.
 ### 2026-03-25 — Shadow Mode (Paper Trading for Data Collection)
 **What changed:**
 - New `SHADOW_MODE_SETUPS` config: setups in this list are detected and ML-logged but NOT executed. A `ShadowMonitor` tracks theoretical outcomes (TP/SL/timeout) from price action.
-- Default: only `setup_f` executes live. All others (`setup_a`, `setup_b`, `setup_c`, `setup_d_choch`, `setup_d_bos`, `setup_e`, `setup_g`, `setup_h`) run in shadow mode.
+- Default: only `setup_f` executes live. Shadow mode setups: `setup_a`, `setup_b`, `setup_c`, `setup_d_choch`, `setup_d_bos`, `setup_e`, `setup_g`. Setup H removed from shadow (03-30) pending pullback redesign.
 - `SHADOW_CAPITAL = $500` — fictional capital for realistic position sizing in shadow trades.
 - Shadow outcomes feed `ml_setups` with the same 40+ features. Additional columns: `shadow_mode`, `shadow_position_size`, `shadow_leverage`, `shadow_margin`, `shadow_spread_at_detection`, `shadow_depth_at_entry`, `shadow_fill_time_ms`, `shadow_fill_candle_volume_ratio`, `shadow_slippage_estimate_pct`.
 - Orderbook snapshot (spread + depth ±0.1%) captured at detection via `fetch_orderbook_snapshot()`.
