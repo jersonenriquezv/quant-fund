@@ -259,21 +259,26 @@ export interface ManualPartialClose {
 
 export interface ManualAnalyticsData {
   total_trades: number;
-  winning: number;
-  losing: number;
+  wins: number;
+  losses: number;
+  winning: number; // alias
+  losing: number;  // alias
   breakeven: number;
-  win_rate: number;
+  cancelled: number;
+  win_rate: number; // Already percentage (e.g. 50.0)
   total_pnl_usd: number;
   avg_r_multiple: number | null;
   avg_rr_planned: number | null;
   profit_factor: number | null;
-  current_streak: number;
-  best_trade: { pair: string; pnl_usd: number; r_multiple: number } | null;
-  worst_trade: { pair: string; pnl_usd: number; r_multiple: number } | null;
-  tp1_hit_rate: number | null;
-  tp2_hit_rate: number | null;
-  by_pair: Record<string, { trades: number; pnl: number; win_rate: number }>;
-  by_direction: Record<string, { trades: number; pnl: number; win_rate: number }>;
+  current_streak: { count: number; type: string };
+  best_trade: { id: number; pair: string; r_multiple: number } | null;
+  worst_trade: { id: number; pair: string; r_multiple: number } | null;
+  tp1_hit_rate: number | null; // Already percentage
+  tp2_hit_rate: number | null; // Already percentage
+  breakeven_rate: number | null;
+  trades_by_pair: Record<string, { count: number; pnl_usd: number; win_rate: number; avg_r: number }>;
+  trades_by_setup: Record<string, { count: number; pnl_usd: number; win_rate: number; avg_r: number }>;
+  trades_by_direction: Record<string, { count: number; pnl_usd: number; win_rate: number; avg_r: number }>;
 }
 
 export interface ManualBalance {
