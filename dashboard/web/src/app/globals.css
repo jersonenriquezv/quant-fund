@@ -859,6 +859,48 @@ a.news-item:hover {
   margin-top: 6px;
 }
 
+/* Actions inside card */
+.manual-card-actions {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.manual-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.manual-action-row .manual-btn {
+  width: auto;
+  padding: 6px 12px;
+  font-size: 11px;
+}
+.manual-btn-del {
+  color: var(--text-muted) !important;
+  font-size: 10px !important;
+}
+.manual-field-label {
+  display: block;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  margin-bottom: 3px;
+}
+.manual-modal-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.manual-modal-actions .manual-btn {
+  flex: 1;
+}
+
+/* Planned card border */
+.manual-trade-card.trade-planned {
+  border-left: 3px solid var(--warning);
+}
+
 /* Buttons */
 .manual-btn {
   background: rgba(255,255,255,0.06);
