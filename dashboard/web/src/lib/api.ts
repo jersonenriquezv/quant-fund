@@ -194,3 +194,108 @@ export async function postApi<T>(path: string, body: unknown): Promise<T> {
   if (!res.ok) throw new Error(`API error: ${res.status}`);
   return res.json();
 }
+
+export async function patchApi<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${getApiBase()}/api${path}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  return res.json();
+}
+
+export async function deleteApi(path: string): Promise<void> {
+  const res = await fetch(`${getApiBase()}/api${path}`, {
+    method: "DELETE",
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+}
+
+// Manual trading types
+export interface ManualTrade {
+  id: number;
+  pair: string;
+  direction: string;
+  status: string;
+  entry_price: number;
+  sl_price: number;
+  tp1_price: number | null;
+  tp2_price: number | null;
+  close_price: number | null;
+  pnl_usd: number | null;
+  pnl_percent: number | null;
+  r_multiple: number | null;
+  result: string | null;
+  position_size: number;
+  position_value_usd: number | null;
+  leverage: number;
+  risk_usd: number;
+  risk_percent: number;
+  rr_ratio: number | null;
+  sl_distance_pct: number | null;
+  thesis: string | null;
+  notes: string | null;
+  mistakes: string | null;
+  setup_type: string | null;
+  timeframe: string | null;
+  tags: string[] | null;
+  created_at: string;
+  activated_at: string | null;
+  closed_at: string | null;
+  partial_closes: ManualPartialClose[];
+}
+
+export interface ManualPartialClose {
+  id: number;
+  close_price: number;
+  close_pct: number;
+  pnl_usd: number | null;
+  notes: string | null;
+  closed_at: string;
+}
+
+export interface ManualAnalyticsData {
+  total_trades: number;
+  winning: number;
+  losing: number;
+  breakeven: number;
+  win_rate: number;
+  total_pnl_usd: number;
+  avg_r_multiple: number | null;
+  avg_rr_planned: number | null;
+  profit_factor: number | null;
+  current_streak: number;
+  best_trade: { pair: string; pnl_usd: number; r_multiple: number } | null;
+  worst_trade: { pair: string; pnl_usd: number; r_multiple: number } | null;
+  tp1_hit_rate: number | null;
+  tp2_hit_rate: number | null;
+  by_pair: Record<string, { trades: number; pnl: number; win_rate: number }>;
+  by_direction: Record<string, { trades: number; pnl: number; win_rate: number }>;
+}
+
+export interface ManualBalance {
+  pair: string;
+  balance: number;
+  updated_at: string;
+}
+
+export interface CalcResult {
+  position_size: number;
+  position_value_usd: number;
+  margin_required: number;
+  risk_usd: number;
+  risk_percent: number;
+  sl_distance_pct: number;
+  rr_ratio: number;
+  rr_ratio_tp2: number | null;
+  tp_plan: {
+    tp1_price: number;
+    tp1_rr: number;
+    tp2_price: number;
+    tp2_rr: number;
+  };
+  warnings: string[];
+}

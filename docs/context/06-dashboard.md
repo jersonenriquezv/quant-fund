@@ -132,9 +132,9 @@ dashboard/
 │   └── Dockerfile
 └── web/
     ├── src/
-    │   ├── app/          # Next.js app router
-    │   ├── components/   # 13 componentes UI (incl. OrderBlockPanel, FearGreedPill, LiquidationHeatmap)
-    │   └── lib/          # API client, hooks
+    │   ├── app/          # Next.js app router (/ = bot dashboard, /manual = manual trading)
+    │   ├── components/   # 13 bot components + 5 manual components (manual/ subdir)
+    │   └── lib/          # API client, hooks, types
     ├── package.json
     ├── Dockerfile
     └── next.config.ts
@@ -236,6 +236,8 @@ Módulo independiente para trades manuales — completamente separado del bot au
 **Analytics:** Win rate, avg R multiple, total PnL, TP1/TP2 hit rates, breakdowns by pair/setup/direction, streak tracking.
 
 **Tablas PostgreSQL:** `manual_trades`, `manual_partial_closes`, `manual_balances` — schema en `dashboard/api/manual/schema.sql`.
+
+**Next.js dashboard (`/manual`):** Página dedicada con 5 componentes: ManualStats (balance, PnL, WR, streak), QuickCalculator (sizing + crear trade), ActiveTrades (cards con PnL live cada 10s, progreso TP1, botón close), TradeHistory (tabla expandible con thesis/mistakes/partials), ManualAnalytics (WR, avg R, profit factor, breakdown por par/dirección). Header con nav Bot/Manual.
 
 **Validaciones:** Pair format regex en price endpoint (previene Redis key injection), leverage >= 1 (Pydantic Field).
 

@@ -367,8 +367,8 @@ class ExchangeClient:
             timestamp_ms = int(time.time() * 1000)
 
             # Raw levels as (price, size_usd) tuples
-            bid_levels = [(p, p * s) for p, s in bids]
-            ask_levels = [(p, p * s) for p, s in asks]
+            bid_levels = [(b[0], b[0] * b[1]) for b in bids]
+            ask_levels = [(a[0], a[0] * a[1]) for a in asks]
 
             return {
                 "best_bid": best_bid,
