@@ -410,6 +410,14 @@ class Settings:
     })
 
     # ========================
+    # ORDERBOOK DEPTH CONFIRMATION
+    # ========================
+    # Validates OB zones against real orderbook liquidity. Confluence, not hard gate.
+    OB_DEPTH_ZONE_MULTIPLIER: float = 1.5    # Search zone = max(OB body, ATR) × this
+    OB_DEPTH_RATIO_THRESHOLD: float = 1.0    # Supporting/opposing depth ratio for confirmation
+    OB_DEPTH_CONCENTRATION_THRESHOLD: float = 0.2  # Largest level / total > this = institutional
+
+    # ========================
     # GEOMETRY CASCADE
     # ========================
     # Try multiple entry/SL combinations before killing a setup for bad R:R.
@@ -785,7 +793,7 @@ class Settings:
     # ========================
     # Feature version — increment when strategy params change in ways that
     # alter feature semantics (e.g. changing OB scoring weights, PD rules).
-    ML_FEATURE_VERSION: int = 8  # v8: confluence_count = structural only (BOS/CHoCH/FVG/OB/sweep/breaker), regime gate, ATR SL floor
+    ML_FEATURE_VERSION: int = 9  # v9: geometry cascade (dynamic entry/SL selection), ATR SL absorbed into cascade
 
     # ========================
     # LIQUIDATION HEATMAP

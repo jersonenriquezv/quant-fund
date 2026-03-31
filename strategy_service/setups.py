@@ -189,39 +189,43 @@ class SetupEvaluator:
             logger.info(f"Setup A [{pair}]: PD override — {len(confluences)} confluences "
                         f"(zone={zone} dir={direction})")
 
-        # Calculate entry at configurable depth into OB body
-        sl_price = self._calculate_sl(best_ob, direction)
-        body_range = best_ob.body_high - best_ob.body_low
-        if body_range <= 0:
-            return None
-        if direction == "bullish":
-            entry_price = best_ob.body_low + body_range * settings.SETUP_A_ENTRY_PCT
+        # Geometry cascade: try multiple entry/SL combos for best R:R
+        if settings.GEOMETRY_CASCADE_ENABLED:
+            result = self._cascade_geometry(
+                ob=best_ob, direction=direction, setup_type="setup_a",
+                pair=pair, liquidity_levels=liquidity_levels, candles=candles,
+            )
+            if result is None:
+                logger.debug(f"Setup A [{pair}]: cascade exhausted — no valid geometry")
+                return None
+            entry_price, sl_price, tp1, tp2, cascade_rank, candidates_tried = result
+            rr = self._compute_rr(entry_price, sl_price, tp2)
+            if cascade_rank > 0:
+                confluences.append(f"geometry_adjusted_{cascade_rank}")
+            logger.info(
+                f"Setup A [{pair}]: cascade rank={cascade_rank} "
+                f"tried={candidates_tried} R:R={rr:.2f}"
+            )
         else:
-            entry_price = best_ob.body_high - body_range * settings.SETUP_A_ENTRY_PCT
-
-        # Validate SL is on correct side of entry
-        if not self._validate_sl_direction(entry_price, sl_price, direction):
-            logger.debug(f"Setup A [{pair}]: SL inverted — entry={entry_price:.2f} "
-                         f"sl={sl_price:.2f} dir={direction}")
-            return None
-
-        # SL distance filter (too close = noise, too far = unbounded risk)
-        if not self._check_sl_distance(entry_price, sl_price, pair, "Setup A"):
-            return None
-
-        tp1, tp2 = self._calculate_tp_levels(
-            entry_price, sl_price, direction, liquidity_levels, "setup_a"
-        )
-
-        # Validate R:R to tp2 meets minimum
-        risk = abs(entry_price - sl_price)
-        if risk <= 0:
-            return None
-        rr = self._compute_rr(entry_price, sl_price, tp2)
-        if rr < settings.MIN_RISK_REWARD:
-            logger.debug(f"Setup A [{pair}]: R:R too low "
-                         f"({rr:.2f} < {settings.MIN_RISK_REWARD})")
-            return None
+            sl_price = self._calculate_sl(best_ob, direction)
+            body_range = best_ob.body_high - best_ob.body_low
+            if body_range <= 0:
+                return None
+            if direction == "bullish":
+                entry_price = best_ob.body_low + body_range * settings.SETUP_A_ENTRY_PCT
+            else:
+                entry_price = best_ob.body_high - body_range * settings.SETUP_A_ENTRY_PCT
+            if not self._validate_sl_direction(entry_price, sl_price, direction):
+                return None
+            if not self._check_sl_distance(entry_price, sl_price, pair, "Setup A"):
+                return None
+            tp1, tp2 = self._calculate_tp_levels(
+                entry_price, sl_price, direction, liquidity_levels, "setup_a"
+            )
+            rr = self._compute_rr(entry_price, sl_price, tp2)
+            if rr < settings.MIN_RISK_REWARD:
+                logger.debug(f"Setup A [{pair}]: R:R too low ({rr:.2f})")
+                return None
 
         entry2_price = self._compute_entry2(best_ob, direction)
         return TradeSetup(
@@ -381,41 +385,52 @@ class SetupEvaluator:
             logger.info(f"Setup B [{pair}]: PD override — {len(confluences)} confluences "
                         f"(zone={zone} dir={direction})")
 
-        # Calculate SL/TP
-        # Setup B entry at FVG_ENTRY_PCT of the gap (0.75 = shallower, easier fill).
-        # SL stays at OB wick for wider distance.
-        sl_price = self._calculate_sl(best_ob, direction)
-        fvg_range = best_fvg.high - best_fvg.low
-        if direction == "bullish":
-            entry_price = best_fvg.low + fvg_range * settings.FVG_ENTRY_PCT
-        else:
-            entry_price = best_fvg.high - fvg_range * settings.FVG_ENTRY_PCT
-
-        # Entry distance filter — reject zombie entries too far from current price
-        if current_price > 0:
-            entry_dist = abs(entry_price - current_price) / current_price
-            if entry_dist > settings.SETUP_B_MAX_ENTRY_DISTANCE_PCT:
-                logger.debug(f"Setup B [{pair}]: entry too far from price "
-                             f"({entry_dist:.4f} > {settings.SETUP_B_MAX_ENTRY_DISTANCE_PCT})")
+        # Geometry cascade: try multiple entry/SL combos for best R:R
+        if settings.GEOMETRY_CASCADE_ENABLED:
+            result = self._cascade_geometry(
+                ob=best_ob, direction=direction, setup_type="setup_b",
+                pair=pair, liquidity_levels=liquidity_levels, candles=candles,
+                fvg=best_fvg,
+            )
+            if result is None:
+                logger.debug(f"Setup B [{pair}]: cascade exhausted — no valid geometry")
                 return None
-
-        # Validate SL is on correct side of entry
-        if not self._validate_sl_direction(entry_price, sl_price, direction):
-            logger.debug(f"Setup B [{pair}]: SL inverted — entry={entry_price:.2f} "
-                         f"sl={sl_price:.2f} dir={direction}")
-            return None
-
-        tp1, tp2 = self._calculate_tp_levels(
-            entry_price, sl_price, direction, liquidity_levels, "setup_b"
-        )
-
-        # Validate R:R to tp2 meets minimum
-        risk = abs(entry_price - sl_price)
-        if risk <= 0:
-            return None
-        rr = self._compute_rr(entry_price, sl_price, tp2)
-        if rr < settings.MIN_RISK_REWARD:
-            return None
+            entry_price, sl_price, tp1, tp2, cascade_rank, candidates_tried = result
+            rr = self._compute_rr(entry_price, sl_price, tp2)
+            if cascade_rank > 0:
+                confluences.append(f"geometry_adjusted_{cascade_rank}")
+            logger.info(
+                f"Setup B [{pair}]: cascade rank={cascade_rank} "
+                f"tried={candidates_tried} R:R={rr:.2f}"
+            )
+            # Entry distance filter — reject zombie entries too far from price
+            if current_price > 0:
+                entry_dist = abs(entry_price - current_price) / current_price
+                if entry_dist > settings.SETUP_B_MAX_ENTRY_DISTANCE_PCT:
+                    logger.debug(f"Setup B [{pair}]: entry too far from price "
+                                 f"({entry_dist:.4f} > {settings.SETUP_B_MAX_ENTRY_DISTANCE_PCT})")
+                    return None
+        else:
+            sl_price = self._calculate_sl(best_ob, direction)
+            fvg_range = best_fvg.high - best_fvg.low
+            if direction == "bullish":
+                entry_price = best_fvg.low + fvg_range * settings.FVG_ENTRY_PCT
+            else:
+                entry_price = best_fvg.high - fvg_range * settings.FVG_ENTRY_PCT
+            if current_price > 0:
+                entry_dist = abs(entry_price - current_price) / current_price
+                if entry_dist > settings.SETUP_B_MAX_ENTRY_DISTANCE_PCT:
+                    logger.debug(f"Setup B [{pair}]: entry too far from price "
+                                 f"({entry_dist:.4f} > {settings.SETUP_B_MAX_ENTRY_DISTANCE_PCT})")
+                    return None
+            if not self._validate_sl_direction(entry_price, sl_price, direction):
+                return None
+            tp1, tp2 = self._calculate_tp_levels(
+                entry_price, sl_price, direction, liquidity_levels, "setup_b"
+            )
+            rr = self._compute_rr(entry_price, sl_price, tp2)
+            if rr < settings.MIN_RISK_REWARD:
+                return None
 
         entry2_price = self._compute_entry2(best_ob, direction)
         return TradeSetup(
@@ -575,38 +590,49 @@ class SetupEvaluator:
             logger.info(f"Setup F [{pair}]: PD override — {len(confluences)} confluences "
                         f"(zone={zone} dir={direction})")
 
-        sl_price = self._calculate_sl(best_ob, direction)
-        entry_price = best_ob.entry_price
-
-        # Entry distance filter — reject zombie setups pointing at distant OBs
-        if current_price > 0:
-            entry_dist = abs(entry_price - current_price) / current_price
-            if entry_dist > settings.SETUP_F_MAX_ENTRY_DISTANCE_PCT:
-                logger.debug(f"Setup F [{pair}]: entry too far from price "
-                             f"({entry_dist:.4f} > {settings.SETUP_F_MAX_ENTRY_DISTANCE_PCT})")
+        # Geometry cascade: try multiple entry/SL combos for best R:R
+        if settings.GEOMETRY_CASCADE_ENABLED:
+            result = self._cascade_geometry(
+                ob=best_ob, direction=direction, setup_type="setup_f",
+                pair=pair, liquidity_levels=liquidity_levels, candles=candles,
+            )
+            if result is None:
+                logger.debug(f"Setup F [{pair}]: cascade exhausted — no valid geometry")
                 return None
-
-        # Validate SL is on correct side of entry
-        if not self._validate_sl_direction(entry_price, sl_price, direction):
-            logger.debug(f"Setup F [{pair}]: SL inverted — entry={entry_price:.2f} "
-                         f"sl={sl_price:.2f} dir={direction}")
-            return None
-
-        # SL distance filter (too close = noise, too far = unbounded risk)
-        if not self._check_sl_distance(entry_price, sl_price, pair, "Setup F"):
-            return None
-
-        tp1, tp2 = self._calculate_tp_levels(
-            entry_price, sl_price, direction, liquidity_levels, "setup_f"
-        )
-
-        risk = abs(entry_price - sl_price)
-        if risk <= 0:
-            return None
-        rr = self._compute_rr(entry_price, sl_price, tp2)
-        if rr < settings.MIN_RISK_REWARD:
-            logger.debug(f"Setup F [{pair}]: R:R too low ({rr:.2f} < {settings.MIN_RISK_REWARD})")
-            return None
+            entry_price, sl_price, tp1, tp2, cascade_rank, candidates_tried = result
+            rr = self._compute_rr(entry_price, sl_price, tp2)
+            if cascade_rank > 0:
+                confluences.append(f"geometry_adjusted_{cascade_rank}")
+            logger.info(
+                f"Setup F [{pair}]: cascade rank={cascade_rank} "
+                f"tried={candidates_tried} R:R={rr:.2f}"
+            )
+            # Entry distance filter — reject zombie setups pointing at distant OBs
+            if current_price > 0:
+                entry_dist = abs(entry_price - current_price) / current_price
+                if entry_dist > settings.SETUP_F_MAX_ENTRY_DISTANCE_PCT:
+                    logger.debug(f"Setup F [{pair}]: entry too far from price "
+                                 f"({entry_dist:.4f} > {settings.SETUP_F_MAX_ENTRY_DISTANCE_PCT})")
+                    return None
+        else:
+            sl_price = self._calculate_sl(best_ob, direction)
+            entry_price = best_ob.entry_price
+            if current_price > 0:
+                entry_dist = abs(entry_price - current_price) / current_price
+                if entry_dist > settings.SETUP_F_MAX_ENTRY_DISTANCE_PCT:
+                    logger.debug(f"Setup F [{pair}]: entry too far ({entry_dist:.4f})")
+                    return None
+            if not self._validate_sl_direction(entry_price, sl_price, direction):
+                return None
+            if not self._check_sl_distance(entry_price, sl_price, pair, "Setup F"):
+                return None
+            tp1, tp2 = self._calculate_tp_levels(
+                entry_price, sl_price, direction, liquidity_levels, "setup_f"
+            )
+            rr = self._compute_rr(entry_price, sl_price, tp2)
+            if rr < settings.MIN_RISK_REWARD:
+                logger.debug(f"Setup F [{pair}]: R:R too low ({rr:.2f})")
+                return None
 
         entry2_price = self._compute_entry2(best_ob, direction)
         return TradeSetup(
@@ -713,30 +739,37 @@ class SetupEvaluator:
             logger.info(f"Setup G [{pair}]: PD override — {len(confluences)} confluences "
                         f"(zone={zone} dir={direction})")
 
-        sl_price = self._calculate_sl(best_bb, direction)
-        entry_price = best_bb.entry_price
-
-        # Validate SL is on correct side of entry
-        if not self._validate_sl_direction(entry_price, sl_price, direction):
-            logger.debug(f"Setup G [{pair}]: SL inverted — entry={entry_price:.2f} "
-                         f"sl={sl_price:.2f} dir={direction}")
-            return None
-
-        # SL distance filter (too close = noise, too far = unbounded risk)
-        if not self._check_sl_distance(entry_price, sl_price, pair, "Setup G"):
-            return None
-
-        tp1, tp2 = self._calculate_tp_levels(
-            entry_price, sl_price, direction, liquidity_levels, "setup_g"
-        )
-
-        risk = abs(entry_price - sl_price)
-        if risk <= 0:
-            return None
-        rr = self._compute_rr(entry_price, sl_price, tp2)
-        if rr < settings.MIN_RISK_REWARD:
-            logger.debug(f"Setup G [{pair}]: R:R too low ({rr:.2f} < {settings.MIN_RISK_REWARD})")
-            return None
+        # Geometry cascade: try multiple entry/SL combos for best R:R
+        if settings.GEOMETRY_CASCADE_ENABLED:
+            result = self._cascade_geometry(
+                ob=best_bb, direction=direction, setup_type="setup_g",
+                pair=pair, liquidity_levels=liquidity_levels, candles=candles,
+            )
+            if result is None:
+                logger.debug(f"Setup G [{pair}]: cascade exhausted — no valid geometry")
+                return None
+            entry_price, sl_price, tp1, tp2, cascade_rank, candidates_tried = result
+            rr = self._compute_rr(entry_price, sl_price, tp2)
+            if cascade_rank > 0:
+                confluences.append(f"geometry_adjusted_{cascade_rank}")
+            logger.info(
+                f"Setup G [{pair}]: cascade rank={cascade_rank} "
+                f"tried={candidates_tried} R:R={rr:.2f}"
+            )
+        else:
+            sl_price = self._calculate_sl(best_bb, direction)
+            entry_price = best_bb.entry_price
+            if not self._validate_sl_direction(entry_price, sl_price, direction):
+                return None
+            if not self._check_sl_distance(entry_price, sl_price, pair, "Setup G"):
+                return None
+            tp1, tp2 = self._calculate_tp_levels(
+                entry_price, sl_price, direction, liquidity_levels, "setup_g"
+            )
+            rr = self._compute_rr(entry_price, sl_price, tp2)
+            if rr < settings.MIN_RISK_REWARD:
+                logger.debug(f"Setup G [{pair}]: R:R too low ({rr:.2f})")
+                return None
 
         return TradeSetup(
             timestamp=int(time.time() * 1000),
@@ -1157,6 +1190,151 @@ class SetupEvaluator:
             return ob.body_low + body_range * 0.25
         else:
             return ob.body_high - body_range * 0.25
+
+    def _cascade_geometry(
+        self,
+        ob: OrderBlock,
+        direction: str,
+        setup_type: str,
+        pair: str,
+        liquidity_levels: list[LiquidityLevel],
+        candles: list[Candle],
+        fvg: Optional[FairValueGap] = None,
+    ) -> Optional[tuple[float, float, float, float, int, int]]:
+        """Try multiple entry/SL combinations and return best valid geometry.
+
+        Generates entry candidates from OB body (or FVG for setup_b) at
+        configurable depths, and SL candidates from OB wick + ATR floor.
+        Selects the combination with the best R:R that passes all validation.
+
+        Returns:
+            (entry, sl, tp1, tp2, cascade_rank, candidates_tried) or None.
+            cascade_rank: 0 = default entry depth won, 1+ = Nth alternative.
+            candidates_tried: total combinations evaluated before selecting.
+        """
+        from config.settings import QUICK_SETUP_TYPES
+
+        min_rr = (settings.MIN_RISK_REWARD_QUICK
+                  if setup_type in QUICK_SETUP_TYPES
+                  else settings.MIN_RISK_REWARD)
+        early_exit_rr = settings.GEOMETRY_CASCADE_EARLY_EXIT_RR
+
+        # --- Entry candidates ---
+        entry_depths = settings.GEOMETRY_CASCADE_ENTRIES.get(
+            setup_type, [0.50]
+        )
+
+        # Determine entry source range (FVG for setup_b, OB body otherwise)
+        if fvg is not None and setup_type == "setup_b":
+            range_low = fvg.low
+            range_high = fvg.high
+        else:
+            range_low = ob.body_low
+            range_high = ob.body_high
+
+        body_range = range_high - range_low
+        if body_range <= 0:
+            return None
+
+        entry_candidates = []
+        for depth in entry_depths:
+            if direction == "bullish":
+                entry = range_low + body_range * depth
+            else:
+                entry = range_high - body_range * depth
+            entry_candidates.append(entry)
+
+        # --- SL candidates (per entry) ---
+        # 1. OB wick (constant)
+        ob_wick_sl = ob.low if direction == "bullish" else ob.high
+
+        # 2. ATR floor (computed once, applied per entry)
+        atr = self._compute_atr(candles, 14)
+
+        # --- Evaluate combinations ---
+        best = None  # (rr, entry, sl, tp1, tp2, rank)
+        candidates_tried = 0
+
+        for rank, entry in enumerate(entry_candidates):
+            if entry <= 0:
+                continue
+
+            # Build SL list for this entry
+            sl_candidates = [ob_wick_sl]
+            if atr is not None and atr > 0:
+                atr_sl_distance = atr * settings.ATR_SL_FLOOR_MULTIPLIER
+                if direction == "bullish":
+                    atr_sl = entry - atr_sl_distance
+                else:
+                    atr_sl = entry + atr_sl_distance
+                sl_candidates.append(atr_sl)
+
+            for sl in sl_candidates:
+                candidates_tried += 1
+
+                # Validate SL on correct side
+                if direction == "bullish" and sl >= entry:
+                    continue
+                if direction == "bearish" and sl <= entry:
+                    continue
+
+                # Validate distance bounds
+                risk_pct = abs(entry - sl) / entry
+                if risk_pct < settings.MIN_RISK_DISTANCE_PCT:
+                    continue
+                if risk_pct > settings.MAX_SL_PCT:
+                    continue
+
+                # Compute TP levels
+                tp1, tp2 = self._calculate_tp_levels(
+                    entry, sl, direction, liquidity_levels, setup_type,
+                )
+
+                # Compute R:R
+                rr = self._compute_rr(entry, sl, tp2)
+                if rr < min_rr:
+                    continue
+
+                # Early exit: R:R ≥ 3.0 is excellent, take it
+                if rr >= early_exit_rr:
+                    logger.debug(
+                        f"Cascade [{pair}]: early exit rank={rank} "
+                        f"tried={candidates_tried} R:R={rr:.2f} "
+                        f"entry={entry:.2f} sl={sl:.2f}"
+                    )
+                    return (entry, sl, tp1, tp2, rank, candidates_tried)
+
+                # Track best
+                if best is None or rr > best[0]:
+                    best = (rr, entry, sl, tp1, tp2, rank)
+
+        if best is None:
+            return None
+
+        rr, entry, sl, tp1, tp2, rank = best
+        logger.debug(
+            f"Cascade [{pair}]: selected rank={rank} "
+            f"tried={candidates_tried} R:R={rr:.2f} "
+            f"entry={entry:.2f} sl={sl:.2f}"
+        )
+        return (entry, sl, tp1, tp2, rank, candidates_tried)
+
+    @staticmethod
+    def _compute_atr(candles: list[Candle], period: int = 14) -> Optional[float]:
+        """Compute ATR(period) from candles. Returns None if insufficient data."""
+        if len(candles) < period + 1:
+            return None
+        trs = []
+        for i in range(-period, 0):
+            c = candles[i]
+            prev_c = candles[i - 1]
+            tr = max(
+                c.high - c.low,
+                abs(c.high - prev_c.close),
+                abs(c.low - prev_c.close),
+            )
+            trs.append(tr)
+        return sum(trs) / len(trs)
 
     def _calculate_sl(self, ob: OrderBlock, direction: str) -> float:
         """Calculate stop loss — below/above entire OB (wick-to-wick)."""

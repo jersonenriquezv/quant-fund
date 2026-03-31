@@ -192,12 +192,12 @@ class StrategyService:
                     logger.debug(f"Setup A detected but disabled (not in ENABLED_SETUPS or SHADOW_MODE_SETUPS)")
                     setup = None
                 else:
-                    setup = self._apply_atr_sl_floor(setup, candles_15m)
                     reject = self._apply_expectancy_filters(setup, candles_15m, state_4h, state_1h)
                     if reject:
                         logger.info(f"Expectancy filter rejected: {setup.pair} {setup.setup_type} — {reject}")
                         setup = None
                     else:
+                        setup = self._enrich_with_ob_depth(setup, candles_15m)
                         logger.info(
                             f"Setup A found: pair={pair} direction={setup.direction} "
                             f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
@@ -222,12 +222,12 @@ class StrategyService:
                     logger.debug(f"Setup B detected but disabled (not in ENABLED_SETUPS or SHADOW_MODE_SETUPS)")
                     setup = None
                 else:
-                    setup = self._apply_atr_sl_floor(setup, candles_15m)
                     reject = self._apply_expectancy_filters(setup, candles_15m, state_4h, state_1h)
                     if reject:
                         logger.info(f"Expectancy filter rejected: {setup.pair} {setup.setup_type} — {reject}")
                         setup = None
                     else:
+                        setup = self._enrich_with_ob_depth(setup, candles_15m)
                         logger.info(
                             f"Setup B found: pair={pair} direction={setup.direction} "
                             f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
@@ -252,12 +252,12 @@ class StrategyService:
                     logger.debug(f"Setup F detected but disabled (not in ENABLED_SETUPS or SHADOW_MODE_SETUPS)")
                     setup = None
                 else:
-                    setup = self._apply_atr_sl_floor(setup, candles_15m)
                     reject = self._apply_expectancy_filters(setup, candles_15m, state_4h, state_1h)
                     if reject:
                         logger.info(f"Expectancy filter rejected: {setup.pair} {setup.setup_type} — {reject}")
                         setup = None
                     else:
+                        setup = self._enrich_with_ob_depth(setup, candles_15m)
                         logger.info(
                             f"Setup F found: pair={pair} direction={setup.direction} "
                             f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
@@ -282,12 +282,12 @@ class StrategyService:
                     logger.debug(f"Setup G detected but disabled (not in ENABLED_SETUPS or SHADOW_MODE_SETUPS)")
                     setup = None
                 else:
-                    setup = self._apply_atr_sl_floor(setup, candles_15m)
                     reject = self._apply_expectancy_filters(setup, candles_15m, state_4h, state_1h)
                     if reject:
                         logger.info(f"Expectancy filter rejected: {setup.pair} {setup.setup_type} — {reject}")
                         setup = None
                     else:
+                        setup = self._enrich_with_ob_depth(setup, candles_15m)
                         logger.info(
                             f"Setup G found: pair={pair} direction={setup.direction} "
                             f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
@@ -602,6 +602,80 @@ class StrategyService:
             tp1_price=new_tp1,
             tp2_price=new_tp2,
         )
+
+    def _enrich_with_ob_depth(
+        self, setup: TradeSetup, candles: list[Candle],
+    ) -> TradeSetup:
+        """Enrich setup with orderbook depth analysis around the OB zone.
+
+        Fetches real-time orderbook and checks if there's institutional
+        liquidity confirming the OB. Adds confluence + ML features.
+        Never blocks a trade — confirmation only.
+        """
+        from dataclasses import replace
+
+        if self._data is None:
+            return setup
+
+        orderbook = self._data.get_orderbook_depth(setup.pair)
+        if orderbook is None:
+            return setup
+
+        direction = "bullish" if setup.direction == "long" else "bearish"
+
+        # Reconstruct OB zone from setup geometry for search zone calculation.
+        ob_body_size = abs(setup.entry_price - setup.sl_price) * 0.6
+        atr = self._compute_atr(candles, 14)
+        zone_base = max(ob_body_size, atr) if atr and atr > 0 else ob_body_size
+        zone_radius = zone_base * settings.OB_DEPTH_ZONE_MULTIPLIER
+
+        # Zone centered on entry price
+        zone_low = setup.entry_price - zone_radius
+        zone_high = setup.entry_price + zone_radius
+
+        # Select relevant side
+        if direction == "bullish":
+            levels = orderbook.get("bid_levels", [])
+            opp_levels = orderbook.get("ask_levels", [])
+        else:
+            levels = orderbook.get("ask_levels", [])
+            opp_levels = orderbook.get("bid_levels", [])
+
+        zone_levels = [(p, usd) for p, usd in levels if zone_low <= p <= zone_high]
+        opp_zone = [(p, usd) for p, usd in opp_levels if zone_low <= p <= zone_high]
+
+        total_depth = sum(usd for _, usd in zone_levels)
+        opp_depth = sum(usd for _, usd in opp_zone)
+
+        depth_ratio = total_depth / opp_depth if opp_depth > 0 else (
+            2.0 if total_depth > 0 else 0.0
+        )
+
+        concentration = 0.0
+        if zone_levels and total_depth > 0:
+            max_level = max(usd for _, usd in zone_levels)
+            concentration = max_level / total_depth
+
+        snapshot_ts = orderbook.get("timestamp_ms", 0)
+        snapshot_age_ms = int(time.time() * 1000) - snapshot_ts if snapshot_ts > 0 else 0
+
+        # Add confluence if confirmed
+        new_confluences = list(setup.confluences)
+        if (depth_ratio >= settings.OB_DEPTH_RATIO_THRESHOLD
+                and concentration >= settings.OB_DEPTH_CONCENTRATION_THRESHOLD):
+            new_confluences.append("ob_depth_confirmed")
+            logger.info(
+                f"OB depth confirmed [{setup.pair}]: ratio={depth_ratio:.2f} "
+                f"concentration={concentration:.2f} depth=${total_depth:.0f} "
+                f"age={snapshot_age_ms}ms"
+            )
+
+        # Store depth features in confluences for ML extraction
+        # (ml_features.py can parse these, or we add dedicated features)
+        new_confluences.append(f"ob_depth_ratio_{depth_ratio:.2f}")
+        new_confluences.append(f"ob_depth_conc_{concentration:.2f}")
+
+        return replace(setup, confluences=new_confluences)
 
     def _apply_expectancy_filters(
         self, setup: TradeSetup, candles: list[Candle],

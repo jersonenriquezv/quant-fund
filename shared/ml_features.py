@@ -105,6 +105,15 @@ def extract_setup_features(
     features["ob_volume_ratio"] = _extract_float(conf_str, r"ob_volume_([\d.]+)x")
     features["sweep_volume_ratio"] = _extract_float(conf_str, r"sweep_volume_([\d.]+)x")
 
+    # OB depth confirmation (orderbook liquidity at OB zone)
+    features["ob_depth_confirmed"] = "ob_depth_confirmed" in conf_str
+    features["ob_depth_ratio"] = _extract_float(conf_str, r"ob_depth_ratio_([\d.]+)")
+    features["ob_depth_concentration"] = _extract_float(conf_str, r"ob_depth_conc_([\d.]+)")
+
+    # Geometry cascade metadata
+    features["geometry_adjusted"] = "geometry_adjusted" in conf_str
+    features["geometry_cascade_rank"] = _extract_float(conf_str, r"geometry_adjusted_(\d+)") or 0
+
     features["has_oi_flush"] = "oi_flush" in conf_str
     features["oi_flush_usd"] = _extract_float(conf_str, r"oi_flush_usd_(\d+)")
     features["cvd_aligned"] = "cvd_aligned" in conf_str or "cvd_momentum_confirmed" in conf_str

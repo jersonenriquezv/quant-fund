@@ -263,6 +263,31 @@ Reference for VPS sizing when migrating from Nitro 5.
 
 ## 8. Changelog
 
+### 2026-03-31 — Orderbook Depth Confirmation + Regime Gate Fix
+**What changed:**
+- New `fetch_orderbook_depth()` in exchange_client.py — fetches 20-level L2 orderbook with raw (price, size_usd) levels
+- New `_enrich_with_ob_depth()` in strategy service — analyzes orderbook liquidity around OB zone for all swing setups (A/B/F/G)
+- Dynamic search zone: `max(OB body size, ATR) × 1.5` — scales per pair and volatility
+- Measures depth ratio (supporting/opposing) and concentration (largest level / total)
+- Confluence `ob_depth_confirmed` added when ratio ≥ 1.0 AND concentration ≥ 0.2
+- ML features: `ob_depth_ratio`, `ob_depth_concentration`, `ob_depth_confirmed`, `geometry_adjusted`, `geometry_cascade_rank`
+- **R:R floating point fix**: `guardrails.py` now uses `rr < min_rr - 1e-9` to prevent rejecting R:R 2.00 as "below 2.0"
+- **Regime gate moved after shadow path**: Shadow setups now collect ML data during extreme fear (F&G < 10). Live setups still blocked. Previously shadow was also blocked, losing data in the most interesting market conditions.
+
+**Why:** OB detection uses historical candles but never validated against real-time liquidity. Now the bot checks if institutional orders actually exist at the detected zone. Not a hard gate — just bonus confirmation for ML to evaluate over time.
+
+### 2026-03-31 — Geometry Cascade (Dynamic Entry/SL Selection)
+**What changed:**
+- New `_cascade_geometry()` in `strategy_service/setups.py` — tries 3 entry depths × 2 SL candidates (OB wick + ATR floor) per setup before killing for bad R:R
+- Integrated into swing setups A, B, F, G. Quick setups unchanged.
+- ATR SL floor now evaluated as cascade candidate (was post-processing in service.py). Removed 4 `_apply_atr_sl_floor()` calls.
+- Early exit at R:R ≥ 3.0 (no need to check remaining combos)
+- Cascade metadata in confluences: `geometry_adjusted_N` for ML tracking
+- `GEOMETRY_CASCADE_ENABLED=true` (env var override), `GEOMETRY_CASCADE_EARLY_EXIT_RR=3.0`
+- ML_FEATURE_VERSION bumped to 9
+
+**Why:** Bot was rejecting valid setups because fixed entry depth + OB wick SL produced R:R below minimum. Position sizer guarantees fixed dollar risk regardless of geometry, so exploring alternative structural levels costs nothing. 9 new tests added.
+
 ### 2026-03-31 — Manual Trading Module
 **What changed:**
 - New manual trading module at `dashboard/api/manual/` — calculator, trade CRUD, partial closes, analytics

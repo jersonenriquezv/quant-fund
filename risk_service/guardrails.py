@@ -63,7 +63,7 @@ class Guardrails:
                   if setup.setup_type in QUICK_SETUP_TYPES
                   else settings.MIN_RISK_REWARD)
 
-        if rr < min_rr:
+        if rr < min_rr - 1e-9:
             return False, f"R:R {rr:.2f} below minimum {min_rr}"
         return True, f"R:R {rr:.2f} OK"
 
