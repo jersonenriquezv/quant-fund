@@ -240,7 +240,7 @@ Reference for VPS sizing when migrating from Nitro 5.
 
 ## 7. ML Feature Versioning
 
-**Current version:** 8 (set in `config/settings.py:ML_FEATURE_VERSION`)
+**Current version:** 9 (set in `config/settings.py:ML_FEATURE_VERSION`)
 **Storage:** `ml_setups.feature_version` column in PostgreSQL
 **Query training data:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL AND outcome_type NOT IN ('shadow_dedup', 'data_blocked', 'shadow_risk_rejected', 'risk_rejected', 'regime_extreme_fear')`
 

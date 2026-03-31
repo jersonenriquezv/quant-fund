@@ -1,5 +1,5 @@
 # Data Service
-> Last updated: 2026-03-30 (RECOVERING gate allows candle-only setups)
+> Last updated: 2026-03-31
 > Status: implemented (complete, running in Docker). Audited — 4 CRITICAL fixes applied. Whale tracking with USD enrichment, 3-tier Telegram notifications, new whale wallets (Trump, Jump Trading, a16z, FTX/Alameda, UK Gov BTC). News sentiment (Fear & Greed + headlines) as new data layer. HTF campaigns: 1D candle support + campaigns table.
 
 ## What it does (30 seconds)
@@ -70,7 +70,7 @@ All frozen (immutable) except MarketSnapshot which has optional fields.
 - File: `logs/{service}_{date}.log` — daily rotation, 30-day retention, gzip compressed
 
 ### `data_service/exchange_client.py` — OKX REST via ccxt
-Six methods:
+Eight methods:
 - `fetch_usdt_balance()` → `float | None`
   - Fetches USDT available balance from exchange via `fetch_balance()`
   - Returns `None` on any failure (logged as warning)
@@ -86,6 +86,10 @@ Six methods:
 - `fetch_open_interest_history(pair, since_ms, limit, timeframe)` → `list[dict]`
   - Historical OI via ccxt. OKX limits: 1h goes back ~30 days, 1D ~99 days.
   - Returns `{timestamp, oi_contracts, oi_base, oi_usd}` dicts. Only `oi_usd` is populated (OKX limitation).
+- `fetch_orderbook_snapshot(pair, depth=5)` → `dict | None`
+  - Aggregated spread + depth within ±0.1% of mid. Used by shadow monitor for fill quality.
+- `fetch_orderbook_depth(pair, levels=20)` → `dict | None`
+  - Raw L2 orderbook with `bid_levels`/`ask_levels` as `[(price, size_usd), ...]`. Used by strategy service for OB depth confirmation.
 
 Auth: API key + secret + passphrase via ccxt. Market data is public, but auth is needed for trading.
 Instrument format: `BTC-USDT-SWAP` (hyphens). ccxt translates `BTC/USDT:USDT` internally.
