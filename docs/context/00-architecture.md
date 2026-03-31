@@ -88,7 +88,7 @@ Sin esta arquitectura, tendríamos un solo programa gigante donde todo está mez
 
 **Regime gate (después de shadow path, antes de live execution):** Si Fear & Greed Index < `REGIME_EXTREME_FEAR_GATE` (10), se rechazan setups LIVE (cualquier dirección). Setups en shadow mode pasan y colectan datos ML durante extreme fear. Outcome ML: `regime_extreme_fear`.
 
-**Shadow dedup (en `ShadowMonitor.add_shadow()`):** Además del dedup de pipeline (1h TTL por pair/direction/setup_type), el shadow monitor rechaza si ya existe una posición shadow activa (filled o unfilled) para el mismo combo. Evita tracking duplicado + notificaciones Telegram repetidas.
+**Shadow dedup (en `ShadowMonitor.add_shadow()`):** Además del dedup de pipeline (1h TTL por pair/direction/setup_type), el shadow monitor rechaza si ya existe una posición shadow activa (filled o unfilled) para el mismo combo. Posiciones activas se persisten en Redis (`qf:bot:shadow_positions`, TTL 48h) y se restauran on startup — el dedup sobrevive restarts. Evita tracking duplicado + notificaciones Telegram repetidas.
 
 **Regla clave:** Si CUALQUIER servicio dice NO, el trade se descarta. No hay "pero" ni "tal vez".
 

@@ -263,6 +263,16 @@ Reference for VPS sizing when migrating from Nitro 5.
 
 ## 8. Changelog
 
+### 2026-03-31 — Shadow Position Redis Persistence
+**What changed:**
+- `ShadowMonitor` now persists active positions to Redis (`qf:bot:shadow_positions`, 48h TTL)
+- Positions restored on startup; expired positions (>36h) are pruned during load
+- Save points: after add, after fill, after resolve. Fire-and-forget (Redis failure never blocks pipeline)
+
+**Why:** Shadow positions were in-memory only. On bot restart, `_positions` was wiped and the in-memory dedup allowed re-tracking of identical setups. This caused 17 duplicate trades for the same OB on 2026-03-30 (7× XRP, 6× SOL, 4× LINK — same entry/SL, all filled+stopped in the same candle).
+
+**Expected impact:** No more duplicate shadow tracking after restarts. Cleaner ML data.
+
 ### 2026-03-31 — Orderbook Depth Confirmation + Regime Gate Fix
 **What changed:**
 - New `fetch_orderbook_depth()` in exchange_client.py — fetches 20-level L2 orderbook with raw (price, size_usd) levels

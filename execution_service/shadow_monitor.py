@@ -16,8 +16,9 @@ Caveats logged per setup:
 """
 
 import asyncio
+import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 from config.settings import settings
 from shared.logger import setup_logger
@@ -65,10 +66,14 @@ class ShadowMonitor:
     3. Outcome written to ml_setups via data_store.update_ml_setup_outcome()
     """
 
+    # Max shadow lifetime: 24h entry + 12h trade + buffer
+    _REDIS_TTL = 172800  # 48h
+
     def __init__(self, data_service, notifier: TelegramNotifier | None = None):
         self._data_service = data_service
         self._notifier = notifier
         self._positions: dict[str, ShadowPosition] = {}  # setup_id -> ShadowPosition
+        self._load_from_redis()
 
     @property
     def active_count(self) -> int:
@@ -166,6 +171,7 @@ class ShadowMonitor:
                 pos.depth_at_entry = orderbook.get("depth_bid_usd", 0.0)
 
         self._positions[setup.setup_id] = pos
+        self._save_to_redis()
 
         # Persist shadow metadata to ml_setups
         if self._data_service and self._data_service.postgres:
@@ -249,6 +255,7 @@ class ShadowMonitor:
                     )
 
                     self._notify_fill(pos)
+                    self._save_to_redis()
 
                     # Check if this same candle also hit TP or SL
                     outcome = self._check_tp_sl(candle, pos)
@@ -272,6 +279,8 @@ class ShadowMonitor:
 
         for sid in resolved:
             del self._positions[sid]
+        if resolved:
+            self._save_to_redis()
 
     def _check_tp_sl(self, candle, pos: ShadowPosition) -> str | None:
         """Check if candle hit TP2 or SL. Returns outcome string or None.
@@ -377,6 +386,58 @@ class ShadowMonitor:
         )
 
         self._notify_resolve(pos, outcome, pnl_usd, pnl_pct, status)
+
+    # --- Redis persistence ---
+
+    def _save_to_redis(self) -> None:
+        """Persist active shadow positions to Redis (fire-and-forget)."""
+        redis = self._get_redis()
+        if redis is None:
+            return
+        try:
+            data = {sid: asdict(pos) for sid, pos in self._positions.items()}
+            redis.set_bot_state(
+                "shadow_positions", json.dumps(data), ttl=self._REDIS_TTL,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to save shadow positions to Redis: {e}")
+
+    def _load_from_redis(self) -> None:
+        """Restore active shadow positions from Redis on startup."""
+        redis = self._get_redis()
+        if redis is None:
+            return
+        try:
+            raw = redis.get_bot_state("shadow_positions")
+            if not raw:
+                return
+            data = json.loads(raw)
+            now = time.time()
+            max_age = (
+                settings.SHADOW_ENTRY_TIMEOUT_HOURS
+                + settings.SHADOW_TRADE_TIMEOUT_HOURS
+            ) * 3600
+            for sid, fields in data.items():
+                pos = ShadowPosition(**fields)
+                # Skip positions that have expired since last save
+                if (now - pos.detection_time) > max_age:
+                    continue
+                self._positions[sid] = pos
+            if self._positions:
+                filled = sum(1 for p in self._positions.values() if p.filled)
+                logger.info(
+                    f"Shadow: restored {len(self._positions)} positions from Redis "
+                    f"({filled} filled, {len(self._positions) - filled} waiting)"
+                )
+        except Exception as e:
+            logger.warning(f"Failed to load shadow positions from Redis: {e}")
+
+    def _get_redis(self):
+        """Get Redis store, or None if unavailable."""
+        if (self._data_service and self._data_service.redis
+                and self._data_service.redis._client):
+            return self._data_service.redis
+        return None
 
     def _notify_detection(self, pos: ShadowPosition) -> None:
         """Send Telegram alert when a shadow setup starts tracking."""
