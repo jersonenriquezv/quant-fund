@@ -1050,6 +1050,41 @@ a.news-item:hover {
   font-weight: 500;
 }
 
+/* Modal */
+.manual-modal-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 16px;
+}
+.manual-modal {
+  background: #111;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  width: 100%;
+  max-width: 420px;
+}
+.manual-modal-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+.manual-modal-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.manual-textarea {
+  resize: vertical;
+  min-height: 40px;
+  width: 100%;
+}
+
 /* Horizontal scroll */
 .scroll-x {
   overflow-x: auto;
