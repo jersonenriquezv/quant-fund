@@ -9,9 +9,11 @@ function fmt(n: number | null | undefined, d: number = 2): string {
   return n.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
 }
 
-const PAIRS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT", "LINK/USDT", "AVAX/USDT"];
+const LINEAR_PAIRS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT", "LINK/USDT", "AVAX/USDT"];
+const INVERSE_PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD", "DOGE/USD", "LINK/USD", "AVAX/USD"];
 
 export function QuickCalculator() {
+  const [marginType, setMarginType] = useState<"linear" | "inverse">("linear");
   const [pair, setPair] = useState("BTC/USDT");
   const [direction, setDirection] = useState("long");
   const [entry, setEntry] = useState("");
@@ -23,6 +25,15 @@ export function QuickCalculator() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
+
+  const pairs = marginType === "linear" ? LINEAR_PAIRS : INVERSE_PAIRS;
+
+  const handleMarginTypeChange = (t: "linear" | "inverse") => {
+    setMarginType(t);
+    // Switch to first pair of the new type
+    setPair(t === "linear" ? LINEAR_PAIRS[0] : INVERSE_PAIRS[0]);
+    setResult(null);
+  };
 
   const handleCalc = async () => {
     if (!entry || !sl) return;
@@ -37,7 +48,7 @@ export function QuickCalculator() {
         balance: parseFloat(balance),
         risk_percent: parseFloat(riskPct),
         leverage: parseInt(leverage),
-        margin_type: "linear",
+        margin_type: marginType,
       });
       setResult(res);
     } catch (e) {
@@ -61,7 +72,7 @@ export function QuickCalculator() {
         balance: parseFloat(balance),
         risk_percent: parseFloat(riskPct),
         leverage: parseInt(leverage),
-        margin_type: "linear",
+        margin_type: marginType,
       });
       setResult(null);
       setEntry("");
@@ -76,9 +87,21 @@ export function QuickCalculator() {
     <div>
       <div className="card-title">Calculator</div>
       <div className="manual-calc-form">
+        {/* Margin type toggle */}
+        <div className="manual-dir-toggle">
+          <button
+            className={`manual-dir-btn ${marginType === "linear" ? "manual-margin-active" : ""}`}
+            onClick={() => handleMarginTypeChange("linear")}
+          >Linear (USDT)</button>
+          <button
+            className={`manual-dir-btn ${marginType === "inverse" ? "manual-margin-active" : ""}`}
+            onClick={() => handleMarginTypeChange("inverse")}
+          >Inverse (USD)</button>
+        </div>
+
         <div className="manual-calc-row">
           <select value={pair} onChange={(e) => setPair(e.target.value)} className="manual-input">
-            {PAIRS.map((p) => <option key={p} value={p}>{p}</option>)}
+            {pairs.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
           <div className="manual-dir-toggle">
             <button
@@ -92,43 +115,13 @@ export function QuickCalculator() {
           </div>
         </div>
         <div className="manual-calc-row">
-          <input
-            className="manual-input"
-            type="number"
-            placeholder="Entry price"
-            value={entry}
-            onChange={(e) => setEntry(e.target.value)}
-          />
-          <input
-            className="manual-input"
-            type="number"
-            placeholder="Stop loss"
-            value={sl}
-            onChange={(e) => setSl(e.target.value)}
-          />
+          <input className="manual-input" type="number" placeholder="Entry price" value={entry} onChange={(e) => setEntry(e.target.value)} />
+          <input className="manual-input" type="number" placeholder="Stop loss" value={sl} onChange={(e) => setSl(e.target.value)} />
         </div>
         <div className="manual-calc-row">
-          <input
-            className="manual-input"
-            type="number"
-            placeholder="Balance"
-            value={balance}
-            onChange={(e) => setBalance(e.target.value)}
-          />
-          <input
-            className="manual-input"
-            type="number"
-            placeholder="Risk %"
-            value={riskPct}
-            onChange={(e) => setRiskPct(e.target.value)}
-          />
-          <input
-            className="manual-input"
-            type="number"
-            placeholder="Leverage"
-            value={leverage}
-            onChange={(e) => setLeverage(e.target.value)}
-          />
+          <input className="manual-input" type="number" placeholder="Balance" value={balance} onChange={(e) => setBalance(e.target.value)} />
+          <input className="manual-input" type="number" placeholder="Risk %" value={riskPct} onChange={(e) => setRiskPct(e.target.value)} />
+          <input className="manual-input" type="number" placeholder="Leverage" value={leverage} onChange={(e) => setLeverage(e.target.value)} />
         </div>
         <button className="manual-btn manual-btn-calc" onClick={handleCalc} disabled={loading}>
           {loading ? "..." : "Calculate"}
@@ -142,11 +135,11 @@ export function QuickCalculator() {
           <div className="manual-calc-result-grid">
             <div>
               <span className="manual-stat-label">Size</span>
-              <span>{fmt(result.position_size, 4)}</span>
+              <span>{marginType === "inverse" ? fmt(result.position_size, 0) + " ct" : fmt(result.position_size, 4)}</span>
             </div>
             <div>
               <span className="manual-stat-label">Margin</span>
-              <span>${fmt(result.margin_required)}</span>
+              <span>{marginType === "inverse" ? fmt(result.margin_required, 6) + " coin" : "$" + fmt(result.margin_required)}</span>
             </div>
             <div>
               <span className="manual-stat-label">Risk</span>

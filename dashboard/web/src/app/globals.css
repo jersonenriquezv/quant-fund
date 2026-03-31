@@ -1013,10 +1013,29 @@ a.news-item:hover {
   font-family: inherit;
   min-width: 0;
 }
+select.manual-input {
+  -webkit-appearance: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='rgba(255,255,255,0.4)' viewBox='0 0 16 16'%3E%3Cpath d='M8 11L3 6h10z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  padding-right: 24px;
+}
 .manual-input:focus {
   outline: none;
   border-color: var(--accent);
 }
+.manual-input option {
+  background: #111;
+  color: var(--text-primary);
+}
+/* Number input spinners removed */
+.manual-input[type=number]::-webkit-inner-spin-button,
+.manual-input[type=number]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.manual-input[type=number] { -moz-appearance: textfield; }
 .manual-dir-toggle {
   display: flex;
   border: 1px solid var(--border);
@@ -1034,6 +1053,7 @@ a.news-item:hover {
 }
 .manual-dir-active-long { background: rgba(16,185,129,0.2); color: var(--long); }
 .manual-dir-active-short { background: rgba(239,68,68,0.2); color: var(--short); }
+.manual-margin-active { background: rgba(59,130,246,0.15); color: var(--accent); }
 
 /* Calc result */
 .manual-calc-result {
