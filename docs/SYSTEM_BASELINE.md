@@ -3,7 +3,7 @@
 > Source of truth for system state. Updated on every material change.
 > Reflects code reality — if code and doc disagree, fix the doc.
 
-**Last updated:** 2026-03-30
+**Last updated:** 2026-03-31
 **ML Feature Version:** 8
 **Bot status:** LIVE (OKX_SANDBOX=false, ~$86 capital)
 
@@ -262,6 +262,18 @@ Reference for VPS sizing when migrating from Nitro 5.
 ---
 
 ## 8. Changelog
+
+### 2026-03-31 — Manual Trading Module
+**What changed:**
+- New manual trading module at `dashboard/api/manual/` — calculator, trade CRUD, partial closes, analytics
+- Supports linear (USDT-margined) and inverse (coin-margined) position sizing
+- 50/50 TP plan with auto-suggest, balance tracking, analytics (win rate, R multiples, TP hit rates)
+- Standalone HTML page at `/manual`, API endpoints at `/api/manual/*`
+- New PostgreSQL tables: `manual_trades`, `manual_partial_closes`, `manual_balances`
+
+**Why:** Track and analyze discretionary trades alongside the bot, with proper position sizing math and journal-style review.
+
+**Expected impact:** Zero impact on bot pipeline — completely isolated module. Dashboard API now also accepts PATCH method (CORS updated).
 
 ### 2026-03-30 — HTF Alignment Enforced + RECOVERING Gate Fix
 **What changed:**

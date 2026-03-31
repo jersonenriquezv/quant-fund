@@ -410,6 +410,24 @@ class Settings:
     })
 
     # ========================
+    # GEOMETRY CASCADE
+    # ========================
+    # Try multiple entry/SL combinations before killing a setup for bad R:R.
+    # Position sizer guarantees fixed dollar risk regardless of entry/SL placement,
+    # so we have freedom to explore alternative geometry at valid structural levels.
+    GEOMETRY_CASCADE_ENABLED: bool = os.getenv("GEOMETRY_CASCADE_ENABLED", "true").lower() == "true"
+    # Per-setup entry depth candidates (fraction of OB body or FVG range).
+    # First element is the default; others are alternatives. Max 3 per setup.
+    GEOMETRY_CASCADE_ENTRIES: dict = field(default_factory=lambda: {
+        "setup_a": [0.65, 0.50, 0.40],
+        "setup_b": [0.75, 0.50, 0.60],
+        "setup_f": [0.50, 0.40, 0.65],
+        "setup_g": [0.50, 0.40, 0.65],
+    })
+    # R:R threshold for early exit — if a candidate hits this, take it immediately.
+    GEOMETRY_CASCADE_EARLY_EXIT_RR: float = 3.0
+
+    # ========================
     # PROGRESSIVE TRAILING SL
     # ========================
     # When enabled, SL trails in 0.5 R:R steps instead of fixed breakeven + tp1.
