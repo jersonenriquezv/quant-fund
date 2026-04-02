@@ -17,9 +17,9 @@ function fmtDate(iso: string | null): string {
 
 // ── Edit Modal — loads all trade fields, user modifies, saves via PATCH ──
 function EditModal({ trade, onClose, onSaved }: { trade: ManualTrade; onClose: () => void; onSaved: () => void }) {
-  const [sl, setSl] = useState(String(trade.sl_price ?? ""));
-  const [tp1, setTp1] = useState(String(trade.tp1_price ?? ""));
-  const [tp2, setTp2] = useState(String(trade.tp2_price ?? ""));
+  const [sl, setSl] = useState(String(trade.stop_loss ?? ""));
+  const [tp1, setTp1] = useState(String(trade.take_profit_1 ?? ""));
+  const [tp2, setTp2] = useState(String(trade.take_profit_2 ?? ""));
   const [entry, setEntry] = useState(String(trade.entry_price ?? ""));
   const [thesis, setThesis] = useState(trade.thesis ?? "");
   const [notes, setNotes] = useState(trade.notes ?? "");
@@ -31,9 +31,9 @@ function EditModal({ trade, onClose, onSaved }: { trade: ManualTrade; onClose: (
     try {
       const body: Record<string, unknown> = {};
       if (entry && parseFloat(entry) !== trade.entry_price) body.entry_price = parseFloat(entry);
-      if (sl && parseFloat(sl) !== trade.sl_price) body.sl_price = parseFloat(sl);
-      if (tp1) body.tp1_price = parseFloat(tp1);
-      if (tp2) body.tp2_price = parseFloat(tp2);
+      if (sl && parseFloat(sl) !== trade.stop_loss) body.stop_loss = parseFloat(sl);
+      if (tp1) body.take_profit_1 = parseFloat(tp1);
+      if (tp2) body.take_profit_2 = parseFloat(tp2);
       if (thesis !== (trade.thesis ?? "")) body.thesis = thesis || null;
       if (notes !== (trade.notes ?? "")) body.notes = notes || null;
       if (mistakes !== (trade.mistakes ?? "")) body.mistakes = mistakes || null;
@@ -221,14 +221,14 @@ function TradeCard({ trade, onRefresh }: { trade: ManualTrade; onRefresh: () => 
 
   // Distances
   const slDist = trade.entry_price > 0
-    ? Math.abs(trade.entry_price - trade.sl_price) / trade.entry_price * 100 : 0;
-  const tp1Dist = trade.tp1_price && trade.entry_price > 0
-    ? Math.abs(trade.tp1_price - trade.entry_price) / trade.entry_price * 100 : 0;
+    ? Math.abs(trade.entry_price - trade.stop_loss) / trade.entry_price * 100 : 0;
+  const tp1Dist = trade.take_profit_1 && trade.entry_price > 0
+    ? Math.abs(trade.take_profit_1 - trade.entry_price) / trade.entry_price * 100 : 0;
 
   // TP1 progress
   let tp1Progress = 0;
-  if (currentPrice && trade.tp1_price && trade.entry_price && trade.status === "active") {
-    const totalDist = Math.abs(trade.tp1_price - trade.entry_price);
+  if (currentPrice && trade.take_profit_1 && trade.entry_price && trade.status === "active") {
+    const totalDist = Math.abs(trade.take_profit_1 - trade.entry_price);
     if (totalDist > 0) {
       const d = isLong ? currentPrice - trade.entry_price : trade.entry_price - currentPrice;
       tp1Progress = Math.max(0, Math.min(100, (d / totalDist) * 100));
@@ -277,7 +277,7 @@ function TradeCard({ trade, onRefresh }: { trade: ManualTrade; onRefresh: () => 
 
         {/* Meta line */}
         <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 8 }}>
-          {fmtDate(trade.activated_at || trade.created_at)} · E ${fmt(trade.entry_price)} · SL ${fmt(trade.sl_price)} · {trade.rr_ratio ? trade.rr_ratio.toFixed(1) : "--"}R · ${fmt(trade.risk_usd)} risk
+          {fmtDate(trade.activated_at || trade.created_at)} · E ${fmt(trade.entry_price)} · SL ${fmt(trade.stop_loss)} · {trade.rr_ratio ? trade.rr_ratio.toFixed(1) : "--"}R · ${fmt(trade.risk_usd)} risk
         </div>
 
         {/* Levels grid */}
@@ -285,14 +285,14 @@ function TradeCard({ trade, onRefresh }: { trade: ManualTrade; onRefresh: () => 
           <div className="manual-trade-level">
             <span className="manual-trade-level-label">TP1</span>
             <span style={{ color: "var(--long)" }}>
-              {trade.tp1_price ? fmt(trade.tp1_price) : "--"}
+              {trade.take_profit_1 ? fmt(trade.take_profit_1) : "--"}
               {tp1Dist > 0 && <span style={{ opacity: 0.5, fontSize: 10 }}> +{tp1Dist.toFixed(1)}%</span>}
             </span>
           </div>
           <div className="manual-trade-level">
             <span className="manual-trade-level-label">TP2</span>
             <span style={{ color: "var(--long)" }}>
-              {trade.tp2_price ? fmt(trade.tp2_price) : "--"}
+              {trade.take_profit_2 ? fmt(trade.take_profit_2) : "--"}
             </span>
           </div>
           <div className="manual-trade-level">
@@ -344,20 +344,20 @@ function TradeCard({ trade, onRefresh }: { trade: ManualTrade; onRefresh: () => 
             {/* Active actions */}
             {trade.status === "active" && (
               <div className="manual-action-row">
-                {closedPct < 50 && trade.tp1_price && (
+                {closedPct < 50 && trade.take_profit_1 && (
                   <button className="manual-btn manual-btn-create"
-                    onClick={() => setShowPartial({ price: trade.tp1_price, pct: 50, label: "TP1" })}>
+                    onClick={() => setShowPartial({ price: trade.take_profit_1, pct: 50, label: "TP1" })}>
                     TP1 Hit
                   </button>
                 )}
                 {closedPct >= 50 && closedPct < 100 && (
                   <button className="manual-btn manual-btn-create"
-                    onClick={() => setShowPartial({ price: trade.tp2_price || trade.tp1_price, pct: 100, label: "TP2" })}>
+                    onClick={() => setShowPartial({ price: trade.take_profit_2 || trade.take_profit_1, pct: 100, label: "TP2" })}>
                     TP2 Hit
                   </button>
                 )}
                 <button className="manual-btn manual-btn-close"
-                  onClick={() => setShowPartial({ price: trade.sl_price, pct: 100, label: "SL" })}>
+                  onClick={() => setShowPartial({ price: trade.stop_loss, pct: 100, label: "SL" })}>
                   Stopped
                 </button>
                 <button className="manual-btn"

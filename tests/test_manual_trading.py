@@ -52,8 +52,8 @@ class TestCalculator:
         # SL distance = 5.0, so TP1 = 105, TP2 = 110
         assert r.suggested_tp1 == 105.0
         assert r.suggested_tp2 == 110.0
-        assert r.take_profit_1 == 105.0  # auto-filled
-        assert r.take_profit_2 == 110.0
+        assert r.take_profit_1 == 105.0  # auto-filled from suggested
+        assert r.take_profit_2 is None   # TP2 only set when explicitly provided
 
     def test_auto_suggest_tps_short(self):
         """When TPs not provided, suggest 1R and 2R for short."""
@@ -195,8 +195,8 @@ class TestCalculatorInverse:
         )
         # contracts = 2 × 2000 / 100 = 40
         assert abs(r.position_size - 40.0) < 0.1
-        # TP1 PnL (half=20 contracts): 20 × (2000 - 1900) / 2000 = 20 × 0.05 = $1
-        assert abs(r.tp_plan[0].potential_profit_usd - 1.0) < 0.1
+        # TP1 PnL (100% = 40 contracts, no TP2): 40 × (2000 - 1900) / 2000 = 40 × 0.05 = $2
+        assert abs(r.tp_plan[0].potential_profit_usd - 2.0) < 0.1
 
     def test_inverse_risk_equals_loss_at_sl(self):
         """Verify that loss at SL equals risk_usd for inverse."""

@@ -8,6 +8,7 @@ No imports from risk_service — self-contained math.
 """
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 
 @dataclass
@@ -18,6 +19,13 @@ class TPLevel:
     size_to_close: float
     potential_profit_usd: float
     after_action: str | None = None  # e.g. "Move SL to breakeven"
+
+
+@dataclass
+class Advice:
+    level: Literal["info", "warn", "danger"]
+    message: str
+    action: str | None = None  # actionable suggestion
 
 
 @dataclass
@@ -54,6 +62,7 @@ class CalculatorResult:
     suggested_tp1: float
     suggested_tp2: float
     warnings: list[str] = field(default_factory=list)
+    advice: list[Advice] = field(default_factory=list)
 
 
 def calculate(
@@ -75,7 +84,8 @@ def calculate(
         "inverse" — Coin-margined. Balance in USDT. Position in USD contracts.
                      PnL = contracts × (close - entry) / entry for longs.
 
-    TP strategy: 50/50 split. TP1 = close 50%, move SL to breakeven. TP2 = close remaining 50%.
+    TP strategy: if TP2 provided → 50/50 split (close 50% at TP1, move SL to BE, 50% at TP2).
+    If only TP1 → close 100% at TP1.
     """
     if balance <= 0:
         raise ValueError("Balance must be positive")
@@ -123,7 +133,7 @@ def calculate(
         suggested_tp2 = entry - 2 * sl_distance
 
     tp1 = take_profit_1 if take_profit_1 is not None else suggested_tp1
-    tp2 = take_profit_2 if take_profit_2 is not None else suggested_tp2
+    tp2 = take_profit_2  # TP2 only when explicitly provided
 
     # Validate TP direction
     if direction == "long":
@@ -137,35 +147,38 @@ def calculate(
         if tp2 is not None and tp2 >= entry:
             raise ValueError("Short trade: TP2 must be below entry")
 
-    # TP plan: 50/50 split
-    half_size = position_size / 2
+    # TP plan: 100% at TP1 if no TP2, else 50/50 split
+    has_tp2 = tp2 is not None
+    tp1_size = position_size / 2 if has_tp2 else position_size
+    tp1_close_pct = 50.0 if has_tp2 else 100.0
 
     tp1_reward = abs(tp1 - entry)
     tp1_rr = tp1_reward / sl_distance
-    tp1_profit = _pnl(margin_type, direction, entry, tp1, half_size)
+    tp1_profit = _pnl(margin_type, direction, entry, tp1, tp1_size)
 
     tp_plan = [
         TPLevel(
             price=tp1,
             rr_ratio=round(tp1_rr, 2),
-            close_pct=50.0,
-            size_to_close=half_size,
+            close_pct=tp1_close_pct,
+            size_to_close=tp1_size,
             potential_profit_usd=round(tp1_profit, 2),
-            after_action=f"Move SL to breakeven at {entry}",
+            after_action=f"Move SL to breakeven at {entry}" if has_tp2 else None,
         ),
     ]
 
     tp2_profit = 0.0
-    if tp2 is not None:
+    if has_tp2:
+        tp2_size = position_size / 2
         tp2_reward = abs(tp2 - entry)
         tp2_rr = tp2_reward / sl_distance
-        tp2_profit = _pnl(margin_type, direction, entry, tp2, half_size)
+        tp2_profit = _pnl(margin_type, direction, entry, tp2, tp2_size)
         tp_plan.append(
             TPLevel(
                 price=tp2,
                 rr_ratio=round(tp2_rr, 2),
                 close_pct=50.0,
-                size_to_close=half_size,
+                size_to_close=tp2_size,
                 potential_profit_usd=round(tp2_profit, 2),
             ),
         )
@@ -173,20 +186,104 @@ def calculate(
     total_profit = tp1_profit + tp2_profit
     total_loss = risk_usd
 
-    # Warnings
+    # Warnings (legacy) + actionable advice
     warnings: list[str] = []
-    if tp1_rr < 1.0:
-        warnings.append("TP1 R:R below 1:1")
-    if tp2 is not None:
-        tp2_rr_val = abs(tp2 - entry) / sl_distance
-        if tp2_rr_val < 2.0:
-            warnings.append("TP2 R:R below 2:1")
-    if sl_distance_pct < 1.0:
+    advice: list[Advice] = []
+
+    tp2_rr_val = abs(tp2 - entry) / sl_distance if has_tp2 else 0.0
+
+    # ── SL distance checks ──
+    if sl_distance_pct < 0.5:
+        ideal_sl_dist = entry * 0.015  # 1.5%
+        ideal_sl = entry - ideal_sl_dist if direction == "long" else entry + ideal_sl_dist
+        ideal_risk_pct = risk_percent * (0.5 / sl_distance_pct)
         warnings.append("SL too tight — likely noise")
-    if sl_distance_pct > 5.0:
+        advice.append(Advice(
+            level="danger",
+            message=f"SL at {sl_distance_pct:.2f}% — will get stopped by noise",
+            action=f"Widen SL to ~${ideal_sl:.2f} (1.5%) or reduce risk to {min(ideal_risk_pct, risk_percent):.1f}%",
+        ))
+    elif sl_distance_pct < 1.0:
+        warnings.append("SL too tight — likely noise")
+        advice.append(Advice(
+            level="warn",
+            message=f"SL at {sl_distance_pct:.2f}% — tight for most setups",
+            action=f"Consider widening SL or reducing risk% to {risk_percent * 0.5:.1f}% to keep position smaller",
+        ))
+    elif sl_distance_pct > 5.0:
+        # Wide SL: suggest reducing position size or risk
+        safe_risk_pct = risk_percent * (3.0 / sl_distance_pct)
         warnings.append("SL very wide")
+        advice.append(Advice(
+            level="warn",
+            message=f"SL at {sl_distance_pct:.1f}% — wide stop, large position exposure",
+            action=f"Reduce risk to ~{safe_risk_pct:.1f}% to keep position manageable, or tighten SL",
+        ))
+    elif sl_distance_pct > 3.0:
+        advice.append(Advice(
+            level="info",
+            message=f"SL at {sl_distance_pct:.1f}% — wider than typical",
+            action=f"Position is smaller due to wide SL — {position_size:.4f} {size_label}. This is fine for HTF setups",
+        ))
+
+    # ── R:R checks ──
+    if tp1_rr < 1.0:
+        # Suggest a TP1 that gives at least 1R
+        min_tp1 = entry + sl_distance if direction == "long" else entry - sl_distance
+        warnings.append("TP1 R:R below 1:1")
+        advice.append(Advice(
+            level="danger",
+            message=f"TP1 R:R is {tp1_rr:.1f} — negative expectancy",
+            action=f"Move TP1 to at least ${min_tp1:.2f} for 1:1 R:R",
+        ))
+    elif tp1_rr < 1.5:
+        advice.append(Advice(
+            level="info",
+            message=f"TP1 R:R is {tp1_rr:.1f} — acceptable but tight",
+            action="Consider if there's a structural level further away for TP1",
+        ))
+
+    if has_tp2 and tp2_rr_val < 2.0:
+        min_tp2 = entry + 2 * sl_distance if direction == "long" else entry - 2 * sl_distance
+        warnings.append("TP2 R:R below 2:1")
+        advice.append(Advice(
+            level="warn",
+            message=f"TP2 R:R is {tp2_rr_val:.1f} — weak runner target",
+            action=f"Move TP2 to ${min_tp2:.2f} for 2:1 or remove TP2 and close 100% at TP1",
+        ))
+
+    # ── Margin / exposure checks ──
     if margin_pct > 50.0:
+        safe_risk = risk_percent * (40.0 / margin_pct)
         warnings.append("Using >50% of balance as margin")
+        advice.append(Advice(
+            level="danger",
+            message=f"Margin is {margin_pct:.0f}% of balance — liquidation risk",
+            action=f"Reduce risk to {safe_risk:.1f}% or lower leverage to {max(1, leverage - 2)}x",
+        ))
+    elif margin_pct > 30.0:
+        advice.append(Advice(
+            level="warn",
+            message=f"Margin is {margin_pct:.0f}% of balance — heavy allocation",
+            action=f"Consider reducing risk% or leverage for more room",
+        ))
+
+    # ── Position value vs balance ──
+    value_ratio = position_value_usd / balance if balance > 0 else 0
+    if value_ratio > 10:
+        advice.append(Advice(
+            level="warn",
+            message=f"Notional {value_ratio:.0f}x your balance (${position_value_usd:.0f})",
+            action=f"High notional — one bad fill or spike and you lose more than planned",
+        ))
+
+    # ── Good setup confirmation ──
+    if not advice and tp1_rr >= 1.5 and 1.0 <= sl_distance_pct <= 3.0 and margin_pct < 30.0:
+        advice.append(Advice(
+            level="info",
+            message=f"Setup looks solid — {tp1_rr:.1f}R TP1, {sl_distance_pct:.1f}% SL, {margin_pct:.0f}% margin",
+            action=None,
+        ))
 
     return CalculatorResult(
         pair=pair,
@@ -214,6 +311,7 @@ def calculate(
         suggested_tp1=round(suggested_tp1, 8),
         suggested_tp2=round(suggested_tp2, 8),
         warnings=warnings,
+        advice=advice,
     )
 
 

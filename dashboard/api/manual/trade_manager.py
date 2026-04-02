@@ -119,6 +119,11 @@ async def update_trade(pool: asyncpg.Pool, trade_id: int, data: dict) -> dict | 
         if key in data:
             updates[key] = data[key]
 
+    # Price fields (editable from frontend)
+    for key in ("entry_price", "stop_loss", "take_profit_1", "take_profit_2"):
+        if key in data:
+            updates[key] = Decimal(str(data[key])) if data[key] is not None else None
+
     # Decimal fields
     for key in ("spot_net_flow_4h", "futures_net_flow_4h", "cg_ls_ratio",
                 "cg_funding_rate", "fees_trend_wow", "tvl_delta_7d", "upcoming_unlock_usd"):

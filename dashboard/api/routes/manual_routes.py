@@ -1,5 +1,6 @@
 """FastAPI routes for manual trading — calculator, CRUD, analytics."""
 
+import json
 import re
 from dataclasses import asdict
 from pathlib import Path
@@ -23,6 +24,7 @@ class CalculateRequest(BaseModel):
     pair: str
     direction: str
     balance: float
+    balance_currency: str = "usd"  # "usd" or "coin" (for inverse pairs)
     risk_percent: float = 2.0
     entry: float
     stop_loss: float
@@ -36,6 +38,7 @@ class CreateTradeRequest(BaseModel):
     pair: str
     direction: str
     balance: float
+    balance_currency: str = "usd"  # "usd" or "coin" (for inverse pairs)
     risk_percent: float = 2.0
     entry: float
     stop_loss: float
@@ -60,6 +63,10 @@ class CreateTradeRequest(BaseModel):
 
 class UpdateTradeRequest(BaseModel):
     status: str | None = None
+    entry_price: float | None = None
+    stop_loss: float | None = None
+    take_profit_1: float | None = None
+    take_profit_2: float | None = None
     close_price: float | None = None
     pnl_usd: float | None = None
     result: str | None = None
@@ -92,29 +99,123 @@ class SetBalanceRequest(BaseModel):
     balance: float
 
 
+# ── Helpers ─────────────────────────────────────────────────────
+
+async def _get_price(pair: str) -> float | None:
+    """Get current price from Redis (maps /USD → /USDT for lookup)."""
+    if not db.redis_client:
+        return None
+    lookup = pair.replace("/USD", "/USDT") if pair.endswith("/USD") else pair
+    raw = await db.redis_client.get(f"qf:candle:{lookup}:5m")
+    if not raw:
+        return None
+    candle = json.loads(raw)
+    price = candle.get("close")
+    return float(price) if price else None
+
+
+async def _resolve_balance(balance: float, balance_currency: str, pair: str) -> tuple[float, float | None]:
+    """Convert coin balance to USD if needed. Returns (balance_usd, coin_price)."""
+    if balance_currency != "coin":
+        return balance, None
+    price = await _get_price(pair)
+    if not price:
+        raise HTTPException(503, f"Price unavailable for {pair} — cannot convert coin balance")
+    return balance * price, price
+
+
 # ── Calculator ───────────────────────────────────────────────────
 
 @router.post("/manual/calculate")
 async def api_calculate(req: CalculateRequest):
     try:
+        balance_usd, coin_price = await _resolve_balance(
+            req.balance, req.balance_currency, req.pair,
+        )
         result = calculate(
-            pair=req.pair, direction=req.direction, balance=req.balance,
+            pair=req.pair, direction=req.direction, balance=balance_usd,
             risk_percent=req.risk_percent, entry=req.entry,
             stop_loss=req.stop_loss, take_profit_1=req.take_profit_1,
             take_profit_2=req.take_profit_2, leverage=req.leverage,
             margin_type=req.margin_type,
         )
-        return asdict(result)
+        data = asdict(result)
+        if req.balance_currency == "coin":
+            data["coin_balance"] = req.balance
+            data["coin_price"] = coin_price
+            data["balance_currency"] = "coin"
+        return data
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/manual/suggested-sl")
+async def api_suggested_sl(pair: str, direction: str, entry: float):
+    """Find the nearest 4H order block and suggest a SL price.
+
+    For longs: nearest bullish OB below entry → SL = OB low.
+    For shorts: nearest bearish OB above entry → SL = OB high.
+    """
+    if direction not in ("long", "short"):
+        raise HTTPException(400, "direction must be 'long' or 'short'")
+    if not db.redis_client:
+        raise HTTPException(503, "Redis unavailable")
+
+    raw = await db.redis_client.get("qf:bot:order_blocks")
+    if not raw:
+        return {"suggested_sl": None, "ob": None}
+
+    obs = json.loads(raw)
+
+    # Filter: same pair, 4H timeframe, correct direction
+    candidates = []
+    for ob in obs:
+        if ob["pair"] != pair or ob["timeframe"] != "4h":
+            continue
+
+        if direction == "long":
+            # Bullish OB below entry = demand zone (support)
+            if ob["direction"] == "bullish" and ob["high"] < entry:
+                sl_price = ob["low"]
+                dist = entry - ob["high"]
+                candidates.append((sl_price, dist, ob))
+        else:
+            # Bearish OB above entry = supply zone (resistance)
+            if ob["direction"] == "bearish" and ob["low"] > entry:
+                sl_price = ob["high"]
+                dist = ob["low"] - entry
+                candidates.append((sl_price, dist, ob))
+
+    if not candidates:
+        return {"suggested_sl": None, "ob": None}
+
+    # Nearest OB by distance
+    candidates.sort(key=lambda x: x[1])
+    sl_price, _, ob = candidates[0]
+
+    return {
+        "suggested_sl": round(sl_price, 8),
+        "ob": {
+            "direction": ob["direction"],
+            "high": ob["high"],
+            "low": ob["low"],
+            "body_high": ob["body_high"],
+            "body_low": ob["body_low"],
+            "entry_price": ob["entry_price"],
+            "volume_ratio": ob.get("volume_ratio"),
+        },
+    }
 
 
 # ── Trades CRUD ──────────────────────────────────────────────────
 
 @router.post("/manual/trades")
 async def api_create_trade(req: CreateTradeRequest):
+    balance_usd, _ = await _resolve_balance(
+        req.balance, req.balance_currency, req.pair,
+    )
     calc = calculate(
-        pair=req.pair, direction=req.direction, balance=req.balance,
+        pair=req.pair, direction=req.direction, balance=balance_usd,
         risk_percent=req.risk_percent, entry=req.entry,
         stop_loss=req.stop_loss, take_profit_1=req.take_profit_1,
         take_profit_2=req.take_profit_2, leverage=req.leverage,
@@ -126,7 +227,7 @@ async def api_create_trade(req: CreateTradeRequest):
         "entry_price": req.entry, "stop_loss": req.stop_loss,
         "take_profit_1": calc.take_profit_1,
         "take_profit_2": calc.take_profit_2,
-        "account_balance": req.balance,
+        "account_balance": balance_usd,
         "risk_percent": req.risk_percent,
         "risk_usd": calc.risk_usd,
         "position_size": req.size_override if req.size_override else calc.position_size,
@@ -222,30 +323,13 @@ async def api_set_balance(pair: str, req: SetBalanceRequest):
 
 @router.get("/manual/price/{pair:path}")
 async def api_get_price(pair: str):
-    """Get current price for a pair from Redis (bot's cached candle data).
-
-    For inverse pairs like ETH/USD, maps to the USDT candle (ETH/USDT)
-    since the bot only caches USDT pairs.
-    """
-    import json
-
+    """Get current price for a pair from Redis (bot's cached candle data)."""
     if not _PAIR_RE.match(pair):
         raise HTTPException(400, "Invalid pair format (expected e.g. BTC/USDT)")
-    if not db.redis_client:
-        raise HTTPException(503, "Redis unavailable")
-
-    # Map USD pairs to their USDT equivalent for price lookup
-    lookup_pair = pair.replace("/USD", "/USDT") if pair.endswith("/USD") else pair
-    candle_raw = await db.redis_client.get(f"qf:candle:{lookup_pair}:5m")
-    if not candle_raw:
-        raise HTTPException(404, f"No price data for {pair}")
-
-    candle = json.loads(candle_raw)
-    price = candle.get("close")
+    price = await _get_price(pair)
     if not price:
-        raise HTTPException(404, f"No close price for {pair}")
-
-    return {"pair": pair, "price": float(price)}
+        raise HTTPException(404, f"No price data for {pair}")
+    return {"pair": pair, "price": price}
 
 
 # ── Analytics ────────────────────────────────────────────────────

@@ -191,13 +191,27 @@ export async function postApi<T>(path: string, body: unknown): Promise<T> {
     body: JSON.stringify(body),
     cache: "no-store",
   });
-  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(detail || `API error: ${res.status}`);
+  }
   return res.json();
 }
 
 export async function patchApi<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${getApiBase()}/api${path}`, {
     method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  return res.json();
+}
+
+export async function putApi<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${getApiBase()}/api${path}`, {
+    method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
     cache: "no-store",
@@ -219,11 +233,12 @@ export interface ManualTrade {
   id: number;
   pair: string;
   direction: string;
+  margin_type: string | null;
   status: string;
   entry_price: number;
-  sl_price: number;
-  tp1_price: number | null;
-  tp2_price: number | null;
+  stop_loss: number;
+  take_profit_1: number | null;
+  take_profit_2: number | null;
   close_price: number | null;
   pnl_usd: number | null;
   pnl_percent: number | null;
@@ -287,20 +302,50 @@ export interface ManualBalance {
   updated_at: string;
 }
 
+export interface CalcTPLevel {
+  price: number;
+  rr_ratio: number;
+  close_pct: number;
+  size_to_close: number;
+  potential_profit_usd: number;
+  after_action: string | null;
+}
+
 export interface CalcResult {
+  pair: string;
+  direction: string;
+  margin_type: string;
+  balance: number;
+  entry: number;
+  stop_loss: number;
+  take_profit_1: number;
+  take_profit_2: number | null;
+  leverage: number;
   position_size: number;
+  position_size_label: string;
   position_value_usd: number;
   margin_required: number;
+  margin_currency: string;
+  margin_pct_of_balance: number;
   risk_usd: number;
   risk_percent: number;
+  sl_distance: number;
   sl_distance_pct: number;
-  rr_ratio: number;
-  rr_ratio_tp2: number | null;
-  tp_plan: {
-    tp1_price: number;
-    tp1_rr: number;
-    tp2_price: number;
-    tp2_rr: number;
-  };
+  tp_plan: CalcTPLevel[];
+  total_potential_profit: number;
+  total_potential_loss: number;
+  suggested_tp1: number;
+  suggested_tp2: number;
   warnings: string[];
+  advice: CalcAdvice[];
+  // Coin balance conversion (present when balance_currency = "coin")
+  coin_balance?: number;
+  coin_price?: number;
+  balance_currency?: string;
+}
+
+export interface CalcAdvice {
+  level: "info" | "warn" | "danger";
+  message: string;
+  action: string | null;
 }

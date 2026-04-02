@@ -62,6 +62,9 @@ class StrategyService:
         # Prevents re-entering the same OB after a loss.
         self._failed_obs: set[tuple[str, float, float]] = set()
 
+        # Track last 4H candle timestamp per pair to avoid redundant OB updates
+        self._last_4h_ob_ts: dict[str, int] = {}
+
     def evaluate(self, pair: str,
                  trigger_candle: Candle) -> Optional[TradeSetup]:
         """Main entry point — evaluate a pair for trade setups.
@@ -95,6 +98,18 @@ class StrategyService:
         # ============================================================
         state_4h = self._market_structure.analyze(candles_4h, pair, "4h")
         state_1h = self._market_structure.analyze(candles_1h, pair, "1h")
+
+        # Detect 4H OBs (used by manual calculator for suggested SL)
+        # Only update when the latest 4H candle has changed to avoid redundant work
+        if candles_4h:
+            latest_4h_ts = candles_4h[-1].timestamp
+            cache_key = f"{pair}:4h"
+            if self._last_4h_ob_ts.get(cache_key) != latest_4h_ts:
+                self._order_blocks.update(
+                    candles_4h, state_4h.structure_breaks,
+                    pair, "4h", current_time_ms,
+                )
+                self._last_4h_ob_ts[cache_key] = latest_4h_ts
 
         htf_bias = self._determine_htf_bias(state_4h, state_1h)
         self._cached_htf_bias[pair] = htf_bias
@@ -541,9 +556,9 @@ class StrategyService:
         return key in self._failed_obs
 
     def get_active_order_blocks(self, pair: str) -> list[OrderBlock]:
-        """Get all active OBs for a pair across LTF timeframes."""
+        """Get all active OBs for a pair across LTF + HTF timeframes."""
         obs: list[OrderBlock] = []
-        for tf in settings.LTF_TIMEFRAMES:
+        for tf in settings.LTF_TIMEFRAMES + settings.HTF_TIMEFRAMES:
             obs.extend(self._order_blocks.get_active_obs(pair, tf))
         return obs
 
