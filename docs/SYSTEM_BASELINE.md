@@ -45,9 +45,11 @@
 | MIN_RISK_REWARD | 2.0 | swing setups (was 1.2) |
 | MIN_RISK_REWARD_QUICK | 1.5 | quick setups (was 1.0) |
 | MIN_RISK_DISTANCE_PCT | 0.5% | SL-too-close filter |
-| ATR_SL_FLOOR_MULTIPLIER | 3.0 | SL widened to 3× ATR(14) if structural SL is tighter |
+| ATR_SL_FLOOR_MULTIPLIER | 4.5 | SL widened to 4.5× ATR(14) if structural SL is tighter |
 | MAX_SL_PCT | 4% | SL-too-far cap — rejects setups with OB SL > 4% |
-| REGIME_EXTREME_FEAR_GATE | 10 | F&G < 10 → reject ALL setups (systemic crisis only) |
+| REGIME_EXTREME_FEAR_GATE | 10 | F&G < 10 → reject ALL live setups (systemic crisis only) |
+| SHADOW_FEAR_LONG_GATE | 25 | F&G < 25 → reject longs in shadow (94% loss rate in data) |
+| SHADOW_MIN_HOUR_UTC | 11 | Skip shadow setups before 11 UTC (0% WR across 23 trades) |
 | MAX_PORTFOLIO_HEAT_PCT | 6% | Sum of (size × SL_distance) across all positions |
 | MAX_SLIPPAGE_PCT | 0.3% | emergency close if exceeded |
 | FIXED_TRADE_MARGIN | $20 | Fallback only (if PositionSizer fails) |
@@ -65,7 +67,8 @@
 | SWING_LOOKBACK | 5 | default, never Optuna-tested |
 | BOS_CONFIRMATION_PCT | 0.1% | default |
 | SWEEP_MIN_VOLUME_RATIO | 1.5x | default |
-| SETUP_A_ENTRY_PCT | 65% | Optuna 03-15 |
+| SETUP_A_ENTRY_PCT | 50% | deepened from 65% (04-02): shadow 9% WR, SL within noise |
+| SETUP_A_MODE | continuation | changed from "both" (04-02): 17/17 SL on counter-trend |
 | SETUP_A_MAX_SWEEP_CHOCH_GAP | 60 | aggressive mode (Optuna: 45) |
 | FUNDING_EXTREME_THRESHOLD | 0.0003 | symmetric for both long/short |
 | PD_AS_CONFLUENCE | true | aggressive mode |
@@ -263,6 +266,27 @@ Reference for VPS sizing when migrating from Nitro 5.
 
 ## 8. Changelog
 
+### 2026-04-02 — Shadow Performance Audit: SL Tightness Fix
+**What changed:**
+- `ATR_SL_FLOOR_MULTIPLIER`: 3.0 → 4.5. Shadow data: 42 SL vs 4 TP (8.7% WR). 15m ATR ~0.3%, so 3× = 0.9% — within normal wick noise. 4.5× = ~1.35% breathing room.
+- `SETUP_A_ENTRY_PCT`: 0.65 → 0.50. Shallow entry kept SL within noise range. Midpoint entry adds distance from SL at cost of lower fill rate.
+- `SETUP_A_MODE`: "both" → "continuation". Counter-trend trades were 17/17 SL. Only trade with HTF bias now.
+- `setup_g` removed from `SHADOW_MODE_SETUPS`. 0/4 WR — breaker blocks (failed OBs) are structurally weak levels. Not worth tracking.
+
+**Why:** Shadow audit revealed 91% SL rate across all shadow setups. Root causes: SL distances (avg 0.76%) within 15m candle noise, counter-trend setup_a trades, and structurally flawed setup_g/h signals.
+
+**Expected impact:** Fewer but higher-quality shadow detections. Setup A should see wider SLs (~1.35% floor) and only continuation trades. Monitor for 1-2 weeks to validate improvement.
+
+### 2026-04-06 — Shadow Quality Filters (Feature Importance Analysis)
+**What changed:**
+- New `SHADOW_FEAR_LONG_GATE=25`: rejects long setups in shadow when F&G < 25. Data: longs 5.9% WR (2/34) vs shorts 20% WR (3/15) in extreme fear.
+- New `SHADOW_MIN_HOUR_UTC=11`: skips shadow setups before 11 UTC. Data: 0% WR (0/23) pre-11 UTC vs 19% WR post-11 UTC.
+- Both env-var overridable. Applied inside shadow path only (live path unaffected).
+
+**Why:** Feature importance analysis (Cohen's d) on 49 resolved shadow trades identified direction and hour_of_day as the two strongest predictors of outcome. Filtering these reduces noise in ML training data while keeping informative short setups.
+
+**Expected impact:** Fewer but higher-quality shadow trades. Estimated ~37% WR on remaining setups (vs 8.5% unfiltered). Cleaner ML dataset for future model training.
+
 ### 2026-03-31 — Shadow Position Redis Persistence
 **What changed:**
 - `ShadowMonitor` now persists active positions to Redis (`qf:bot:shadow_positions`, 48h TTL)
@@ -381,7 +405,7 @@ Reference for VPS sizing when migrating from Nitro 5.
 ### 2026-03-25 — Shadow Mode (Paper Trading for Data Collection)
 **What changed:**
 - New `SHADOW_MODE_SETUPS` config: setups in this list are detected and ML-logged but NOT executed. A `ShadowMonitor` tracks theoretical outcomes (TP/SL/timeout) from price action.
-- Default: only `setup_f` executes live. Shadow mode setups: `setup_a`, `setup_b`, `setup_c`, `setup_d_choch`, `setup_d_bos`, `setup_e`, `setup_g`. Setup H removed from shadow (03-30) pending pullback redesign.
+- Default: only `setup_f` executes live. Shadow mode setups: `setup_a`, `setup_b`, `setup_c`, `setup_d_choch`, `setup_d_bos`, `setup_e`. Setup G removed from shadow (04-02): 0/4 WR, breaker blocks are structurally weak. Setup H removed from shadow (03-30) pending pullback redesign.
 - `SHADOW_CAPITAL = $500` — fictional capital for realistic position sizing in shadow trades.
 - Shadow outcomes feed `ml_setups` with the same 40+ features. Additional columns: `shadow_mode`, `shadow_position_size`, `shadow_leverage`, `shadow_margin`, `shadow_spread_at_detection`, `shadow_depth_at_entry`, `shadow_fill_time_ms`, `shadow_fill_candle_volume_ratio`, `shadow_slippage_estimate_pct`.
 - Orderbook snapshot (spread + depth ±0.1%) captured at detection via `fetch_orderbook_snapshot()`.

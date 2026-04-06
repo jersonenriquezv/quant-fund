@@ -116,7 +116,9 @@ class Settings:
     # ATR-based SL floor — SL must be at least ATR_SL_FLOOR_MULTIPLIER × ATR(14).
     # If structural SL (OB wick) is tighter, widen to this floor.
     # Diagnostic 2026-03-30: avg SL was 2.97× ATR and 14/14 got stopped by noise.
-    ATR_SL_FLOOR_MULTIPLIER: float = float(os.getenv("ATR_SL_FLOOR_MULTIPLIER", "3.0"))
+    # Bumped 3.0→4.5 on 2026-04-02: shadow data showed 91% SL rate with 3× ATR.
+    # 15m ATR ~0.3%, so 3× = 0.9% — within normal wick noise. 4.5× = ~1.35%.
+    ATR_SL_FLOOR_MULTIPLIER: float = float(os.getenv("ATR_SL_FLOOR_MULTIPLIER", "4.5"))
     # Maximum SL distance as fraction of entry price.
     # Rejects setups where the OB is so large that SL > 4% from entry.
     # Caps risk per trade regardless of position sizing.
@@ -261,13 +263,17 @@ class Settings:
     # 0.50 = midpoint (deeper, better R:R but lower fill rate ~18%).
     # 0.65 = shallower (easier fill, slightly worse R:R).
     # Optuna 03-15: 0.50→0.65 (higher fill rate, walk-forward validated)
-    SETUP_A_ENTRY_PCT: float = float(os.getenv("SETUP_A_ENTRY_PCT", "0.65"))
+    # Deepened 0.65→0.50 on 2026-04-02: shallow entry kept SL within noise range.
+    # 0.50 = OB midpoint, more distance from SL, lower fill rate but better survival.
+    SETUP_A_ENTRY_PCT: float = float(os.getenv("SETUP_A_ENTRY_PCT", "0.50"))
 
     # Setup A mode: "both" (default), "continuation", or "reversal".
     # "continuation": CHoCH must align with HTF bias (safe, lower volume).
     # "reversal": CHoCH must oppose HTF bias (counter-trend, higher risk).
     # "both": no alignment check (current behavior).
-    SETUP_A_MODE: str = os.getenv("SETUP_A_MODE", "both")
+    # Changed both→continuation on 2026-04-02: shadow showed 17/17 SL on counter-trend.
+    # Only trade WITH the HTF bias, not against it.
+    SETUP_A_MODE: str = os.getenv("SETUP_A_MODE", "continuation")
 
     # --- Setup A temporal ---
     # Max candles between sweep and CHoCH for Setup A validity.
@@ -649,6 +655,11 @@ class Settings:
     # Other fixes (ATR SL floor, structural confluence, setup_h disabled) handle quality.
     REGIME_EXTREME_FEAR_GATE: int = int(os.getenv("REGIME_EXTREME_FEAR_GATE", "10"))
 
+    # Shadow quality filters — derived from feature importance analysis (2026-04-06).
+    # In extreme fear, longs lose 94% of the time. Before 11 UTC, 0% WR (23 trades).
+    SHADOW_FEAR_LONG_GATE: int = int(os.getenv("SHADOW_FEAR_LONG_GATE", "25"))   # F&G < 25 → reject longs in shadow
+    SHADOW_MIN_HOUR_UTC: int = int(os.getenv("SHADOW_MIN_HOUR_UTC", "11"))       # Skip setups before this hour
+
     # ========================
     # SIGNAL MODE — semi-manual trading
     # ========================
@@ -777,7 +788,9 @@ class Settings:
     # Setups NOT in this list execute normally through the live pipeline.
     SHADOW_MODE_SETUPS: list = field(default_factory=lambda: [
         "setup_a", "setup_b", "setup_c", "setup_d_choch", "setup_d_bos",
-        "setup_e", "setup_g",
+        "setup_e",
+        # "setup_g" — removed 2026-04-02: 0/4 WR in shadow. Breaker blocks
+        # (failed OBs) are structurally weak levels. Not worth tracking.
         # "setup_h" — disabled 2026-03-30: 12/14 aligned-HTF shadow losses,
         # chases impulse tips without OB retest. Needs pullback redesign.
     ])
