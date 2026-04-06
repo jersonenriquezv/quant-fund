@@ -1,0 +1,161 @@
+{
+  "timestamp": "2026-03-30T20:43:11.087318+00:00",
+  "period_days": 30.0,
+  "capital": 10000.0,
+  "pairs": [
+    "ETH/USDT",
+    "BTC/USDT",
+    "SOL/USDT",
+    "DOGE/USDT",
+    "XRP/USDT",
+    "LINK/USDT",
+    "AVAX/USDT"
+  ],
+  "summary": {
+    "total_trades": 18,
+    "wins": 11,
+    "losses": 7,
+    "win_rate": 61.1,
+    "total_pnl_usd": 884.94,
+    "total_pnl_pct": 8.85,
+    "avg_r_multiple": 0.478,
+    "max_drawdown_pct": 2.1,
+    "sharpe_ratio": 9.3,
+    "profit_factor": 2.63,
+    "trades_per_week": 4.2,
+    "avg_trade_duration_hours": 3.8
+  },
+  "by_setup": {
+    "setup_a": {
+      "count": 6,
+      "wins": 3,
+      "win_rate": 0.5,
+      "pnl": 175.704
+    },
+    "setup_b": {
+      "count": 2,
+      "wins": 1,
+      "win_rate": 0.5,
+      "pnl": 7.3375
+    },
+    "setup_d_bos": {
+      "count": 5,
+      "wins": 3,
+      "win_rate": 0.6,
+      "pnl": 233.4937
+    },
+    "setup_d_choch": {
+      "count": 3,
+      "wins": 3,
+      "win_rate": 1.0,
+      "pnl": 369.6176
+    },
+    "setup_f": {
+      "count": 1,
+      "wins": 0,
+      "win_rate": 0.0,
+      "pnl": -109.3795
+    },
+    "setup_g": {
+      "count": 1,
+      "wins": 1,
+      "win_rate": 1.0,
+      "pnl": 208.17
+    }
+  },
+  "by_pair": {
+    "ETH/USDT": {
+      "count": 16,
+      "wins": 10,
+      "win_rate": 0.625,
+      "pnl": 999.5071
+    },
+    "LINK/USDT": {
+      "count": 1,
+      "wins": 0,
+      "win_rate": 0.0,
+      "pnl": -130.9313
+    },
+    "XRP/USDT": {
+      "count": 1,
+      "wins": 1,
+      "win_rate": 1.0,
+      "pnl": 16.3673
+    }
+  },
+  "by_direction": {
+    "long": {
+      "count": 10,
+      "wins": 6,
+      "win_rate": 0.6,
+      "pnl": 479.4878
+    },
+    "short": {
+      "count": 8,
+      "wins": 5,
+      "win_rate": 0.625,
+      "pnl": 405.4553
+    }
+  },
+  "exit_reasons": {
+    "tp": 7,
+    "sl": 4,
+    "timeout": 5,
+    "trailing_sl": 1,
+    "breakeven_sl": 1
+  },
+  "entry_timeouts": 14,
+  "setups_found": 425,
+  "setups_deduped": 2691,
+  "execution_funnel": {
+    "pending_created": 84,
+    "pending_replaced": 49,
+    "pending_filled": 18,
+    "entry_timeouts": 14,
+    "fill_rate": 21.4
+  },
+  "execution_by_setup": {
+    "setup_a": {
+      "created": 18,
+      "replaced": 11,
+      "timeout": 1,
+      "filled": 6,
+      "fill_rate": 0.3333333333333333
+    },
+    "setup_d_choch": {
+      "created": 21,
+      "replaced": 14,
+      "timeout": 4,
+      "filled": 3,
+      "fill_rate": 0.14285714285714285
+    },
+    "setup_d_bos": {
+      "created": 25,
+      "replaced": 12,
+      "timeout": 8,
+      "filled": 5,
+      "fill_rate": 0.2
+    },
+    "setup_f": {
+      "created": 6,
+      "replaced": 4,
+      "timeout": 0,
+      "filled": 1,
+      "fill_rate": 0.16666666666666666
+    },
+    "setup_g": {
+      "created": 1,
+      "replaced": 0,
+      "timeout": 0,
+      "filled": 1,
+      "fill_rate": 1.0
+    },
+    "setup_b": {
+      "created": 13,
+      "replaced": 8,
+      "timeout": 1,
+      "filled": 2,
+      "fill_rate": 0.15384615384615385
+    }
+  }
+}

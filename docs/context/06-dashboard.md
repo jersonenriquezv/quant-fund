@@ -28,6 +28,18 @@ Si el dashboard crashea, el bot sigue operando normalmente.
 | `GET /api/headlines` | Redis (`qf:bot:news:headlines:{BTC,ETH}`) | Recent news headlines (CryptoCompare) |
 | `POST /api/trades/{pair}/cancel` | Redis write (`qf:cancel_request:{pair}`) | Solicita cancelación de posición (TTL 60s) |
 | `GET /api/liquidation/heatmap/{pair}` | PG candles + Redis OI + cache | Estimated liquidation levels (bins con long/short USD) |
+| `POST /api/manual/calculate` | Pure math | Position sizing & R:R calculator (linear + inverse) |
+| `POST /api/manual/trades` | PG manual_trades | Create manual trade (planned) |
+| `GET /api/manual/trades` | PG manual_trades | List trades (filter by status/pair) |
+| `GET /api/manual/trades/{id}` | PG manual_trades + partials | Trade detail + partial closes |
+| `PATCH /api/manual/trades/{id}` | PG manual_trades | Update trade (status transitions, PnL auto-calc) |
+| `DELETE /api/manual/trades/{id}` | PG manual_trades | Hard delete trade |
+| `POST /api/manual/trades/{id}/partial-close` | PG manual_partial_closes | Record partial close (auto-closes at 100%) |
+| `GET /api/manual/balances` | PG manual_balances | Per-pair balance tracking |
+| `PUT /api/manual/balances/{pair}` | PG manual_balances | Set/update balance |
+| `GET /api/manual/price/{pair}` | Redis candle cache | Current price (maps USD→USDT) |
+| `GET /api/manual/analytics` | PG manual_trades + partials | Win rate, avg R, PnL, TP hit rates, breakdowns |
+| `GET /manual` | HTML file | Manual trading UI (standalone page, no /api prefix) |
 
 ## Frontend — Layout
 
@@ -106,15 +118,23 @@ dashboard/
 │   │   ├── whales.py    # GET /api/whales
 │   │   ├── strategy.py     # GET /api/strategy/order-blocks, /api/strategy/htf-bias
 │   │   ├── sentiment.py    # GET /api/sentiment
-│   │   └── liquidation.py  # GET /api/liquidation/heatmap/{pair}
+│   │   ├── liquidation.py  # GET /api/liquidation/heatmap/{pair}
+│   │   └── manual_routes.py # Manual trading API + HTML page
+│   ├── manual/
+│   │   ├── calculator.py  # Position sizing math (linear + inverse), no external deps
+│   │   ├── trade_manager.py # CRUD, partial closes, balance tracking (asyncpg)
+│   │   ├── analytics.py   # Win rate, R multiples, TP hit rates, breakdowns
+│   │   └── schema.sql     # CREATE TABLE for manual_trades, manual_partial_closes, manual_balances
+│   ├── templates/
+│   │   └── manual.html    # Standalone manual trading UI
 │   ├── ws.py            # WS /api/ws
 │   ├── requirements.txt
 │   └── Dockerfile
 └── web/
     ├── src/
-    │   ├── app/          # Next.js app router
-    │   ├── components/   # 13 componentes UI (incl. OrderBlockPanel, FearGreedPill, LiquidationHeatmap)
-    │   └── lib/          # API client, hooks
+    │   ├── app/          # Next.js app router (/ = bot dashboard, /manual = manual trading)
+    │   ├── components/   # 13 bot components + 5 manual components (manual/ subdir)
+    │   └── lib/          # API client, hooks, types
     ├── package.json
     ├── Dockerfile
     └── next.config.ts
@@ -200,6 +220,26 @@ Estimated liquidation level chart — DIY approximation of Coinglass-style heatm
 **Limitations vs Coinglass:** Assumed leverage distribution (not real), OKX only, candle close as entry proxy, snapshot only (no time dimension). Labeled "Estimated Liquidation Levels" to be transparent.
 
 **Settings:** `LIQ_CANDLE_COUNT` (200), `LIQ_BIN_SIZE_BTC` (50), `LIQ_BIN_SIZE_ETH` (2), `LIQ_BIN_SIZE_SOL` (0.5), `LIQ_BIN_SIZE_DOGE` (0.002), `LIQ_CACHE_TTL` (30)
+
+## Manual Trading Module
+
+Módulo independiente para trades manuales — completamente separado del bot automático. No importa strategy/risk/execution services.
+
+**Margin types:** Linear (USDT-margined, size en base asset) e Inverse (coin-margined, size en USD contracts). Calculator soporta ambos con PnL correcto.
+
+**TP strategy:** 50/50 split automático. TP1 cierra 50% + mueve SL a breakeven. TP2 cierra el resto. Si no se proveen TPs, sugiere 1R y 2R automáticamente.
+
+**Status flow:** `planned` → `active` (activated_at auto) → `closed` (closed_at auto, PnL auto-calc, balance auto-update)
+
+**Partial closes:** Registra cierres parciales con porcentaje. Auto-cierra trade si total >= 100%. Auto-actualiza balance del par con PnL.
+
+**Analytics:** Win rate, avg R multiple, total PnL, TP1/TP2 hit rates, breakdowns by pair/setup/direction, streak tracking.
+
+**Tablas PostgreSQL:** `manual_trades`, `manual_partial_closes`, `manual_balances` — schema en `dashboard/api/manual/schema.sql`.
+
+**Next.js dashboard (`/manual`):** Página dedicada con 5 componentes: ManualStats (balance, PnL, WR, streak), QuickCalculator (sizing + crear trade), ActiveTrades (cards con PnL live cada 10s, progreso TP1, botón close), TradeHistory (tabla expandible con thesis/mistakes/partials), ManualAnalytics (WR, avg R, profit factor, breakdown por par/dirección). Header con nav Bot/Manual.
+
+**Validaciones:** Pair format regex en price endpoint (previene Redis key injection), leverage >= 1 (Pydantic Field).
 
 ## Bugs Conocidos (resueltos)
 

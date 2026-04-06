@@ -113,6 +113,12 @@ class Settings:
     #          → 0.5% (03-19, restored — 0.8% blocked valid setups with small OB bodies).
     # Long-term: replace with daily_vol-adaptive threshold (AFML Ch.3 getDailyVol).
     MIN_RISK_DISTANCE_PCT: float = 0.005
+    # ATR-based SL floor — SL must be at least ATR_SL_FLOOR_MULTIPLIER × ATR(14).
+    # If structural SL (OB wick) is tighter, widen to this floor.
+    # Diagnostic 2026-03-30: avg SL was 2.97× ATR and 14/14 got stopped by noise.
+    # Bumped 3.0→4.5 on 2026-04-02: shadow data showed 91% SL rate with 3× ATR.
+    # 15m ATR ~0.3%, so 3× = 0.9% — within normal wick noise. 4.5× = ~1.35%.
+    ATR_SL_FLOOR_MULTIPLIER: float = float(os.getenv("ATR_SL_FLOOR_MULTIPLIER", "4.5"))
     # Maximum SL distance as fraction of entry price.
     # Rejects setups where the OB is so large that SL > 4% from entry.
     # Caps risk per trade regardless of position sizing.
@@ -257,13 +263,17 @@ class Settings:
     # 0.50 = midpoint (deeper, better R:R but lower fill rate ~18%).
     # 0.65 = shallower (easier fill, slightly worse R:R).
     # Optuna 03-15: 0.50→0.65 (higher fill rate, walk-forward validated)
-    SETUP_A_ENTRY_PCT: float = float(os.getenv("SETUP_A_ENTRY_PCT", "0.65"))
+    # Deepened 0.65→0.50 on 2026-04-02: shallow entry kept SL within noise range.
+    # 0.50 = OB midpoint, more distance from SL, lower fill rate but better survival.
+    SETUP_A_ENTRY_PCT: float = float(os.getenv("SETUP_A_ENTRY_PCT", "0.50"))
 
     # Setup A mode: "both" (default), "continuation", or "reversal".
     # "continuation": CHoCH must align with HTF bias (safe, lower volume).
     # "reversal": CHoCH must oppose HTF bias (counter-trend, higher risk).
     # "both": no alignment check (current behavior).
-    SETUP_A_MODE: str = os.getenv("SETUP_A_MODE", "both")
+    # Changed both→continuation on 2026-04-02: shadow showed 17/17 SL on counter-trend.
+    # Only trade WITH the HTF bias, not against it.
+    SETUP_A_MODE: str = os.getenv("SETUP_A_MODE", "continuation")
 
     # --- Setup A temporal ---
     # Max candles between sweep and CHoCH for Setup A validity.
@@ -346,7 +356,7 @@ class Settings:
 
     # --- Strategy behavior (profile-controlled) ---
     # If True, LTF structure (CHoCH/BOS) must align with HTF bias direction.
-    REQUIRE_HTF_LTF_ALIGNMENT: bool = False
+    REQUIRE_HTF_LTF_ALIGNMENT: bool = True
     # If True, trades in the equilibrium zone (around 50% of range) are blocked.
     ALLOW_EQUILIBRIUM_TRADES: bool = True
     # If True, 4H trend must be defined for HTF bias. If False, 1H alone is enough.
@@ -404,6 +414,32 @@ class Settings:
         "setup_g": 2.0,        # Breaker retest — must meet MIN_RISK_REWARD (2.0)
         "setup_h": 2.0,        # Momentum — must meet MIN_RISK_REWARD if re-enabled
     })
+
+    # ========================
+    # ORDERBOOK DEPTH CONFIRMATION
+    # ========================
+    # Validates OB zones against real orderbook liquidity. Confluence, not hard gate.
+    OB_DEPTH_ZONE_MULTIPLIER: float = 1.5    # Search zone = max(OB body, ATR) × this
+    OB_DEPTH_RATIO_THRESHOLD: float = 1.0    # Supporting/opposing depth ratio for confirmation
+    OB_DEPTH_CONCENTRATION_THRESHOLD: float = 0.2  # Largest level / total > this = institutional
+
+    # ========================
+    # GEOMETRY CASCADE
+    # ========================
+    # Try multiple entry/SL combinations before killing a setup for bad R:R.
+    # Position sizer guarantees fixed dollar risk regardless of entry/SL placement,
+    # so we have freedom to explore alternative geometry at valid structural levels.
+    GEOMETRY_CASCADE_ENABLED: bool = os.getenv("GEOMETRY_CASCADE_ENABLED", "true").lower() == "true"
+    # Per-setup entry depth candidates (fraction of OB body or FVG range).
+    # First element is the default; others are alternatives. Max 3 per setup.
+    GEOMETRY_CASCADE_ENTRIES: dict = field(default_factory=lambda: {
+        "setup_a": [0.65, 0.50, 0.40],
+        "setup_b": [0.75, 0.50, 0.60],
+        "setup_f": [0.50, 0.40, 0.65],
+        "setup_g": [0.50, 0.40, 0.65],
+    })
+    # R:R threshold for early exit — if a candidate hits this, take it immediately.
+    GEOMETRY_CASCADE_EARLY_EXIT_RR: float = 3.0
 
     # ========================
     # PROGRESSIVE TRAILING SL
@@ -613,6 +649,16 @@ class Settings:
     NEWS_HEADLINES_CACHE_TTL: int = 300                  # 5 minutes
     NEWS_EXTREME_FEAR_THRESHOLD: int = 5                # F&G < 5 → reject longs (only systemic crashes)
     NEWS_EXTREME_GREED_THRESHOLD: int = 85              # F&G > 85 → reject shorts
+    # Hard regime gate — reject ALL setups (any direction) when F&G < threshold.
+    # Only for systemic crises (Luna/FTX-level). Normal fear is contrarian signal
+    # per SMC thesis — institutions accumulate when retail panics.
+    # Other fixes (ATR SL floor, structural confluence, setup_h disabled) handle quality.
+    REGIME_EXTREME_FEAR_GATE: int = int(os.getenv("REGIME_EXTREME_FEAR_GATE", "10"))
+
+    # Shadow quality filters — derived from feature importance analysis (2026-04-06).
+    # In extreme fear, longs lose 94% of the time. Before 11 UTC, 0% WR (23 trades).
+    SHADOW_FEAR_LONG_GATE: int = int(os.getenv("SHADOW_FEAR_LONG_GATE", "25"))   # F&G < 25 → reject longs in shadow
+    SHADOW_MIN_HOUR_UTC: int = int(os.getenv("SHADOW_MIN_HOUR_UTC", "11"))       # Skip setups before this hour
 
     # ========================
     # SIGNAL MODE — semi-manual trading
@@ -742,7 +788,11 @@ class Settings:
     # Setups NOT in this list execute normally through the live pipeline.
     SHADOW_MODE_SETUPS: list = field(default_factory=lambda: [
         "setup_a", "setup_b", "setup_c", "setup_d_choch", "setup_d_bos",
-        "setup_e", "setup_g", "setup_h",
+        "setup_e",
+        # "setup_g" — removed 2026-04-02: 0/4 WR in shadow. Breaker blocks
+        # (failed OBs) are structurally weak levels. Not worth tracking.
+        # "setup_h" — disabled 2026-03-30: 12/14 aligned-HTF shadow losses,
+        # chases impulse tips without OB retest. Needs pullback redesign.
     ])
     # Fictional capital for shadow mode position sizing ($500 USDT).
     # Shadow R:R and position sizes reflect realistic trades you'd take later.
@@ -756,7 +806,7 @@ class Settings:
     # ========================
     # Feature version — increment when strategy params change in ways that
     # alter feature semantics (e.g. changing OB scoring weights, PD rules).
-    ML_FEATURE_VERSION: int = 7  # v7: shadow uses risk_service sizing (not standalone), risk_approved/risk_reject_reason columns
+    ML_FEATURE_VERSION: int = 9  # v9: geometry cascade (dynamic entry/SL selection), ATR SL absorbed into cascade
 
     # ========================
     # LIQUIDATION HEATMAP

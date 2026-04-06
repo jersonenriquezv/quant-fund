@@ -3,9 +3,9 @@
 > Source of truth for system state. Updated on every material change.
 > Reflects code reality — if code and doc disagree, fix the doc.
 
-**Last updated:** 2026-03-26
-**ML Feature Version:** 7
-**Bot status:** LIVE (OKX_SANDBOX=false, ~$90 capital)
+**Last updated:** 2026-03-31
+**ML Feature Version:** 8
+**Bot status:** LIVE (OKX_SANDBOX=false, ~$86 capital)
 
 ---
 
@@ -30,7 +30,7 @@
 | E (Cascade Reversal) | **ENABLED** | quick | live, collecting data |
 | F (Pure OB Retest) | **ENABLED** | swing, AI bypass | 34-59% |
 | G (Breaker Block) | **DISABLED** | — | unvalidated |
-| H (Momentum/Impulse) | **DISABLED** | — | 11% WR, PF 0.10 (28 trades). Adverse selection at impulse top. |
+| H (Momentum/Impulse) | **DISABLED** (live+shadow) | — | 11% WR live, 0/12 aligned shadow. Chases impulse tips without OB retest. Needs pullback redesign. |
 
 ### Risk Guardrails
 | Parameter | Value | Notes |
@@ -45,7 +45,11 @@
 | MIN_RISK_REWARD | 2.0 | swing setups (was 1.2) |
 | MIN_RISK_REWARD_QUICK | 1.5 | quick setups (was 1.0) |
 | MIN_RISK_DISTANCE_PCT | 0.5% | SL-too-close filter |
+| ATR_SL_FLOOR_MULTIPLIER | 4.5 | SL widened to 4.5× ATR(14) if structural SL is tighter |
 | MAX_SL_PCT | 4% | SL-too-far cap — rejects setups with OB SL > 4% |
+| REGIME_EXTREME_FEAR_GATE | 10 | F&G < 10 → reject ALL live setups (systemic crisis only) |
+| SHADOW_FEAR_LONG_GATE | 25 | F&G < 25 → reject longs in shadow (94% loss rate in data) |
+| SHADOW_MIN_HOUR_UTC | 11 | Skip shadow setups before 11 UTC (0% WR across 23 trades) |
 | MAX_PORTFOLIO_HEAT_PCT | 6% | Sum of (size × SL_distance) across all positions |
 | MAX_SLIPPAGE_PCT | 0.3% | emergency close if exceeded |
 | FIXED_TRADE_MARGIN | $20 | Fallback only (if PositionSizer fails) |
@@ -63,7 +67,8 @@
 | SWING_LOOKBACK | 5 | default, never Optuna-tested |
 | BOS_CONFIRMATION_PCT | 0.1% | default |
 | SWEEP_MIN_VOLUME_RATIO | 1.5x | default |
-| SETUP_A_ENTRY_PCT | 65% | Optuna 03-15 |
+| SETUP_A_ENTRY_PCT | 50% | deepened from 65% (04-02): shadow 9% WR, SL within noise |
+| SETUP_A_MODE | continuation | changed from "both" (04-02): 17/17 SL on counter-trend |
 | SETUP_A_MAX_SWEEP_CHOCH_GAP | 60 | aggressive mode (Optuna: 45) |
 | FUNDING_EXTREME_THRESHOLD | 0.0003 | symmetric for both long/short |
 | PD_AS_CONFLUENCE | true | aggressive mode |
@@ -104,13 +109,17 @@
 ```
 Candle confirmed → StrategyService.evaluate()
   ├── HTF bias undefined? → BLOCK (all setups)
+  ├── LTF direction != HTF bias? → BLOCK (REQUIRE_HTF_LTF_ALIGNMENT=True)
   ├── Swing setups (15m only): A → B → F → G
-  │     Each: detect pattern → PD check → OB selection → volume confirmation → confluence ≥ 2
-  │     Post-detection: ATR filter → target space filter
-  ├── Quick setups (5m): C → D → E → H (with per-type cooldown)
+  │     Each: detect pattern → PD check → OB selection → volume confirmation
+  │     → structural confluence ≥ 2 (metrics don't count)
+  │     Post-detection: ATR SL floor (widen to 3× ATR if tight) → ATR filter → target space filter
+  ├── Quick setups (5m): C → D → E (with per-type cooldown)
   └── TradeSetup produced
-        ├── ENABLED_SETUPS check → discard if not in list
-        ├── Dedup cache (1h TTL)
+        ├── ENABLED_SETUPS / SHADOW_MODE_SETUPS check
+        ├── Data integrity gate (DEGRADED blocks all; RECOVERING allows candle-only setups)
+        ├── Regime gate (F&G < 20 → BLOCK all)
+        ├── Dedup cache (1h TTL) + shadow dedup (active position check)
         ├── AI filter → BYPASSED for all active setups (synthetic approval)
         ├── Risk Service → guardrails, position sizing
         └── Execution Service → limit order + SL + TP
@@ -129,7 +138,7 @@ Candle confirmed → StrategyService.evaluate()
 | PD zone | Confluence | Demoted from hard gate (PD_AS_CONFLUENCE=true) |
 | OB volume | Confluence | Restored: 1.3x minimum (was 1.0 = disabled) |
 | Whale flows | Logging only | Collected, never used in decisions |
-| Fear & Greed | Pre-filter | F&G < 5 or > 85 (almost never triggers) |
+| Fear & Greed | **Hard gate** + pre-filter | F&G < 10 → reject ALL (systemic crisis). Also: < 5 reject longs, > 85 reject shorts |
 
 ---
 
@@ -182,6 +191,8 @@ Reference for VPS sizing when migrating from Nitro 5.
 | 03-10 | AI v1 | 54 | 44.4% | +$2,104 | 1.45 | 3.44 | AI destroyed B |
 | 03-15 | Pre-Optuna | 26 | 42.3% | +$123 | 1.05 | — | |
 | 03-15 | Optuna best (30d) | 17 | 58.8% | +$1,683 | 2.65 | — | Walk-forward: PF 3.07 |
+| 03-30 | Pre-diagnostic (30d) | 104 | 36.5% | -$717 | 0.87 | -1.38 | Setup H = 74 trades, -$1,144 |
+| 03-30 | Post-diagnostic (30d) | 18 | 61.1% | +$885 | 2.63 | 9.30 | H disabled, regime gate, ATR SL floor, confluence fix |
 
 ### Per-Setup Performance (60d baseline, no AI)
 | Setup | Trades | WR | PnL | Status |
@@ -232,9 +243,9 @@ Reference for VPS sizing when migrating from Nitro 5.
 
 ## 7. ML Feature Versioning
 
-**Current version:** 7 (set in `config/settings.py:ML_FEATURE_VERSION`)
+**Current version:** 9 (set in `config/settings.py:ML_FEATURE_VERSION`)
 **Storage:** `ml_setups.feature_version` column in PostgreSQL
-**Query training data:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL`
+**Query training data:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL AND outcome_type NOT IN ('shadow_dedup', 'data_blocked', 'shadow_risk_rejected', 'risk_rejected', 'regime_extreme_fear')`
 
 | Version | Date | Changes | Training Status |
 |---------|------|---------|-----------------|
@@ -245,6 +256,7 @@ Reference for VPS sizing when migrating from Nitro 5.
 | v5 | 03-19 | Graduated signal weighting (sweep/CVD/OI/funding by strength, not binary), tier features | **TRAINING READY** |
 | v6 | 03-19+ | daily_vol (AFML Ch.3 getDailyVol), EWMA volatility for barrier normalization | **TRAINING READY** |
 | v7 | 03-25+ | Shadow mode risk_approved/risk_reject_reason columns, OB impulse/retest scoring | **TRAINING READY** |
+| v8 | 03-30+ | confluence_count = structural only (BOS/CHoCH/FVG/OB/sweep/breaker), regime gate, ATR SL floor | **TRAINING READY** |
 
 **When to bump:** Increment `ML_FEATURE_VERSION` whenever strategy params change in ways that alter feature semantics (OB scoring weights, PD rules, confluence logic, threshold changes).
 
@@ -253,6 +265,96 @@ Reference for VPS sizing when migrating from Nitro 5.
 ---
 
 ## 8. Changelog
+
+### 2026-04-02 — Shadow Performance Audit: SL Tightness Fix
+**What changed:**
+- `ATR_SL_FLOOR_MULTIPLIER`: 3.0 → 4.5. Shadow data: 42 SL vs 4 TP (8.7% WR). 15m ATR ~0.3%, so 3× = 0.9% — within normal wick noise. 4.5× = ~1.35% breathing room.
+- `SETUP_A_ENTRY_PCT`: 0.65 → 0.50. Shallow entry kept SL within noise range. Midpoint entry adds distance from SL at cost of lower fill rate.
+- `SETUP_A_MODE`: "both" → "continuation". Counter-trend trades were 17/17 SL. Only trade with HTF bias now.
+- `setup_g` removed from `SHADOW_MODE_SETUPS`. 0/4 WR — breaker blocks (failed OBs) are structurally weak levels. Not worth tracking.
+
+**Why:** Shadow audit revealed 91% SL rate across all shadow setups. Root causes: SL distances (avg 0.76%) within 15m candle noise, counter-trend setup_a trades, and structurally flawed setup_g/h signals.
+
+**Expected impact:** Fewer but higher-quality shadow detections. Setup A should see wider SLs (~1.35% floor) and only continuation trades. Monitor for 1-2 weeks to validate improvement.
+
+### 2026-04-06 — Shadow Quality Filters (Feature Importance Analysis)
+**What changed:**
+- New `SHADOW_FEAR_LONG_GATE=25`: rejects long setups in shadow when F&G < 25. Data: longs 5.9% WR (2/34) vs shorts 20% WR (3/15) in extreme fear.
+- New `SHADOW_MIN_HOUR_UTC=11`: skips shadow setups before 11 UTC. Data: 0% WR (0/23) pre-11 UTC vs 19% WR post-11 UTC.
+- Both env-var overridable. Applied inside shadow path only (live path unaffected).
+
+**Why:** Feature importance analysis (Cohen's d) on 49 resolved shadow trades identified direction and hour_of_day as the two strongest predictors of outcome. Filtering these reduces noise in ML training data while keeping informative short setups.
+
+**Expected impact:** Fewer but higher-quality shadow trades. Estimated ~37% WR on remaining setups (vs 8.5% unfiltered). Cleaner ML dataset for future model training.
+
+### 2026-03-31 — Shadow Position Redis Persistence
+**What changed:**
+- `ShadowMonitor` now persists active positions to Redis (`qf:bot:shadow_positions`, 48h TTL)
+- Positions restored on startup; expired positions (>36h) are pruned during load
+- Save points: after add, after fill, after resolve. Fire-and-forget (Redis failure never blocks pipeline)
+
+**Why:** Shadow positions were in-memory only. On bot restart, `_positions` was wiped and the in-memory dedup allowed re-tracking of identical setups. This caused 17 duplicate trades for the same OB on 2026-03-30 (7× XRP, 6× SOL, 4× LINK — same entry/SL, all filled+stopped in the same candle).
+
+**Expected impact:** No more duplicate shadow tracking after restarts. Cleaner ML data.
+
+### 2026-03-31 — Orderbook Depth Confirmation + Regime Gate Fix
+**What changed:**
+- New `fetch_orderbook_depth()` in exchange_client.py — fetches 20-level L2 orderbook with raw (price, size_usd) levels
+- New `_enrich_with_ob_depth()` in strategy service — analyzes orderbook liquidity around OB zone for all swing setups (A/B/F/G)
+- Dynamic search zone: `max(OB body size, ATR) × 1.5` — scales per pair and volatility
+- Measures depth ratio (supporting/opposing) and concentration (largest level / total)
+- Confluence `ob_depth_confirmed` added when ratio ≥ 1.0 AND concentration ≥ 0.2
+- ML features: `ob_depth_ratio`, `ob_depth_concentration`, `ob_depth_confirmed`, `geometry_adjusted`, `geometry_cascade_rank`
+- **R:R floating point fix**: `guardrails.py` now uses `rr < min_rr - 1e-9` to prevent rejecting R:R 2.00 as "below 2.0"
+- **Regime gate moved after shadow path**: Shadow setups now collect ML data during extreme fear (F&G < 10). Live setups still blocked. Previously shadow was also blocked, losing data in the most interesting market conditions.
+
+**Why:** OB detection uses historical candles but never validated against real-time liquidity. Now the bot checks if institutional orders actually exist at the detected zone. Not a hard gate — just bonus confirmation for ML to evaluate over time.
+
+### 2026-03-31 — Geometry Cascade (Dynamic Entry/SL Selection)
+**What changed:**
+- New `_cascade_geometry()` in `strategy_service/setups.py` — tries 3 entry depths × 2 SL candidates (OB wick + ATR floor) per setup before killing for bad R:R
+- Integrated into swing setups A, B, F, G. Quick setups unchanged.
+- ATR SL floor now evaluated as cascade candidate (was post-processing in service.py). Removed 4 `_apply_atr_sl_floor()` calls.
+- Early exit at R:R ≥ 3.0 (no need to check remaining combos)
+- Cascade metadata in confluences: `geometry_adjusted_N` for ML tracking
+- `GEOMETRY_CASCADE_ENABLED=true` (env var override), `GEOMETRY_CASCADE_EARLY_EXIT_RR=3.0`
+- ML_FEATURE_VERSION bumped to 9
+
+**Why:** Bot was rejecting valid setups because fixed entry depth + OB wick SL produced R:R below minimum. Position sizer guarantees fixed dollar risk regardless of geometry, so exploring alternative structural levels costs nothing. 9 new tests added.
+
+### 2026-03-31 — Manual Trading Module
+**What changed:**
+- New manual trading module at `dashboard/api/manual/` — calculator, trade CRUD, partial closes, analytics
+- Supports linear (USDT-margined) and inverse (coin-margined) position sizing
+- 50/50 TP plan with auto-suggest, balance tracking, analytics (win rate, R multiples, TP hit rates)
+- Standalone HTML page at `/manual`, API endpoints at `/api/manual/*`
+- New PostgreSQL tables: `manual_trades`, `manual_partial_closes`, `manual_balances`
+
+**Why:** Track and analyze discretionary trades alongside the bot, with proper position sizing math and journal-style review.
+
+**Expected impact:** Zero impact on bot pipeline — completely isolated module. Dashboard API now also accepts PATCH method (CORS updated).
+
+### 2026-03-30 — HTF Alignment Enforced + RECOVERING Gate Fix
+**What changed:**
+- **`REQUIRE_HTF_LTF_ALIGNMENT=True`**: Setups A/B/F now require LTF structure direction (CHoCH/BOS) to match HTF bias. Counter-trend trades blocked.
+- **Data gate: RECOVERING allows candle-only setups**: Previously, `service=RECOVERING` blocked ALL setups. Now candle-only setups (A/B/D/F/H) bypass the global RECOVERING gate since WebSocket still delivers candles. Setups needing non-candle deps (C=funding+CVD, E=OI) remain blocked. Removed duplicate Gate 1 in `main.py`; all filtering goes through `can_trade_setup()`.
+
+**Why:** Shadow diagnostic showed 17/17 SL on counter-trend setup_a (all long against bearish HTF). Also, 62 setup_a detections on 03-25 lost to `data_blocked` during a 3h RECOVERING window — setup_a only needs candles, which were flowing fine via WebSocket.
+
+**Expected impact:** Cleaner ML shadow data (no more counter-trend noise). Fewer data_blocked losses during recovery episodes.
+
+### 2026-03-30 — Shadow Diagnostic: Setup H Disabled, Regime Gate, Confluence Fix, ATR SL Floor
+**What changed:**
+- **Setup H disabled from shadow mode**: 12/14 aligned-HTF shadow losses were setup_h. Chases impulse tips at current price instead of waiting for OB retest. Only 1 structural confluence (BOS) inflated to 6-9 by impulse metrics. Kept in codebase for redesign with pullback requirement.
+- **Regime gate (F&G < 20)**: Hard gate rejects ALL setups (any direction) when Fear & Greed < 20. Diagnostic: 14/14 trades lost at F&G=8. Market structure is unreliable in extreme fear. `REGIME_EXTREME_FEAR_GATE=20`, env-var overridable.
+- **Structural-only confluence counting**: `confluence_count` and `_check_confluence_minimum()` now only count structural items (BOS, CHoCH, FVG, OB, sweep, breaker, pd_zone). Metrics (CVD, OI, funding, volume ratios, impulse stats) are captured as separate ML features but don't inflate the ≥2 gate. With corrected counting, all 14 shadow losses had only 0-1 structural confluences.
+- **ATR SL floor**: SL widened to `max(structural_SL, 3× ATR(14))`. If OB-based SL is tighter than 3× ATR, the SL moves out and TPs recalculate to preserve R:R. Diagnostic: avg SL was 2.97× ATR → all 14 got stopped by noise. 7/14 would have hit TP2 with wider SL.
+- **Shadow dedup fix**: `ShadowMonitor.add_shadow()` now rejects if an active shadow already exists for the same (pair, direction, setup_type). Previously, the 1h pipeline dedup TTL expired before shadow resolution, creating duplicate tracking + duplicate Telegram notifications. 552 orphan `ml_setups` rows cleaned up.
+- **ML_FEATURE_VERSION bumped to 8** for confluence_count semantic change.
+
+**Why:** Shadow data diagnostic (63 resolved setups, 18 unique filled trades) showed 0/14 aligned-HTF WR. Root causes: setup_h adverse selection, no regime filter, inflated confluence counts, SL within noise range. Backtest confirmed: old code -$717 (36.5% WR, PF 0.87), new code +$885 (61.1% WR, PF 2.63).
+
+**Expected impact:** Fewer but higher-quality shadow trades. Zero trades during extreme fear (F&G < 20). Wider SLs with proportionally wider TPs. Shadow data collection continues for setups A/B/C/D/E/G.
 
 ### 2026-03-26 — Risk Management Overhaul + Trade Journal
 **What changed:**
@@ -303,7 +405,7 @@ Reference for VPS sizing when migrating from Nitro 5.
 ### 2026-03-25 — Shadow Mode (Paper Trading for Data Collection)
 **What changed:**
 - New `SHADOW_MODE_SETUPS` config: setups in this list are detected and ML-logged but NOT executed. A `ShadowMonitor` tracks theoretical outcomes (TP/SL/timeout) from price action.
-- Default: only `setup_f` executes live. All others (`setup_a`, `setup_b`, `setup_c`, `setup_d_choch`, `setup_d_bos`, `setup_e`, `setup_g`, `setup_h`) run in shadow mode.
+- Default: only `setup_f` executes live. Shadow mode setups: `setup_a`, `setup_b`, `setup_c`, `setup_d_choch`, `setup_d_bos`, `setup_e`. Setup G removed from shadow (04-02): 0/4 WR, breaker blocks are structurally weak. Setup H removed from shadow (03-30) pending pullback redesign.
 - `SHADOW_CAPITAL = $500` — fictional capital for realistic position sizing in shadow trades.
 - Shadow outcomes feed `ml_setups` with the same 40+ features. Additional columns: `shadow_mode`, `shadow_position_size`, `shadow_leverage`, `shadow_margin`, `shadow_spread_at_detection`, `shadow_depth_at_entry`, `shadow_fill_time_ms`, `shadow_fill_candle_volume_ratio`, `shadow_slippage_estimate_pct`.
 - Orderbook snapshot (spread + depth ±0.1%) captured at detection via `fetch_orderbook_snapshot()`.

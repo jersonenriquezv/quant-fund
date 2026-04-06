@@ -62,6 +62,9 @@ class StrategyService:
         # Prevents re-entering the same OB after a loss.
         self._failed_obs: set[tuple[str, float, float]] = set()
 
+        # Track last 4H candle timestamp per pair to avoid redundant OB updates
+        self._last_4h_ob_ts: dict[str, int] = {}
+
     def evaluate(self, pair: str,
                  trigger_candle: Candle) -> Optional[TradeSetup]:
         """Main entry point — evaluate a pair for trade setups.
@@ -95,6 +98,18 @@ class StrategyService:
         # ============================================================
         state_4h = self._market_structure.analyze(candles_4h, pair, "4h")
         state_1h = self._market_structure.analyze(candles_1h, pair, "1h")
+
+        # Detect 4H OBs (used by manual calculator for suggested SL)
+        # Only update when the latest 4H candle has changed to avoid redundant work
+        if candles_4h:
+            latest_4h_ts = candles_4h[-1].timestamp
+            cache_key = f"{pair}:4h"
+            if self._last_4h_ob_ts.get(cache_key) != latest_4h_ts:
+                self._order_blocks.update(
+                    candles_4h, state_4h.structure_breaks,
+                    pair, "4h", current_time_ms,
+                )
+                self._last_4h_ob_ts[cache_key] = latest_4h_ts
 
         htf_bias = self._determine_htf_bias(state_4h, state_1h)
         self._cached_htf_bias[pair] = htf_bias
@@ -197,6 +212,7 @@ class StrategyService:
                         logger.info(f"Expectancy filter rejected: {setup.pair} {setup.setup_type} — {reject}")
                         setup = None
                     else:
+                        setup = self._enrich_with_ob_depth(setup, candles_15m)
                         logger.info(
                             f"Setup A found: pair={pair} direction={setup.direction} "
                             f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
@@ -226,6 +242,7 @@ class StrategyService:
                         logger.info(f"Expectancy filter rejected: {setup.pair} {setup.setup_type} — {reject}")
                         setup = None
                     else:
+                        setup = self._enrich_with_ob_depth(setup, candles_15m)
                         logger.info(
                             f"Setup B found: pair={pair} direction={setup.direction} "
                             f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
@@ -255,6 +272,7 @@ class StrategyService:
                         logger.info(f"Expectancy filter rejected: {setup.pair} {setup.setup_type} — {reject}")
                         setup = None
                     else:
+                        setup = self._enrich_with_ob_depth(setup, candles_15m)
                         logger.info(
                             f"Setup F found: pair={pair} direction={setup.direction} "
                             f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
@@ -284,6 +302,7 @@ class StrategyService:
                         logger.info(f"Expectancy filter rejected: {setup.pair} {setup.setup_type} — {reject}")
                         setup = None
                     else:
+                        setup = self._enrich_with_ob_depth(setup, candles_15m)
                         logger.info(
                             f"Setup G found: pair={pair} direction={setup.direction} "
                             f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
@@ -537,15 +556,141 @@ class StrategyService:
         return key in self._failed_obs
 
     def get_active_order_blocks(self, pair: str) -> list[OrderBlock]:
-        """Get all active OBs for a pair across LTF timeframes."""
+        """Get all active OBs for a pair across LTF + HTF timeframes."""
         obs: list[OrderBlock] = []
-        for tf in settings.LTF_TIMEFRAMES:
+        for tf in settings.LTF_TIMEFRAMES + settings.HTF_TIMEFRAMES:
             obs.extend(self._order_blocks.get_active_obs(pair, tf))
         return obs
 
     def get_htf_bias(self, pair: str) -> str:
         """Get the cached HTF bias for a pair."""
         return self._cached_htf_bias.get(pair, "undefined")
+
+    def _apply_atr_sl_floor(
+        self, setup: TradeSetup, candles: list[Candle],
+    ) -> TradeSetup:
+        """Widen SL to ATR floor if structural SL is too tight.
+
+        SL = max(structural_SL, entry ± ATR_SL_FLOOR_MULTIPLIER × ATR(14)).
+        This prevents noise stop-outs in ranging markets while keeping the
+        structural SL when it's already wider than the ATR floor.
+        """
+        from dataclasses import replace
+
+        atr = self._compute_atr(candles, 14)
+        if atr is None or atr <= 0 or setup.entry_price <= 0:
+            return setup
+
+        min_sl_distance = atr * settings.ATR_SL_FLOOR_MULTIPLIER
+        current_sl_distance = abs(setup.entry_price - setup.sl_price)
+
+        if current_sl_distance >= min_sl_distance:
+            return setup  # structural SL is already wider
+
+        # Widen SL to ATR floor
+        if setup.direction == "long":
+            new_sl = setup.entry_price - min_sl_distance
+        else:
+            new_sl = setup.entry_price + min_sl_distance
+
+        # Recalculate TPs based on new risk distance (preserve R:R)
+        new_risk = min_sl_distance
+        rr1 = settings.TP1_RR_RATIO
+        rr2 = settings.SETUP_TP2_RR.get(setup.setup_type, settings.TP2_RR_RATIO)
+        if setup.direction == "long":
+            new_tp1 = setup.entry_price + new_risk * rr1
+            new_tp2 = setup.entry_price + new_risk * rr2
+        else:
+            new_tp1 = setup.entry_price - new_risk * rr1
+            new_tp2 = setup.entry_price - new_risk * rr2
+
+        logger.info(
+            f"ATR SL floor: {setup.setup_type} {setup.pair} SL widened "
+            f"{current_sl_distance/setup.entry_price*100:.2f}% → "
+            f"{min_sl_distance/setup.entry_price*100:.2f}% "
+            f"({settings.ATR_SL_FLOOR_MULTIPLIER}× ATR={atr:.4f})"
+        )
+
+        return replace(
+            setup,
+            sl_price=new_sl,
+            tp1_price=new_tp1,
+            tp2_price=new_tp2,
+        )
+
+    def _enrich_with_ob_depth(
+        self, setup: TradeSetup, candles: list[Candle],
+    ) -> TradeSetup:
+        """Enrich setup with orderbook depth analysis around the OB zone.
+
+        Fetches real-time orderbook and checks if there's institutional
+        liquidity confirming the OB. Adds confluence + ML features.
+        Never blocks a trade — confirmation only.
+        """
+        from dataclasses import replace
+
+        if self._data is None:
+            return setup
+
+        orderbook = self._data.get_orderbook_depth(setup.pair)
+        if orderbook is None:
+            return setup
+
+        direction = "bullish" if setup.direction == "long" else "bearish"
+
+        # Reconstruct OB zone from setup geometry for search zone calculation.
+        ob_body_size = abs(setup.entry_price - setup.sl_price) * 0.6
+        atr = self._compute_atr(candles, 14)
+        zone_base = max(ob_body_size, atr) if atr and atr > 0 else ob_body_size
+        zone_radius = zone_base * settings.OB_DEPTH_ZONE_MULTIPLIER
+
+        # Zone centered on entry price
+        zone_low = setup.entry_price - zone_radius
+        zone_high = setup.entry_price + zone_radius
+
+        # Select relevant side
+        if direction == "bullish":
+            levels = orderbook.get("bid_levels", [])
+            opp_levels = orderbook.get("ask_levels", [])
+        else:
+            levels = orderbook.get("ask_levels", [])
+            opp_levels = orderbook.get("bid_levels", [])
+
+        zone_levels = [(p, usd) for p, usd in levels if zone_low <= p <= zone_high]
+        opp_zone = [(p, usd) for p, usd in opp_levels if zone_low <= p <= zone_high]
+
+        total_depth = sum(usd for _, usd in zone_levels)
+        opp_depth = sum(usd for _, usd in opp_zone)
+
+        depth_ratio = total_depth / opp_depth if opp_depth > 0 else (
+            2.0 if total_depth > 0 else 0.0
+        )
+
+        concentration = 0.0
+        if zone_levels and total_depth > 0:
+            max_level = max(usd for _, usd in zone_levels)
+            concentration = max_level / total_depth
+
+        snapshot_ts = orderbook.get("timestamp_ms", 0)
+        snapshot_age_ms = int(time.time() * 1000) - snapshot_ts if snapshot_ts > 0 else 0
+
+        # Add confluence if confirmed
+        new_confluences = list(setup.confluences)
+        if (depth_ratio >= settings.OB_DEPTH_RATIO_THRESHOLD
+                and concentration >= settings.OB_DEPTH_CONCENTRATION_THRESHOLD):
+            new_confluences.append("ob_depth_confirmed")
+            logger.info(
+                f"OB depth confirmed [{setup.pair}]: ratio={depth_ratio:.2f} "
+                f"concentration={concentration:.2f} depth=${total_depth:.0f} "
+                f"age={snapshot_age_ms}ms"
+            )
+
+        # Store depth features in confluences for ML extraction
+        # (ml_features.py can parse these, or we add dedicated features)
+        new_confluences.append(f"ob_depth_ratio_{depth_ratio:.2f}")
+        new_confluences.append(f"ob_depth_conc_{concentration:.2f}")
+
+        return replace(setup, confluences=new_confluences)
 
     def _apply_expectancy_filters(
         self, setup: TradeSetup, candles: list[Candle],

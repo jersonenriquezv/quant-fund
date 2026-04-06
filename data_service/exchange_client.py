@@ -345,6 +345,43 @@ class ExchangeClient:
             logger.debug(f"Orderbook fetch failed: pair={pair} {e}")
             return None
 
+    def fetch_orderbook_depth(
+        self, pair: str, levels: int = 20,
+    ) -> dict | None:
+        """Fetch L2 orderbook with raw level data for depth analysis.
+
+        Returns dict with bids/asks as [(price, size_usd), ...] and metadata.
+        Used by strategy layer to confirm OB zones with real liquidity.
+        """
+        try:
+            symbol = self._ccxt_symbol(pair)
+            book = self._market_exchange.fetch_order_book(symbol, limit=levels)
+            bids = book.get("bids", [])
+            asks = book.get("asks", [])
+            if not bids or not asks:
+                return None
+
+            best_bid = bids[0][0]
+            best_ask = asks[0][0]
+            mid = (best_bid + best_ask) / 2
+            timestamp_ms = int(time.time() * 1000)
+
+            # Raw levels as (price, size_usd) tuples
+            bid_levels = [(b[0], b[0] * b[1]) for b in bids]
+            ask_levels = [(a[0], a[0] * a[1]) for a in asks]
+
+            return {
+                "best_bid": best_bid,
+                "best_ask": best_ask,
+                "mid": mid,
+                "bid_levels": bid_levels,
+                "ask_levels": ask_levels,
+                "timestamp_ms": timestamp_ms,
+            }
+        except (ccxt.NetworkError, ccxt.RateLimitExceeded, ccxt.ExchangeError) as e:
+            logger.debug(f"Orderbook depth fetch failed: pair={pair} {e}")
+            return None
+
     # ================================================================
     # Historical funding rates — for backtest backfill
     # ================================================================

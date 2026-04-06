@@ -66,7 +66,8 @@ quant-fund/
 │   ├── backtest.py          # Offline backtester (historical candle replay)
 │   └── optimize.py          # Optuna parameter optimizer
 ├── dashboard/
-│   ├── api/                 # FastAPI backend (read-only, port 8000)
+│   ├── api/                 # FastAPI backend (port 8000)
+│   │   └── manual/          # Manual trading: calculator, CRUD, analytics (self-contained)
 │   └── web/                 # Next.js frontend (port 3000)
 ├── docs/
 │   ├── SYSTEM_BASELINE.md   # Source of truth: config, thresholds, setup status, changelog

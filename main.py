@@ -15,6 +15,7 @@ import json
 import signal
 import sys
 import time
+from datetime import datetime, timezone
 
 from config.settings import settings, QUICK_SETUP_TYPES, AI_BYPASS_SETUP_TYPES
 from shared.logger import setup_logger
@@ -181,15 +182,7 @@ async def on_candle_confirmed(candle: Candle) -> None:
     )
 
     # --- Data integrity gate ---
-    if _data_service is not None and _data_service.state != DataServiceState.RUNNING:
-        logger.info(
-            f"Data gate: service={_data_service.state.name} | "
-            f"{setup.setup_type} {setup.pair}"
-        )
-        _ml_log_setup(setup, candle)
-        _ml_resolve_outcome(setup.setup_id, "data_blocked")
-        return
-
+    snapshot = None
     if _data_service is not None:
         snapshot = _data_service.get_market_snapshot(candle.pair)
         cvd_state = _data_service.get_cvd_state(candle.pair)
@@ -224,6 +217,29 @@ async def on_candle_confirmed(candle: Candle) -> None:
 
     # --- Shadow mode: run full pipeline (risk check) but don't execute ---
     if setup.setup_type in settings.SHADOW_MODE_SETUPS and _shadow_monitor is not None:
+        # Shadow quality filters (data-driven, 2026-04-06 feature importance analysis).
+        # Hour filter: 0% WR before 11 UTC across 23 shadow trades.
+        current_hour = datetime.now(timezone.utc).hour
+        if current_hour < settings.SHADOW_MIN_HOUR_UTC:
+            logger.debug(
+                f"Shadow hour filter: {current_hour} UTC < {settings.SHADOW_MIN_HOUR_UTC} "
+                f"| {setup.setup_type} {setup.pair} {setup.direction}"
+            )
+            _ml_resolve_outcome(setup.setup_id, "shadow_hour_filtered")
+            _setup_dedup_cache[dedup_key] = time.time()
+            return
+
+        # Direction filter: in extreme fear, longs lose 94% (2/34). Shorts: 20% (3/15).
+        if snapshot is not None and snapshot.news_sentiment is not None:
+            fg_score = snapshot.news_sentiment.score
+            if fg_score < settings.SHADOW_FEAR_LONG_GATE and setup.direction == "long":
+                logger.info(
+                    f"Shadow fear-long filter: F&G={fg_score} < {settings.SHADOW_FEAR_LONG_GATE} "
+                    f"+ direction=long | {setup.setup_type} {setup.pair}"
+                )
+                _ml_resolve_outcome(setup.setup_id, "shadow_fear_long_filtered")
+                _setup_dedup_cache[dedup_key] = time.time()
+                return
         # Risk check (dry_run=True + SHADOW_CAPITAL: sizes against $500 virtual account)
         risk_approval = None
         if _risk_service is not None:
@@ -254,10 +270,14 @@ async def on_candle_confirmed(candle: Candle) -> None:
         if _data_service is not None:
             ob_snapshot = _data_service.get_orderbook_snapshot(setup.pair)
 
-        _shadow_monitor.add_shadow(
+        accepted = _shadow_monitor.add_shadow(
             setup, orderbook=ob_snapshot, risk_approval=risk_approval,
         )
         _setup_dedup_cache[dedup_key] = time.time()
+        if not accepted:
+            # Shadow dedup rejected — resolve ML row so it doesn't stay pending
+            _ml_resolve_outcome(setup.setup_id, "shadow_dedup")
+            return
         if risk_approval and risk_approval.approved:
             logger.info(
                 f"Shadow mode: {setup.setup_type} {setup.pair} {setup.direction} "
@@ -270,6 +290,19 @@ async def on_candle_confirmed(candle: Candle) -> None:
                 f"— skipped (no valid risk approval)"
             )
         return
+
+    # --- Regime gate: reject LIVE setups in systemic crisis ---
+    # Positioned after shadow path so shadow still collects ML data during
+    # extreme fear. Only blocks real capital deployment.
+    if snapshot is not None and snapshot.news_sentiment is not None:
+        fg_score = snapshot.news_sentiment.score
+        if fg_score < settings.REGIME_EXTREME_FEAR_GATE:
+            logger.info(
+                f"Regime gate: F&G={fg_score} < {settings.REGIME_EXTREME_FEAR_GATE} "
+                f"(systemic crisis) | {setup.setup_type} {setup.pair} {setup.direction}"
+            )
+            _ml_resolve_outcome(setup.setup_id, "regime_extreme_fear")
+            return
 
     # Pre-check: can this pair meet exchange minimum order size?
     min_size = settings.MIN_ORDER_SIZES.get(setup.pair, 0)
@@ -700,7 +733,6 @@ TRADING_SESSIONS = [
 async def _session_alert_loop() -> None:
     """Send Telegram alert when a major trading session opens."""
     # Track which sessions we've already alerted today
-    from datetime import datetime, timezone
     alerted: dict[str, int] = {}  # session_name -> day_of_year
 
     while True:

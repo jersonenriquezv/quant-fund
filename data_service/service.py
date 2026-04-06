@@ -171,6 +171,10 @@ class DataService:
         """Fetch L2 orderbook snapshot (spread, depth). Returns None on failure."""
         return self._exchange.fetch_orderbook_snapshot(pair)
 
+    def get_orderbook_depth(self, pair: str) -> dict | None:
+        """Fetch L2 orderbook with raw levels for depth analysis."""
+        return self._exchange.fetch_orderbook_depth(pair)
+
     def get_market_snapshot(self, pair: str) -> MarketSnapshot:
         """Assemble a complete MarketSnapshot for a pair.
 

@@ -191,6 +191,161 @@ export async function postApi<T>(path: string, body: unknown): Promise<T> {
     body: JSON.stringify(body),
     cache: "no-store",
   });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(detail || `API error: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function patchApi<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${getApiBase()}/api${path}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
   if (!res.ok) throw new Error(`API error: ${res.status}`);
   return res.json();
+}
+
+export async function putApi<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${getApiBase()}/api${path}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  return res.json();
+}
+
+export async function deleteApi(path: string): Promise<void> {
+  const res = await fetch(`${getApiBase()}/api${path}`, {
+    method: "DELETE",
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+}
+
+// Manual trading types
+export interface ManualTrade {
+  id: number;
+  pair: string;
+  direction: string;
+  margin_type: string | null;
+  status: string;
+  entry_price: number;
+  stop_loss: number;
+  take_profit_1: number | null;
+  take_profit_2: number | null;
+  close_price: number | null;
+  pnl_usd: number | null;
+  pnl_percent: number | null;
+  r_multiple: number | null;
+  result: string | null;
+  position_size: number;
+  position_value_usd: number | null;
+  leverage: number;
+  risk_usd: number;
+  risk_percent: number;
+  rr_ratio: number | null;
+  sl_distance_pct: number | null;
+  thesis: string | null;
+  notes: string | null;
+  mistakes: string | null;
+  setup_type: string | null;
+  timeframe: string | null;
+  tags: string[] | null;
+  created_at: string;
+  activated_at: string | null;
+  closed_at: string | null;
+  partial_closes: ManualPartialClose[];
+}
+
+export interface ManualPartialClose {
+  id: number;
+  close_price: number;
+  close_pct: number;
+  pnl_usd: number | null;
+  notes: string | null;
+  closed_at: string;
+}
+
+export interface ManualAnalyticsData {
+  total_trades: number;
+  wins: number;
+  losses: number;
+  winning: number; // alias
+  losing: number;  // alias
+  breakeven: number;
+  cancelled: number;
+  win_rate: number; // Already percentage (e.g. 50.0)
+  total_pnl_usd: number;
+  avg_r_multiple: number | null;
+  avg_rr_planned: number | null;
+  profit_factor: number | null;
+  current_streak: { count: number; type: string };
+  best_trade: { id: number; pair: string; r_multiple: number } | null;
+  worst_trade: { id: number; pair: string; r_multiple: number } | null;
+  tp1_hit_rate: number | null; // Already percentage
+  tp2_hit_rate: number | null; // Already percentage
+  breakeven_rate: number | null;
+  trades_by_pair: Record<string, { count: number; pnl_usd: number; win_rate: number; avg_r: number }>;
+  trades_by_setup: Record<string, { count: number; pnl_usd: number; win_rate: number; avg_r: number }>;
+  trades_by_direction: Record<string, { count: number; pnl_usd: number; win_rate: number; avg_r: number }>;
+}
+
+export interface ManualBalance {
+  pair: string;
+  balance: number;
+  updated_at: string;
+}
+
+export interface CalcTPLevel {
+  price: number;
+  rr_ratio: number;
+  close_pct: number;
+  size_to_close: number;
+  potential_profit_usd: number;
+  after_action: string | null;
+}
+
+export interface CalcResult {
+  pair: string;
+  direction: string;
+  margin_type: string;
+  balance: number;
+  entry: number;
+  stop_loss: number;
+  take_profit_1: number;
+  take_profit_2: number | null;
+  leverage: number;
+  position_size: number;
+  position_size_label: string;
+  position_value_usd: number;
+  margin_required: number;
+  margin_currency: string;
+  margin_pct_of_balance: number;
+  risk_usd: number;
+  risk_percent: number;
+  sl_distance: number;
+  sl_distance_pct: number;
+  tp_plan: CalcTPLevel[];
+  total_potential_profit: number;
+  total_potential_loss: number;
+  suggested_tp1: number;
+  suggested_tp2: number;
+  warnings: string[];
+  advice: CalcAdvice[];
+  // Coin balance conversion (present when balance_currency = "coin")
+  coin_balance?: number;
+  coin_price?: number;
+  balance_currency?: string;
+}
+
+export interface CalcAdvice {
+  level: "info" | "warn" | "danger";
+  message: string;
+  action: string | null;
 }

@@ -20,6 +20,9 @@ export function Header({ children }: { children?: React.ReactNode }) {
   const isOk = health?.status === "ok";
   const isLive = health ? !health.sandbox : false;
 
+  // Determine active page from pathname
+  const isManual = typeof window !== "undefined" && window.location.pathname.startsWith("/manual");
+
   return (
     <div className="header card header-inner" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 20px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -30,6 +33,10 @@ export function Header({ children }: { children?: React.ReactNode }) {
         <span className={`mode-badge ${isLive ? "mode-badge-live" : "mode-badge-demo"}`}>
           {isLive ? "LIVE" : "DEMO"}
         </span>
+        <nav className="header-nav">
+          <a href="/" className={`header-nav-link ${!isManual ? "header-nav-active" : ""}`}>Bot</a>
+          <a href="/manual" className={`header-nav-link ${isManual ? "header-nav-active" : ""}`}>Manual</a>
+        </nav>
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>

@@ -71,7 +71,9 @@ class TestExtractSetupFeatures:
         # entry_distance_pct = |2005 - 2000| / 2005
         assert abs(features["entry_distance_pct"] - 5.0 / 2005.0) < 1e-6
 
-        assert features["confluence_count"] == 6
+        # Only structural confluences count: sweep, choch, order_block, pd_zone = 4
+        # (ob_volume and cvd_aligned are metrics, not structural)
+        assert features["confluence_count"] == 4
 
     def test_stale_entry_features(self):
         # Setup created 5 minutes ago

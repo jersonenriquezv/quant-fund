@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from dashboard.api.database import init_db, close_db
 from dashboard.api.routes import health, market, trades, ai, risk, candles, stats, whales, strategy, sentiment, liquidation
+from dashboard.api.routes import manual_routes
 from dashboard.api.ws import router as ws_router
 
 
@@ -29,8 +30,9 @@ app.add_middleware(
         "http://localhost:3000",
         "http://127.0.0.1:3000",
         "http://100.120.181.11:3000",
+        "http://192.168.1.236:3000",
     ],
-    allow_methods=["GET", "POST", "DELETE"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -47,3 +49,7 @@ app.include_router(strategy.router, prefix="/api")
 app.include_router(sentiment.router, prefix="/api")
 app.include_router(liquidation.router, prefix="/api")
 app.include_router(ws_router, prefix="/api")
+
+# Manual trading — API routes under /api, HTML page at /manual
+app.include_router(manual_routes.router, prefix="/api")
+app.include_router(manual_routes.html_router)

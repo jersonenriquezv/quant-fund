@@ -1,6 +1,6 @@
 # Strategy Service
-> Última actualización: 2026-03-26
-> Estado: implementado. OB impulse score + retest counter in scoring. `_check_sl_distance()` consolidates MIN (0.5%) + MAX (4%) SL checks across all setups. TP2 per-setup raised: A=2.5, B/F/G/H=2.0, D=1.5. Shadow mode for paper-trading non-live setups.
+> Última actualización: 2026-03-31
+> Estado: implementado. Confluence counting = structural only (BOS/CHoCH/FVG/OB/sweep/breaker/pd_zone — metrics don't count). ATR SL floor: SL widened to max(structural, 3× ATR(14)). Setup H disabled from shadow (impulse chaser). Regime gate F&G < 20.
 
 ## Qué hace (30 segundos)
 El Strategy Service es el detective del sistema. Analiza los datos del Data Service buscando patrones de Smart Money Concepts (SMC): rupturas de estructura (BOS/CHoCH), order blocks, fair value gaps, sweeps de liquidez, y zonas premium/discount. Cuando encuentra un setup con suficiente confluencia, genera un `TradeSetup` para evaluación.
@@ -83,14 +83,15 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
   - Requiere HTF bias alineado con dirección del breaker + PD zone + min 2 confluencias
   - Usa `get_breaker_blocks()` de OrderBlockDetector
 - **Swing setups evalúan solo 15m** — `SWING_SETUP_TIMEFRAMES = ["15m"]`. Detectors corren en 5m también (quick setups D/H los necesitan) pero swing setups (A/B/F/G) solo consideran OBs de 15m. `MIN_RISK_DISTANCE_PCT` (0.5%) filtra micro-SLs.
-- **Zone-based orders** — no requiere proximidad al OB. El bot coloca limit orders al 50% del OB body (configurable via `SETUP_A_ENTRY_PCT`) y espera fill. SL siempre en `ob.low` (long) / `ob.high` (short) — wick-to-wick, independiente del entry.
+- **Zone-based orders + geometry cascade** — no requiere proximidad al OB. `_cascade_geometry()` prueba múltiples combinaciones entry/SL (3 entries × 2 SLs = 6 max) y selecciona la mejor R:R. Entry candidates: depths configurables por setup en `GEOMETRY_CASCADE_ENTRIES`. SL candidates: OB wick + ATR floor (`ATR_SL_FLOOR_MULTIPLIER × ATR(14)`). Early exit a R:R ≥ 3.0. Fallback a geometría rígida si `GEOMETRY_CASCADE_ENABLED=false`.
+- **Orderbook depth confirmation** — después de detectar un setup, `_enrich_with_ob_depth()` analiza liquidez real en el orderbook L2 (20 niveles) alrededor de la zona del OB. Zona dinámica: `max(OB body, ATR) × OB_DEPTH_ZONE_MULTIPLIER`. Mide depth ratio (bids/asks) y concentración (nivel más grande / total). Si ratio ≥ 1.0 y concentración ≥ 0.2 → confluencia `ob_depth_confirmed`. No es hard gate — solo bonus para ML.
   - `_find_best_ob()` selecciona by composite scoring via `_score_ob()`: impulse (25%), volume (20%), freshness (20%), proximity (15%), retest penalty (10%), body size (10%). Replaces old "highest volume_ratio + tiebreak by timestamp" selector.
   - `_score_ob()` returns -1 (filtered) for OBs below `OB_MIN_BODY_PCT` (0.15%) or beyond `OB_MAX_DISTANCE_PCT` (8%). Otherwise returns 0-1 composite score. Retest penalty: linear decay from 1.0 (first touch) to 0.0 at `OB_MAX_RETESTS` (4).
   - `OB_MIN_BODY_PCT` (0.15%) filters micro-OBs that produce tiny SLs eaten by commissions
   - `_is_ob_within_range()` filtra OBs más allá de `OB_MAX_DISTANCE_PCT` (8%) del precio actual
   - `_is_price_near_ob()` se mantiene para notificaciones de OB summary, pero no bloquea setups
 - **SL direction validation** — `_validate_sl_direction()` en todos los setup types (A/B/F/G). Rechaza si SL está del lado incorrecto del entry (bearish: sl debe ser > entry, bullish: sl debe ser < entry). Fix para bug donde Setup B con FVG encima del OB producía entry > ob.high = SL invertido.
-- Mínimo 2 confluencias obligatorio (no configurable — hardcoded)
+- Mínimo 2 confluencias **estructurales** obligatorio (no configurable — hardcoded). Solo cuentan: BOS, CHoCH, FVG, order_block, liquidity_sweep, breaker_block, pd_zone, initiating_ob, bos_confirmed. Métricas (CVD, OI, funding, volume ratios, impulse stats) se capturan como features ML separados pero NO inflan el gate.
 - **`_check_volume_confirmation()`** — método compartido por todos los swing setups (A/B/F/G). Señales graduadas (v5):
   - OB volume ratio vs `OB_MIN_VOLUME_RATIO` (1.3)
   - **OB impulse quality**: `impulse_score >= 0.6` → `ob_impulse_strong` confluence, `>= 0.35` → `ob_impulse_moderate`
