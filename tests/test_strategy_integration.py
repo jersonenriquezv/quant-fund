@@ -760,7 +760,14 @@ class TestExpectancyFilters:
         setup.sl_price = 99.0  # risk = 1.0
         setup.direction = "long"
 
-        # Swing high at 100.5 → space = 0.5 < risk * 1.4 = 1.4
+        # Swing high at 100.5, above current price → space = 0.5 < risk * 1.4 = 1.4
+        # Use candles where current price is below the swing high
+        candles = [
+            Candle(timestamp=1000 + i * 300_000, open=99.5, high=100.0,
+                   low=99.0, close=99.5, volume=100, volume_quote=10000,
+                   pair="BTC/USDT", timeframe="5m", confirmed=True)
+            for i in range(20)
+        ]
         state_with_swing = MarketStructureState(
             pair="BTC/USDT", timeframe="4h", trend="bullish",
             swing_highs=[SwingPoint(timestamp=1000, price=100.5, index=5, swing_type="high")],

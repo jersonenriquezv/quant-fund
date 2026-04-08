@@ -711,9 +711,11 @@ class StrategyService:
             return None
 
         min_space = risk * settings.MIN_TARGET_SPACE_R
+        current_price = candles[-1].close if candles else setup.entry_price
         if setup.direction == "long":
+            # Ignore swing highs the current price already broke through
             highs = [s.price for s in state_4h.swing_highs + state_1h.swing_highs
-                     if s.price > setup.entry_price]
+                     if s.price > setup.entry_price and s.price > current_price]
             if highs:
                 nearest = min(highs)
                 space = nearest - setup.entry_price
@@ -721,8 +723,9 @@ class StrategyService:
                     return (f"Target space too tight: {space:.2f} "
                             f"< {min_space:.2f} (1H/4H swing high at {nearest:.2f})")
         else:
+            # Ignore swing lows the current price already broke through
             lows = [s.price for s in state_4h.swing_lows + state_1h.swing_lows
-                    if s.price < setup.entry_price]
+                    if s.price < setup.entry_price and s.price < current_price]
             if lows:
                 nearest = max(lows)
                 space = setup.entry_price - nearest

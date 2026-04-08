@@ -12,7 +12,8 @@
       "Bash(grep*)",
       "Bash(find*)",
       "Bash(mkdir*)",
-      "Bash(source*)"
+      "Bash(source*)",
+      "Bash(timeout 15 node test-snapshot.mjs ETH)"
     ]
   },
   "hooks": {
