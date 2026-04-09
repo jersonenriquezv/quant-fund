@@ -23,6 +23,7 @@ from strategy_service.fvg import FairValueGap
 from strategy_service.liquidity import (
     LiquiditySweep, LiquidityLevel, PremiumDiscountZone,
 )
+from strategy_service.volume_profile import VolumeProfile
 
 logger = setup_logger("strategy_setups")
 
@@ -45,6 +46,9 @@ class SetupEvaluator:
         pair: str,
         htf_bias: str,
         liquidity_levels: list[LiquidityLevel],
+        swing_highs_htf: list = None,
+        swing_lows_htf: list = None,
+        volume_profile: Optional[VolumeProfile] = None,
     ) -> Optional[TradeSetup]:
         """Evaluate Setup A — Liquidity Sweep + CHoCH + Order Block.
 
@@ -189,11 +193,19 @@ class SetupEvaluator:
             logger.info(f"Setup A [{pair}]: PD override — {len(confluences)} confluences "
                         f"(zone={zone} dir={direction})")
 
+        # VP OB quality confluence
+        vp_confluences = self._check_vp_ob_quality(
+            best_ob, volume_profile, candles, pair
+        )
+        confluences.extend(vp_confluences)
+
         # Geometry cascade: try multiple entry/SL combos for best R:R
         if settings.GEOMETRY_CASCADE_ENABLED:
             result = self._cascade_geometry(
                 ob=best_ob, direction=direction, setup_type="setup_a",
                 pair=pair, liquidity_levels=liquidity_levels, candles=candles,
+                swing_highs_htf=swing_highs_htf, swing_lows_htf=swing_lows_htf,
+                volume_profile=volume_profile,
             )
             if result is None:
                 logger.debug(f"Setup A [{pair}]: cascade exhausted — no valid geometry")
@@ -220,7 +232,9 @@ class SetupEvaluator:
             if not self._check_sl_distance(entry_price, sl_price, pair, "Setup A"):
                 return None
             tp1, tp2 = self._calculate_tp_levels(
-                entry_price, sl_price, direction, liquidity_levels, "setup_a"
+                entry_price, sl_price, direction, liquidity_levels, "setup_a",
+                swing_highs_htf=swing_highs_htf, swing_lows_htf=swing_lows_htf,
+                volume_profile=volume_profile,
             )
             rr = self._compute_rr(entry_price, sl_price, tp2)
             if rr < settings.MIN_RISK_REWARD:
@@ -254,6 +268,9 @@ class SetupEvaluator:
         pair: str,
         htf_bias: str,
         liquidity_levels: list[LiquidityLevel],
+        swing_highs_htf: list = None,
+        swing_lows_htf: list = None,
+        volume_profile: Optional[VolumeProfile] = None,
     ) -> Optional[TradeSetup]:
         """Evaluate Setup B — BOS + FVG + Order Block.
 
@@ -385,12 +402,20 @@ class SetupEvaluator:
             logger.info(f"Setup B [{pair}]: PD override — {len(confluences)} confluences "
                         f"(zone={zone} dir={direction})")
 
+        # VP OB quality confluence
+        vp_confluences = self._check_vp_ob_quality(
+            best_ob, volume_profile, candles, pair
+        )
+        confluences.extend(vp_confluences)
+
         # Geometry cascade: try multiple entry/SL combos for best R:R
         if settings.GEOMETRY_CASCADE_ENABLED:
             result = self._cascade_geometry(
                 ob=best_ob, direction=direction, setup_type="setup_b",
                 pair=pair, liquidity_levels=liquidity_levels, candles=candles,
                 fvg=best_fvg,
+                swing_highs_htf=swing_highs_htf, swing_lows_htf=swing_lows_htf,
+                volume_profile=volume_profile,
             )
             if result is None:
                 logger.debug(f"Setup B [{pair}]: cascade exhausted — no valid geometry")
@@ -426,7 +451,9 @@ class SetupEvaluator:
             if not self._validate_sl_direction(entry_price, sl_price, direction):
                 return None
             tp1, tp2 = self._calculate_tp_levels(
-                entry_price, sl_price, direction, liquidity_levels, "setup_b"
+                entry_price, sl_price, direction, liquidity_levels, "setup_b",
+                swing_highs_htf=swing_highs_htf, swing_lows_htf=swing_lows_htf,
+                volume_profile=volume_profile,
             )
             rr = self._compute_rr(entry_price, sl_price, tp2)
             if rr < settings.MIN_RISK_REWARD:
@@ -458,6 +485,9 @@ class SetupEvaluator:
         pair: str,
         htf_bias: str,
         liquidity_levels: list[LiquidityLevel],
+        swing_highs_htf: list = None,
+        swing_lows_htf: list = None,
+        volume_profile: Optional[VolumeProfile] = None,
     ) -> Optional[TradeSetup]:
         """Evaluate Setup F — Pure OB Retest (BOS + OB, no FVG required).
 
@@ -590,11 +620,19 @@ class SetupEvaluator:
             logger.info(f"Setup F [{pair}]: PD override — {len(confluences)} confluences "
                         f"(zone={zone} dir={direction})")
 
+        # VP OB quality confluence
+        vp_confluences = self._check_vp_ob_quality(
+            best_ob, volume_profile, candles, pair
+        )
+        confluences.extend(vp_confluences)
+
         # Geometry cascade: try multiple entry/SL combos for best R:R
         if settings.GEOMETRY_CASCADE_ENABLED:
             result = self._cascade_geometry(
                 ob=best_ob, direction=direction, setup_type="setup_f",
                 pair=pair, liquidity_levels=liquidity_levels, candles=candles,
+                swing_highs_htf=swing_highs_htf, swing_lows_htf=swing_lows_htf,
+                volume_profile=volume_profile,
             )
             if result is None:
                 logger.debug(f"Setup F [{pair}]: cascade exhausted — no valid geometry")
@@ -627,7 +665,9 @@ class SetupEvaluator:
             if not self._check_sl_distance(entry_price, sl_price, pair, "Setup F"):
                 return None
             tp1, tp2 = self._calculate_tp_levels(
-                entry_price, sl_price, direction, liquidity_levels, "setup_f"
+                entry_price, sl_price, direction, liquidity_levels, "setup_f",
+                swing_highs_htf=swing_highs_htf, swing_lows_htf=swing_lows_htf,
+                volume_profile=volume_profile,
             )
             rr = self._compute_rr(entry_price, sl_price, tp2)
             if rr < settings.MIN_RISK_REWARD:
@@ -659,6 +699,9 @@ class SetupEvaluator:
         pair: str,
         htf_bias: str,
         liquidity_levels: list[LiquidityLevel],
+        swing_highs_htf: list = None,
+        swing_lows_htf: list = None,
+        volume_profile: Optional[VolumeProfile] = None,
     ) -> Optional[TradeSetup]:
         """Evaluate Setup G — Breaker Block Retest.
 
@@ -744,6 +787,8 @@ class SetupEvaluator:
             result = self._cascade_geometry(
                 ob=best_bb, direction=direction, setup_type="setup_g",
                 pair=pair, liquidity_levels=liquidity_levels, candles=candles,
+                swing_highs_htf=swing_highs_htf, swing_lows_htf=swing_lows_htf,
+                volume_profile=volume_profile,
             )
             if result is None:
                 logger.debug(f"Setup G [{pair}]: cascade exhausted — no valid geometry")
@@ -764,7 +809,9 @@ class SetupEvaluator:
             if not self._check_sl_distance(entry_price, sl_price, pair, "Setup G"):
                 return None
             tp1, tp2 = self._calculate_tp_levels(
-                entry_price, sl_price, direction, liquidity_levels, "setup_g"
+                entry_price, sl_price, direction, liquidity_levels, "setup_g",
+                swing_highs_htf=swing_highs_htf, swing_lows_htf=swing_lows_htf,
+                volume_profile=volume_profile,
             )
             rr = self._compute_rr(entry_price, sl_price, tp2)
             if rr < settings.MIN_RISK_REWARD:
@@ -792,21 +839,110 @@ class SetupEvaluator:
         direction: str,
         liquidity_levels: list[LiquidityLevel],
         setup_type: str = "",
+        swing_highs_htf: list = None,
+        swing_lows_htf: list = None,
+        volume_profile: Optional[VolumeProfile] = None,
     ) -> tuple[float, float]:
-        """Calculate TP1 and TP2 from entry/SL.
+        """Calculate TP1 and TP2 from structural levels or fixed R:R fallback.
 
-        TP1: settings.TP1_RR_RATIO (1:1 R:R) — breakeven trigger (same for all)
+        When STRUCTURAL_TP_ENABLED:
+          1. Collect all structural levels (swing highs/lows, VP POC/VAH/VAL/HVNs)
+          2. Filter by direction (only levels beyond entry)
+          3. TP1 = nearest structural level (must give R:R >= TP1_RR_RATIO)
+          4. TP2 = next structural level beyond TP1
+          5. Fall back to fixed R:R if no structural levels found
+
+        TP1: breakeven trigger (same for all setups)
         TP2: per-setup from SETUP_TP2_RR, fallback to TP2_RR_RATIO
         """
         risk = abs(entry - sl)
+        tp1_rr = settings.TP1_RR_RATIO
         tp2_rr = settings.SETUP_TP2_RR.get(setup_type, settings.TP2_RR_RATIO)
 
+        # Fixed R:R TPs (fallback)
         if direction == "bullish":
-            tp1 = entry + (risk * settings.TP1_RR_RATIO)
-            tp2 = entry + (risk * tp2_rr)
+            fixed_tp1 = entry + (risk * tp1_rr)
+            fixed_tp2 = entry + (risk * tp2_rr)
         else:
-            tp1 = entry - (risk * settings.TP1_RR_RATIO)
-            tp2 = entry - (risk * tp2_rr)
+            fixed_tp1 = entry - (risk * tp1_rr)
+            fixed_tp2 = entry - (risk * tp2_rr)
+
+        if not settings.STRUCTURAL_TP_ENABLED or risk <= 0:
+            return fixed_tp1, fixed_tp2
+
+        # Collect structural levels
+        candidates = []
+
+        # Swing highs/lows from 4H + 1H
+        if swing_highs_htf:
+            candidates.extend(s.price for s in swing_highs_htf)
+        if swing_lows_htf:
+            candidates.extend(s.price for s in swing_lows_htf)
+
+        # VP levels (POC, VAH, VAL, HVNs)
+        if volume_profile:
+            candidates.extend([
+                volume_profile.poc_price,
+                volume_profile.vah,
+                volume_profile.val,
+            ])
+            for hvn_price, _ in volume_profile.high_volume_nodes:
+                candidates.append(hvn_price)
+
+        # Liquidity levels
+        for liq in liquidity_levels:
+            candidates.append(liq.price)
+
+        # Filter by direction: only levels beyond entry
+        min_separation = entry * settings.STRUCTURAL_TP_MIN_SEPARATION_PCT
+        if direction == "bullish":
+            valid = sorted(set(
+                p for p in candidates
+                if p > entry + min_separation
+            ))
+        else:
+            valid = sorted(set(
+                p for p in candidates
+                if p < entry - min_separation
+            ), reverse=True)
+
+        if not valid:
+            return fixed_tp1, fixed_tp2
+
+        # TP1 = nearest structural level with R:R >= TP1_RR_RATIO
+        structural_tp1 = None
+        structural_tp2 = None
+        for i, level in enumerate(valid):
+            level_rr = abs(level - entry) / risk
+            if level_rr >= tp1_rr and structural_tp1 is None:
+                structural_tp1 = level
+                # TP2 = next level beyond TP1
+                if i + 1 < len(valid):
+                    structural_tp2 = valid[i + 1]
+                break
+
+        # Use structural levels if they meet R:R minimums, else fallback
+        tp1 = structural_tp1 if structural_tp1 else fixed_tp1
+        # TP1 must be at least as good as fixed TP1
+        if direction == "bullish":
+            tp1 = max(tp1, fixed_tp1)
+        else:
+            tp1 = min(tp1, fixed_tp1)
+
+        if structural_tp2:
+            tp2_candidate_rr = abs(structural_tp2 - entry) / risk
+            if tp2_candidate_rr >= tp2_rr:
+                tp2 = structural_tp2
+            else:
+                tp2 = fixed_tp2
+        else:
+            tp2 = fixed_tp2
+
+        # TP2 must be at least as good as fixed TP2
+        if direction == "bullish":
+            tp2 = max(tp2, fixed_tp2)
+        else:
+            tp2 = min(tp2, fixed_tp2)
 
         return tp1, tp2
 
@@ -1200,6 +1336,9 @@ class SetupEvaluator:
         liquidity_levels: list[LiquidityLevel],
         candles: list[Candle],
         fvg: Optional[FairValueGap] = None,
+        swing_highs_htf: list = None,
+        swing_lows_htf: list = None,
+        volume_profile: Optional[VolumeProfile] = None,
     ) -> Optional[tuple[float, float, float, float, int, int]]:
         """Try multiple entry/SL combinations and return best valid geometry.
 
@@ -1285,9 +1424,11 @@ class SetupEvaluator:
                 if risk_pct > settings.MAX_SL_PCT:
                     continue
 
-                # Compute TP levels
+                # Compute TP levels (structural when available)
                 tp1, tp2 = self._calculate_tp_levels(
                     entry, sl, direction, liquidity_levels, setup_type,
+                    swing_highs_htf=swing_highs_htf, swing_lows_htf=swing_lows_htf,
+                    volume_profile=volume_profile,
                 )
 
                 # Compute R:R
@@ -1342,6 +1483,44 @@ class SetupEvaluator:
             return ob.low   # SL below OB low
         else:
             return ob.high  # SL above OB high
+
+    def _check_vp_ob_quality(
+        self,
+        ob: OrderBlock,
+        volume_profile: Optional[VolumeProfile],
+        candles: list[Candle],
+        pair: str,
+    ) -> list[str]:
+        """Check OB quality against Volume Profile. Returns confluence strings."""
+        if not volume_profile:
+            return []
+
+        confluences = []
+        atr = self._compute_atr(candles, 14)
+        if atr is None or atr <= 0:
+            return []
+
+        ob_mid = (ob.body_high + ob.body_low) / 2
+
+        # OB near POC — institutional volume confirms zone
+        if abs(ob_mid - volume_profile.poc_price) <= atr:
+            confluences.append(f"vp_poc_confluence")
+            poc_dist = abs(ob_mid - volume_profile.poc_price) / ob_mid if ob_mid > 0 else 0
+            confluences.append(f"vp_poc_dist_{poc_dist*100:.2f}")
+
+        # OB near any HVN
+        for hvn_price, _ in volume_profile.high_volume_nodes:
+            if abs(ob_mid - hvn_price) <= atr:
+                confluences.append("vp_hvn_confluence")
+                break
+
+        # OB in LVN — fast-move zone, weaker support (informational)
+        for lvn_low, lvn_high in volume_profile.low_volume_nodes:
+            if lvn_low <= ob_mid <= lvn_high:
+                confluences.append("vp_lvn_warning")
+                break
+
+        return confluences
 
     def _check_sl_distance(
         self, entry_price: float, sl_price: float, pair: str, setup_name: str

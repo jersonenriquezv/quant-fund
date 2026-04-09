@@ -114,6 +114,14 @@ def extract_setup_features(
     features["geometry_adjusted"] = "geometry_adjusted" in conf_str
     features["geometry_cascade_rank"] = _extract_float(conf_str, r"geometry_adjusted_(\d+)") or 0
 
+    # Volume Profile confluences (v10+)
+    features["has_vp_poc"] = "vp_poc_confluence" in conf_str
+    features["has_vp_hvn"] = "vp_hvn_confluence" in conf_str
+    features["has_vp_lvn"] = "vp_lvn_warning" in conf_str
+    features["vp_poc_distance_pct"] = _extract_float(conf_str, r"vp_poc_dist_([\d.]+)")
+    if features["vp_poc_distance_pct"]:
+        features["vp_poc_distance_pct"] /= 100.0  # Convert to fraction
+
     features["has_oi_flush"] = "oi_flush" in conf_str
     features["oi_flush_usd"] = _extract_float(conf_str, r"oi_flush_usd_(\d+)")
     features["cvd_aligned"] = "cvd_aligned" in conf_str or "cvd_momentum_confirmed" in conf_str

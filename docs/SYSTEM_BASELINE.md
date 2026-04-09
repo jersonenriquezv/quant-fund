@@ -3,8 +3,8 @@
 > Source of truth for system state. Updated on every material change.
 > Reflects code reality — if code and doc disagree, fix the doc.
 
-**Last updated:** 2026-03-31
-**ML Feature Version:** 8
+**Last updated:** 2026-04-09
+**ML Feature Version:** 9
 **Bot status:** LIVE (OKX_SANDBOX=false, ~$86 capital)
 
 ---
@@ -243,7 +243,7 @@ Reference for VPS sizing when migrating from Nitro 5.
 
 ## 7. ML Feature Versioning
 
-**Current version:** 9 (set in `config/settings.py:ML_FEATURE_VERSION`)
+**Current version:** 10 (set in `config/settings.py:ML_FEATURE_VERSION`)
 **Storage:** `ml_setups.feature_version` column in PostgreSQL
 **Query training data:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL AND outcome_type NOT IN ('shadow_dedup', 'data_blocked', 'shadow_risk_rejected', 'risk_rejected', 'regime_extreme_fear')`
 
@@ -257,6 +257,8 @@ Reference for VPS sizing when migrating from Nitro 5.
 | v6 | 03-19+ | daily_vol (AFML Ch.3 getDailyVol), EWMA volatility for barrier normalization | **TRAINING READY** |
 | v7 | 03-25+ | Shadow mode risk_approved/risk_reject_reason columns, OB impulse/retest scoring | **TRAINING READY** |
 | v8 | 03-30+ | confluence_count = structural only (BOS/CHoCH/FVG/OB/sweep/breaker), regime gate, ATR SL floor | **TRAINING READY** |
+| v9 | 04-02+ | geometry cascade (dynamic entry/SL from OB wick + ATR floor candidates), ATR SL absorbed into cascade | **TRAINING READY** |
+| v10 | 04-09+ | volume profile (POC/VAH/VAL/HVN), structural TPs, 1H/4H OBs for swing setups, VP OB quality | **TRAINING READY** |
 
 **When to bump:** Increment `ML_FEATURE_VERSION` whenever strategy params change in ways that alter feature semantics (OB scoring weights, PD rules, confluence logic, threshold changes).
 
@@ -265,6 +267,29 @@ Reference for VPS sizing when migrating from Nitro 5.
 ---
 
 ## 8. Changelog
+
+### 2026-04-09 — Volume Profile, Structural TPs, 1H/4H OBs for Swing Setups
+**What changed:**
+- **Volume Profile module** (`strategy_service/volume_profile.py`): Approximates VP from 4H candles by distributing volume uniformly across each candle's [low, high] range. Computes POC (Point of Control), VAH/VAL (Value Area), HVNs (High Volume Nodes), and LVNs (Low Volume Nodes). Recalculates only on new 4H candles. 200-bin resolution, 500 candles (~83 days lookback).
+- **Structural TPs**: TPs now target structural levels (swing highs/lows from 4H/1H, VP POC/VAH/VAL/HVNs, liquidity levels) instead of fixed R:R multiples. Falls back to fixed R:R when no structural level found or when structural level gives worse R:R than fixed. `STRUCTURAL_TP_ENABLED=true` (env-var overridable).
+- **1H/4H OBs for swing setups**: Swing setups (A/B/F/G) now use 1H Order Blocks (primary) or 4H OBs (fallback) instead of 15m OBs. 15m OB bodies (~0.15%) produce SLs within noise range; 1H/4H OBs have structural significance. Quick setups (C/D/E) still use 5m/15m OBs. `SWING_OB_TIMEFRAMES=["1h", "4h"]`.
+- **VP as OB quality filter**: OBs near a High Volume Node or POC get `vp_hvn_confluence` / `vp_poc_confluence` added. OBs in Low Volume Nodes get `vp_lvn_warning`. Informational only (not a gate).
+- **ML features**: `has_vp_poc`, `has_vp_hvn`, `has_vp_lvn`, `vp_poc_distance_pct` added. `ML_FEATURE_VERSION` bumped to 10.
+- **New settings**: `VP_ENABLED`, `VP_BIN_COUNT`, `VP_VALUE_AREA_PCT`, `VP_HVN_THRESHOLD`, `VP_LVN_THRESHOLD`, `STRUCTURAL_TP_ENABLED`, `STRUCTURAL_TP_MIN_SEPARATION_PCT`, `SWING_OB_TIMEFRAMES`. All env-var overridable.
+- **17 new tests** for VP computation, caching, helpers, and structural TP logic.
+
+**Why:** Shadow data showed 8.7% WR — root causes: (1) 15m OBs produce SLs within noise (avg 0.7-1%, 15m ATR ~0.3%), (2) fixed R:R TPs have no structural basis (price doesn't care about 2:1 ratios), (3) no volume profile analysis to validate OB zones. User's manual approach (VP POC as entry magnet, structural TPs, multi-TF volume analysis) outperforms fixed R:R mechanically.
+
+**Expected impact:** Wider SLs from 1H/4H OBs = fewer noise stop-outs. Structural TPs = targets that have a reason to hold (volume clusters, swing levels). VP confluence = higher-quality OB selection. May reduce setup frequency (fewer 1H OBs than 15m), but quality should improve significantly. All changes have instant rollback via env vars.
+
+### 2026-04-09 — Skip Broken Swing Levels in Target Space Check
+**What changed:**
+- Target space filter (`_check_target_space`) now ignores swing highs/lows that price already broke through. Previously, a swing high below current price (already invalidated) could falsely block a long setup.
+- `ml_setups.outcome_type` column widened from VARCHAR(20) to VARCHAR(50) to fix DB write errors on longer outcome strings.
+
+**Why:** Bot was rejecting valid setups because stale swing levels (already broken by price) were treated as resistance/support barriers. The target space check should only consider levels that are still ahead of price.
+
+**Expected impact:** More setups pass the target space gate. No change to setups that already had clear space.
 
 ### 2026-04-02 — Shadow Performance Audit: SL Tightness Fix
 **What changed:**

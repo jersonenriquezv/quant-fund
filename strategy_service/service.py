@@ -23,6 +23,7 @@ from strategy_service.fvg import FVGDetector
 from strategy_service.liquidity import LiquidityAnalyzer
 from strategy_service.setups import SetupEvaluator
 from strategy_service.quick_setups import QuickSetupEvaluator
+from strategy_service.volume_profile import VolumeProfileAnalyzer
 
 logger = setup_logger("strategy_service")
 
@@ -51,6 +52,12 @@ class StrategyService:
         self._liquidity = LiquidityAnalyzer()
         self._setups = SetupEvaluator()
         self._quick_setups = QuickSetupEvaluator()
+        self._volume_profile = VolumeProfileAnalyzer(
+            bin_count=settings.VP_BIN_COUNT,
+            value_area_pct=settings.VP_VALUE_AREA_PCT,
+            hvn_threshold=settings.VP_HVN_THRESHOLD,
+            lvn_threshold=settings.VP_LVN_THRESHOLD,
+        ) if settings.VP_ENABLED else None
 
         # Cached HTF bias per pair (updated on every evaluate call)
         self._cached_htf_bias: dict[str, str] = {}
@@ -99,7 +106,7 @@ class StrategyService:
         state_4h = self._market_structure.analyze(candles_4h, pair, "4h")
         state_1h = self._market_structure.analyze(candles_1h, pair, "1h")
 
-        # Detect 4H OBs (used by manual calculator for suggested SL)
+        # Detect 4H OBs (used by manual calculator for suggested SL + swing setups fallback)
         # Only update when the latest 4H candle has changed to avoid redundant work
         if candles_4h:
             latest_4h_ts = candles_4h[-1].timestamp
@@ -110,6 +117,25 @@ class StrategyService:
                     pair, "4h", current_time_ms,
                 )
                 self._last_4h_ob_ts[cache_key] = latest_4h_ts
+                # Update Volume Profile on 4H candle change
+                if self._volume_profile:
+                    self._volume_profile.update(pair, candles_4h)
+
+        # Detect 1H OBs for swing setups (1H OBs have structural significance vs 15m noise)
+        active_obs_1h = []
+        if candles_1h:
+            active_obs_1h = self._order_blocks.update(
+                candles_1h, state_1h.structure_breaks,
+                pair, "1h", current_time_ms,
+            )
+
+        # Build HTF OB list for swing setups: prefer 1H, fall back to 4H
+        active_obs_4h = self._order_blocks.get_active_obs(pair, "4h")
+        swing_obs = active_obs_1h if active_obs_1h else active_obs_4h
+        swing_ob_tf = "1h" if active_obs_1h else "4h"
+
+        # Get volume profile for this pair
+        volume_profile = self._volume_profile.get_profile(pair) if self._volume_profile else None
 
         htf_bias = self._determine_htf_bias(state_4h, state_1h)
         self._cached_htf_bias[pair] = htf_bias
@@ -189,10 +215,11 @@ class StrategyService:
             # ============================================================
             # Step 4: Evaluate setups — A first, then B
             # Allow enabled OR shadow-mode setups through (main.py routes shadow to ShadowMonitor)
+            # Swing setups use 1H/4H OBs (structural SLs) instead of 15m OBs (noise).
             # ============================================================
             setup = self._setups.evaluate_setup_a(
                 structure_state=ltf_state,
-                active_obs=active_obs,
+                active_obs=swing_obs,
                 recent_sweeps=recent_sweeps,
                 pd_zone=pd_zone,
                 market_snapshot=market_snapshot,
@@ -200,6 +227,9 @@ class StrategyService:
                 pair=pair,
                 htf_bias=htf_bias,
                 liquidity_levels=liq_levels,
+                swing_highs_htf=state_4h.swing_highs + state_1h.swing_highs,
+                swing_lows_htf=state_4h.swing_lows + state_1h.swing_lows,
+                volume_profile=volume_profile,
             )
 
             if setup is not None:
@@ -222,7 +252,7 @@ class StrategyService:
 
             setup = self._setups.evaluate_setup_b(
                 structure_state=ltf_state,
-                active_obs=active_obs,
+                active_obs=swing_obs,
                 active_fvgs=active_fvgs,
                 pd_zone=pd_zone,
                 market_snapshot=market_snapshot,
@@ -230,6 +260,9 @@ class StrategyService:
                 pair=pair,
                 htf_bias=htf_bias,
                 liquidity_levels=liq_levels,
+                swing_highs_htf=state_4h.swing_highs + state_1h.swing_highs,
+                swing_lows_htf=state_4h.swing_lows + state_1h.swing_lows,
+                volume_profile=volume_profile,
             )
 
             if setup is not None:
@@ -253,13 +286,16 @@ class StrategyService:
             # Setup F — Pure OB Retest (BOS + OB, no FVG required)
             setup = self._setups.evaluate_setup_f(
                 structure_state=ltf_state,
-                active_obs=active_obs,
+                active_obs=swing_obs,
                 pd_zone=pd_zone,
                 market_snapshot=market_snapshot,
                 candles=candles,
                 pair=pair,
                 htf_bias=htf_bias,
                 liquidity_levels=liq_levels,
+                swing_highs_htf=state_4h.swing_highs + state_1h.swing_highs,
+                swing_lows_htf=state_4h.swing_lows + state_1h.swing_lows,
+                volume_profile=volume_profile,
             )
 
             if setup is not None:
@@ -290,6 +326,9 @@ class StrategyService:
                 pair=pair,
                 htf_bias=htf_bias,
                 liquidity_levels=liq_levels,
+                swing_highs_htf=state_4h.swing_highs + state_1h.swing_highs,
+                swing_lows_htf=state_4h.swing_lows + state_1h.swing_lows,
+                volume_profile=volume_profile,
             )
 
             if setup is not None:
