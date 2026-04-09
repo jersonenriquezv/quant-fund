@@ -56,26 +56,34 @@ class RiskService:
         now = int(time.time())
 
         # --- Guardrail checks (fail fast) ---
+        # Structural checks apply to all trades (live + shadow):
         checks = [
             self._guardrails.check_min_risk_distance(setup),
             self._guardrails.check_max_sl_distance(setup),
             self._guardrails.check_rr_ratio(setup),
-            self._guardrails.check_cooldown(
-                self._state.get_last_loss_time(), now
-            ),
-            self._guardrails.check_max_trades_today(
-                self._state.get_trades_today_count()
-            ),
-            self._guardrails.check_max_open_positions(
-                self._state.get_open_positions_count()
-            ),
-            self._guardrails.check_daily_drawdown(
-                self._state.get_daily_dd_pct()
-            ),
-            self._guardrails.check_weekly_drawdown(
-                self._state.get_weekly_dd_pct()
-            ),
         ]
+
+        # State-dependent checks only apply to LIVE trades.
+        # Shadow mode uses virtual capital and should not be blocked by
+        # live account state (DD, cooldown, open positions, trades today).
+        if not dry_run:
+            checks.extend([
+                self._guardrails.check_cooldown(
+                    self._state.get_last_loss_time(), now
+                ),
+                self._guardrails.check_max_trades_today(
+                    self._state.get_trades_today_count()
+                ),
+                self._guardrails.check_max_open_positions(
+                    self._state.get_open_positions_count()
+                ),
+                self._guardrails.check_daily_drawdown(
+                    self._state.get_daily_dd_pct()
+                ),
+                self._guardrails.check_weekly_drawdown(
+                    self._state.get_weekly_dd_pct()
+                ),
+            ])
 
         for passed, reason in checks:
             if not passed:
