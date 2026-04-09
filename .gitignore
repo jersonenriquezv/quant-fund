@@ -33,3 +33,7 @@ backtest_results/
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Media / content projects
+content/
+video/

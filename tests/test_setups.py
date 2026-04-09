@@ -1467,15 +1467,15 @@ class TestGeometryCascade:
         """SL candidates violating MIN/MAX distance are excluded."""
         # OB where wick SL is too far (>4%) but ATR SL is valid
         # body 100-102, wick low=94. SL=94 → risk_pct=6% > MAX_SL_PCT (4%).
-        # ATR = 1.0, floor = 3.0. Entry ~101 → ATR SL = 101-3 = 98.
-        # risk_pct = 3/101 = 2.97% < 4%. Valid.
+        # ATR = 0.6, floor = 4.5×0.6 = 2.7. Entry ~101 → ATR SL = 101-2.7 = 98.3.
+        # risk_pct = 2.7/101 = 2.67% < 4%. Valid.
         ob = _make_ob(
             direction="bullish",
             body_low=100.0, body_high=102.0,
             low=94.0, high=103.0,
             entry_price=101.0,
         )
-        candles = _make_candles_with_atr(price=102.0, atr_approx=1.0)
+        candles = _make_candles_with_atr(price=102.0, atr_approx=0.6)
         result = self.evaluator._cascade_geometry(
             ob=ob, direction="bullish", setup_type="setup_f",
             pair="BTC/USDT", liquidity_levels=[], candles=candles,
@@ -1562,7 +1562,7 @@ class TestGeometryCascade:
                 low=98.0, high=105.0,
                 entry_price=102.0,
             )
-            candles = _make_candles_with_atr(price=104.0, atr_approx=1.0)
+            candles = _make_candles_with_atr(price=104.0, atr_approx=0.6)
             result = self.evaluator._cascade_geometry(
                 ob=ob, direction="bullish", setup_type="setup_a",
                 pair="BTC/USDT", liquidity_levels=[], candles=candles,
@@ -1571,8 +1571,8 @@ class TestGeometryCascade:
             entry, sl, tp1, tp2, rank, tried = result
             rr = abs(tp2 - entry) / abs(entry - sl)
             assert rr >= 3.0, f"Expected R:R >= 3.0 for early exit, got {rr:.2f}"
-            # Early exit → should have tried at most 2 (wick may fail bounds, ATR passes)
-            assert tried <= 2, f"Expected early exit within first entry, got tried={tried}"
+            # Early exit → should have tried at most first entry's candidates
+            assert tried <= 3, f"Expected early exit within first entry, got tried={tried}"
         finally:
             settings.SETUP_TP2_RR["setup_a"] = original_rr
 
@@ -1592,7 +1592,7 @@ class TestGeometryCascade:
         """Setup B entries computed from FVG range, not OB body."""
         fvg = _make_fvg(direction="bullish", high=103.0, low=100.5)
         ob = _make_ob(direction="bullish", body_low=99.0, body_high=102.0, low=97.0, high=103.0)
-        candles = _make_candles_with_atr(price=103.0, atr_approx=1.0)
+        candles = _make_candles_with_atr(price=103.0, atr_approx=0.6)
         result = self.evaluator._cascade_geometry(
             ob=ob, direction="bullish", setup_type="setup_b",
             pair="BTC/USDT", liquidity_levels=[], candles=candles,
