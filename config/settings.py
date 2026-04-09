@@ -442,6 +442,33 @@ class Settings:
     GEOMETRY_CASCADE_EARLY_EXIT_RR: float = 3.0
 
     # ========================
+    # VOLUME PROFILE
+    # ========================
+    # Approximate VP from 4H candles. POC/VAH/VAL used for structural TPs and OB validation.
+    VP_ENABLED: bool = os.getenv("VP_ENABLED", "true").lower() == "true"
+    VP_BIN_COUNT: int = int(os.getenv("VP_BIN_COUNT", "200"))
+    VP_VALUE_AREA_PCT: float = 0.70    # 70% of volume defines value area
+    VP_HVN_THRESHOLD: float = 1.5      # Bins > 1.5x median = High Volume Node
+    VP_LVN_THRESHOLD: float = 0.5      # Bins < 0.5x median = Low Volume Node
+
+    # ========================
+    # STRUCTURAL TAKE PROFITS
+    # ========================
+    # When enabled, TPs target structural levels (swing highs/lows, VAH/VAL, POC)
+    # instead of fixed R:R multiples. Falls back to fixed R:R if no structural level found.
+    STRUCTURAL_TP_ENABLED: bool = os.getenv("STRUCTURAL_TP_ENABLED", "true").lower() == "true"
+    # Minimum gap between TP1 and TP2 as fraction of entry price.
+    STRUCTURAL_TP_MIN_SEPARATION_PCT: float = 0.003  # 0.3%
+
+    # ========================
+    # SWING SETUP OB TIMEFRAMES
+    # ========================
+    # OB timeframe preference for swing setups (A/B/F/G): try first, fall back to second.
+    # 15m OBs are too small (bodies ~0.15%, SL within noise). 1H/4H OBs have structural significance.
+    # Quick setups (C/D/E) still use 5m/15m OBs.
+    SWING_OB_TIMEFRAMES: list = field(default_factory=lambda: ["1h", "4h"])
+
+    # ========================
     # PROGRESSIVE TRAILING SL
     # ========================
     # When enabled, SL trails in 0.5 R:R steps instead of fixed breakeven + tp1.
@@ -806,7 +833,7 @@ class Settings:
     # ========================
     # Feature version — increment when strategy params change in ways that
     # alter feature semantics (e.g. changing OB scoring weights, PD rules).
-    ML_FEATURE_VERSION: int = 9  # v9: geometry cascade (dynamic entry/SL selection), ATR SL absorbed into cascade
+    ML_FEATURE_VERSION: int = 10  # v10: volume profile (POC/VAH/VAL), structural TPs, 1H/4H OBs for swing setups
 
     # ========================
     # LIQUIDATION HEATMAP

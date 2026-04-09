@@ -1,6 +1,6 @@
 # Strategy Service
-> Última actualización: 2026-03-31
-> Estado: implementado. Confluence counting = structural only (BOS/CHoCH/FVG/OB/sweep/breaker/pd_zone — metrics don't count). ATR SL floor: SL widened to max(structural, 3× ATR(14)). Setup H disabled from shadow (impulse chaser). Regime gate F&G < 20.
+> Última actualización: 2026-04-09
+> Estado: implementado. Volume Profile (POC/VAH/VAL) from 4H candles. Structural TPs (swing levels + VP levels). Swing setups use 1H/4H OBs (not 15m). VP OB quality confluence. ML_FEATURE_VERSION=10.
 
 ## Qué hace (30 segundos)
 El Strategy Service es el detective del sistema. Analiza los datos del Data Service buscando patrones de Smart Money Concepts (SMC): rupturas de estructura (BOS/CHoCH), order blocks, fair value gaps, sweeps de liquidez, y zonas premium/discount. Cuando encuentra un setup con suficiente confluencia, genera un `TradeSetup` para evaluación.
@@ -82,7 +82,7 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
   - DEBUG logs en cada early return (HTF undefined, no breakers, no aligned, PD misaligned, no in range, confluences, R:R)
   - Requiere HTF bias alineado con dirección del breaker + PD zone + min 2 confluencias
   - Usa `get_breaker_blocks()` de OrderBlockDetector
-- **Swing setups evalúan solo 15m** — `SWING_SETUP_TIMEFRAMES = ["15m"]`. Detectors corren en 5m también (quick setups D/H los necesitan) pero swing setups (A/B/F/G) solo consideran OBs de 15m. `MIN_RISK_DISTANCE_PCT` (0.5%) filtra micro-SLs.
+- **Swing setups usan OBs de 1H/4H** — `SWING_OB_TIMEFRAMES = ["1h", "4h"]`. Swing setups (A/B/F/G) reciben OBs de 1H (primario) o 4H (fallback) en vez de 15m. OBs de 15m producían SLs dentro del ruido (bodies ~0.15%, SL ~0.7-1% vs ATR 15m ~0.3%). OBs de 1H/4H tienen bodies más grandes = SLs con significado estructural. Quick setups (C/D/E) siguen usando 5m/15m OBs. Detectors corren en todos los timeframes.
 - **Zone-based orders + geometry cascade** — no requiere proximidad al OB. `_cascade_geometry()` prueba múltiples combinaciones entry/SL (3 entries × 2 SLs = 6 max) y selecciona la mejor R:R. Entry candidates: depths configurables por setup en `GEOMETRY_CASCADE_ENTRIES`. SL candidates: OB wick + ATR floor (`ATR_SL_FLOOR_MULTIPLIER × ATR(14)`). Early exit a R:R ≥ 3.0. Fallback a geometría rígida si `GEOMETRY_CASCADE_ENABLED=false`.
 - **Orderbook depth confirmation** — después de detectar un setup, `_enrich_with_ob_depth()` analiza liquidez real en el orderbook L2 (20 niveles) alrededor de la zona del OB. Zona dinámica: `max(OB body, ATR) × OB_DEPTH_ZONE_MULTIPLIER`. Mide depth ratio (bids/asks) y concentración (nivel más grande / total). Si ratio ≥ 1.0 y concentración ≥ 0.2 → confluencia `ob_depth_confirmed`. No es hard gate — solo bonus para ML.
   - `_find_best_ob()` selecciona by composite scoring via `_score_ob()`: impulse (25%), volume (20%), freshness (20%), proximity (15%), retest penalty (10%), body size (10%). Replaces old "highest volume_ratio + tiebreak by timestamp" selector.
@@ -90,6 +90,8 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
   - `OB_MIN_BODY_PCT` (0.15%) filters micro-OBs that produce tiny SLs eaten by commissions
   - `_is_ob_within_range()` filtra OBs más allá de `OB_MAX_DISTANCE_PCT` (8%) del precio actual
   - `_is_price_near_ob()` se mantiene para notificaciones de OB summary, pero no bloquea setups
+- **Volume Profile** (`volume_profile.py`) — aproximación de VP desde velas 4H. Distribuye volumen de cada candle uniformemente en [low, high] usando grid de 200 bins. Computa POC (Point of Control = precio con mayor volumen acumulado), VAH/VAL (Value Area = rango con 70% del volumen), HVNs (High Volume Nodes > 1.5x mediana, top 10), LVNs (Low Volume Nodes < 0.5x mediana, gaps contiguos). Recalcula solo con nueva vela 4H (~6x/día por par). Cache per-pair. Usado por: TPs estructurales (POC/VAH/VAL como targets), VP OB quality check (OBs cerca de HVN/POC = más fuertes), ML features.
+- **VP OB quality confluence** (`_check_vp_ob_quality`) — evalúa OBs contra el Volume Profile. OB cerca del POC (dentro de 1x ATR) → `vp_poc_confluence`. OB cerca de cualquier HVN → `vp_hvn_confluence`. OB en zona LVN → `vp_lvn_warning`. Informacional (no hard gate). Aplicado a todos los swing setups.
 - **SL direction validation** — `_validate_sl_direction()` en todos los setup types (A/B/F/G). Rechaza si SL está del lado incorrecto del entry (bearish: sl debe ser > entry, bullish: sl debe ser < entry). Fix para bug donde Setup B con FVG encima del OB producía entry > ob.high = SL invertido.
 - Mínimo 2 confluencias **estructurales** obligatorio (no configurable — hardcoded). Solo cuentan: BOS, CHoCH, FVG, order_block, liquidity_sweep, breaker_block, pd_zone, initiating_ob, bos_confirmed. Métricas (CVD, OI, funding, volume ratios, impulse stats) se capturan como features ML separados pero NO inflan el gate.
 - **`_check_volume_confirmation()`** — método compartido por todos los swing setups (A/B/F/G). Señales graduadas (v5):
@@ -100,7 +102,7 @@ El bot necesita reglas determinísticas para detectar oportunidades. Sin el Stra
   - **CVD divergence + magnitud**: divergencia precio↓/CVD↑ = señal más fuerte. MTF agreement (5m+15m+1h). Fallback a simple alignment. **Buy/sell dominance tiers**: 55%+ = `buy_dominance_moderate`, 60%+ = `buy_dominance_strong` (thresholds: `BUY_DOMINANCE_MODERATE_PCT`, `BUY_DOMINANCE_STRONG_PCT`)
   - **OI delta graduado**: trackea OI USD entre evaluaciones por pair. 0.5-2% = `oi_rising_mild`, 2-5% = `oi_rising_moderate`, 5%+ = `oi_rising_strong`. Dropping >2% = `oi_dropping_Xpct`. Raw `oi_delta_X.XXpct` siempre incluido para ML. (thresholds: `OI_DELTA_MILD_PCT`, `OI_DELTA_MODERATE_PCT`, `OI_DELTA_STRONG_PCT`)
   - **Funding graduado simétrico**: mild (0.01-0.03%) = 1 confluence CONTEXT, moderate (0.03-0.06%) = SUPPORTING, extreme (0.06%+) = 2 confluences. Labels: `funding_mild_long/short`, `funding_moderate_long/short`, `funding_extreme_long/short`. (thresholds: `FUNDING_MILD_THRESHOLD`, `FUNDING_MODERATE_THRESHOLD`, `FUNDING_EXTREME_THRESHOLD`)
-- Cálculo de TP1 (1:1 R:R, breakeven trigger) y TP2 (**per-setup** via `SETUP_TP2_RR` dict, fallback `TP2_RR_RATIO`=2.0). A=2.5, B/F/G/H=2.0, C/E=2.0, D=1.5.
+- **Structural TPs** — cuando `STRUCTURAL_TP_ENABLED=true` (default), TPs apuntan a niveles estructurales reales: swing highs/lows de 4H/1H, VP POC/VAH/VAL/HVNs, liquidity levels. TP1 = nivel estructural más cercano (mínimo 1:1 R:R). TP2 = siguiente nivel más allá de TP1. Fallback a fixed R:R si no hay niveles estructurales o si dan peor resultado. TPs siempre >= fixed R:R (estructural solo puede mejorar, nunca degradar). Separation mínima entre TP1 y TP2: `STRUCTURAL_TP_MIN_SEPARATION_PCT` (0.3%). Per-setup fallback R:R: A=2.5, B/F/G/H=2.0, C/E=2.0, D=1.5.
 - **R:R simple** — `abs(tp2 - entry) / abs(entry - sl)` ≥ `MIN_RISK_REWARD`
 - **Validación premium/discount** — equilibrium zone permite trades por defecto (`ALLOW_EQUILIBRIUM_TRADES = True`)
 - **PD override diferido** — el check de PD alignment se difiere hasta después de contar confluencias. Si un setup tiene ≥ `PD_OVERRIDE_MIN_CONFLUENCES` (5) confluencias, puede operar contra la zona PD. Evita lockout total cuando bearish bias + discount zone bloquea todo. Log INFO cuando se activa override.
@@ -147,8 +149,8 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 - Cooldown: 1h por (par, tipo) para evitar re-triggering
 
 ### `strategy_service/service.py` — Facade
-- `StrategyService(data_service)` — obtiene candles del DataService
-- `evaluate(pair, candle)` — evalúa LTF candles: A → B → F → G → C → D → E, retorna `TradeSetup | None`
+- `StrategyService(data_service)` — obtiene candles del DataService. Inicializa `VolumeProfileAnalyzer` si `VP_ENABLED`.
+- `evaluate(pair, candle)` — evalúa LTF candles: A → B → F → G → C → D → E, retorna `TradeSetup | None`. Detecta OBs en 1H (swing setups) + 15m/5m (quick setups). Pasa swing_highs_htf/swing_lows_htf + volume_profile a cada swing setup evaluator para TPs estructurales y VP OB quality.
 - **`evaluate_htf(pair, candle)`** — evalúa 4H candles para HTF campaigns. Usa Daily candles para bias (en vez de 4H/1H). Corre los mismos detectores SMC en 4H data con params más amplios: OB age 168h (vs 48h), OB distance 10% (vs 5%), FVG age 168h, min risk distance 0.5% (same as intraday). Overrides temporales de settings durante evaluación. Retorna `TradeSetup | None`. Gate: `HTF_ENABLED_SETUPS` (default: A, B, F).
 - **`get_htf_swing_levels(pair)`** — retorna `(swing_highs, swing_lows)` de 4H data. Usado por CampaignMonitor para trailing SL.
 - **`ENABLED_SETUPS` gate** — después de detectar un setup, verifica `setup.setup_type in settings.ENABLED_SETUPS`. Si no está habilitado, logea debug y continúa evaluando el siguiente tipo. **Post-review (2026-03-19):** `["setup_a", "setup_c", "setup_d_choch", "setup_e", "setup_f"]` — 5 tipos activos. Setup B deshabilitado (audit: F es mejor). Setup H deshabilitado (27 trades, 11% WR, PF 0.10). G pendiente de validación.
@@ -209,7 +211,7 @@ Data-driven setups con duración máxima 4h y R:R mínimo 1:1. Solo se disparan 
 - `FUNDING_MILD_THRESHOLD: float = 0.0001` — mild crowding (0.01%)
 - `FUNDING_MODERATE_THRESHOLD: float = 0.0003` — moderate crowding (0.03%, was FUNDING_EXTREME_THRESHOLD)
 - `FUNDING_EXTREME_THRESHOLD: float = 0.0006` — extreme crowding (0.06%)
-- `ML_FEATURE_VERSION: int = 5` — v5: graduated signals
+- `ML_FEATURE_VERSION: int = 10` — v10: VP + structural TPs + 1H/4H OBs
 
 **HTF Campaign settings:**
 - `HTF_CAMPAIGN_ENABLED: bool = False` — master switch para HTF campaigns (env var)
