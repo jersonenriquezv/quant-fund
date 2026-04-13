@@ -229,17 +229,8 @@ async def on_candle_confirmed(candle: Candle) -> None:
             _setup_dedup_cache[dedup_key] = time.time()
             return
 
-        # Direction filter: in extreme fear, longs lose 94% (2/34). Shorts: 20% (3/15).
-        if snapshot is not None and snapshot.news_sentiment is not None:
-            fg_score = snapshot.news_sentiment.score
-            if fg_score < settings.SHADOW_FEAR_LONG_GATE and setup.direction == "long":
-                logger.info(
-                    f"Shadow fear-long filter: F&G={fg_score} < {settings.SHADOW_FEAR_LONG_GATE} "
-                    f"+ direction=long | {setup.setup_type} {setup.pair}"
-                )
-                _ml_resolve_outcome(setup.setup_id, "shadow_fear_long_filtered")
-                _setup_dedup_cache[dedup_key] = time.time()
-                return
+        # F&G score logged as ML feature (fear_greed_score column in ml_setups).
+        # Previously filtered longs in fear — removed: let ML learn when fear matters.
         # Risk check (dry_run=True + SHADOW_CAPITAL: sizes against $500 virtual account)
         risk_approval = None
         if _risk_service is not None:
@@ -365,7 +356,13 @@ async def on_candle_confirmed(candle: Candle) -> None:
             })
             # Log to trade_rejections table for journal analysis
             _log_trade_rejection(setup, approval.reason or "unknown")
-            # ML: resolve with risk context at rejection time
+            # ML: store risk check result + resolve outcome
+            if _data_service is not None and _data_service.postgres is not None:
+                _data_service.postgres.update_ml_risk_check(
+                    setup.setup_id,
+                    approved=False,
+                    reason=approval.reason,
+                )
             _ml_resolve_outcome(
                 setup.setup_id, "risk_rejected",
                 risk_context=extract_risk_context(_risk_service),

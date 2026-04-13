@@ -58,6 +58,17 @@ class Settings:
     REDIS_PASSWORD: str = os.getenv("REDIS_PASSWORD", "")
 
     # ========================
+    # DASHBOARD
+    # ========================
+    DASHBOARD_API_KEY: str = os.getenv("DASHBOARD_API_KEY", "")
+    DASHBOARD_CORS_ORIGINS: list = field(default_factory=lambda: [
+        o.strip() for o in os.getenv(
+            "DASHBOARD_CORS_ORIGINS",
+            "http://localhost:3000,http://127.0.0.1:3000,http://100.120.181.11:3000,http://192.168.1.236:3000"
+        ).split(",") if o.strip()
+    ])
+
+    # ========================
     # PARES DE TRADING
     # ========================
     # Pares activos. El bot solo opera estos.
@@ -683,8 +694,8 @@ class Settings:
     REGIME_EXTREME_FEAR_GATE: int = int(os.getenv("REGIME_EXTREME_FEAR_GATE", "10"))
 
     # Shadow quality filters — derived from feature importance analysis (2026-04-06).
-    # In extreme fear, longs lose 94% of the time. Before 11 UTC, 0% WR (23 trades).
-    SHADOW_FEAR_LONG_GATE: int = int(os.getenv("SHADOW_FEAR_LONG_GATE", "25"))   # F&G < 25 → reject longs in shadow
+    # SHADOW_FEAR_LONG_GATE removed — F&G kept as ML feature (fear_greed_score), not as gate.
+    # Rationale: SMC follows institutional flow; institutions accumulate during fear. Let ML learn nuance.
     SHADOW_MIN_HOUR_UTC: int = int(os.getenv("SHADOW_MIN_HOUR_UTC", "11"))       # Skip setups before this hour
 
     # ========================

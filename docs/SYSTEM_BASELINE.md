@@ -48,7 +48,7 @@
 | ATR_SL_FLOOR_MULTIPLIER | 4.5 | SL widened to 4.5× ATR(14) if structural SL is tighter |
 | MAX_SL_PCT | 4% | SL-too-far cap — rejects setups with OB SL > 4% |
 | REGIME_EXTREME_FEAR_GATE | 10 | F&G < 10 → reject ALL live setups (systemic crisis only) |
-| SHADOW_FEAR_LONG_GATE | 25 | F&G < 25 → reject longs in shadow (94% loss rate in data) |
+| ~~SHADOW_FEAR_LONG_GATE~~ | removed | F&G kept as ML feature, not used as gate. SMC follows institutional flow; fear = accumulation opportunity |
 | SHADOW_MIN_HOUR_UTC | 11 | Skip shadow setups before 11 UTC (0% WR across 23 trades) |
 | MAX_PORTFOLIO_HEAT_PCT | 6% | Sum of (size × SL_distance) across all positions |
 | MAX_SLIPPAGE_PCT | 0.3% | emergency close if exceeded |
@@ -301,6 +301,15 @@ Reference for VPS sizing when migrating from Nitro 5.
 **Why:** Shadow audit revealed 91% SL rate across all shadow setups. Root causes: SL distances (avg 0.76%) within 15m candle noise, counter-trend setup_a trades, and structurally flawed setup_g/h signals.
 
 **Expected impact:** Fewer but higher-quality shadow detections. Setup A should see wider SLs (~1.35% floor) and only continuation trades. Monitor for 1-2 weeks to validate improvement.
+
+### 2026-04-13 — Remove Fear-Long Gate from Shadow
+**What changed:**
+- Removed `SHADOW_FEAR_LONG_GATE` (was 25). F&G score remains as ML feature (`fear_greed_score` in ml_setups), no longer used as a gate.
+- `SHADOW_MIN_HOUR_UTC=11` kept (0% WR data still valid).
+
+**Why:** F&G < 25 was blocking 100% of shadow longs during sustained fear (Apr 9-13, F&G 14-16), producing zero shadow data for 4 days. More fundamentally: SMC follows institutional order flow — institutions accumulate during retail fear. Filtering longs in fear contradicts the system's thesis. The ML model will learn when fear matters with more nuance than a binary gate.
+
+**Expected impact:** Shadow pipeline resumes collecting data in fear conditions. ML training data grows faster and includes fear-regime examples for the model to learn from.
 
 ### 2026-04-06 — Shadow Quality Filters (Feature Importance Analysis)
 **What changed:**

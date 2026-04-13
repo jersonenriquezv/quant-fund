@@ -5,6 +5,7 @@ import json
 from fastapi import APIRouter, HTTPException
 
 from dashboard.api import database as db
+from dashboard.api.auth import validate_pair
 from dashboard.api.models import LiqHeatmapResponse, LiqHeatmapBin
 from dashboard.api.queries import get_candles
 
@@ -93,6 +94,7 @@ def _estimate_liquidation_levels(
 
 @router.get("/liquidation/heatmap/{pair:path}", response_model=LiqHeatmapResponse)
 async def get_liquidation_heatmap(pair: str):
+    validate_pair(pair)
     if not db.redis_client:
         raise HTTPException(503, "Redis unavailable")
 

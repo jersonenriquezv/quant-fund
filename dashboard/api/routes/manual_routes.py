@@ -5,15 +5,15 @@ import re
 from dataclasses import asdict
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 import dashboard.api.database as db
+from dashboard.api.auth import require_api_key, validate_pair
 from dashboard.api.manual.calculator import calculate
-
-_PAIR_RE = re.compile(r"^[A-Z0-9]{2,10}/[A-Z]{3,4}$")
 from dashboard.api.manual import trade_manager, analytics
+from config.settings import settings
 
 router = APIRouter()
 
@@ -51,6 +51,16 @@ class CreateTradeRequest(BaseModel):
     thesis: str | None = None
     tags: str | None = None
     size_override: float | None = None             # Actual position size (overrides calculated)
+
+    @field_validator("pair")
+    @classmethod
+    def pair_must_be_valid(cls, v: str) -> str:
+        # Manual trading allows pairs not in bot's TRADING_PAIRS (e.g. inverse pairs)
+        # but still enforce basic format
+        import re
+        if not re.match(r"^[A-Z0-9]{2,10}/[A-Z]{3,5}$", v):
+            raise ValueError(f"Invalid pair format: {v} (expected e.g. BTC/USDT)")
+        return v
     # Structured fundamental data — CoinGlass + Token Terminal (optional, for ML)
     spot_net_flow_4h: float | None = None       # USD, positive=inflow(bearish)
     futures_net_flow_4h: float | None = None    # USD, positive=inflow(bearish)
@@ -209,7 +219,7 @@ async def api_suggested_sl(pair: str, direction: str, entry: float):
 
 # ── Trades CRUD ──────────────────────────────────────────────────
 
-@router.post("/manual/trades")
+@router.post("/manual/trades", dependencies=[Depends(require_api_key)])
 async def api_create_trade(req: CreateTradeRequest):
     balance_usd, _ = await _resolve_balance(
         req.balance, req.balance_currency, req.pair,
@@ -277,7 +287,7 @@ async def api_get_trade(trade_id: int):
     return trade
 
 
-@router.patch("/manual/trades/{trade_id}")
+@router.patch("/manual/trades/{trade_id}", dependencies=[Depends(require_api_key)])
 async def api_update_trade(trade_id: int, req: UpdateTradeRequest):
     data = req.model_dump(exclude_none=True)
     if not data:
@@ -288,7 +298,7 @@ async def api_update_trade(trade_id: int, req: UpdateTradeRequest):
     return trade
 
 
-@router.delete("/manual/trades/{trade_id}")
+@router.delete("/manual/trades/{trade_id}", dependencies=[Depends(require_api_key)])
 async def api_delete_trade(trade_id: int):
     deleted = await trade_manager.delete_trade(db.pg_pool, trade_id)
     if not deleted:
@@ -298,7 +308,7 @@ async def api_delete_trade(trade_id: int):
 
 # ── Partial closes ───────────────────────────────────────────────
 
-@router.post("/manual/trades/{trade_id}/partial-close")
+@router.post("/manual/trades/{trade_id}/partial-close", dependencies=[Depends(require_api_key)])
 async def api_partial_close(trade_id: int, req: PartialCloseRequest):
     try:
         result = await trade_manager.partial_close(db.pg_pool, trade_id, req.model_dump())
@@ -314,8 +324,9 @@ async def api_get_balances():
     return await trade_manager.get_balances(db.pg_pool)
 
 
-@router.put("/manual/balances/{pair:path}")
+@router.put("/manual/balances/{pair:path}", dependencies=[Depends(require_api_key)])
 async def api_set_balance(pair: str, req: SetBalanceRequest):
+    validate_pair(pair)
     return await trade_manager.set_balance(db.pg_pool, pair, req.balance)
 
 
@@ -324,8 +335,7 @@ async def api_set_balance(pair: str, req: SetBalanceRequest):
 @router.get("/manual/price/{pair:path}")
 async def api_get_price(pair: str):
     """Get current price for a pair from Redis (bot's cached candle data)."""
-    if not _PAIR_RE.match(pair):
-        raise HTTPException(400, "Invalid pair format (expected e.g. BTC/USDT)")
+    validate_pair(pair)
     price = await _get_price(pair)
     if not price:
         raise HTTPException(404, f"No price data for {pair}")

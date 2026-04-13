@@ -13,6 +13,8 @@ venv/
 # Environment / secrets
 .env
 config/.env
+.env.local
+dashboard/web/.env.local
 
 # Logs
 logs/

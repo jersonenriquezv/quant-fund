@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from config.settings import settings
 from dashboard.api.database import init_db, close_db
 from dashboard.api.routes import health, market, trades, ai, risk, candles, stats, whales, strategy, sentiment, liquidation
 from dashboard.api.routes import manual_routes
@@ -26,13 +27,8 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://100.120.181.11:3000",
-        "http://192.168.1.236:3000",
-    ],
-    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    allow_origins=settings.DASHBOARD_CORS_ORIGINS,
+    allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
     allow_headers=["*"],
 )
 

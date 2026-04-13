@@ -298,8 +298,32 @@ class PostgresStore:
         logger.warning("PostgreSQL connection lost — attempting reconnect")
         return self.connect()
 
+    def _get_schema_version(self) -> int:
+        """Get current schema version. Returns 0 if table doesn't exist."""
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS schema_version (
+                        version INT PRIMARY KEY,
+                        description TEXT NOT NULL,
+                        applied_at TIMESTAMP DEFAULT NOW()
+                    )
+                """)
+                cur.execute("SELECT COALESCE(MAX(version), 0) FROM schema_version")
+                return cur.fetchone()[0]
+        except psycopg2.Error:
+            return 0
+
+    def _apply_migration(self, cur, version: int, description: str) -> None:
+        """Record a migration as applied."""
+        cur.execute(
+            "INSERT INTO schema_version (version, description) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+            (version, description),
+        )
+
     def _create_tables(self) -> None:
         """Create tables if they don't exist. Schema from CLAUDE.md."""
+        current_version = self._get_schema_version()
         with self._conn.cursor() as cur:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS candles (
@@ -608,67 +632,83 @@ class PostgresStore:
                 ON ml_setups(outcome_type) WHERE outcome_type IS NOT NULL
             """)
 
-            # v6 migration: add daily_vol column if missing
-            cur.execute("""
-                ALTER TABLE ml_setups ADD COLUMN IF NOT EXISTS
-                    daily_vol DOUBLE PRECISION
-            """)
+            # ── Schema migrations (versioned) ──────────────────────────
+            # All migrations use IF NOT EXISTS / ADD COLUMN IF NOT EXISTS
+            # so they're idempotent even if version tracking is new.
 
-            # Shadow mode migration: columns for theoretical outcome tracking
-            for col_def in [
-                "shadow_mode BOOLEAN DEFAULT FALSE",
-                "shadow_position_size DOUBLE PRECISION",
-                "shadow_leverage DOUBLE PRECISION",
-                "shadow_margin DOUBLE PRECISION",
-                "shadow_spread_at_detection DOUBLE PRECISION",
-                "shadow_depth_at_entry DOUBLE PRECISION",
-                "shadow_fill_time_ms BIGINT",
-                "shadow_fill_candle_volume_ratio DOUBLE PRECISION",
-                "shadow_slippage_estimate_pct DOUBLE PRECISION",
-            ]:
-                cur.execute(f"ALTER TABLE ml_setups ADD COLUMN IF NOT EXISTS {col_def}")
+            if current_version < 6:
+                cur.execute("""
+                    ALTER TABLE ml_setups ADD COLUMN IF NOT EXISTS
+                        daily_vol DOUBLE PRECISION
+                """)
+                self._apply_migration(cur, 6, "ml_setups: add daily_vol column")
 
-            # v7 migration: risk check result columns for shadow mode analysis
-            for col_def in [
-                "risk_approved BOOLEAN",
-                "risk_reject_reason TEXT",
-            ]:
-                cur.execute(f"ALTER TABLE ml_setups ADD COLUMN IF NOT EXISTS {col_def}")
+            if current_version < 7:
+                # Shadow mode: columns for theoretical outcome tracking
+                for col_def in [
+                    "shadow_mode BOOLEAN DEFAULT FALSE",
+                    "shadow_position_size DOUBLE PRECISION",
+                    "shadow_leverage DOUBLE PRECISION",
+                    "shadow_margin DOUBLE PRECISION",
+                    "shadow_spread_at_detection DOUBLE PRECISION",
+                    "shadow_depth_at_entry DOUBLE PRECISION",
+                    "shadow_fill_time_ms BIGINT",
+                    "shadow_fill_candle_volume_ratio DOUBLE PRECISION",
+                    "shadow_slippage_estimate_pct DOUBLE PRECISION",
+                ]:
+                    cur.execute(f"ALTER TABLE ml_setups ADD COLUMN IF NOT EXISTS {col_def}")
+                # Risk check result columns for shadow mode analysis
+                for col_def in [
+                    "risk_approved BOOLEAN",
+                    "risk_reject_reason TEXT",
+                ]:
+                    cur.execute(f"ALTER TABLE ml_setups ADD COLUMN IF NOT EXISTS {col_def}")
+                self._apply_migration(cur, 7, "ml_setups: shadow mode + risk check columns")
 
-            # migration: add setup_id to trades for ML linkage
-            cur.execute("""
-                ALTER TABLE trades ADD COLUMN IF NOT EXISTS
-                    setup_id VARCHAR(20)
-            """)
+            if current_version < 8:
+                # setup_id linkage + trade journal columns
+                cur.execute("""
+                    ALTER TABLE trades ADD COLUMN IF NOT EXISTS
+                        setup_id VARCHAR(20)
+                """)
+                for col_def in [
+                    "margin_used DOUBLE PRECISION",
+                    "risk_usd DOUBLE PRECISION",
+                    "r_multiple DOUBLE PRECISION",
+                    "rejection_reason TEXT",
+                    "notes TEXT",
+                ]:
+                    cur.execute(f"ALTER TABLE trades ADD COLUMN IF NOT EXISTS {col_def}")
+                # Trade rejections table
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS trade_rejections (
+                        id SERIAL PRIMARY KEY,
+                        timestamp TIMESTAMP DEFAULT NOW(),
+                        pair VARCHAR(20) NOT NULL,
+                        direction VARCHAR(5),
+                        setup_type VARCHAR(20),
+                        reason TEXT NOT NULL,
+                        sl_distance_pct DOUBLE PRECISION,
+                        rr_ratio DOUBLE PRECISION,
+                        oi_delta DOUBLE PRECISION
+                    )
+                """)
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_rejections_pair_ts
+                    ON trade_rejections(pair, timestamp DESC)
+                """)
+                self._apply_migration(cur, 8, "trades: setup_id + sizing columns, trade_rejections table")
 
-            # Trade journal migration: add risk/sizing columns to trades
-            for col_def in [
-                "margin_used DOUBLE PRECISION",
-                "risk_usd DOUBLE PRECISION",
-                "r_multiple DOUBLE PRECISION",
-                "rejection_reason TEXT",
-                "notes TEXT",
-            ]:
-                cur.execute(f"ALTER TABLE trades ADD COLUMN IF NOT EXISTS {col_def}")
-
-            # Trade rejections table — logs every rejected setup for pipeline analysis
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS trade_rejections (
-                    id SERIAL PRIMARY KEY,
-                    timestamp TIMESTAMP DEFAULT NOW(),
-                    pair VARCHAR(20) NOT NULL,
-                    direction VARCHAR(5),
-                    setup_type VARCHAR(20),
-                    reason TEXT NOT NULL,
-                    sl_distance_pct DOUBLE PRECISION,
-                    rr_ratio DOUBLE PRECISION,
-                    oi_delta DOUBLE PRECISION
-                )
-            """)
-            cur.execute("""
-                CREATE INDEX IF NOT EXISTS idx_rejections_pair_ts
-                ON trade_rejections(pair, timestamp DESC)
-            """)
+            if current_version < 10:
+                # Volume profile + structural TP features
+                for col_def in [
+                    "has_vp_poc BOOLEAN",
+                    "has_vp_hvn BOOLEAN",
+                    "has_vp_lvn BOOLEAN",
+                    "vp_poc_distance_pct DOUBLE PRECISION",
+                ]:
+                    cur.execute(f"ALTER TABLE ml_setups ADD COLUMN IF NOT EXISTS {col_def}")
+                self._apply_migration(cur, 10, "ml_setups: volume profile features")
 
         logger.info("PostgreSQL tables verified/created")
 
@@ -1126,7 +1166,8 @@ class PostgresStore:
                             dominance_tier, oi_delta_pct,
                             hour_of_day, atr_pct, daily_vol,
                             risk_capital, risk_open_positions,
-                            risk_daily_dd_pct, risk_weekly_dd_pct, risk_trades_today
+                            risk_daily_dd_pct, risk_weekly_dd_pct, risk_trades_today,
+                            has_vp_poc, has_vp_hvn, has_vp_lvn, vp_poc_distance_pct
                         ) VALUES (
                             %s, %s, %s,
                             %s, %s, %s,
@@ -1152,7 +1193,8 @@ class PostgresStore:
                             %s, %s, %s,
                             %s, %s,
                             %s, %s, %s,
-                            %s, %s
+                            %s, %s,
+                            %s, %s, %s, %s
                         ) ON CONFLICT (setup_id) DO NOTHING""",
                         (
                             setup_id, feature_version, features.get("timestamp", 0),
@@ -1192,6 +1234,8 @@ class PostgresStore:
                             rc.get("risk_capital"), rc.get("risk_open_positions"),
                             rc.get("risk_daily_dd_pct"), rc.get("risk_weekly_dd_pct"),
                             rc.get("risk_trades_today"),
+                            features.get("has_vp_poc"), features.get("has_vp_hvn"),
+                            features.get("has_vp_lvn"), features.get("vp_poc_distance_pct"),
                         ),
                     )
                 logger.debug(f"ML: inserted setup {setup_id} ({features.get('pair')} {features.get('setup_type')})")
