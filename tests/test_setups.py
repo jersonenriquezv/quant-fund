@@ -670,8 +670,8 @@ class TestZoneBasedOB:
 class TestBidirectionalTrading:
     """Test counter-trend setups (LTF opposes HTF)."""
 
-    def test_counter_trend_setup_a_blocked(self):
-        """Setup A with bullish CHoCH + bearish HTF is blocked (REQUIRE_HTF_LTF_ALIGNMENT=True)."""
+    def test_counter_trend_setup_a_allowed(self):
+        """Setup A with bullish CHoCH + bearish HTF is allowed (REQUIRE_HTF_LTF_ALIGNMENT=False)."""
         evaluator = SetupEvaluator()
         state = _make_structure_state(
             trend="bullish", break_type="choch", break_direction="bullish",
@@ -694,13 +694,14 @@ class TestBidirectionalTrading:
             structure_state=state, active_obs=obs,
             recent_sweeps=sweeps, pd_zone=pd,
             market_snapshot=snapshot, candles=candles,
-            pair="BTC/USDT", htf_bias="bearish",  # Counter-trend → blocked
+            pair="BTC/USDT", htf_bias="bearish",  # Counter-trend → allowed
             liquidity_levels=[],
         )
-        assert setup is None
+        assert setup is not None
+        assert setup.direction == "long"
 
-    def test_counter_trend_setup_b_blocked(self):
-        """Setup B with bullish BOS + bearish HTF is blocked (REQUIRE_HTF_LTF_ALIGNMENT=True)."""
+    def test_counter_trend_setup_b_allowed(self):
+        """Setup B with bullish BOS + bearish HTF is allowed (REQUIRE_HTF_LTF_ALIGNMENT=False)."""
         evaluator = SetupEvaluator()
         state = _make_structure_state(
             trend="bullish", break_type="bos", break_direction="bullish",
@@ -716,10 +717,11 @@ class TestBidirectionalTrading:
             structure_state=state, active_obs=obs,
             active_fvgs=fvgs, pd_zone=pd,
             market_snapshot=snapshot, candles=candles,
-            pair="BTC/USDT", htf_bias="bearish",  # Counter-trend → blocked
+            pair="BTC/USDT", htf_bias="bearish",  # Counter-trend → allowed
             liquidity_levels=[],
         )
-        assert setup is None
+        assert setup is not None
+        assert setup.direction == "long"
 
 
 # ============================================================
@@ -1465,25 +1467,26 @@ class TestGeometryCascade:
 
     def test_cascade_respects_sl_bounds(self):
         """SL candidates violating MIN/MAX distance are excluded."""
-        # OB where wick SL is too far (>4%) but ATR SL is valid
-        # body 100-102, wick low=94. SL=94 → risk_pct=6% > MAX_SL_PCT (4%).
-        # ATR = 0.6, floor = 4.5×0.6 = 2.7. Entry ~101 → ATR SL = 101-2.7 = 98.3.
-        # risk_pct = 2.7/101 = 2.67% < 4%. Valid.
+        # OB where wick SL is too far (>4%) but ATR SL is valid.
+        # body 100-104 (range=4), wick low=90. At depth 0.50 → entry=102.
+        # OB wick SL=90 → risk_pct=12/102=11.8% > MAX_SL_PCT (4%) → excluded.
+        # ATR=0.5, floor=4.5×0.5=2.25. ATR SL=102-2.25=99.75 → risk_pct=2.2% < 4%.
+        # Risk=2.25, TP2 needs entry+2×2.25=106.5 for 2:1 R:R.
         ob = _make_ob(
             direction="bullish",
-            body_low=100.0, body_high=102.0,
-            low=94.0, high=103.0,
-            entry_price=101.0,
+            body_low=100.0, body_high=104.0,
+            low=90.0, high=105.0,
+            entry_price=102.0,
         )
-        candles = _make_candles_with_atr(price=102.0, atr_approx=0.6)
+        candles = _make_candles_with_atr(price=104.0, atr_approx=0.5)
         result = self.evaluator._cascade_geometry(
             ob=ob, direction="bullish", setup_type="setup_f",
             pair="BTC/USDT", liquidity_levels=[], candles=candles,
         )
         assert result is not None
         entry, sl, tp1, tp2, rank, tried = result
-        # OB wick SL (94) should be excluded (>4%), ATR SL should be used
-        assert sl > 94.0, f"Expected ATR SL (not wick), got sl={sl}"
+        # OB wick SL (90) should be excluded (>4%), ATR SL should be used
+        assert sl > 90.0, f"Expected ATR SL (not wick), got sl={sl}"
 
     def test_cascade_prefers_best_rr(self):
         """Multiple valid combos → picks highest R:R."""

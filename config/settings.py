@@ -318,7 +318,7 @@ class Settings:
     # SETUP F HARDENING — Pure OB Retest quality filters
     # ========================
     # Max candles since BOS to be considered fresh (20 = ~5h on 15m).
-    SETUP_F_MAX_BOS_AGE_CANDLES: int = 40
+    SETUP_F_MAX_BOS_AGE_CANDLES: int = 60
     # Max candle gap between OB and BOS (OB must form near the BOS impulse).
     SETUP_F_MAX_OB_BOS_GAP_CANDLES: int = 20
     # Minimum BOS displacement beyond broken level (0.2% = reject micro-breaks).
@@ -367,7 +367,7 @@ class Settings:
 
     # --- Strategy behavior (profile-controlled) ---
     # If True, LTF structure (CHoCH/BOS) must align with HTF bias direction.
-    REQUIRE_HTF_LTF_ALIGNMENT: bool = True
+    REQUIRE_HTF_LTF_ALIGNMENT: bool = False
     # If True, trades in the equilibrium zone (around 50% of range) are blocked.
     ALLOW_EQUILIBRIUM_TRADES: bool = True
     # If True, 4H trend must be defined for HTF bias. If False, 1H alone is enough.

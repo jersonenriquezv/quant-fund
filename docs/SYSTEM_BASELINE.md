@@ -109,7 +109,7 @@
 ```
 Candle confirmed → StrategyService.evaluate()
   ├── HTF bias undefined? → BLOCK (all setups)
-  ├── LTF direction != HTF bias? → BLOCK (REQUIRE_HTF_LTF_ALIGNMENT=True)
+  ├── LTF direction != HTF bias? → ALLOWED (REQUIRE_HTF_LTF_ALIGNMENT=False since 04-13)
   ├── Swing setups (15m only): A → B → F → G
   │     Each: detect pattern → PD check → OB selection → volume confirmation
   │     → structural confluence ≥ 2 (metrics don't count)
@@ -267,6 +267,22 @@ Reference for VPS sizing when migrating from Nitro 5.
 ---
 
 ## 8. Changelog
+
+### 2026-04-13 — Disable HTF-LTF Alignment Requirement
+**What changed:**
+- **`REQUIRE_HTF_LTF_ALIGNMENT=False`**: Setups A/B/F no longer require LTF structure direction (CHoCH/BOS) to match HTF bias. Counter-trend trades allowed.
+
+**Why:** 4 days with zero setup_f detections (Apr 10-13). All 7 pairs showed "BOS bearish != HTF bullish" — the alignment gate blocked 455 evaluations/day (26% of all setup_f evals). Requiring full alignment means the bot never catches trend reversals or bottoms. ML will learn which counter-trend setups work; for now this gate was the #1 configurable blocker.
+
+**Expected impact:** More setup_f detections during trend transitions. Counter-trend setups will fire — expect lower WR initially but more data for ML to filter later.
+
+### 2026-04-13 — Relax BOS Max Age (40 → 60 candles)
+**What changed:**
+- **`SETUP_F_MAX_BOS_AGE_CANDLES=60`** (was 40). BOS up to 15h old (on 15m TF) now qualifies for setup_f.
+
+**Why:** "BOS too old" rejected ~300 evals/day (17% of setup_f). Most rejections clustered at 41-64 candles — just past the old limit. 10h was conservative for 24/7 crypto. 60 candles (15h) captures same-session BOS without accepting day-old stale structure.
+
+**Expected impact:** More setup_f candidates from BOS that formed earlier in the session. ML tracks `candles_since_bos` as a feature — will learn optimal freshness threshold over time.
 
 ### 2026-04-09 — Volume Profile, Structural TPs, 1H/4H OBs for Swing Setups
 **What changed:**
