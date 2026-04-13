@@ -1398,15 +1398,29 @@ class SetupEvaluator:
             if entry <= 0:
                 continue
 
-            # Build SL list for this entry
-            sl_candidates = [ob_wick_sl]
-            if atr is not None and atr > 0:
-                atr_sl_distance = atr * settings.ATR_SL_FLOOR_MULTIPLIER
+            # Determine SL candidates.
+            # ATR floor is enforced as minimum: if OB wick is tighter, widen to ATR.
+            # If the wider SL exceeds MAX_SL_PCT, also try the narrower one as fallback.
+            ob_distance = abs(entry - ob_wick_sl)
+            atr_sl_distance = (atr * settings.ATR_SL_FLOOR_MULTIPLIER
+                               if atr is not None and atr > 0 else 0)
+
+            # Primary SL: wider of OB wick and ATR floor (ATR floor is minimum)
+            primary_distance = max(ob_distance, atr_sl_distance) if atr_sl_distance > 0 else ob_distance
+            if direction == "bullish":
+                primary_sl = entry - primary_distance
+            else:
+                primary_sl = entry + primary_distance
+
+            sl_candidates = [primary_sl]
+
+            # Fallback: if primary exceeds MAX_SL_PCT, try the narrower option
+            if primary_distance / entry > settings.MAX_SL_PCT and atr_sl_distance > 0:
+                fallback_distance = min(ob_distance, atr_sl_distance)
                 if direction == "bullish":
-                    atr_sl = entry - atr_sl_distance
+                    sl_candidates.append(entry - fallback_distance)
                 else:
-                    atr_sl = entry + atr_sl_distance
-                sl_candidates.append(atr_sl)
+                    sl_candidates.append(entry + fallback_distance)
 
             for sl in sl_candidates:
                 candidates_tried += 1
