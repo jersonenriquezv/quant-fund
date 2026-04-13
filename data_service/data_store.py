@@ -993,6 +993,42 @@ class PostgresStore:
         return result
         return []
 
+    def fetch_recent_closed_trades(self, limit: int = 10) -> list[dict]:
+        """Fetch last N closed trades ordered by closed_at DESC."""
+        for attempt in range(2):
+            if not self._ensure_connected():
+                return []
+            try:
+                with self._conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT id, pair, direction, setup_type, entry_price, "
+                        "actual_entry, actual_exit, exit_reason, pnl_usd, pnl_pct, "
+                        "opened_at, closed_at "
+                        "FROM trades WHERE status = 'closed' "
+                        "ORDER BY closed_at DESC NULLS LAST LIMIT %s",
+                        (limit,),
+                    )
+                    rows = cur.fetchall()
+                return [
+                    {
+                        "id": r[0], "pair": r[1], "direction": r[2],
+                        "setup_type": r[3], "entry_price": r[4],
+                        "actual_entry": r[5], "actual_exit": r[6],
+                        "exit_reason": r[7], "pnl_usd": r[8], "pnl_pct": r[9],
+                        "opened_at": r[10], "closed_at": r[11],
+                    }
+                    for r in rows
+                ]
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                logger.warning(f"PostgreSQL fetch recent trades error (attempt {attempt+1}): {e}")
+                self._conn = None
+                if attempt == 1:
+                    return []
+            except psycopg2.Error as e:
+                logger.error(f"PostgreSQL fetch recent trades failed: {e}")
+                return []
+        return []
+
     # --- Trade Rejections ---
 
     def insert_trade_rejection(
