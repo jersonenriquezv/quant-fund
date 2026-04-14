@@ -710,6 +710,17 @@ class PostgresStore:
                     cur.execute(f"ALTER TABLE ml_setups ADD COLUMN IF NOT EXISTS {col_def}")
                 self._apply_migration(cur, 10, "ml_setups: volume profile features")
 
+            if current_version < 13:
+                # RSI + microstructure features (v13)
+                for col_def in [
+                    "rsi_14 DOUBLE PRECISION",
+                    "rsi_zone TEXT",
+                    "rsi_divergence TEXT",
+                    "avg_body_ratio DOUBLE PRECISION",
+                ]:
+                    cur.execute(f"ALTER TABLE ml_setups ADD COLUMN IF NOT EXISTS {col_def}")
+                self._apply_migration(cur, 13, "ml_setups: RSI + microstructure features")
+
         logger.info("PostgreSQL tables verified/created")
 
     # --- Candle Storage ---
@@ -1203,7 +1214,8 @@ class PostgresStore:
                             hour_of_day, atr_pct, daily_vol,
                             risk_capital, risk_open_positions,
                             risk_daily_dd_pct, risk_weekly_dd_pct, risk_trades_today,
-                            has_vp_poc, has_vp_hvn, has_vp_lvn, vp_poc_distance_pct
+                            has_vp_poc, has_vp_hvn, has_vp_lvn, vp_poc_distance_pct,
+                            rsi_14, rsi_zone, rsi_divergence, avg_body_ratio
                         ) VALUES (
                             %s, %s, %s,
                             %s, %s, %s,
@@ -1230,6 +1242,7 @@ class PostgresStore:
                             %s, %s,
                             %s, %s, %s,
                             %s, %s,
+                            %s, %s, %s, %s,
                             %s, %s, %s, %s
                         ) ON CONFLICT (setup_id) DO NOTHING""",
                         (
@@ -1272,6 +1285,8 @@ class PostgresStore:
                             rc.get("risk_trades_today"),
                             features.get("has_vp_poc"), features.get("has_vp_hvn"),
                             features.get("has_vp_lvn"), features.get("vp_poc_distance_pct"),
+                            features.get("rsi_14"), features.get("rsi_zone"),
+                            features.get("rsi_divergence"), features.get("avg_body_ratio"),
                         ),
                     )
                 logger.debug(f"ML: inserted setup {setup_id} ({features.get('pair')} {features.get('setup_type')})")

@@ -3,8 +3,8 @@
 > Source of truth for system state. Updated on every material change.
 > Reflects code reality — if code and doc disagree, fix the doc.
 
-**Last updated:** 2026-04-09
-**ML Feature Version:** 9
+**Last updated:** 2026-04-14
+**ML Feature Version:** 13
 **Bot status:** LIVE (OKX_SANDBOX=false, ~$86 capital)
 
 ---
@@ -259,6 +259,8 @@ Reference for VPS sizing when migrating from Nitro 5.
 | v8 | 03-30+ | confluence_count = structural only (BOS/CHoCH/FVG/OB/sweep/breaker), regime gate, ATR SL floor | **TRAINING READY** |
 | v9 | 04-02+ | geometry cascade (dynamic entry/SL from OB wick + ATR floor candidates), ATR SL absorbed into cascade | **TRAINING READY** |
 | v10 | 04-09+ | volume profile (POC/VAH/VAL/HVN), structural TPs, 1H/4H OBs for swing setups, VP OB quality | **TRAINING READY** |
+| v12 | 04-13+ | C/E/H removed, OI cascade confluence booster, sweep touch_count, CHoCH displacement filter | **TRAINING READY** |
+| v13 | 04-14+ | RSI(14) + RSI zone + RSI divergence, avg_body_ratio (candle decisiveness) | **TRAINING READY** |
 
 **When to bump:** Increment `ML_FEATURE_VERSION` whenever strategy params change in ways that alter feature semantics (OB scoring weights, PD rules, confluence logic, threshold changes).
 

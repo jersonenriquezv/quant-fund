@@ -851,7 +851,7 @@ class Settings:
     # ========================
     # Feature version — increment when strategy params change in ways that
     # alter feature semantics (e.g. changing OB scoring weights, PD rules).
-    ML_FEATURE_VERSION: int = 12  # v12: C/E/H removed, OI cascade booster, sweep touch_count, CHoCH displacement filter
+    ML_FEATURE_VERSION: int = 13  # v13: RSI(14) + divergence + zone, avg_body_ratio
 
     # ========================
     # LIQUIDATION HEATMAP
