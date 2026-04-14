@@ -9,6 +9,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY dashboard/__init__.py ./dashboard/__init__.py
 COPY dashboard/api/ ./dashboard/api/
 
+# Copy config (settings.py needed for API key auth, CORS config)
+COPY config/__init__.py ./config/__init__.py
+COPY config/settings.py ./config/settings.py
+
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" || exit 1
 
