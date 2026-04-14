@@ -32,6 +32,7 @@ from execution_service.shadow_monitor import ShadowMonitor
 from shared.notifier import TelegramNotifier
 from shared.alert_manager import AlertManager
 from data_service.liquidation_estimator import estimate_liquidation_levels
+from telegram_bot import TelegramInteractiveBot
 
 logger = setup_logger("main")
 
@@ -1142,6 +1143,27 @@ async def main() -> None:
     elif settings.HTF_CAMPAIGN_ENABLED:
         logger.warning("HTF campaigns enabled but execution disabled (no OKX key)")
 
+    # Start interactive Telegram bot (inline keyboard menus)
+    _interactive_bot = None
+    if settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID:
+        try:
+            _interactive_bot = TelegramInteractiveBot(
+                token=settings.TELEGRAM_BOT_TOKEN,
+                allowed_chat_ids={int(settings.TELEGRAM_CHAT_ID)},
+                data_service=_data_service,
+                strategy_service=_strategy_service,
+                risk_service=_risk_service,
+                execution_service=_execution_service,
+                shadow_monitor=_shadow_monitor,
+                bot_start_time=time.time(),
+                get_last_setup_time=lambda: _last_setup_detected_time,
+            )
+            await _interactive_bot.start()
+            logger.info("Telegram interactive bot started")
+        except Exception as e:
+            logger.warning(f"Telegram interactive bot failed to start: {e}")
+            _interactive_bot = None
+
     # Handle graceful shutdown
     shutdown_event = asyncio.Event()
 
@@ -1170,6 +1192,8 @@ async def main() -> None:
 
     # Graceful shutdown
     logger.info("Shutting down...")
+    if _interactive_bot is not None:
+        await _interactive_bot.stop()
     if _campaign_monitor is not None:
         await _campaign_monitor.stop()
     if _execution_service is not None:

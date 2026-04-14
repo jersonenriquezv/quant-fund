@@ -81,6 +81,7 @@ def _make_sweep(
     direction="bullish",
     volume_ratio=2.5,
     had_oi_flush=True,
+    swept_level_touch_count=4,
 ) -> LiquiditySweep:
     return LiquiditySweep(
         timestamp=9000,
@@ -92,6 +93,7 @@ def _make_sweep(
         close_price=96.0 if direction == "bullish" else 104.0,
         volume_ratio=volume_ratio,
         had_oi_flush=had_oi_flush,
+        swept_level_touch_count=swept_level_touch_count,
     )
 
 
@@ -725,6 +727,136 @@ class TestBidirectionalTrading:
 
 
 # ============================================================
+# Setup A quality filters (sweep significance + CHoCH displacement)
+# ============================================================
+
+class TestSetupAQualityFilters:
+    """Test sweep significance and CHoCH displacement filters added 2026-04-13."""
+
+    def test_sweep_insignificant_rejected(self):
+        """Sweep of 2-touch level (< 3 min) → rejected."""
+        evaluator = SetupEvaluator()
+        state = _make_structure_state(
+            trend="bullish", break_type="choch", break_direction="bullish",
+        )
+        obs = [_make_ob(direction="bullish", entry_price=101.0)]
+        sweeps = [_make_sweep(direction="bullish", swept_level_touch_count=2)]
+        pd = _make_pd_zone("discount")
+        snapshot = make_market_snapshot(
+            cvd_15m=100.0,
+            oi_flushes=[
+                OIFlushEvent(
+                    timestamp=9000, pair="BTC/USDT", side="long",
+                    size_usd=50000, price=94.5, source="oi_proxy",
+                ),
+            ],
+        )
+        candles = _make_candles_near_ob(101.0)
+
+        setup = evaluator.evaluate_setup_a(
+            structure_state=state, active_obs=obs,
+            recent_sweeps=sweeps, pd_zone=pd,
+            market_snapshot=snapshot, candles=candles,
+            pair="BTC/USDT", htf_bias="bullish",
+            liquidity_levels=[],
+        )
+        assert setup is None
+
+    def test_sweep_significant_passes(self):
+        """Sweep of 4-touch level (>= 3 min) → passes."""
+        evaluator = SetupEvaluator()
+        state = _make_structure_state(
+            trend="bullish", break_type="choch", break_direction="bullish",
+        )
+        obs = [_make_ob(direction="bullish", entry_price=101.0)]
+        sweeps = [_make_sweep(direction="bullish", swept_level_touch_count=4)]
+        pd = _make_pd_zone("discount")
+        snapshot = make_market_snapshot(
+            cvd_15m=100.0,
+            oi_flushes=[
+                OIFlushEvent(
+                    timestamp=9000, pair="BTC/USDT", side="long",
+                    size_usd=50000, price=94.5, source="oi_proxy",
+                ),
+            ],
+        )
+        candles = _make_candles_near_ob(101.0)
+
+        setup = evaluator.evaluate_setup_a(
+            structure_state=state, active_obs=obs,
+            recent_sweeps=sweeps, pd_zone=pd,
+            market_snapshot=snapshot, candles=candles,
+            pair="BTC/USDT", htf_bias="bullish",
+            liquidity_levels=[],
+        )
+        assert setup is not None
+        assert any("sweep_touch_count_4" in c for c in setup.confluences)
+
+    def test_choch_displacement_too_small(self):
+        """CHoCH with micro displacement (0.05%) → rejected."""
+        evaluator = SetupEvaluator()
+        # CHoCH: break_price=100.05, broken_level=100.0 → 0.05% < 0.2%
+        brk = StructureBreak(
+            timestamp=10000, break_type="choch", direction="bullish",
+            break_price=100.05, broken_level=100.0, candle_index=10,
+        )
+        state = MarketStructureState(
+            pair="BTC/USDT", timeframe="15m", trend="bullish",
+            swing_highs=[], swing_lows=[],
+            structure_breaks=[brk], latest_break=brk,
+        )
+        obs = [_make_ob(direction="bullish", entry_price=101.0)]
+        sweeps = [_make_sweep(direction="bullish")]
+        pd = _make_pd_zone("discount")
+        candles = _make_candles_near_ob(101.0)
+
+        setup = evaluator.evaluate_setup_a(
+            structure_state=state, active_obs=obs,
+            recent_sweeps=sweeps, pd_zone=pd,
+            market_snapshot=None, candles=candles,
+            pair="BTC/USDT", htf_bias="bullish",
+            liquidity_levels=[],
+        )
+        assert setup is None
+
+    def test_choch_displacement_sufficient(self):
+        """CHoCH with 0.3% displacement → passes."""
+        evaluator = SetupEvaluator()
+        # break_price=100.3, broken_level=100.0 → 0.3% > 0.2%
+        brk = StructureBreak(
+            timestamp=10000, break_type="choch", direction="bullish",
+            break_price=100.3, broken_level=100.0, candle_index=10,
+        )
+        state = MarketStructureState(
+            pair="BTC/USDT", timeframe="15m", trend="bullish",
+            swing_highs=[], swing_lows=[],
+            structure_breaks=[brk], latest_break=brk,
+        )
+        obs = [_make_ob(direction="bullish", entry_price=101.0)]
+        sweeps = [_make_sweep(direction="bullish")]
+        pd = _make_pd_zone("discount")
+        snapshot = make_market_snapshot(
+            cvd_15m=100.0,
+            oi_flushes=[
+                OIFlushEvent(
+                    timestamp=9000, pair="BTC/USDT", side="long",
+                    size_usd=50000, price=94.5, source="oi_proxy",
+                ),
+            ],
+        )
+        candles = _make_candles_near_ob(101.0)
+
+        setup = evaluator.evaluate_setup_a(
+            structure_state=state, active_obs=obs,
+            recent_sweeps=sweeps, pd_zone=pd,
+            market_snapshot=snapshot, candles=candles,
+            pair="BTC/USDT", htf_bias="bullish",
+            liquidity_levels=[],
+        )
+        assert setup is not None
+
+
+# ============================================================
 # Temporal ordering tests (Setup A)
 # ============================================================
 
@@ -751,6 +883,7 @@ class TestTemporalOrdering:
             timestamp=9000, pair="BTC/USDT", timeframe="15m",
             direction="bullish", swept_level=95.0, wick_price=94.0,
             close_price=96.0, volume_ratio=2.5, had_oi_flush=True,
+            swept_level_touch_count=4,
         )
 
         obs = [_make_ob(direction="bullish", entry_price=101.0)]
@@ -786,6 +919,7 @@ class TestTemporalOrdering:
             timestamp=8000, pair="BTC/USDT", timeframe="15m",
             direction="bullish", swept_level=95.0, wick_price=94.0,
             close_price=96.0, volume_ratio=2.5, had_oi_flush=True,
+            swept_level_touch_count=4,
         )
 
         obs = [_make_ob(direction="bullish", entry_price=101.0)]

@@ -243,7 +243,7 @@ Reference for VPS sizing when migrating from Nitro 5.
 
 ## 7. ML Feature Versioning
 
-**Current version:** 10 (set in `config/settings.py:ML_FEATURE_VERSION`)
+**Current version:** 12 (set in `config/settings.py:ML_FEATURE_VERSION`)
 **Storage:** `ml_setups.feature_version` column in PostgreSQL
 **Query training data:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL AND outcome_type NOT IN ('shadow_dedup', 'data_blocked', 'shadow_risk_rejected', 'risk_rejected', 'regime_extreme_fear')`
 
@@ -267,6 +267,18 @@ Reference for VPS sizing when migrating from Nitro 5.
 ---
 
 ## 8. Changelog
+
+### 2026-04-13 — Institutional Strategy Overhaul: Remove Retail Setups, Harden Setup A
+**What changed:**
+- **Setup H REMOVED**: 0/13 WR, 27 trades at 11% WR, PF 0.10. Entry at market during impulse = adverse selection (AFML Ch.5). Tombstoned in code — `evaluate_setup_h()` returns None.
+- **Setup C REMOVED**: 0 resolved trades. No OB anchor (market order + fixed 0.5% SL). Funding extreme signal already flows as confluence via `_check_volume_confirmation()`.
+- **Setup E REMOVED**: 0W/1L. No OB anchor when no OB found. OI cascade signal migrated to `_check_volume_confirmation()` as `oi_cascade_long_liq_support` / `oi_cascade_short_liq_support` confluence booster.
+- **Setup A HARDENED**: (1) Sweep significance filter: `SETUP_A_MIN_SWEEP_TOUCH_COUNT=3` — sweeps of 2-touch levels (noise) rejected. (2) CHoCH displacement filter: `SETUP_A_MIN_CHOCH_DISPLACEMENT_PCT=0.002` (0.2%) — micro-CHoCH on 15m rejected.
+- **ML_FEATURE_VERSION → 12**: New confluence strings (`oi_cascade_*_liq_support`, `sweep_touch_count_N`), `LiquiditySweep.swept_level_touch_count` field.
+
+**Why:** Audit showed only Setup F has institutional backing + positive WR. Setups C/E/H entered at market price with no OB anchor — retail behavior. Setup A had correct concept (sweep+CHoCH+OB) but 8.7% WR due to sweeps of insignificant levels and micro-CHoCH noise. Golden rule enforced: **no Order Block = no trade**.
+
+**Expected impact:** Fewer but higher-quality setups. Setup A will produce fewer but more meaningful detections (significant sweeps + real CHoCH). OI cascade and funding signals now boost confidence of OB-anchored setups instead of firing standalone trades.
 
 ### 2026-04-13 — Disable HTF-LTF Alignment Requirement
 **What changed:**

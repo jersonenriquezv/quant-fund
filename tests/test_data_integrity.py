@@ -7,6 +7,7 @@ import time
 
 import pytest
 
+from config.settings import QUICK_SETUP_TYPES
 from data_service.data_integrity import (
     DataServiceState,
     CVDState,
@@ -116,12 +117,9 @@ class TestCanTradeSetup:
         )
         assert allowed is True
 
-    def test_setup_h_only_needs_candles(self):
-        health = _make_health(missing=("funding", "oi", "cvd"))
-        allowed, reason = can_trade_setup(
-            "setup_h", health, DataServiceState.RUNNING, CVDState.INVALID,
-        )
-        assert allowed is True
+    def test_setup_h_removed_from_pipeline(self):
+        """Setup H removed 2026-04-13 — no longer in QUICK_SETUP_TYPES."""
+        assert "setup_h" not in QUICK_SETUP_TYPES
 
     def test_unknown_setup_defaults_to_candles_only(self):
         allowed, reason = can_trade_setup(
@@ -650,7 +648,7 @@ class TestStateTransitions:
     def test_gating_allows_candle_only_during_running(self):
         """Candle-only setups (A/B/D/F/H) can trade during RUNNING even with stale non-deps."""
         health = _make_health(stale=("funding", "oi", "cvd"), missing=("whales",))
-        candle_only = ["setup_a", "setup_b", "setup_d_choch", "setup_d_bos", "setup_f", "setup_h"]
+        candle_only = ["setup_a", "setup_b", "setup_d_choch", "setup_d_bos", "setup_f"]
         for setup_type in candle_only:
             allowed, reason = can_trade_setup(
                 setup_type, health, DataServiceState.RUNNING, CVDState.INVALID,
