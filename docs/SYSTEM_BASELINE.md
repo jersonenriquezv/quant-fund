@@ -48,7 +48,7 @@
 | ATR_SL_FLOOR_MULTIPLIER | 4.5 | SL widened to 4.5× ATR(14) if structural SL is tighter |
 | MAX_SL_PCT | 4% | SL-too-far cap — rejects setups with OB SL > 4% |
 | REGIME_EXTREME_FEAR_GATE | 10 | F&G < 10 → reject ALL live setups (systemic crisis only) |
-| SHADOW_FEAR_LONG_GATE | 25 | F&G < 25 → reject longs in shadow (94% loss rate in data) |
+| ~~SHADOW_FEAR_LONG_GATE~~ | removed | F&G kept as ML feature, not used as gate. SMC follows institutional flow; fear = accumulation opportunity |
 | SHADOW_MIN_HOUR_UTC | 11 | Skip shadow setups before 11 UTC (0% WR across 23 trades) |
 | MAX_PORTFOLIO_HEAT_PCT | 6% | Sum of (size × SL_distance) across all positions |
 | MAX_SLIPPAGE_PCT | 0.3% | emergency close if exceeded |
@@ -109,7 +109,7 @@
 ```
 Candle confirmed → StrategyService.evaluate()
   ├── HTF bias undefined? → BLOCK (all setups)
-  ├── LTF direction != HTF bias? → BLOCK (REQUIRE_HTF_LTF_ALIGNMENT=True)
+  ├── LTF direction != HTF bias? → ALLOWED (REQUIRE_HTF_LTF_ALIGNMENT=False since 04-13)
   ├── Swing setups (15m only): A → B → F → G
   │     Each: detect pattern → PD check → OB selection → volume confirmation
   │     → structural confluence ≥ 2 (metrics don't count)
@@ -243,7 +243,7 @@ Reference for VPS sizing when migrating from Nitro 5.
 
 ## 7. ML Feature Versioning
 
-**Current version:** 10 (set in `config/settings.py:ML_FEATURE_VERSION`)
+**Current version:** 12 (set in `config/settings.py:ML_FEATURE_VERSION`)
 **Storage:** `ml_setups.feature_version` column in PostgreSQL
 **Query training data:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL AND outcome_type NOT IN ('shadow_dedup', 'data_blocked', 'shadow_risk_rejected', 'risk_rejected', 'regime_extreme_fear')`
 
@@ -267,6 +267,34 @@ Reference for VPS sizing when migrating from Nitro 5.
 ---
 
 ## 8. Changelog
+
+### 2026-04-13 — Institutional Strategy Overhaul: Remove Retail Setups, Harden Setup A
+**What changed:**
+- **Setup H REMOVED**: 0/13 WR, 27 trades at 11% WR, PF 0.10. Entry at market during impulse = adverse selection (AFML Ch.5). Tombstoned in code — `evaluate_setup_h()` returns None.
+- **Setup C REMOVED**: 0 resolved trades. No OB anchor (market order + fixed 0.5% SL). Funding extreme signal already flows as confluence via `_check_volume_confirmation()`.
+- **Setup E REMOVED**: 0W/1L. No OB anchor when no OB found. OI cascade signal migrated to `_check_volume_confirmation()` as `oi_cascade_long_liq_support` / `oi_cascade_short_liq_support` confluence booster.
+- **Setup A HARDENED**: (1) Sweep significance filter: `SETUP_A_MIN_SWEEP_TOUCH_COUNT=3` — sweeps of 2-touch levels (noise) rejected. (2) CHoCH displacement filter: `SETUP_A_MIN_CHOCH_DISPLACEMENT_PCT=0.002` (0.2%) — micro-CHoCH on 15m rejected.
+- **ML_FEATURE_VERSION → 12**: New confluence strings (`oi_cascade_*_liq_support`, `sweep_touch_count_N`), `LiquiditySweep.swept_level_touch_count` field.
+
+**Why:** Audit showed only Setup F has institutional backing + positive WR. Setups C/E/H entered at market price with no OB anchor — retail behavior. Setup A had correct concept (sweep+CHoCH+OB) but 8.7% WR due to sweeps of insignificant levels and micro-CHoCH noise. Golden rule enforced: **no Order Block = no trade**.
+
+**Expected impact:** Fewer but higher-quality setups. Setup A will produce fewer but more meaningful detections (significant sweeps + real CHoCH). OI cascade and funding signals now boost confidence of OB-anchored setups instead of firing standalone trades.
+
+### 2026-04-13 — Disable HTF-LTF Alignment Requirement
+**What changed:**
+- **`REQUIRE_HTF_LTF_ALIGNMENT=False`**: Setups A/B/F no longer require LTF structure direction (CHoCH/BOS) to match HTF bias. Counter-trend trades allowed.
+
+**Why:** 4 days with zero setup_f detections (Apr 10-13). All 7 pairs showed "BOS bearish != HTF bullish" — the alignment gate blocked 455 evaluations/day (26% of all setup_f evals). Requiring full alignment means the bot never catches trend reversals or bottoms. ML will learn which counter-trend setups work; for now this gate was the #1 configurable blocker.
+
+**Expected impact:** More setup_f detections during trend transitions. Counter-trend setups will fire — expect lower WR initially but more data for ML to filter later.
+
+### 2026-04-13 — Relax BOS Max Age (40 → 60 candles)
+**What changed:**
+- **`SETUP_F_MAX_BOS_AGE_CANDLES=60`** (was 40). BOS up to 15h old (on 15m TF) now qualifies for setup_f.
+
+**Why:** "BOS too old" rejected ~300 evals/day (17% of setup_f). Most rejections clustered at 41-64 candles — just past the old limit. 10h was conservative for 24/7 crypto. 60 candles (15h) captures same-session BOS without accepting day-old stale structure.
+
+**Expected impact:** More setup_f candidates from BOS that formed earlier in the session. ML tracks `candles_since_bos` as a feature — will learn optimal freshness threshold over time.
 
 ### 2026-04-09 — Volume Profile, Structural TPs, 1H/4H OBs for Swing Setups
 **What changed:**
@@ -301,6 +329,15 @@ Reference for VPS sizing when migrating from Nitro 5.
 **Why:** Shadow audit revealed 91% SL rate across all shadow setups. Root causes: SL distances (avg 0.76%) within 15m candle noise, counter-trend setup_a trades, and structurally flawed setup_g/h signals.
 
 **Expected impact:** Fewer but higher-quality shadow detections. Setup A should see wider SLs (~1.35% floor) and only continuation trades. Monitor for 1-2 weeks to validate improvement.
+
+### 2026-04-13 — Remove Fear-Long Gate from Shadow
+**What changed:**
+- Removed `SHADOW_FEAR_LONG_GATE` (was 25). F&G score remains as ML feature (`fear_greed_score` in ml_setups), no longer used as a gate.
+- `SHADOW_MIN_HOUR_UTC=11` kept (0% WR data still valid).
+
+**Why:** F&G < 25 was blocking 100% of shadow longs during sustained fear (Apr 9-13, F&G 14-16), producing zero shadow data for 4 days. More fundamentally: SMC follows institutional order flow — institutions accumulate during retail fear. Filtering longs in fear contradicts the system's thesis. The ML model will learn when fear matters with more nuance than a binary gate.
+
+**Expected impact:** Shadow pipeline resumes collecting data in fear conditions. ML training data grows faster and includes fear-regime examples for the model to learn from.
 
 ### 2026-04-06 — Shadow Quality Filters (Feature Importance Analysis)
 **What changed:**

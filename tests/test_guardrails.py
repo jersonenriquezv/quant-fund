@@ -152,7 +152,7 @@ class TestDrawdown:
         assert passed is False
 
     def test_daily_dd_above_limit(self, g):
-        passed, _ = g.check_daily_drawdown(0.05)
+        passed, _ = g.check_daily_drawdown(settings.MAX_DAILY_DRAWDOWN + 0.01)
         assert passed is False
 
     def test_daily_dd_zero(self, g):

@@ -5,6 +5,7 @@ import json
 from fastapi import APIRouter, HTTPException
 
 from dashboard.api import database as db
+from dashboard.api.auth import validate_pair
 from dashboard.api.models import MarketData
 
 router = APIRouter()
@@ -12,6 +13,7 @@ router = APIRouter()
 
 @router.get("/market/{pair:path}", response_model=MarketData)
 async def get_market(pair: str):
+    validate_pair(pair)
     if not db.redis_client:
         raise HTTPException(503, "Redis unavailable")
 

@@ -14,7 +14,7 @@ Tests what the strategy audit (2026-03-18) identified as gaps:
 import time
 import pytest
 
-from config.settings import settings
+from config.settings import settings, QUICK_SETUP_TYPES
 from shared.models import (
     Candle, MarketSnapshot, FundingRate, OpenInterest,
     CVDSnapshot, OIFlushEvent,
@@ -107,6 +107,7 @@ def _make_sweep(
     direction="bullish",
     volume_ratio=2.5,
     had_oi_flush=True,
+    swept_level_touch_count=4,
 ) -> LiquiditySweep:
     return LiquiditySweep(
         timestamp=9000,
@@ -118,6 +119,7 @@ def _make_sweep(
         close_price=96.0 if direction == "bullish" else 104.0,
         volume_ratio=volume_ratio,
         had_oi_flush=had_oi_flush,
+        swept_level_touch_count=swept_level_touch_count,
     )
 
 
@@ -468,9 +470,10 @@ class TestEnabledSetups:
         """Setup F should remain enabled (strictly better than B)."""
         assert "setup_f" in settings.ENABLED_SETUPS
 
-    def test_setup_h_disabled(self):
-        """Setup H disabled (03-19): 27 trades, 11% WR, PF 0.10. Adverse selection at impulse top."""
+    def test_setup_h_removed(self):
+        """Setup H removed (04-13): 0/13 WR. Retail momentum chase — adverse selection."""
         assert "setup_h" not in settings.ENABLED_SETUPS
+        assert "setup_h" not in QUICK_SETUP_TYPES
 
     def test_disabled_setup_detected_but_discarded(self):
         """StrategyService.evaluate() discards setups not in ENABLED_SETUPS."""
@@ -905,53 +908,25 @@ class TestConfluenceCounting:
 # ============================================================
 
 class TestQuickSetupSignals:
-    """Quick setup signal validation — C, D, H."""
+    """Quick setup signal validation — C/E/H removed 2026-04-13."""
 
-    def test_setup_c_requires_extreme_funding(self):
-        """Setup C needs funding < -0.0003 (long) or > +0.0003 (short)."""
+    def test_setup_c_removed(self):
+        """Setup C removed — always returns None."""
         qe = QuickSetupEvaluator()
-        # Normal funding: should NOT trigger
-        snapshot_normal = _make_snapshot(
-            funding_rate=-0.0001,
-            buy_volume=600.0, sell_volume=400.0,
-        )
+        snapshot = _make_snapshot(funding_rate=-0.0005, buy_volume=600.0, sell_volume=400.0)
         candles = _make_candles(101.0, count=20, timeframe="5m")
-        result = qe.evaluate_setup_c(
-            "BTC/USDT", "bullish", snapshot_normal, 101.0, candles,
-        )
+        result = qe.evaluate_setup_c("BTC/USDT", "bullish", snapshot, 101.0, candles)
         assert result is None
 
-    def test_setup_c_fires_on_extreme_funding(self):
-        """Setup C fires when funding is extreme + CVD aligned."""
-        qe = QuickSetupEvaluator()
-        snapshot = _make_snapshot(
-            funding_rate=-0.0005,
-            buy_volume=600.0, sell_volume=400.0,
-        )
-        candles = _make_candles(101.0, count=20, timeframe="5m")
-        result = qe.evaluate_setup_c(
-            "BTC/USDT", "bullish", snapshot, 101.0, candles,
-        )
-        assert result is not None
-        assert result.setup_type == "setup_c"
-        assert "funding_extreme" in result.confluences[0]
-
-    def test_setup_h_rejects_random_walk(self):
-        """Setup H: 60% directional candles is close to random — verify it filters."""
+    def test_setup_h_removed(self):
+        """Setup H removed — always returns None."""
         qe = QuickSetupEvaluator()
         state = _make_state(break_type="bos", break_direction="bullish", timeframe="5m")
-        # 3 bullish + 2 bearish = 60% exactly
-        candles = []
-        base = 100.0
-        for i in range(25):
-            candles.append(make_candle(
-                open=base, close=base + 0.01, high=base + 0.02, low=base - 0.01,
-                volume=10.0, timestamp=i * 300_000, timeframe="5m",
-            ))
-
-        # Make impulse window essentially flat (low vol, no move)
+        candles = [make_candle(
+            open=100.0, close=100.01, high=100.02, low=99.99,
+            volume=10.0, timestamp=i * 300_000, timeframe="5m",
+        ) for i in range(25)]
         result = qe.evaluate_setup_h("BTC/USDT", "bullish", state, candles)
-        # Should be rejected for insufficient move or volume
         assert result is None
 
 

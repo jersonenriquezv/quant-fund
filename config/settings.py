@@ -58,6 +58,17 @@ class Settings:
     REDIS_PASSWORD: str = os.getenv("REDIS_PASSWORD", "")
 
     # ========================
+    # DASHBOARD
+    # ========================
+    DASHBOARD_API_KEY: str = os.getenv("DASHBOARD_API_KEY", "")
+    DASHBOARD_CORS_ORIGINS: list = field(default_factory=lambda: [
+        o.strip() for o in os.getenv(
+            "DASHBOARD_CORS_ORIGINS",
+            "http://localhost:3000,http://127.0.0.1:3000,http://100.120.181.11:3000,http://192.168.1.236:3000"
+        ).split(",") if o.strip()
+    ])
+
+    # ========================
     # PARES DE TRADING
     # ========================
     # Pares activos. El bot solo opera estos.
@@ -254,9 +265,11 @@ class Settings:
     # D_bos: 20-33% WR backtests, 0% live. B: 0-7.7% WR. Bleeding capital.
     # Setup B disabled (audit 03-18): 0-7.7% WR, F is strictly better (F = B minus weak FVG gate)
     ENABLED_SETUPS: list = field(default_factory=lambda: [
-        "setup_a", "setup_c", "setup_d_choch", "setup_e", "setup_f",
-        # setup_h disabled (2026-03-19): 27 trades, 11% WR, PF 0.10.
-        # Entry at impulse completion = adverse selection. Code kept for recalibration.
+        "setup_a", "setup_d_choch", "setup_f",
+        # setup_c removed 2026-04-13: 0 resolved trades. No OB anchor (market order + fixed % SL).
+        # setup_e removed 2026-04-13: 0W/1L. No OB anchor. Both signals now flow as
+        # confluence boosters in _check_volume_confirmation() for OB-anchored setups.
+        # setup_h removed 2026-04-13: 0/13 WR, retail momentum chase.
     ])
 
     # Setup A entry depth — fraction of OB body for entry placement.
@@ -274,6 +287,16 @@ class Settings:
     # Changed both→continuation on 2026-04-02: shadow showed 17/17 SL on counter-trend.
     # Only trade WITH the HTF bias, not against it.
     SETUP_A_MODE: str = os.getenv("SETUP_A_MODE", "continuation")
+
+    # --- Setup A quality filters ---
+    # Minimum touch count of swept liquidity level (institutional significance).
+    # 2 touches = minimum for a level to exist. 3+ = real liquidity pool.
+    SETUP_A_MIN_SWEEP_TOUCH_COUNT: int = int(os.getenv("SETUP_A_MIN_SWEEP_TOUCH_COUNT", "3"))
+    # Minimum CHoCH displacement beyond broken level (fraction of price).
+    # Mirrors SETUP_F_MIN_BOS_DISPLACEMENT_PCT. Rejects micro-CHoCH noise on 15m.
+    SETUP_A_MIN_CHOCH_DISPLACEMENT_PCT: float = float(
+        os.getenv("SETUP_A_MIN_CHOCH_DISPLACEMENT_PCT", "0.002")
+    )
 
     # --- Setup A temporal ---
     # Max candles between sweep and CHoCH for Setup A validity.
@@ -307,7 +330,7 @@ class Settings:
     # SETUP F HARDENING — Pure OB Retest quality filters
     # ========================
     # Max candles since BOS to be considered fresh (20 = ~5h on 15m).
-    SETUP_F_MAX_BOS_AGE_CANDLES: int = 40
+    SETUP_F_MAX_BOS_AGE_CANDLES: int = 60
     # Max candle gap between OB and BOS (OB must form near the BOS impulse).
     SETUP_F_MAX_OB_BOS_GAP_CANDLES: int = 20
     # Minimum BOS displacement beyond broken level (0.2% = reject micro-breaks).
@@ -331,18 +354,14 @@ class Settings:
     CASCADE_CVD_REVERSAL_SHORT: float = 0.50      # Buy dominance < 50% after short cascade
     CASCADE_MAX_AGE_SECONDS: int = 900            # 15 min — cascade must be recent
 
-    # Setup H — Momentum/Impulse Entry
-    # Detects volume-driven impulse moves and enters at market price.
-    # SL at the initiating OB (structural SL), not a tight pip-based SL.
-    SETUP_H_MIN_IMPULSE_CANDLES: int = 5          # Min candles to analyze for impulse
-    SETUP_H_MIN_DIRECTIONAL_PCT: float = 0.60     # 60% of candles must be same direction
-    SETUP_H_MIN_IMPULSE_PCT: float = 0.003        # 0.3% minimum total move
-    SETUP_H_VOLUME_SPIKE_RATIO: float = 1.5       # 1.5x average volume
-    SETUP_H_MAX_SL_PCT: float = 0.03              # 3% max SL distance cap
-    # Exhaustion filters — reject momentum trades when impulse is fading
-    SETUP_H_DECEL_RATIO: float = 0.4              # Reject if avg body of last 2 < 40% of first 3
-    SETUP_H_MAX_EXTENDED_PCT: float = 0.015        # Reject if total move already > 1.5%
-    SETUP_H_VOL_DECAY_RATIO: float = 0.5           # Reject if avg volume of last 2 < 50% of first 3
+    # SETUP H REMOVED (2026-04-13): 0/13 live WR, 27 trades at 11% WR, PF 0.10.
+    # Entry at market during impulse = adverse selection (AFML Ch.5).
+    # This is what institutions profit FROM — retail chasing momentum.
+    # Code tombstoned in quick_setups.py. Settings preserved as comments for reference:
+    # SETUP_H_MIN_IMPULSE_CANDLES=5, SETUP_H_MIN_DIRECTIONAL_PCT=0.60,
+    # SETUP_H_MIN_IMPULSE_PCT=0.003, SETUP_H_VOLUME_SPIKE_RATIO=1.5,
+    # SETUP_H_MAX_SL_PCT=0.03, SETUP_H_DECEL_RATIO=0.4,
+    # SETUP_H_MAX_EXTENDED_PCT=0.015, SETUP_H_VOL_DECAY_RATIO=0.5
 
     # --- Expectancy filters (post-detection, pre-AI) ---
     # Minimum ATR(14) as fraction of price. Rejects low-volatility setups.
@@ -356,7 +375,7 @@ class Settings:
 
     # --- Strategy behavior (profile-controlled) ---
     # If True, LTF structure (CHoCH/BOS) must align with HTF bias direction.
-    REQUIRE_HTF_LTF_ALIGNMENT: bool = True
+    REQUIRE_HTF_LTF_ALIGNMENT: bool = False
     # If True, trades in the equilibrium zone (around 50% of range) are blocked.
     ALLOW_EQUILIBRIUM_TRADES: bool = True
     # If True, 4H trend must be defined for HTF bias. If False, 1H alone is enough.
@@ -406,13 +425,13 @@ class Settings:
     SETUP_TP2_RR: dict = field(default_factory=lambda: {
         "setup_a": 2.5,        # Reversal post-sweep — strong energy, targeting higher
         "setup_b": 2.0,        # BOS continuation — must meet MIN_RISK_REWARD (2.0)
-        "setup_c": 2.0,        # Extreme funding event — momentum carries
+        # setup_c removed 2026-04-13: no OB anchor, signal is now confluence booster
         "setup_d_choch": 1.5,  # 5m scalp, 4h max — meets MIN_RISK_REWARD_QUICK (1.5)
         "setup_d_bos": 1.5,    # Same as D_choch
-        "setup_e": 2.0,        # Cascade reversal — post-liquidation bounce has energy
+        # setup_e removed 2026-04-13: no OB anchor, signal is now confluence booster
         "setup_f": 2.0,        # Continuation — must meet MIN_RISK_REWARD (2.0)
         "setup_g": 2.0,        # Breaker retest — must meet MIN_RISK_REWARD (2.0)
-        "setup_h": 2.0,        # Momentum — must meet MIN_RISK_REWARD if re-enabled
+        # setup_h removed 2026-04-13: 0/13 WR, retail momentum chase
     })
 
     # ========================
@@ -683,8 +702,8 @@ class Settings:
     REGIME_EXTREME_FEAR_GATE: int = int(os.getenv("REGIME_EXTREME_FEAR_GATE", "10"))
 
     # Shadow quality filters — derived from feature importance analysis (2026-04-06).
-    # In extreme fear, longs lose 94% of the time. Before 11 UTC, 0% WR (23 trades).
-    SHADOW_FEAR_LONG_GATE: int = int(os.getenv("SHADOW_FEAR_LONG_GATE", "25"))   # F&G < 25 → reject longs in shadow
+    # SHADOW_FEAR_LONG_GATE removed — F&G kept as ML feature (fear_greed_score), not as gate.
+    # Rationale: SMC follows institutional flow; institutions accumulate during fear. Let ML learn nuance.
     SHADOW_MIN_HOUR_UTC: int = int(os.getenv("SHADOW_MIN_HOUR_UTC", "11"))       # Skip setups before this hour
 
     # ========================
@@ -814,12 +833,11 @@ class Settings:
     # Feeds ml_setups with labeled outcomes for future feature importance analysis.
     # Setups NOT in this list execute normally through the live pipeline.
     SHADOW_MODE_SETUPS: list = field(default_factory=lambda: [
-        "setup_a", "setup_b", "setup_c", "setup_d_choch", "setup_d_bos",
-        "setup_e",
-        # "setup_g" — removed 2026-04-02: 0/4 WR in shadow. Breaker blocks
-        # (failed OBs) are structurally weak levels. Not worth tracking.
-        # "setup_h" — disabled 2026-03-30: 12/14 aligned-HTF shadow losses,
-        # chases impulse tips without OB retest. Needs pullback redesign.
+        "setup_a", "setup_b", "setup_d_choch", "setup_d_bos",
+        # "setup_c" — removed 2026-04-13: no OB anchor. Signal is now a confluence booster.
+        # "setup_e" — removed 2026-04-13: no OB anchor. Signal is now a confluence booster.
+        # "setup_g" — removed 2026-04-02: 0/4 WR in shadow. Breaker blocks structurally weak.
+        # "setup_h" — removed 2026-04-13: 0/13 WR. Retail momentum chase.
     ])
     # Fictional capital for shadow mode position sizing ($500 USDT).
     # Shadow R:R and position sizes reflect realistic trades you'd take later.
@@ -833,7 +851,7 @@ class Settings:
     # ========================
     # Feature version — increment when strategy params change in ways that
     # alter feature semantics (e.g. changing OB scoring weights, PD rules).
-    ML_FEATURE_VERSION: int = 10  # v10: volume profile (POC/VAH/VAL), structural TPs, 1H/4H OBs for swing setups
+    ML_FEATURE_VERSION: int = 12  # v12: C/E/H removed, OI cascade booster, sweep touch_count, CHoCH displacement filter
 
     # ========================
     # LIQUIDATION HEATMAP
@@ -903,13 +921,13 @@ class Settings:
 
 
 # Quick setup type identifiers (bypass AI + use short entry timeout)
-QUICK_SETUP_TYPES = ("setup_c", "setup_d", "setup_d_bos", "setup_d_choch", "setup_e", "setup_h")
+QUICK_SETUP_TYPES = ("setup_c", "setup_d", "setup_d_bos", "setup_d_choch", "setup_e")
 
 # Setup types that bypass AI filter but keep normal (swing) entry timeout.
 # setup_a: AI v2 approval rate 89.6% = no value added. Bypass until recalibrated.
 # setup_b: AI v1 destroyed it (49% WR → 21.4% WR). Bypass until recalibrated.
 # setup_f: AI bypassed per aggressive validation mode (2026-03-15).
-AI_BYPASS_SETUP_TYPES = ("setup_a", "setup_b", "setup_f", "setup_h")
+AI_BYPASS_SETUP_TYPES = ("setup_a", "setup_b", "setup_f")
 
 
 # Instancia global — importar esta en todo el proyecto

@@ -327,6 +327,12 @@ input[type="date"]::-webkit-calendar-picker-indicator,input[type="time"]::-webki
 
 <script>
 const API='/api';
+// API key for write operations — set via ?key= URL param or localStorage
+const _urlKey=new URLSearchParams(location.search).get('key');
+if(_urlKey){localStorage.setItem('dashboard_api_key',_urlKey);history.replaceState(null,'',location.pathname)}
+const API_KEY=localStorage.getItem('dashboard_api_key')||'';
+function authHeaders(){return API_KEY?{Authorization:'Bearer '+API_KEY}:{}}
+function writeHeaders(){return{'Content-Type':'application/json',...authHeaders()}}
 let dir='long',mtype='linear',lastCalc=null,balances={};
 const LINEAR_PAIRS=['BTC/USDT','ETH/USDT','SOL/USDT','XRP/USDT','DOGE/USDT','LINK/USDT','AVAX/USDT'];
 const INVERSE_PAIRS=['BTC/USD','ETH/USD','SOL/USD','XRP/USD','DOGE/USD','LINK/USD','AVAX/USD'];
@@ -417,12 +423,12 @@ function editBalance(){
     const v=prompt('Balance for '+p+' (in '+coin+'):',balances[p]||'');
     if(v===null)return;
     const n=parseFloat(v);if(isNaN(n)||n<0)return alert('Invalid');
-    fetch(API+'/manual/balances/'+encodeURIComponent(p),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({balance:n})}).then(()=>{balances[p]=n;onPairChange()});
+    fetch(API+'/manual/balances/'+encodeURIComponent(p),{method:'PUT',headers:writeHeaders(),body:JSON.stringify({balance:n})}).then(()=>{balances[p]=n;onPairChange()});
   }else{
     const v=prompt('Balance for '+p+' (USDT):',balances[p]||'');
     if(v===null)return;
     const n=parseFloat(v);if(isNaN(n)||n<0)return alert('Invalid');
-    fetch(API+'/manual/balances/'+encodeURIComponent(p),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({balance:n})}).then(()=>{balances[p]=n;onPairChange()});
+    fetch(API+'/manual/balances/'+encodeURIComponent(p),{method:'PUT',headers:writeHeaders(),body:JSON.stringify({balance:n})}).then(()=>{balances[p]=n;onPairChange()});
   }
 }
 
@@ -431,7 +437,7 @@ async function doCalculate(){
   const body={pair:$('pair').value,direction:dir,balance:parseFloat($('balance').value),risk_percent:parseFloat($('risk-pct').value),entry:parseFloat($('entry').value),stop_loss:parseFloat($('stop-loss').value),leverage:parseInt($('leverage').value),margin_type:mtype};
   const t1=$('tp1').value,t2=$('tp2').value;
   if(t1)body.take_profit_1=parseFloat(t1);if(t2)body.take_profit_2=parseFloat(t2);
-  const res=await fetch(API+'/manual/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const res=await fetch(API+'/manual/calculate',{method:'POST',headers:writeHeaders(),body:JSON.stringify(body)});
   if(!res.ok){const e=await res.json();alert(e.detail||'Error');return}
   lastCalc=await res.json();renderResult(lastCalc);$('save-section').style.display='block';
   // Update size override label and placeholder
@@ -558,10 +564,10 @@ async function saveTrade(){
     tvl_delta_7d:numOrNull('tvl-delta'),
     upcoming_unlock_usd:numOrNull('unlock-usd'),
   };
-  const res=await fetch(API+'/manual/trades',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const res=await fetch(API+'/manual/trades',{method:'POST',headers:writeHeaders(),body:JSON.stringify(body)});
   if(res.ok){
     // If editing, delete the old trade only after new one saved
-    if(editingTradeId){await fetch(API+'/manual/trades/'+editingTradeId,{method:'DELETE'});editingTradeId=null}
+    if(editingTradeId){await fetch(API+'/manual/trades/'+editingTradeId,{method:'DELETE',headers:authHeaders()});editingTradeId=null}
     alert('Trade saved!');$('save-section').style.display='none';$('calc-result').textContent='';lastCalc=null;
   } else{const e=await res.json();alert(e.detail||'Error')}
 }
@@ -699,7 +705,7 @@ async function confirmDtModal(){
     if(d){body[f.key]=new Date(d+'T'+(t||'12:00')+':00').toISOString()}
   });
   if(!Object.keys(body).length){closeDtModal();return}
-  await fetch(API+'/manual/trades/'+dtModalTradeId,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  await fetch(API+'/manual/trades/'+dtModalTradeId,{method:'PATCH',headers:writeHeaders(),body:JSON.stringify(body)});
   closeDtModal();loadTrades();
 }
 
@@ -714,28 +720,28 @@ function activateTrade(id){
       const d=$('dt-'+f.key+'-date').value;const t=$('dt-'+f.key+'-time').value;
       if(d)body[f.key]=new Date(d+'T'+(t||'12:00')+':00').toISOString();
     });
-    await fetch(API+'/manual/trades/'+dtModalTradeId,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    await fetch(API+'/manual/trades/'+dtModalTradeId,{method:'PATCH',headers:writeHeaders(),body:JSON.stringify(body)});
     closeDtModal();loadTrades();confirmDtModal=origConfirm;
   };
 }
 
-async function deleteTrade(id){if(!confirm('Delete?'))return;await fetch(API+'/manual/trades/'+id,{method:'DELETE'});loadTrades()}
+async function deleteTrade(id){if(!confirm('Delete?'))return;await fetch(API+'/manual/trades/'+id,{method:'DELETE',headers:authHeaders()});loadTrades()}
 
 async function doPartial(id,label,price){
   const p=prompt(label+' \u2014 close price:',price||'');if(!p)return;
   const pct=label==='SL'?100:50;
-  const res=await fetch(API+'/manual/trades/'+id+'/partial-close',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({close_price:parseFloat(p),percentage:pct,notes:label+' hit'})});
+  const res=await fetch(API+'/manual/trades/'+id+'/partial-close',{method:'POST',headers:writeHeaders(),body:JSON.stringify({close_price:parseFloat(p),percentage:pct,notes:label+' hit'})});
   if(res.ok){const d=await res.json();if(d.reminder)alert(d.reminder);loadTrades();loadBalances()}
   else{const e=await res.json();alert(e.detail||'Error')}
 }
 
 async function manualExit(id){
   const p=prompt('Exit price:');if(!p)return;const n=prompt('Notes:')||'';
-  await fetch(API+'/manual/trades/'+id+'/partial-close',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({close_price:parseFloat(p),percentage:100,notes:'Manual: '+n})});
+  await fetch(API+'/manual/trades/'+id+'/partial-close',{method:'POST',headers:writeHeaders(),body:JSON.stringify({close_price:parseFloat(p),percentage:100,notes:'Manual: '+n})});
   loadTrades();loadBalances();
 }
 
-async function addNotes(id){const n=prompt('Notes / mistakes:');if(!n)return;await fetch(API+'/manual/trades/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({mistakes:n})});loadTrades()}
+async function addNotes(id){const n=prompt('Notes / mistakes:');if(!n)return;await fetch(API+'/manual/trades/'+id,{method:'PATCH',headers:writeHeaders(),body:JSON.stringify({mistakes:n})});loadTrades()}
 
 // ── Analytics ──
 async function loadAnalytics(){

@@ -32,6 +32,7 @@ from execution_service.shadow_monitor import ShadowMonitor
 from shared.notifier import TelegramNotifier
 from shared.alert_manager import AlertManager
 from data_service.liquidation_estimator import estimate_liquidation_levels
+from telegram_bot import TelegramInteractiveBot
 
 logger = setup_logger("main")
 
@@ -229,17 +230,8 @@ async def on_candle_confirmed(candle: Candle) -> None:
             _setup_dedup_cache[dedup_key] = time.time()
             return
 
-        # Direction filter: in extreme fear, longs lose 94% (2/34). Shorts: 20% (3/15).
-        if snapshot is not None and snapshot.news_sentiment is not None:
-            fg_score = snapshot.news_sentiment.score
-            if fg_score < settings.SHADOW_FEAR_LONG_GATE and setup.direction == "long":
-                logger.info(
-                    f"Shadow fear-long filter: F&G={fg_score} < {settings.SHADOW_FEAR_LONG_GATE} "
-                    f"+ direction=long | {setup.setup_type} {setup.pair}"
-                )
-                _ml_resolve_outcome(setup.setup_id, "shadow_fear_long_filtered")
-                _setup_dedup_cache[dedup_key] = time.time()
-                return
+        # F&G score logged as ML feature (fear_greed_score column in ml_setups).
+        # Previously filtered longs in fear — removed: let ML learn when fear matters.
         # Risk check (dry_run=True + SHADOW_CAPITAL: sizes against $500 virtual account)
         risk_approval = None
         if _risk_service is not None:
@@ -365,7 +357,13 @@ async def on_candle_confirmed(candle: Candle) -> None:
             })
             # Log to trade_rejections table for journal analysis
             _log_trade_rejection(setup, approval.reason or "unknown")
-            # ML: resolve with risk context at rejection time
+            # ML: store risk check result + resolve outcome
+            if _data_service is not None and _data_service.postgres is not None:
+                _data_service.postgres.update_ml_risk_check(
+                    setup.setup_id,
+                    approved=False,
+                    reason=approval.reason,
+                )
             _ml_resolve_outcome(
                 setup.setup_id, "risk_rejected",
                 risk_context=extract_risk_context(_risk_service),
@@ -1145,6 +1143,27 @@ async def main() -> None:
     elif settings.HTF_CAMPAIGN_ENABLED:
         logger.warning("HTF campaigns enabled but execution disabled (no OKX key)")
 
+    # Start interactive Telegram bot (inline keyboard menus)
+    _interactive_bot = None
+    if settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID:
+        try:
+            _interactive_bot = TelegramInteractiveBot(
+                token=settings.TELEGRAM_BOT_TOKEN,
+                allowed_chat_ids={int(settings.TELEGRAM_CHAT_ID)},
+                data_service=_data_service,
+                strategy_service=_strategy_service,
+                risk_service=_risk_service,
+                execution_service=_execution_service,
+                shadow_monitor=_shadow_monitor,
+                bot_start_time=time.time(),
+                get_last_setup_time=lambda: _last_setup_detected_time,
+            )
+            await _interactive_bot.start()
+            logger.info("Telegram interactive bot started")
+        except Exception as e:
+            logger.warning(f"Telegram interactive bot failed to start: {e}")
+            _interactive_bot = None
+
     # Handle graceful shutdown
     shutdown_event = asyncio.Event()
 
@@ -1173,6 +1192,8 @@ async def main() -> None:
 
     # Graceful shutdown
     logger.info("Shutting down...")
+    if _interactive_bot is not None:
+        await _interactive_bot.stop()
     if _campaign_monitor is not None:
         await _campaign_monitor.stop()
     if _execution_service is not None:

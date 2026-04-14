@@ -85,6 +85,18 @@ class SetupEvaluator:
         latest_choch = choch_breaks[-1]
         direction = latest_choch.direction  # "bullish" or "bearish"
 
+        # CHoCH displacement filter — reject micro-CHoCH (15m noise)
+        min_disp = settings.SETUP_A_MIN_CHOCH_DISPLACEMENT_PCT
+        if min_disp > 0 and latest_choch.broken_level > 0:
+            displacement = abs(latest_choch.break_price - latest_choch.broken_level)
+            disp_pct = displacement / latest_choch.broken_level
+            if disp_pct < min_disp:
+                logger.debug(
+                    f"Setup A [{pair}]: CHoCH displacement too small "
+                    f"({disp_pct*100:.3f}% < {min_disp*100:.1f}%)"
+                )
+                return None
+
         # Setup A mode: "continuation", "reversal", or "both".
         # continuation: CHoCH must align with HTF bias (LTF confirms HTF).
         # reversal: CHoCH must oppose HTF bias (counter-trend entry).
@@ -122,6 +134,15 @@ class SetupEvaluator:
         if aligned_sweep is None:
             logger.debug(f"Setup A [{pair}]: no aligned sweep before CHoCH "
                          f"(sweeps={len(recent_sweeps)} dir={direction})")
+            return None
+
+        # Sweep significance filter — institutional liquidity pools have 3+ touches
+        min_touch = settings.SETUP_A_MIN_SWEEP_TOUCH_COUNT
+        if min_touch > 0 and aligned_sweep.swept_level_touch_count < min_touch:
+            logger.debug(
+                f"Setup A [{pair}]: sweep level insignificant "
+                f"(touch_count={aligned_sweep.swept_level_touch_count} < {min_touch})"
+            )
             return None
 
         # PD zone alignment
@@ -163,6 +184,7 @@ class SetupEvaluator:
         # Build confluences list
         confluences = []
         confluences.append(f"liquidity_sweep_{aligned_sweep.direction}")
+        confluences.append(f"sweep_touch_count_{aligned_sweep.swept_level_touch_count}")
         confluences.append(f"choch_{latest_choch.direction}")
         confluences.append(f"order_block_{best_ob.timeframe}")
 
@@ -989,6 +1011,24 @@ class SetupEvaluator:
             if total_liq > 0:
                 confluences.append(f"oi_flush_usd_{total_liq:.0f}")
 
+            # OI cascade confluence booster (migrated from Setup E, 2026-04-13)
+            # After liquidation cascade, OB retest in the same direction = institutional accumulation
+            now_ms = int(time.time() * 1000)
+            max_age_ms = settings.CASCADE_MAX_AGE_SECONDS * 1000
+            recent_flushes = [
+                f for f in market_snapshot.recent_oi_flushes
+                if (now_ms - f.timestamp) <= max_age_ms
+            ]
+            if recent_flushes:
+                long_liq = sum(f.size_usd for f in recent_flushes if f.side == "long")
+                short_liq = sum(f.size_usd for f in recent_flushes if f.side == "short")
+                # Long liquidations + bullish OB = smart money buying the dip
+                if long_liq > short_liq and ob.direction == "bullish":
+                    confluences.append("oi_cascade_long_liq_support")
+                # Short liquidations + bearish OB = smart money selling the rip
+                elif short_liq > long_liq and ob.direction == "bearish":
+                    confluences.append("oi_cascade_short_liq_support")
+
         # CVD divergence check (replaces simple cvd_15m > 0 boolean)
         if market_snapshot and market_snapshot.cvd and candles and len(candles) >= 4:
             cvd = market_snapshot.cvd
@@ -1398,15 +1438,29 @@ class SetupEvaluator:
             if entry <= 0:
                 continue
 
-            # Build SL list for this entry
-            sl_candidates = [ob_wick_sl]
-            if atr is not None and atr > 0:
-                atr_sl_distance = atr * settings.ATR_SL_FLOOR_MULTIPLIER
+            # Determine SL candidates.
+            # ATR floor is enforced as minimum: if OB wick is tighter, widen to ATR.
+            # If the wider SL exceeds MAX_SL_PCT, also try the narrower one as fallback.
+            ob_distance = abs(entry - ob_wick_sl)
+            atr_sl_distance = (atr * settings.ATR_SL_FLOOR_MULTIPLIER
+                               if atr is not None and atr > 0 else 0)
+
+            # Primary SL: wider of OB wick and ATR floor (ATR floor is minimum)
+            primary_distance = max(ob_distance, atr_sl_distance) if atr_sl_distance > 0 else ob_distance
+            if direction == "bullish":
+                primary_sl = entry - primary_distance
+            else:
+                primary_sl = entry + primary_distance
+
+            sl_candidates = [primary_sl]
+
+            # Fallback: if primary exceeds MAX_SL_PCT, try the narrower option
+            if primary_distance / entry > settings.MAX_SL_PCT and atr_sl_distance > 0:
+                fallback_distance = min(ob_distance, atr_sl_distance)
                 if direction == "bullish":
-                    atr_sl = entry - atr_sl_distance
+                    sl_candidates.append(entry - fallback_distance)
                 else:
-                    atr_sl = entry + atr_sl_distance
-                sl_candidates.append(atr_sl)
+                    sl_candidates.append(entry + fallback_distance)
 
             for sl in sl_candidates:
                 candidates_tried += 1

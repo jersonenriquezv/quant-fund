@@ -5,6 +5,12 @@ function getApiBase(): string {
   return process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 }
 
+function getAuthHeaders(): Record<string, string> {
+  const key = process.env.NEXT_PUBLIC_DASHBOARD_API_KEY || "";
+  if (!key) return {};
+  return { Authorization: `Bearer ${key}` };
+}
+
 export async function fetchApi<T>(path: string): Promise<T> {
   const res = await fetch(`${getApiBase()}/api${path}`, { cache: "no-store" });
   if (!res.ok) throw new Error(`API error: ${res.status}`);
@@ -187,7 +193,7 @@ export interface LiqHeatmapData {
 export async function postApi<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${getApiBase()}/api${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...getAuthHeaders() },
     body: JSON.stringify(body),
     cache: "no-store",
   });
@@ -201,7 +207,7 @@ export async function postApi<T>(path: string, body: unknown): Promise<T> {
 export async function patchApi<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${getApiBase()}/api${path}`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...getAuthHeaders() },
     body: JSON.stringify(body),
     cache: "no-store",
   });
@@ -212,7 +218,7 @@ export async function patchApi<T>(path: string, body: unknown): Promise<T> {
 export async function putApi<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${getApiBase()}/api${path}`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...getAuthHeaders() },
     body: JSON.stringify(body),
     cache: "no-store",
   });
@@ -223,6 +229,7 @@ export async function putApi<T>(path: string, body: unknown): Promise<T> {
 export async function deleteApi(path: string): Promise<void> {
   const res = await fetch(`${getApiBase()}/api${path}`, {
     method: "DELETE",
+    headers: { ...getAuthHeaders() },
     cache: "no-store",
   });
   if (!res.ok) throw new Error(`API error: ${res.status}`);

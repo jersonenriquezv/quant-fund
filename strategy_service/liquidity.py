@@ -40,6 +40,7 @@ class LiquiditySweep:
     close_price: float          # Where the candle closed
     volume_ratio: float         # Candle volume / average volume
     had_oi_flush: bool           # True if OI flush event detected
+    swept_level_touch_count: int = 0  # touch_count of the swept level (institutional significance)
 
 
 @dataclass
@@ -322,6 +323,7 @@ class LiquidityAnalyzer:
                                 close_price=candle.close,
                                 volume_ratio=vol_ratio,
                                 had_oi_flush=had_oi_flush,
+                                swept_level_touch_count=level.touch_count,
                             ))
                             break
 
@@ -340,6 +342,7 @@ class LiquidityAnalyzer:
                                 close_price=candle.close,
                                 volume_ratio=vol_ratio,
                                 had_oi_flush=had_oi_flush,
+                                swept_level_touch_count=level.touch_count,
                             ))
                             break
 

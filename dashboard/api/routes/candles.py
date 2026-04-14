@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, Query
 
+from dashboard.api.auth import validate_pair
 from dashboard.api.models import CandleRecord
 from dashboard.api import queries
 
@@ -10,6 +11,7 @@ router = APIRouter()
 
 @router.get("/candles/{pair:path}/{timeframe}", response_model=list[CandleRecord])
 async def get_candles(pair: str, timeframe: str, count: int = Query(100, ge=1, le=500)):
+    validate_pair(pair)
     rows = await queries.get_candles(pair, timeframe, count)
     return [
         CandleRecord(

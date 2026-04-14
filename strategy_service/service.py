@@ -372,21 +372,14 @@ class StrategyService:
         market_snapshot,
         pd_zone,
     ) -> Optional[TradeSetup]:
-        """Try quick setups C → D → E → H in order. Respects per-type cooldown."""
+        """Try quick setups D only. C/E/H removed 2026-04-13. Respects per-type cooldown."""
         if not candles_5m:
             return None
 
-        current_price = candles_5m[-1].close
         now = time.time()
 
-        # Setup C — Funding Squeeze
-        if not self._is_quick_cooldown_active(pair, "setup_c", now):
-            setup = self._quick_setups.evaluate_setup_c(
-                pair, htf_bias, market_snapshot, current_price, candles_5m,
-            )
-            if setup is not None:
-                self._quick_setup_last[(pair, "setup_c")] = now
-                return setup
+        # Setup C removed 2026-04-13: no OB anchor. Signal is now a confluence booster.
+        # Setup E removed 2026-04-13: no OB anchor. Signal is now a confluence booster.
 
         # Setup D — LTF Structure Scalp (5m only)
         if not self._is_quick_cooldown_active(pair, "setup_d", now):
@@ -401,29 +394,7 @@ class StrategyService:
                     self._quick_setup_last[(pair, "setup_d")] = now
                     return setup
 
-        # Setup E — Cascade Reversal
-        if not self._is_quick_cooldown_active(pair, "setup_e", now):
-            active_obs_5m = self._order_blocks.get_active_obs(pair, "5m")
-            setup = self._quick_setups.evaluate_setup_e(
-                pair, htf_bias, market_snapshot, active_obs_5m, candles_5m,
-                current_price,
-            )
-            if setup is not None:
-                self._quick_setup_last[(pair, "setup_e")] = now
-                return setup
-
-        # Setup H — Momentum/Impulse Entry (5m and 15m)
-        if not self._is_quick_cooldown_active(pair, "setup_h", now):
-            for tf, candles in [("5m", candles_5m), ("15m", candles_15m)]:
-                state = self._market_structure.get_state(pair, tf)
-                if state is not None and candles:
-                    setup = self._quick_setups.evaluate_setup_h(
-                        pair, htf_bias, state, candles,
-                        snapshot=market_snapshot,
-                    )
-                    if setup is not None:
-                        self._quick_setup_last[(pair, "setup_h")] = now
-                        return setup
+        # Setup H removed 2026-04-13: 0/13 WR, retail momentum chase.
 
         return None
 

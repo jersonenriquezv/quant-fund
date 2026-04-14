@@ -120,96 +120,14 @@ def _make_structure_state(
 # ================================================================
 
 class TestSetupC:
+    """Setup C removed 2026-04-13 — signal demoted to confluence booster."""
 
-    def test_long_funding_squeeze(self, evaluator):
-        """Negative funding + buy dominance > 55% + bullish HTF → long."""
-        snapshot = _make_snapshot(
-            funding_rate=-0.0005,  # Very negative
-            buy_volume=600, sell_volume=400,  # 60% buy dominance
-        )
+    def test_setup_c_always_returns_none(self, evaluator):
+        """Setup C removed — method returns None unconditionally."""
+        snapshot = _make_snapshot(funding_rate=-0.0005, buy_volume=600, sell_volume=400)
         candles = make_candle_series(base_price=100.0, count=20)
-        result = evaluator.evaluate_setup_c(
-            "BTC/USDT", "bullish", snapshot, 100.0, candles,
-        )
-        assert result is not None
-        assert result.setup_type == "setup_c"
-        assert result.direction == "long"
-        assert result.sl_price < result.entry_price
-        assert result.tp1_price > result.entry_price
-        assert len(result.confluences) >= 2
-
-    def test_short_funding_squeeze(self, evaluator):
-        """Positive funding + sell dominance > 55% + bearish HTF → short."""
-        snapshot = _make_snapshot(
-            funding_rate=0.0005,
-            buy_volume=400, sell_volume=600,  # 40% buy dominance
-        )
-        candles = make_candle_series(base_price=100.0, count=20)
-        result = evaluator.evaluate_setup_c(
-            "ETH/USDT", "bearish", snapshot, 100.0, candles,
-        )
-        assert result is not None
-        assert result.direction == "short"
-        assert result.sl_price > result.entry_price
-        assert result.tp1_price < result.entry_price
-
-    def test_rejects_normal_funding(self, evaluator):
-        """Normal funding rate → no setup."""
-        snapshot = _make_snapshot(
-            funding_rate=0.0001,  # Not extreme
-            buy_volume=600, sell_volume=400,
-        )
-        candles = make_candle_series(count=20)
-        result = evaluator.evaluate_setup_c(
-            "BTC/USDT", "bullish", snapshot, 100.0, candles,
-        )
+        result = evaluator.evaluate_setup_c("BTC/USDT", "bullish", snapshot, 100.0, candles)
         assert result is None
-
-    def test_rejects_htf_conflict(self, evaluator):
-        """Negative funding (long signal) + bearish HTF → reject."""
-        snapshot = _make_snapshot(
-            funding_rate=-0.0005,
-            buy_volume=600, sell_volume=400,
-        )
-        candles = make_candle_series(count=20)
-        result = evaluator.evaluate_setup_c(
-            "BTC/USDT", "bearish", snapshot, 100.0, candles,
-        )
-        assert result is None
-
-    def test_rejects_cvd_misalignment(self, evaluator):
-        """Negative funding but buy dominance too low → reject."""
-        snapshot = _make_snapshot(
-            funding_rate=-0.0005,
-            buy_volume=500, sell_volume=500,  # 50% — below 55% threshold
-        )
-        candles = make_candle_series(count=20)
-        result = evaluator.evaluate_setup_c(
-            "BTC/USDT", "bullish", snapshot, 100.0, candles,
-        )
-        assert result is None
-
-    def test_rejects_missing_data(self, evaluator):
-        """No snapshot → no setup."""
-        candles = make_candle_series(count=20)
-        result = evaluator.evaluate_setup_c(
-            "BTC/USDT", "bullish", None, 100.0, candles,
-        )
-        assert result is None
-
-    def test_sl_distance(self, evaluator):
-        """SL is 0.5% from entry."""
-        snapshot = _make_snapshot(
-            funding_rate=-0.0005,
-            buy_volume=600, sell_volume=400,
-        )
-        candles = make_candle_series(base_price=50000.0, count=20)
-        result = evaluator.evaluate_setup_c(
-            "BTC/USDT", "bullish", snapshot, 50000.0, candles,
-        )
-        assert result is not None
-        expected_sl = 50000.0 * (1 - settings.MOMENTUM_SL_PCT)
-        assert abs(result.sl_price - expected_sl) < 0.01
 
 
 # ================================================================
@@ -320,139 +238,18 @@ class TestSetupD:
 # ================================================================
 
 class TestSetupE:
+    """Setup E removed 2026-04-13 — signal demoted to confluence booster."""
 
-    def test_long_cascade_reversal(self, evaluator):
-        """Long liquidation cascade + CVD reversal → long entry."""
+    def test_setup_e_always_returns_none(self, evaluator):
+        """Setup E removed — method returns None unconditionally."""
         ts = int(time.time() * 1000)
         liq = OIFlushEvent(
-            timestamp=ts - 5000,  # 5 sec ago
-            pair="BTC/USDT", side="long", size_usd=500000,
-            price=99000.0, source="oi_proxy",
+            timestamp=ts - 5000, pair="BTC/USDT", side="long",
+            size_usd=500000, price=99000.0, source="oi_proxy",
         )
-        snapshot = _make_snapshot(
-            funding_rate=0.0001,
-            buy_volume=550, sell_volume=450,  # 55% buy dom > 50% threshold
-            oi_flushes=[liq],
-        )
+        snapshot = _make_snapshot(buy_volume=550, sell_volume=450, oi_flushes=[liq])
         candles = make_candle_series(base_price=99.0, count=20, timeframe="5m")
-
-        result = evaluator.evaluate_setup_e(
-            "BTC/USDT", "bullish", snapshot, [], candles, 99.0,
-        )
-        assert result is not None
-        assert result.setup_type == "setup_e"
-        assert result.direction == "long"
-        assert any("cascade" in c for c in result.confluences)
-        assert any("cvd_reversal" in c for c in result.confluences)
-
-    def test_short_cascade_reversal(self, evaluator):
-        """Short liquidation cascade + CVD reversal → short entry."""
-        ts = int(time.time() * 1000)
-        liq = OIFlushEvent(
-            timestamp=ts - 5000,
-            pair="BTC/USDT", side="short", size_usd=500000,
-            price=101000.0, source="oi_proxy",
-        )
-        snapshot = _make_snapshot(
-            funding_rate=0.0001,
-            buy_volume=450, sell_volume=550,  # 45% buy dom < 50% threshold
-            oi_flushes=[liq],
-        )
-        candles = make_candle_series(base_price=101.0, count=20, timeframe="5m")
-
-        result = evaluator.evaluate_setup_e(
-            "BTC/USDT", "bearish", snapshot, [], candles, 101.0,
-        )
-        assert result is not None
-        assert result.direction == "short"
-
-    def test_rejects_no_cascade(self, evaluator):
-        """No liquidation events → reject."""
-        snapshot = _make_snapshot(oi_flushes=[])
-        candles = make_candle_series(count=20, timeframe="5m")
-
-        result = evaluator.evaluate_setup_e(
-            "BTC/USDT", "bullish", snapshot, [], candles, 100.0,
-        )
-        assert result is None
-
-    def test_rejects_old_cascade(self, evaluator):
-        """Cascade older than 15 minutes → reject."""
-        ts = int(time.time() * 1000)
-        liq = OIFlushEvent(
-            timestamp=ts - 1_200_000,  # 20 min ago
-            pair="BTC/USDT", side="long", size_usd=500000,
-            price=99000.0, source="oi_proxy",
-        )
-        snapshot = _make_snapshot(
-            buy_volume=550, sell_volume=450,
-            oi_flushes=[liq],
-        )
-        candles = make_candle_series(count=20, timeframe="5m")
-
-        result = evaluator.evaluate_setup_e(
-            "BTC/USDT", "bullish", snapshot, [], candles, 100.0,
-        )
-        assert result is None
-
-    def test_rejects_wrong_cvd_direction(self, evaluator):
-        """Long cascade but buy dominance too low → reject."""
-        ts = int(time.time() * 1000)
-        liq = OIFlushEvent(
-            timestamp=ts - 5000,
-            pair="BTC/USDT", side="long", size_usd=500000,
-            price=99000.0, source="oi_proxy",
-        )
-        snapshot = _make_snapshot(
-            buy_volume=400, sell_volume=600,  # 40% — below 50% threshold
-            oi_flushes=[liq],
-        )
-        candles = make_candle_series(count=20, timeframe="5m")
-
-        result = evaluator.evaluate_setup_e(
-            "BTC/USDT", "bullish", snapshot, [], candles, 100.0,
-        )
-        assert result is None
-
-    def test_uses_ob_as_entry_anchor(self, evaluator):
-        """When OB is nearby, use OB entry price instead of current price."""
-        ts = int(time.time() * 1000)
-        liq = OIFlushEvent(
-            timestamp=ts - 5000,
-            pair="BTC/USDT", side="long", size_usd=500000,
-            price=99000.0, source="oi_proxy",
-        )
-        snapshot = _make_snapshot(
-            buy_volume=550, sell_volume=450,
-            oi_flushes=[liq],
-        )
-        ob = _make_ob(direction="bullish", entry_price=99.5, low=98.5)
-        candles = make_candle_series(base_price=99.5, count=20, timeframe="5m")
-
-        result = evaluator.evaluate_setup_e(
-            "BTC/USDT", "bullish", snapshot, [ob], candles, 99.5,
-        )
-        assert result is not None
-        assert result.entry_price == 99.5
-        assert any("order_block" in c for c in result.confluences)
-
-    def test_rejects_htf_conflict(self, evaluator):
-        """Long cascade reversal but bearish HTF → reject."""
-        ts = int(time.time() * 1000)
-        liq = OIFlushEvent(
-            timestamp=ts - 5000,
-            pair="BTC/USDT", side="long", size_usd=500000,
-            price=99000.0, source="oi_proxy",
-        )
-        snapshot = _make_snapshot(
-            buy_volume=550, sell_volume=450,
-            oi_flushes=[liq],
-        )
-        candles = make_candle_series(count=20, timeframe="5m")
-
-        result = evaluator.evaluate_setup_e(
-            "BTC/USDT", "bearish", snapshot, [], candles, 100.0,
-        )
+        result = evaluator.evaluate_setup_e("BTC/USDT", "bullish", snapshot, [], candles, 99.0)
         assert result is None
 
 
@@ -468,9 +265,9 @@ class TestQuickSetupTypes:
         assert "setup_d_bos" in QUICK_SETUP_TYPES
         assert "setup_d_choch" in QUICK_SETUP_TYPES
         assert "setup_e" in QUICK_SETUP_TYPES
-        assert "setup_h" in QUICK_SETUP_TYPES
-        assert "setup_a" not in QUICK_SETUP_TYPES
-        assert "setup_b" not in QUICK_SETUP_TYPES
+        assert "setup_h" not in QUICK_SETUP_TYPES  # Removed 2026-04-13
+        assert "setup_a" not in QUICK_SETUP_TYPES  # Swing setup
+        assert "setup_b" not in QUICK_SETUP_TYPES  # Swing setup
 
 
 # ================================================================
@@ -684,272 +481,19 @@ class TestSetupDPDAsConfluence:
 
 
 # ================================================================
-# Setup H — Momentum/Impulse Entry
+# Setup H — REMOVED 2026-04-13 (retail momentum chase, 0/13 WR)
 # ================================================================
 
 class TestSetupH:
 
-    def _make_impulse_candles(
-        self,
-        direction="bullish",
-        base_price=100.0,
-        count=30,
-        impulse_count=5,
-        impulse_move=0.5,
-        impulse_volume=30.0,
-        normal_volume=10.0,
-        timeframe="5m",
-    ):
-        """Create candle series with a volume impulse at the end."""
-        candles = []
-        ts = 1_000_000_000_000
-        interval = 300_000 if timeframe == "5m" else 900_000
-        price = base_price
-
-        # Normal candles (before impulse)
-        for i in range(count - impulse_count):
-            delta = 0.05  # Small random movement
-            candles.append(Candle(
-                timestamp=ts + i * interval,
-                open=price, high=price + 0.1, low=price - 0.1,
-                close=price + delta,
-                volume=normal_volume, volume_quote=normal_volume * price,
-                pair="BTC/USDT", timeframe=timeframe, confirmed=True,
-            ))
-            price += delta
-
-        # Impulse candles
-        step = impulse_move / impulse_count
-        for i in range(impulse_count):
-            idx = count - impulse_count + i
-            if direction == "bullish":
-                open_p = price
-                close_p = price + step
-            else:
-                open_p = price
-                close_p = price - step
-
-            candles.append(Candle(
-                timestamp=ts + idx * interval,
-                open=open_p,
-                high=max(open_p, close_p) + 0.05,
-                low=min(open_p, close_p) - 0.05,
-                close=close_p,
-                volume=impulse_volume,
-                volume_quote=impulse_volume * price,
-                pair="BTC/USDT", timeframe=timeframe, confirmed=True,
-            ))
-            price = close_p
-
-        return candles
-
-    def test_bullish_impulse_detected(self, evaluator):
-        """Bullish impulse with volume spike + BOS → setup_h long."""
-        candles = self._make_impulse_candles(
-            direction="bullish", base_price=100.0,
-            impulse_move=1.2, impulse_volume=30.0, normal_volume=10.0,
-        )
+    def test_setup_h_always_returns_none(self, evaluator):
+        """Setup H removed — method returns None unconditionally."""
         state = _make_structure_state("bos", "bullish")
-
-        result = evaluator.evaluate_setup_h(
-            "BTC/USDT", "bullish", state, candles,
-        )
-        assert result is not None
-        assert result.setup_type == "setup_h"
-        assert result.direction == "long"
-        assert result.entry_price == candles[-1].close
-        assert result.sl_price < result.entry_price
-        assert any("impulse_move" in c for c in result.confluences)
-        assert any("volume_spike" in c for c in result.confluences)
-        assert "bos_confirmed" in result.confluences
-
-    def test_bearish_impulse_detected(self, evaluator):
-        """Bearish impulse with volume spike + BOS → setup_h short."""
-        candles = self._make_impulse_candles(
-            direction="bearish", base_price=100.0,
-            impulse_move=1.2, impulse_volume=30.0, normal_volume=10.0,
-        )
-        state = _make_structure_state("bos", "bearish")
-
-        result = evaluator.evaluate_setup_h(
-            "BTC/USDT", "bearish", state, candles,
-        )
-        assert result is not None
-        assert result.direction == "short"
-        assert result.sl_price > result.entry_price
-
-    def test_rejects_no_volume_spike(self, evaluator):
-        """Directional move without volume spike → reject."""
-        candles = self._make_impulse_candles(
-            direction="bullish", impulse_volume=10.0, normal_volume=10.0,
-        )
-        state = _make_structure_state("bos", "bullish")
-
-        result = evaluator.evaluate_setup_h(
-            "BTC/USDT", "bullish", state, candles,
-        )
+        candles = [Candle(
+            timestamp=1_000_000_000_000 + i * 300_000,
+            open=100.0, high=100.1, low=99.9, close=100.05,
+            volume=10.0, volume_quote=1000.0,
+            pair="BTC/USDT", timeframe="5m", confirmed=True,
+        ) for i in range(30)]
+        result = evaluator.evaluate_setup_h("BTC/USDT", "bullish", state, candles)
         assert result is None
-
-    def test_rejects_small_move(self, evaluator):
-        """Volume spike but move too small → reject."""
-        candles = self._make_impulse_candles(
-            direction="bullish", impulse_move=0.1,  # 0.1% < 0.3% threshold
-            impulse_volume=30.0, normal_volume=10.0,
-        )
-        state = _make_structure_state("bos", "bullish")
-
-        result = evaluator.evaluate_setup_h(
-            "BTC/USDT", "bullish", state, candles,
-        )
-        assert result is None
-
-    def test_rejects_htf_conflict(self, evaluator):
-        """Bullish impulse but bearish HTF → reject."""
-        candles = self._make_impulse_candles(direction="bullish")
-        state = _make_structure_state("bos", "bullish")
-
-        result = evaluator.evaluate_setup_h(
-            "BTC/USDT", "bearish", state, candles,
-        )
-        assert result is None
-
-    def test_rejects_no_bos(self, evaluator):
-        """Impulse without any structure break → reject."""
-        candles = self._make_impulse_candles(direction="bullish")
-        # Structure state with bearish break only (no bullish BOS)
-        state = _make_structure_state("bos", "bearish")
-
-        result = evaluator.evaluate_setup_h(
-            "BTC/USDT", "bullish", state, candles,
-        )
-        assert result is None
-
-    def test_rejects_choppy_candles(self, evaluator):
-        """Alternating candle colors → no directional impulse → reject."""
-        candles = self._make_impulse_candles(
-            direction="bullish", impulse_volume=30.0, normal_volume=10.0,
-        )
-        # Override impulse candles: make 3 of 5 bearish (only 40% bullish < 60% threshold)
-        n = settings.SETUP_H_MIN_IMPULSE_CANDLES
-        for i in range(-n, -n + 3):  # First 3 of 5 impulse candles → bearish
-            c = candles[i]
-            candles[i] = Candle(
-                timestamp=c.timestamp, open=c.close, high=c.high,
-                low=c.low, close=c.open,  # Reversed = bearish
-                volume=c.volume, volume_quote=c.volume_quote,
-                pair=c.pair, timeframe=c.timeframe, confirmed=True,
-            )
-        state = _make_structure_state("bos", "bullish")
-
-        result = evaluator.evaluate_setup_h(
-            "BTC/USDT", "bullish", state, candles,
-        )
-        assert result is None
-
-    def test_sl_capped_at_max(self, evaluator):
-        """SL distance capped at SETUP_H_MAX_SL_PCT."""
-        # Create impulse with very wide move so OB would be far away
-        candles = self._make_impulse_candles(
-            direction="bullish", base_price=100.0,
-            impulse_move=5.0, impulse_volume=30.0, normal_volume=10.0,
-            count=30, impulse_count=5,
-        )
-        state = _make_structure_state("bos", "bullish")
-
-        result = evaluator.evaluate_setup_h(
-            "BTC/USDT", "bullish", state, candles,
-        )
-        if result is not None:
-            sl_dist_pct = abs(result.entry_price - result.sl_price) / result.entry_price
-            assert sl_dist_pct <= settings.SETUP_H_MAX_SL_PCT + 0.001
-
-    def test_rejects_decelerating_impulse(self, evaluator):
-        """Impulse where last 2 candles have tiny bodies vs first 3 → reject."""
-        candles = self._make_impulse_candles(
-            direction="bullish", base_price=100.0,
-            impulse_move=0.5, impulse_volume=30.0, normal_volume=10.0,
-        )
-        # Override last 2 impulse candles: make bodies tiny (doji-like)
-        n = settings.SETUP_H_MIN_IMPULSE_CANDLES
-        for i in [-2, -1]:
-            c = candles[i]
-            mid = (c.open + c.close) / 2
-            candles[i] = Candle(
-                timestamp=c.timestamp, open=mid, high=c.high,
-                low=c.low, close=mid + 0.001,  # Tiny body
-                volume=c.volume, volume_quote=c.volume_quote,
-                pair=c.pair, timeframe=c.timeframe, confirmed=True,
-            )
-        state = _make_structure_state("bos", "bullish")
-
-        result = evaluator.evaluate_setup_h(
-            "BTC/USDT", "bullish", state, candles,
-        )
-        assert result is None
-
-    def test_rejects_extended_move(self, evaluator):
-        """Impulse with >1.5% total move → reject as already extended."""
-        candles = self._make_impulse_candles(
-            direction="bullish", base_price=100.0,
-            impulse_move=2.0,  # 2.0% move > 1.5% threshold
-            impulse_volume=30.0, normal_volume=10.0,
-        )
-        state = _make_structure_state("bos", "bullish")
-
-        result = evaluator.evaluate_setup_h(
-            "BTC/USDT", "bullish", state, candles,
-        )
-        assert result is None
-
-    def test_rejects_volume_decay(self, evaluator):
-        """Impulse where volume drops off in last 2 candles → reject."""
-        candles = self._make_impulse_candles(
-            direction="bullish", base_price=100.0,
-            impulse_move=0.5, impulse_volume=30.0, normal_volume=10.0,
-        )
-        # Override last 2 impulse candles: drop volume to < 50% of first 3
-        for i in [-2, -1]:
-            c = candles[i]
-            candles[i] = Candle(
-                timestamp=c.timestamp, open=c.open, high=c.high,
-                low=c.low, close=c.close,
-                volume=5.0,  # 5.0 < 50% of 30.0
-                volume_quote=5.0 * c.close,
-                pair=c.pair, timeframe=c.timeframe, confirmed=True,
-            )
-        state = _make_structure_state("bos", "bullish")
-
-        result = evaluator.evaluate_setup_h(
-            "BTC/USDT", "bullish", state, candles,
-        )
-        assert result is None
-
-    def test_passes_fresh_impulse(self, evaluator):
-        """Healthy impulse with consistent bodies and volume passes all filters."""
-        candles = self._make_impulse_candles(
-            direction="bullish", base_price=100.0,
-            impulse_move=1.2,  # 1.2% — within 0.3%-1.5% window, SL > 0.8%
-            impulse_volume=30.0, normal_volume=10.0,
-        )
-        state = _make_structure_state("bos", "bullish")
-
-        result = evaluator.evaluate_setup_h(
-            "BTC/USDT", "bullish", state, candles,
-        )
-        assert result is not None
-        assert result.setup_type == "setup_h"
-        assert result.direction == "long"
-
-    def test_works_on_15m_candles(self, evaluator):
-        """Setup H works on 15m timeframe too."""
-        candles = self._make_impulse_candles(
-            direction="bullish", timeframe="15m",
-            impulse_move=1.2, impulse_volume=30.0, normal_volume=10.0,
-        )
-        state = _make_structure_state("bos", "bullish", timeframe="15m")
-
-        result = evaluator.evaluate_setup_h(
-            "BTC/USDT", "bullish", state, candles,
-        )
-        assert result is not None
-        assert result.ob_timeframe == "15m"

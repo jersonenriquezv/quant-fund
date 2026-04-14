@@ -1,8 +1,9 @@
 """Trade history endpoints."""
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from dashboard.api.auth import require_api_key
 from dashboard.api.models import TradeRecord, TradeDetail, AIDecisionRecord
 from dashboard.api import queries
 
@@ -14,7 +15,7 @@ class CancelResponse(BaseModel):
     pair: str
 
 
-@router.post("/trades/{pair}/cancel", response_model=CancelResponse)
+@router.post("/trades/{pair}/cancel", response_model=CancelResponse, dependencies=[Depends(require_api_key)])
 async def cancel_trade(pair: str):
     """Request cancellation of a position. Writes to Redis; the bot's monitor picks it up."""
     from config.settings import settings
