@@ -97,28 +97,42 @@ class ShadowMonitor:
         if setup.setup_id in self._positions:
             return False
 
-        # Dedup: skip if we already have an active (unfilled or tracking)
-        # shadow for the same pair/direction/setup_type.  The 1h pipeline
-        # dedup TTL expires before shadow positions resolve, so without this
-        # the same trade idea gets re-tracked (and re-notified) repeatedly.
+        # Dedup: only block if we already have an UNFILLED shadow for the
+        # same pair/direction/setup_type with a similar entry price (<1% diff).
+        # Once filled (tracking outcome), allow new shadows — they represent
+        # a new trade idea at a different price level.
         for pos in self._positions.values():
             if (pos.pair == setup.pair
                     and pos.direction == setup.direction
-                    and pos.setup_type == setup.setup_type):
-                logger.debug(
-                    f"Shadow dedup: {setup.setup_type} {setup.pair} "
-                    f"{setup.direction} — already tracking {pos.setup_id}"
-                )
+                    and pos.setup_type == setup.setup_type
+                    and not pos.filled):
+                price_diff = abs(pos.entry_price - setup.entry_price) / pos.entry_price
+                if price_diff < 0.01:
+                    logger.debug(
+                        f"Shadow dedup: {setup.setup_type} {setup.pair} "
+                        f"{setup.direction} entry={setup.entry_price:.2f} — "
+                        f"already tracking unfilled {pos.setup_id} at {pos.entry_price:.2f}"
+                    )
+                    return False
+
+        # Fallback sizing if risk_approval is missing or rejected —
+        # shadow is data collection, always track
+        if risk_approval is None or risk_approval.position_size <= 0:
+            fallback_margin = settings.SHADOW_CAPITAL * 0.05  # 5% of virtual capital
+            fallback_leverage = settings.MAX_LEVERAGE
+            fallback_notional = fallback_margin * fallback_leverage
+            fallback_size = fallback_notional / setup.entry_price if setup.entry_price > 0 else 0
+            if fallback_size <= 0:
+                logger.warning(f"Shadow: cannot size {setup.setup_id}, skipping")
                 return False
 
-        # Require risk_approval — standalone sizing removed to prevent
-        # data quality issues (wrong capital, missing guardrails)
-        if risk_approval is None or risk_approval.position_size <= 0:
-            logger.warning(
-                f"Shadow: no valid risk_approval for {setup.setup_id}, "
-                f"skipping (risk service unavailable or rejected)"
-            )
-            return False
+            # Create a minimal approval-like object for sizing
+            class _FallbackApproval:
+                approved = False
+                position_size = fallback_size
+                leverage = fallback_leverage
+                reason = "fallback_sizing"
+            risk_approval = _FallbackApproval()
 
         risk = abs(setup.entry_price - setup.sl_price)
         if risk <= 0 or setup.entry_price <= 0:

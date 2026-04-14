@@ -48,8 +48,9 @@
 | ATR_SL_FLOOR_MULTIPLIER | 4.5 | SL widened to 4.5× ATR(14) if structural SL is tighter |
 | MAX_SL_PCT | 4% | SL-too-far cap — rejects setups with OB SL > 4% |
 | REGIME_EXTREME_FEAR_GATE | 10 | F&G < 10 → reject ALL live setups (systemic crisis only) |
-| ~~SHADOW_FEAR_LONG_GATE~~ | removed | F&G kept as ML feature, not used as gate. SMC follows institutional flow; fear = accumulation opportunity |
-| SHADOW_MIN_HOUR_UTC | 11 | Skip shadow setups before 11 UTC (0% WR across 23 trades) |
+| ~~SHADOW_FEAR_LONG_GATE~~ | removed | F&G kept as ML feature, not used as gate |
+| ~~SHADOW_MIN_HOUR_UTC~~ | removed | Hour captured as ML feature (created_at), not used as gate |
+| SHADOW_DEDUP_TTL | 5 min | Pipeline dedup for shadow (live remains 1h) |
 | MAX_PORTFOLIO_HEAT_PCT | 6% | Sum of (size × SL_distance) across all positions |
 | MAX_SLIPPAGE_PCT | 0.3% | emergency close if exceeded |
 | FIXED_TRADE_MARGIN | $20 | Fallback only (if PositionSizer fails) |
@@ -118,11 +119,17 @@ Candle confirmed → StrategyService.evaluate()
   └── TradeSetup produced
         ├── ENABLED_SETUPS / SHADOW_MODE_SETUPS check
         ├── Data integrity gate (DEGRADED blocks all; RECOVERING allows candle-only setups)
-        ├── Regime gate (F&G < 20 → BLOCK all)
-        ├── Dedup cache (1h TTL) + shadow dedup (active position check)
-        ├── AI filter → BYPASSED for all active setups (synthetic approval)
-        ├── Risk Service → guardrails, position sizing
-        └── Execution Service → limit order + SL + TP
+        ├── **Shadow path** (setup in SHADOW_MODE_SETUPS):
+        │     ├── Dedup cache (5min TTL — short, for data collection)
+        │     ├── Risk check → logged as ML feature, NOT a gate (tracks anyway)
+        │     ├── Shadow monitor dedup (only blocks unfilled + same entry ±1%)
+        │     └── Fallback sizing if risk rejects (5% of SHADOW_CAPITAL)
+        ├── **Live path** (setup_f):
+        │     ├── Regime gate (F&G < 10 → BLOCK)
+        │     ├── Dedup cache (1h TTL)
+        │     ├── AI filter → BYPASSED (synthetic approval)
+        │     ├── Risk Service → guardrails, position sizing
+        │     └── Execution Service → limit order + SL + TP
 ```
 
 ### Key Signal Hierarchy (audit 03-18)
@@ -270,6 +277,31 @@ Reference for VPS sizing when migrating from Nitro 5.
 ---
 
 ## 8. Changelog
+
+### 2026-04-14 — Shadow Pipeline Ungate: Maximize ML Data Collection
+**What changed:**
+- **Hour filter REMOVED** from shadow: `SHADOW_MIN_HOUR_UTC` no longer gates shadow setups. Hour is already captured as an ML feature via `created_at`. Was killing 21% of all shadow detections.
+- **Fear-long filter REMOVED** from shadow: Already removed in code but old deploy was still producing `shadow_fear_long_filtered` outcomes. Confirmed current deploy has no fear gate. Was killing 33% of all shadow detections.
+- **Risk rejection NO LONGER gates shadow**: Risk check still runs and result is stored as ML feature (`risk_approved`, `risk_reject_reason`), but rejected setups proceed to tracking with fallback sizing (5% of SHADOW_CAPITAL × MAX_LEVERAGE).
+- **Shadow monitor dedup RELAXED**: Previously blocked any new shadow if same (pair, direction, setup_type) was already tracking — up to 36h block. Now only blocks if an unfilled shadow exists with entry price within 1%. Filled shadows don't block new ones.
+- **Pipeline dedup TTL reduced for shadow**: 5 min (was 1h). Shadow is data collection — only dedup same-candle repeats.
+- **Updated `/trade-review` and `/pipeline-diagnosis` skills**: Now filter disabled setups from queries, include "Known Context" section to avoid repeating known issues, and focus on what changed since last run.
+- **Updated `/status` skill**: Fixed psql/redis commands to go through Docker instead of host.
+
+**Why:** Shadow pipeline was collecting almost no resolved data — 93% of detections were filtered before reaching tracking. In 14 days: 190 detections → only 13 resolved (2 TP, 9 SL, 2 no_fill). User confirmed manual setups exist that bot was filtering. Shadow mode exists to collect ML training data; aggressive filtering defeats its purpose. Risk check result and hour are stored as features — ML can learn to use them without hard-gating.
+
+**Starting point (14-day shadow baseline before this change):**
+| Metric | Value |
+|--------|-------|
+| Total detections | 190 |
+| fear_long_filtered | 62 (33%) |
+| hour_filtered | 39 (21%) |
+| shadow_dedup | 38 (20%) |
+| Resolved (TP/SL/no_fill) | 13 (7%) |
+| Shadow WR (resolved) | 15% (2 TP / 13 resolved) |
+| Pending | 38 (20%) |
+
+**Expected impact:** 3-5× more shadow setups reaching tracking and resolving. More ML training data, faster path to model training. Trade-off: noisier data, but ML is designed to handle that.
 
 ### 2026-04-13 — Institutional Strategy Overhaul: Remove Retail Setups, Harden Setup A
 **What changed:**
