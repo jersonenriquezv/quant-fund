@@ -851,7 +851,7 @@ class Settings:
     # ========================
     # Feature version — increment when strategy params change in ways that
     # alter feature semantics (e.g. changing OB scoring weights, PD rules).
-    ML_FEATURE_VERSION: int = 13  # v13: RSI(14) + divergence + zone, avg_body_ratio
+    ML_FEATURE_VERSION: int = 14  # v14: orderbook spread/imbalance, BTC correlation, vol regime, session
 
     # ========================
     # LIQUIDATION HEATMAP

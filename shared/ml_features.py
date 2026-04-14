@@ -24,6 +24,9 @@ def extract_setup_features(
     snapshot: Optional[MarketSnapshot],
     current_price: float,
     recent_candles: Optional[list] = None,
+    *,
+    ob_snapshot: Optional[dict] = None,
+    btc_candles: Optional[list] = None,
 ) -> dict:
     """Extract structured features at setup detection time.
 
@@ -275,6 +278,63 @@ def extract_setup_features(
     # Candle body ratio: avg(body/range) of last 5 candles.
     # High = decisive moves (strong trend), low = indecision (dojis/wicks).
     features["avg_body_ratio"] = _avg_body_ratio(recent_candles, n=5) if recent_candles else None
+
+    # --- Orderbook microstructure (v14) ---
+    # Spread: cost of entry in basis points. Wide spread = thin book = slippage risk.
+    features["spread_bps"] = None
+    features["book_imbalance_ratio"] = None
+    if ob_snapshot:
+        best_bid = ob_snapshot.get("best_bid", 0)
+        best_ask = ob_snapshot.get("best_ask", 0)
+        if best_bid and best_ask and best_bid > 0:
+            features["spread_bps"] = (best_ask - best_bid) / best_bid * 10000
+        depth_bid = ob_snapshot.get("depth_bid_usd", 0)
+        depth_ask = ob_snapshot.get("depth_ask_usd", 0)
+        if depth_bid and depth_ask and depth_ask > 0:
+            features["book_imbalance_ratio"] = depth_bid / depth_ask
+
+    # --- BTC correlation (v14) ---
+    # For altcoins: how much is BTC moving? If BTC is in impulse, alt setups may be
+    # correlation-driven (weaker edge) rather than structural.
+    features["btc_return_5"] = None
+    features["btc_return_20"] = None
+    features["btc_volatility_ratio"] = None
+    if btc_candles and len(btc_candles) >= 20 and setup.pair != "BTC/USDT":
+        btc_closes = [c.close for c in btc_candles if c.close and c.close > 0]
+        if len(btc_closes) >= 20:
+            # BTC return over last 5 and 20 candles
+            features["btc_return_5"] = (btc_closes[-1] - btc_closes[-5]) / btc_closes[-5]
+            features["btc_return_20"] = (btc_closes[-1] - btc_closes[-20]) / btc_closes[-20]
+            # BTC volatility vs pair volatility — high ratio = pair moving less than BTC
+            btc_atr = sum(c.high - c.low for c in btc_candles[-20:]) / 20
+            if current_price > 0 and btc_closes[-1] > 0:
+                btc_atr_pct = btc_atr / btc_closes[-1]
+                pair_atr_pct = features.get("atr_pct") or 0
+                if btc_atr_pct > 0 and pair_atr_pct > 0:
+                    features["btc_volatility_ratio"] = pair_atr_pct / btc_atr_pct
+
+    # --- Volatility regime (v14) ---
+    # ATR(5) / ATR(50) ratio — >1 = volatility expanding, <1 = contracting.
+    # Expansion = breakouts more likely to follow through, contraction = mean reversion.
+    features["volatility_regime_ratio"] = None
+    if recent_candles and len(recent_candles) >= 50:
+        atr_5 = sum(c.high - c.low for c in recent_candles[-5:]) / 5
+        atr_50 = sum(c.high - c.low for c in recent_candles[-50:]) / 50
+        if atr_50 > 0:
+            features["volatility_regime_ratio"] = atr_5 / atr_50
+
+    # --- Trading session (v14) ---
+    # Categorical session — more interpretable than raw hour for tree models.
+    # Asia (00-08 UTC), Europe (08-14 UTC), US (14-21 UTC), Overlap/Off (21-00 UTC)
+    hour = features.get("hour_of_day", 0)
+    if hour < 8:
+        features["trading_session"] = "asia"
+    elif hour < 14:
+        features["trading_session"] = "europe"
+    elif hour < 21:
+        features["trading_session"] = "us"
+    else:
+        features["trading_session"] = "overlap"
 
     return features
 
