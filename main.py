@@ -421,8 +421,27 @@ def _ml_log_setup(setup, candle: Candle) -> None:
     try:
         snapshot = _data_service.get_market_snapshot(candle.pair)
         current_price = candle.close
-        recent_candles = _data_service.get_candles(candle.pair, candle.timeframe, count=20)
-        features = extract_setup_features(setup, snapshot, current_price, recent_candles)
+        recent_candles = _data_service.get_candles(candle.pair, candle.timeframe, count=50)
+
+        # Orderbook snapshot for spread/imbalance features
+        ob_snapshot = None
+        try:
+            ob_snapshot = _data_service.get_orderbook_snapshot(candle.pair)
+        except Exception:
+            pass  # Non-critical — features will be None
+
+        # BTC candles for correlation features (altcoins only)
+        btc_candles = None
+        if candle.pair != "BTC/USDT":
+            try:
+                btc_candles = _data_service.get_candles("BTC/USDT", candle.timeframe, count=50)
+            except Exception:
+                pass
+
+        features = extract_setup_features(
+            setup, snapshot, current_price, recent_candles,
+            ob_snapshot=ob_snapshot, btc_candles=btc_candles,
+        )
         # Add fields that come from setup but aren't in the feature dict yet
         features["timestamp"] = setup.timestamp
         features["tp1_price"] = setup.tp1_price
