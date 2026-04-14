@@ -252,6 +252,30 @@ def extract_setup_features(
     # for ML label analysis. Does NOT change strategy SL/TP (those are structural).
     features["daily_vol"] = _get_daily_vol(recent_candles) if recent_candles else None
 
+    # --- RSI features (v13) ---
+    # RSI captures momentum exhaustion — complements structural pattern detection.
+    # RSI divergence (price makes new high/low but RSI doesn't) is a leading signal
+    # that structural features alone don't capture.
+    rsi_val = _compute_rsi(recent_candles, period=14) if recent_candles else None
+    features["rsi_14"] = rsi_val
+    if rsi_val is not None:
+        if rsi_val <= 30:
+            features["rsi_zone"] = "oversold"
+        elif rsi_val >= 70:
+            features["rsi_zone"] = "overbought"
+        else:
+            features["rsi_zone"] = "neutral"
+    else:
+        features["rsi_zone"] = None
+    features["rsi_divergence"] = _detect_rsi_divergence(
+        recent_candles, lookback=20
+    ) if recent_candles else None
+
+    # --- Microstructure features (v13) ---
+    # Candle body ratio: avg(body/range) of last 5 candles.
+    # High = decisive moves (strong trend), low = indecision (dojis/wicks).
+    features["avg_body_ratio"] = _avg_body_ratio(recent_candles, n=5) if recent_candles else None
+
     return features
 
 
@@ -317,6 +341,104 @@ def _get_daily_vol(candles: list, span: int = 100) -> float | None:
         ewma_var = alpha * (lr ** 2) + (1 - alpha) * ewma_var
 
     return math.sqrt(ewma_var) if ewma_var > 0 else None
+
+
+def _compute_rsi(candles: list, period: int = 14) -> float | None:
+    """Compute RSI(period) from candle closes. Returns 0-100 or None."""
+    if not candles or len(candles) < period + 1:
+        return None
+
+    closes = [c.close for c in candles if c.close and c.close > 0]
+    if len(closes) < period + 1:
+        return None
+
+    # Use the last (period+1) closes for a single RSI value,
+    # but seed with more data if available for accuracy
+    gains = []
+    losses = []
+    for i in range(1, len(closes)):
+        delta = closes[i] - closes[i - 1]
+        gains.append(max(delta, 0))
+        losses.append(max(-delta, 0))
+
+    if len(gains) < period:
+        return None
+
+    # Wilder's smoothed RSI (exponential moving average)
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+
+    for i in range(period, len(gains)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return 100.0 - (100.0 / (1.0 + rs))
+
+
+def _detect_rsi_divergence(candles: list, lookback: int = 20) -> str | None:
+    """Detect RSI divergence over the last `lookback` candles.
+
+    Returns: "bullish", "bearish", or None.
+    - Bullish divergence: price makes lower low, RSI makes higher low
+    - Bearish divergence: price makes higher high, RSI makes lower high
+    """
+    if not candles or len(candles) < lookback + 14:
+        return None
+
+    # Compute RSI for last `lookback` candles
+    rsi_values = []
+    for i in range(lookback):
+        end_idx = len(candles) - lookback + i + 1
+        sub = candles[:end_idx]
+        r = _compute_rsi(sub, period=14)
+        if r is None:
+            return None
+        rsi_values.append(r)
+
+    if len(rsi_values) < lookback:
+        return None
+
+    closes = [c.close for c in candles[-lookback:]]
+    mid = lookback // 2
+
+    # Compare first half extreme vs second half extreme
+    first_closes = closes[:mid]
+    second_closes = closes[mid:]
+    first_rsi = rsi_values[:mid]
+    second_rsi = rsi_values[mid:]
+
+    # Bullish: price lower low, RSI higher low
+    price_lower_low = min(second_closes) < min(first_closes)
+    rsi_higher_low = min(second_rsi) > min(first_rsi)
+    if price_lower_low and rsi_higher_low:
+        return "bullish"
+
+    # Bearish: price higher high, RSI lower high
+    price_higher_high = max(second_closes) > max(first_closes)
+    rsi_lower_high = max(second_rsi) < max(first_rsi)
+    if price_higher_high and rsi_lower_high:
+        return "bearish"
+
+    return None
+
+
+def _avg_body_ratio(candles: list, n: int = 5) -> float | None:
+    """Average body/range ratio of last n candles. 1.0=all body, 0.0=all wick."""
+    if not candles or len(candles) < n:
+        return None
+
+    ratios = []
+    for c in candles[-n:]:
+        rng = c.high - c.low
+        if rng <= 0:
+            continue
+        body = abs(c.close - c.open)
+        ratios.append(body / rng)
+
+    return sum(ratios) / len(ratios) if ratios else None
 
 
 def _extract_float(text: str, pattern: str) -> float:
