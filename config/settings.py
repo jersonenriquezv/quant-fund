@@ -298,6 +298,12 @@ class Settings:
         os.getenv("SETUP_A_MIN_CHOCH_DISPLACEMENT_PCT", "0.002")
     )
 
+    # Max entry distance from current price (consistent with B=4%, F=5%).
+    # OB_MAX_DISTANCE_PCT bounds OB selection, this bounds computed entry.
+    SETUP_A_MAX_ENTRY_DISTANCE_PCT: float = float(
+        os.getenv("SETUP_A_MAX_ENTRY_DISTANCE_PCT", "0.05")
+    )
+
     # --- Setup A temporal ---
     # Max candles between sweep and CHoCH for Setup A validity.
     # Optuna 03-15: 40→45 (slightly more temporal tolerance)
@@ -340,7 +346,7 @@ class Settings:
     # Max distance from current price to entry (5% = allow entries near liq clusters).
     # Relaxed from 3% for aggressive validation mode (2026-03-15).
     SETUP_F_MAX_ENTRY_DISTANCE_PCT: float = 0.05
-    # Minimum confluences (3 = BOS + OB + one of PD/volume). Higher than generic 2.
+    # Minimum structural confluences for Setup F (BOS + OB = 2 minimum).
     SETUP_F_MIN_CONFLUENCES: int = 2
 
     # Setup C — Funding Squeeze
@@ -712,6 +718,13 @@ class Settings:
     # When True, bot detects setups and sends Telegram signals but does NOT
     # execute. User opens trades manually; bot monitors via position adoption.
     SIGNAL_ONLY: bool = os.getenv("SIGNAL_ONLY", "false").lower() == "true"
+
+    # ========================
+    # EMERGENCY HALT — freeze trade execution
+    # ========================
+    # When True, bot continues monitoring positions and collecting data
+    # but will NOT place new trades. Set via env var or /emergency Telegram command.
+    TRADING_HALTED: bool = os.getenv("TRADING_HALTED", "false").lower() == "true"
 
     # ========================
     # EXECUTION SERVICE

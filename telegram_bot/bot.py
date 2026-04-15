@@ -8,7 +8,9 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler
 
 from shared.logger import setup_logger
 from telegram_bot.data_bridge import DataBridge
-from telegram_bot.handlers.menu import start_command, menu_command, callback_router
+from telegram_bot.handlers.menu import (
+    start_command, menu_command, callback_router, emergency_command,
+)
 
 logger = setup_logger("telegram_bot")
 
@@ -50,6 +52,7 @@ class TelegramInteractiveBot:
         # Register handlers
         self._app.add_handler(CommandHandler("start", start_command))
         self._app.add_handler(CommandHandler("menu", menu_command))
+        self._app.add_handler(CommandHandler("emergency", emergency_command))
         self._app.add_handler(CallbackQueryHandler(callback_router))
 
         logger.info("Telegram interactive bot initialized")

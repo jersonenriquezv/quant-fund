@@ -17,7 +17,7 @@ Lightweight operational reference for the quant fund bot. Covers security, deplo
 | **PostgreSQL** (:5432) | localhost only (Docker network) | Password auth | Container escape = DB access |
 | **Redis** (:6379) | localhost only (Docker network) | Password auth | Same |
 | **SSH** | Local network (192.168.1.x) | Key-based auth | Physical network access |
-| **Grafana** (:3001) | Tailscale mesh | Anonymous viewer (read-only) | No write risk |
+| **Grafana** (:3001) | Tailscale mesh | Admin login (password in .env) | GRAFANA_ADMIN_PASSWORD required |
 
 ### Key Rotation Procedure
 
@@ -26,6 +26,7 @@ Lightweight operational reference for the quant fund bot. Covers security, deplo
 3. **TELEGRAM_BOT_TOKEN**: Revoke via @BotFather → update `.env` → restart
 4. **ANTHROPIC_API_KEY**: Rotate in Anthropic console → update `.env` → restart
 5. **POSTGRES/REDIS passwords**: Update in `.env` + respective Docker configs → restart all services
+6. **GRAFANA_ADMIN_PASSWORD**: Update in `config/.env` → `docker compose up -d grafana`
 
 ### What to Do If Keys Leak
 
@@ -62,7 +63,7 @@ docker compose ps                # verify all services healthy
 cd ~/quant-fund/dashboard/web
 npm run build
 # If running via Docker:
-docker compose up -d --build dashboard
+docker compose up -d --build web
 ```
 
 ### Rules
@@ -112,7 +113,7 @@ Redis data is ephemeral cache — bot repopulates on next candle cycle. No recov
 
 1. New server: install Ubuntu 24.04, Docker, Docker Compose
 2. Clone repo: `git clone <repo> ~/quant-fund`
-3. Restore `config/.env` from secure backup (NOT in git)
+3. Restore `config/.env` from secure backup (NOT in git) — includes GRAFANA_ADMIN_PASSWORD
 4. Restore `dashboard/web/.env.local`
 5. Restore PostgreSQL backup
 6. `docker compose up -d --build`
@@ -129,7 +130,7 @@ Redis data is ephemeral cache — bot repopulates on next candle cycle. No recov
 - Migrations use `ALTER TABLE ADD COLUMN IF NOT EXISTS` (idempotent)
 - Version tracking via `schema_version` table — each migration records its version number
 
-### Current Schema Version: 10
+### Current Schema Version: 14
 
 | Version | Description | Date |
 |---------|-------------|------|
@@ -138,6 +139,8 @@ Redis data is ephemeral cache — bot repopulates on next candle cycle. No recov
 | 7 | ml_setups: shadow mode + risk check columns | 2026-03 |
 | 8 | trades: setup_id + sizing columns, trade_rejections table | 2026-03 |
 | 10 | ml_setups: volume profile features (POC/HVN/LVN) | 2026-04 |
+| 13 | ml_setups: RSI + microstructure features | 2026-04 |
+| 14 | ml_setups: orderbook, BTC correlation, volatility regime, session | 2026-04 |
 
 ### Adding a New Migration
 
@@ -162,7 +165,22 @@ DELETE FROM schema_version WHERE version = N;
 
 ---
 
-## 5. Monitoring Checklist
+## 5. Documentation Truth Checks
+
+Operational docs are guarded by `scripts/check_docs_truth.py`. It verifies high-impact facts that must match code: setup status, ML feature version, selected risk/strategy constants, and schema migration version.
+
+Run manually after config/schema/pipeline changes:
+```bash
+python3 scripts/check_docs_truth.py
+```
+
+Use `/doc-audit` when the checker fails or when docs feel stale. It fixes only proven drift, then reruns the checker.
+
+The Claude pre-commit hook (`scripts/check-critical-commit.sh`) runs this check automatically when staged changes touch `config/settings.py`, `data_service/data_store.py`, `main.py`, `strategy_service/`, `risk_service/`, or `execution_service/`.
+
+---
+
+## 6. Monitoring Checklist
 
 ### Daily
 
@@ -181,21 +199,67 @@ DELETE FROM schema_version WHERE version = N;
 
 ### On Deploy
 
-- [ ] `curl http://localhost:8000/api/health` returns `{"status": "ok"}`
+- [ ] `curl http://localhost:8000/api/health` returns `{"status": "ok", "postgres": true, "redis": true, "sandbox": false}`
 - [ ] `docker compose logs --tail=20 bot` — no errors
 - [ ] Grafana System Health dashboard — no gaps in metrics
 - [ ] Telegram test alert received
+
+### Emergency Trading Halt
+
+Use when: flash crash, suspected key compromise, runaway trades, or any situation needing immediate position closure.
+
+**Step 1 — Freeze execution (stop new trades, keep monitoring):**
+```bash
+# Telegram: send /emergency to the bot (2-step confirm)
+# OR set env var and restart:
+echo "TRADING_HALTED=true" >> config/.env
+docker compose up -d --build bot
+```
+
+**Step 2 — Cancel open orders + close all positions:**
+```bash
+# Via Telegram /emergency command (preferred — handles both)
+# OR manually via OKX:
+#   1. Go to OKX Futures → open positions → "Close All"
+#   2. Go to Open Orders → "Cancel All"
+```
+
+**Step 3 — Reconcile:**
+```bash
+# Check what the bot thinks vs what OKX has:
+docker compose exec bot python3 -c "
+from execution_service.service import ExecutionService
+# Compare DB open trades vs exchange positions
+"
+# Or check DB directly:
+docker compose exec postgres psql -U jer quant_fund -c \
+  "SELECT pair, direction, status, entry_price, opened_at FROM trades WHERE status='open'"
+```
+
+**Step 4 — Snapshot for post-mortem:**
+```bash
+docker compose logs --since=1h bot > /tmp/emergency_$(date +%Y%m%d_%H%M).log
+docker compose exec postgres pg_dump -U jer quant_fund > /tmp/emergency_backup_$(date +%Y%m%d_%H%M).sql
+```
+
+**Step 5 — Resume (when safe):**
+```bash
+# Remove the halt flag:
+sed -i '/TRADING_HALTED/d' config/.env
+docker compose up -d --build bot
+docker compose logs -f bot  # verify normal operation
+```
 
 ### Incident Response
 
 1. **Bot crash loop**: Check logs, identify error, fix, redeploy
 2. **Exchange API error**: Check OKX status page, verify API keys, check rate limits
 3. **Unexpected trade**: Check `trades` table, `ai_decisions`, `risk_events` for that trade_id
-4. **High drawdown alert**: Review positions, consider manual close via dashboard
+4. **High drawdown alert**: Trigger emergency halt (above). Review positions before resuming
 
 ---
 
-## 6. API Authentication
+## 7. API Authentication
 
 ### Dashboard API Key
 

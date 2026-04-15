@@ -3,7 +3,7 @@
 > Estado: implementado. Dynamic position sizing via PositionSizer: `size = (capital × 1%) / SL_distance`. Leverage dynamic (capped at 7x). Portfolio heat tracking (6% max). MAX_SL_PCT (4%) cap. R:R minimums: swing 2.0, quick 1.5. Trade journal in PostgreSQL (trade_rejections table + r_multiple on trades).
 
 ## Qué hace (30 segundos)
-El Risk Service es el guardián del capital. Antes de que cualquier trade se ejecute, pasa por 6 checks obligatorios (guardrails) y un cálculo de tamaño de posición. Si cualquier check falla, el trade NO se ejecuta. Sin excepciones.
+El Risk Service es el guardián del capital. Antes de que cualquier trade se ejecute, pasa por 9 checks obligatorios (guardrails) y un cálculo de tamaño de posición. Si cualquier check falla, el trade NO se ejecuta. Sin excepciones.
 
 ## Por qué existe
 Sin control de riesgo, un solo trade malo puede destruir la cuenta. El Risk Service implementa las reglas de CLAUDE.md: máximo 2% riesgo por trade, 10% drawdown diario, 10% semanal, 7x apalancamiento, y cooldown de 5 min después de pérdida.
@@ -17,13 +17,14 @@ TradeSetup (del Strategy Service)
   ▼
 RiskService.check(setup, ai_confidence, dry_run)
   │
-  ├── check min risk distance >= 0.5% (SL no demasiado cerca de entry)
-  ├── check R:R ratio >= 2.0 swing / 1.5 quick (usa TP2 vs entry/SL)
-  ├── check cooldown (5 min post-loss)
-  ├── check max trades/día (20)
-  ├── check max posiciones abiertas (8)
-  ├── check drawdown diario < 10%
-  ├── check drawdown semanal < 10%
+  ├── [structural] check min risk distance >= 0.5% (SL no demasiado cerca de entry)
+  ├── [structural] check max SL distance <= 4% (MAX_SL_PCT — SL demasiado lejos)
+  ├── [structural] check R:R ratio >= 2.0 swing / 1.5 quick (usa TP2 vs entry/SL)
+  ├── [state, live only] check cooldown (5 min post-loss)
+  ├── [state, live only] check max trades/día (20)
+  ├── [state, live only] check max posiciones abiertas (8)
+  ├── [state, live only] check drawdown diario < 10%
+  ├── [state, live only] check drawdown semanal < 10%
   ├── query OKX balance (fallback: tracked capital)
   ├── PositionSizer: size = (capital × 1%) / |Entry - SL|, leverage capped at 7x
   ├── optional: bet sizing (half-Kelly × confidence)
@@ -55,13 +56,14 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 - **Risk-based sizing (PositionSizer):** `position_size = (capital × risk_pct) / abs(entry - sl)`. Leverage: `(position_size × entry) / capital`. Si leverage > MAX_LEVERAGE (7x), recorta la posición. Now wired into live pipeline via `RiskService.check()`.
 - Validaciones: entry == sl → error, capital ≤ 0 → error, risk ≤ 0 → error
 
-### `risk_service/guardrails.py` — 6 checks puros
+### `risk_service/guardrails.py` — 9 checks puros
 - Clase: `Guardrails`
 - Cada método retorna `tuple[bool, str]` (passed, reason)
 - **Sin estado** — funciones puras, reciben valores y retornan veredicto
 - Checks:
   - `check_min_risk_distance(setup)` — SL distance >= MIN_RISK_DISTANCE_PCT (0.5%) del entry price. Also checked in strategy layer via `_check_sl_distance()`.
-  - `check_rr_ratio(setup)` — R:R de TP2 >= MIN_RISK_REWARD (2.0 swing) o MIN_RISK_REWARD_QUICK (1.5 quick setups C/D/E)
+  - `check_max_sl_distance(setup)` — SL distance <= MAX_SL_PCT (4%) del entry price. Rejects setups with unbounded risk.
+  - `check_rr_ratio(setup)` — R:R de TP2 >= MIN_RISK_REWARD (2.0 swing) o MIN_RISK_REWARD_QUICK (1.5 quick setups D)
   - `check_cooldown(last_loss_time, current_time)` — COOLDOWN_MINUTES (5) elapsed?
   - `check_max_trades_today(count)` — < MAX_TRADES_PER_DAY (20)?
   - `check_max_open_positions(count)` — < MAX_OPEN_POSITIONS (8)?

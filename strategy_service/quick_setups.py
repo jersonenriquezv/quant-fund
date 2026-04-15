@@ -172,14 +172,15 @@ class QuickSetupEvaluator:
         # CVD alignment — confirms order flow supports the direction
         if snapshot and snapshot.cvd:
             cvd = snapshot.cvd
+            cvd_15m_warm = getattr(cvd, "is_window_warm", lambda _window: True)("15m")
             total_vol = cvd.buy_volume + cvd.sell_volume
             if total_vol > 0:
                 buy_dom = cvd.buy_volume / total_vol
-                if direction == "bullish" and cvd.cvd_15m > 0:
+                if direction == "bullish" and cvd_15m_warm and cvd.cvd_15m > 0:
                     confluences.append("cvd_aligned_bullish")
                     if buy_dom >= settings.BUY_DOMINANCE_STRONG_PCT:
                         confluences.append("buy_dominance_strong")
-                elif direction == "bearish" and cvd.cvd_15m < 0:
+                elif direction == "bearish" and cvd_15m_warm and cvd.cvd_15m < 0:
                     confluences.append("cvd_aligned_bearish")
                     sell_dom = 1 - buy_dom
                     if sell_dom >= settings.BUY_DOMINANCE_STRONG_PCT:

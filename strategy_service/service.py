@@ -316,26 +316,23 @@ class StrategyService:
                         )
                         return setup
 
-            # Setup G — Breaker Block Retest
-            breaker_blocks = self._order_blocks.get_breaker_blocks(pair, ltf)
-            setup = self._setups.evaluate_setup_g(
-                breaker_blocks=breaker_blocks,
-                pd_zone=pd_zone,
-                market_snapshot=market_snapshot,
-                candles=candles,
-                pair=pair,
-                htf_bias=htf_bias,
-                liquidity_levels=liq_levels,
-                swing_highs_htf=state_4h.swing_highs + state_1h.swing_highs,
-                swing_lows_htf=state_4h.swing_lows + state_1h.swing_lows,
-                volume_profile=volume_profile,
-            )
+            # Setup G — Breaker Block Retest (skip evaluation if disabled)
+            if "setup_g" in settings.ENABLED_SETUPS or "setup_g" in settings.SHADOW_MODE_SETUPS:
+                breaker_blocks = self._order_blocks.get_breaker_blocks(pair, ltf)
+                setup = self._setups.evaluate_setup_g(
+                    breaker_blocks=breaker_blocks,
+                    pd_zone=pd_zone,
+                    market_snapshot=market_snapshot,
+                    candles=candles,
+                    pair=pair,
+                    htf_bias=htf_bias,
+                    liquidity_levels=liq_levels,
+                    swing_highs_htf=state_4h.swing_highs + state_1h.swing_highs,
+                    swing_lows_htf=state_4h.swing_lows + state_1h.swing_lows,
+                    volume_profile=volume_profile,
+                )
 
-            if setup is not None:
-                if setup.setup_type not in settings.ENABLED_SETUPS and setup.setup_type not in settings.SHADOW_MODE_SETUPS:
-                    logger.debug(f"Setup G detected but disabled (not in ENABLED_SETUPS or SHADOW_MODE_SETUPS)")
-                    setup = None
-                else:
+                if setup is not None:
                     reject = self._apply_expectancy_filters(setup, candles_15m, state_4h, state_1h)
                     if reject:
                         logger.info(f"Expectancy filter rejected: {setup.pair} {setup.setup_type} — {reject}")

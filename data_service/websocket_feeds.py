@@ -21,22 +21,15 @@ import websockets
 from config.settings import settings
 from shared.logger import setup_logger
 from shared.models import Candle
+from data_service.metadata import active_okx_instruments, assert_supported_trading_pairs
 
 logger = setup_logger("data_service")
 
 # OKX business WebSocket URL (candle channels live here, NOT on /public)
 _OKX_WS_URL = "wss://ws.okx.com:8443/ws/v5/business"
 
-# Instrument IDs for OKX perpetuals
-_INST_IDS = {
-    "BTC/USDT": "BTC-USDT-SWAP",
-    "ETH/USDT": "ETH-USDT-SWAP",
-    "SOL/USDT": "SOL-USDT-SWAP",
-    "DOGE/USDT": "DOGE-USDT-SWAP",
-    "XRP/USDT": "XRP-USDT-SWAP",
-    "LINK/USDT": "LINK-USDT-SWAP",
-    "AVAX/USDT": "AVAX-USDT-SWAP",
-}
+assert_supported_trading_pairs()
+_INST_IDS = active_okx_instruments()
 
 # Reverse map: instId back to our pair format
 _INST_TO_PAIR = {v: k for k, v in _INST_IDS.items()}
@@ -106,6 +99,7 @@ class OKXWebSocketFeed:
 
         # Track live (WS-received) candle count since last connect
         self._live_candle_count: int = 0
+        self._has_connected_once: bool = False
 
     # ================================================================
     # Public interface — called by other services via direct import
@@ -156,7 +150,6 @@ class OKXWebSocketFeed:
     async def start(self) -> None:
         """Start the WebSocket connection with automatic reconnection."""
         self._running = True
-        _first_connect = True
         while self._running:
             try:
                 await self._connect_and_listen()
@@ -167,13 +160,12 @@ class OKXWebSocketFeed:
                 logger.warning(f"OKX WebSocket disconnected. Reason: {e}")
                 if self._metrics_cb:
                     self._metrics_cb("ws_reconnection", 1.0, None, {"feed": "candles"})
-                # Notify DataService of reconnect (skip first connect — that's startup)
-                if not _first_connect and self._on_reconnect_cb:
+                # Notify DataService after any established connection drops.
+                if self._has_connected_once and self._on_reconnect_cb:
                     try:
                         await self._on_reconnect_cb()
                     except Exception as cb_err:
                         logger.error(f"Reconnect callback failed: {cb_err}")
-                _first_connect = False
                 await self._reconnect_backoff()
 
     async def stop(self) -> None:
@@ -199,6 +191,7 @@ class OKXWebSocketFeed:
         ) as ws:
             self._ws = ws
             self._connected = True
+            self._has_connected_once = True
             self._reconnect_delay = settings.RECONNECT_INITIAL_DELAY
             self._last_message_time = time.time()
             self._live_candle_count = 0

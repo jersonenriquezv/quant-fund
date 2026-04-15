@@ -3,7 +3,7 @@
 > Source of truth for system state. Updated on every material change.
 > Reflects code reality — if code and doc disagree, fix the doc.
 
-**Last updated:** 2026-04-14
+**Last updated:** 2026-04-15
 **ML Feature Version:** 14
 **Bot status:** LIVE (OKX_SANDBOX=false, ~$86 capital)
 
@@ -19,16 +19,16 @@
 | LTF_TIMEFRAMES | 15m, 5m |
 | SWING_SETUP_TIMEFRAMES | 15m |
 
-### Enabled Setups
+### Setup Status
 | Setup | Status | Type | Historical WR |
 |-------|--------|------|---------------|
-| A (Sweep+CHoCH+OB) | **ENABLED** | swing, AI bypass | 45-50% |
-| B (BOS+FVG+OB) | **DISABLED** | — | 0-7.7% |
-| C (Funding Squeeze) | **ENABLED** | quick | live, collecting data |
-| D_choch (LTF CHoCH) | **ENABLED** | quick | 75% backtest |
-| D_bos (LTF BOS) | **DISABLED** | — | 20-33% |
-| E (Cascade Reversal) | **ENABLED** | quick | live, collecting data |
-| F (Pure OB Retest) | **ENABLED** | swing, AI bypass | 34-59% |
+| A (Sweep+CHoCH+OB) | **SHADOW** | swing, data collection | 45-50% |
+| B (BOS+FVG+OB) | **SHADOW** | swing, data collection | 0-7.7% |
+| C (Funding Squeeze) | **DISABLED** | signal folded into confluence | 0 resolved |
+| D_choch (LTF CHoCH) | **SHADOW** | quick, data collection | 75% backtest |
+| D_bos (LTF BOS) | **SHADOW** | quick, data collection | 20-33% |
+| E (Cascade Reversal) | **DISABLED** | signal folded into confluence | 0W/1L |
+| F (Pure OB Retest) | **LIVE** | swing, AI bypass | 34-59% |
 | G (Breaker Block) | **DISABLED** | — | unvalidated |
 | H (Momentum/Impulse) | **DISABLED** (live+shadow) | — | 11% WR live, 0/12 aligned shadow. Chases impulse tips without OB retest. Needs pullback redesign. |
 
@@ -71,25 +71,23 @@
 | SETUP_A_ENTRY_PCT | 50% | deepened from 65% (04-02): shadow 9% WR, SL within noise |
 | SETUP_A_MODE | continuation | changed from "both" (04-02): 17/17 SL on counter-trend |
 | SETUP_A_MAX_SWEEP_CHOCH_GAP | 60 | aggressive mode (Optuna: 45) |
-| FUNDING_EXTREME_THRESHOLD | 0.0003 | symmetric for both long/short |
+| SETUP_A_MAX_ENTRY_DISTANCE_PCT | 5% | added 04-15: consistency with B/F |
+| FUNDING_MILD_THRESHOLD | 0.0001 | 0.01% — mild directional crowding |
+| FUNDING_MODERATE_THRESHOLD | 0.0003 | 0.03% — was EXTREME, now moderate |
+| FUNDING_EXTREME_THRESHOLD | 0.0006 | 0.06% — extreme crowding, high reversal risk |
 | PD_AS_CONFLUENCE | true | aggressive mode |
 | PD_OVERRIDE_MIN_CONFLUENCES | 5 | |
 
 ### Setup-Specific Parameters
 | Parameter | Value | Setup |
 |-----------|-------|-------|
-| SETUP_F_MAX_BOS_AGE_CANDLES | 40 | F |
+| SETUP_F_MAX_BOS_AGE_CANDLES | 60 | F |
 | SETUP_F_MIN_BOS_DISPLACEMENT_PCT | 0.1% | F |
 | SETUP_F_MAX_OB_BOS_GAP_CANDLES | 20 | F |
 | SETUP_F_MIN_OB_SCORE | 0.35 | F |
 | SETUP_F_MAX_ENTRY_DISTANCE_PCT | 5% | F |
 | SETUP_F_MIN_CONFLUENCES | 2 | F |
-| SETUP_H_MIN_DIRECTIONAL_PCT | 60% | H |
-| SETUP_H_MIN_IMPULSE_PCT | 0.3% | H |
-| SETUP_H_VOLUME_SPIKE_RATIO | 1.5x | H |
-| SETUP_H_MAX_SL_PCT | 3% | H |
-| SETUP_H_DECEL_RATIO | 0.4 | H |
-| SETUP_H_MAX_EXTENDED_PCT | 1.5% | H |
+| ~~SETUP_H_*~~ | removed | H tombstoned 04-13 (0/13 WR). Values in code comments only |
 | SETUP_D_ENTRY_PCT | 85% | D |
 | QUICK_OB_MAX_DISTANCE_PCT | 1.5% | quick |
 | QUICK_SETUP_COOLDOWN | 1h | quick |
@@ -98,7 +96,7 @@
 | Parameter | Value |
 |-----------|-------|
 | TP1_RR_RATIO | 1.0 (breakeven trigger) |
-| SETUP_TP2_RR | A=2.5, B/F/G/H=2.0, C/E=2.0, D=1.5 |
+| SETUP_TP2_RR | A=2.5, B/F/G=2.0, D=1.5 (C/E/H removed) |
 | TRAILING_TP_ENABLED | false |
 | MAX_TRADE_DURATION | 12h swing / 4h quick |
 | ENTRY_TIMEOUT | 24h swing / 1h quick |
@@ -114,8 +112,8 @@ Candle confirmed → StrategyService.evaluate()
   ├── Swing setups (15m only): A → B → F → G
   │     Each: detect pattern → PD check → OB selection → volume confirmation
   │     → structural confluence ≥ 2 (metrics don't count)
-  │     Post-detection: ATR SL floor (widen to 3× ATR if tight) → ATR filter → target space filter
-  ├── Quick setups (5m): C → D → E (with per-type cooldown)
+  │     Post-detection: ATR SL floor (widen to 4.5× ATR if tight) → ATR filter → target space filter
+  ├── Quick setup candidates (5m): D only (C/E removed 04-13)
   └── TradeSetup produced
         ├── ENABLED_SETUPS / SHADOW_MODE_SETUPS check
         ├── Data integrity gate (DEGRADED blocks all; RECOVERING allows candle-only setups)
@@ -138,10 +136,10 @@ Candle confirmed → StrategyService.evaluate()
 | HTF bias (4H/1H) | **Hard gate** | Blocks all if undefined (~60% of time in range) |
 | Sweep (Setup A only) | **Core trigger** | Strongest microstructure signal |
 | CHoCH / BOS | **Core trigger** | Required for all setups |
-| Order Block | **Core trigger** | Required for 5/6 enabled setups |
+| Order Block | **Core trigger** | Required for live swing setup and most shadow-tracked setups |
 | CVD (divergence + MTF) | Confluence | Upgraded: price vs CVD direction, 3-TF agreement |
 | OI delta | Confluence | Upgraded: tracks delta between evaluations |
-| Funding rate | Confluence | Fixed: symmetric threshold (0.0003) |
+| Funding rate | Confluence | 3-tier graduated: mild 0.01% / moderate 0.03% / extreme 0.06% |
 | PD zone | Confluence | Demoted from hard gate (PD_AS_CONFLUENCE=true) |
 | OB volume | Confluence | Restored: 1.3x minimum (was 1.0 = disabled) |
 | Whale flows | Logging only | Collected, never used in decisions |
@@ -250,7 +248,7 @@ Reference for VPS sizing when migrating from Nitro 5.
 
 ## 7. ML Feature Versioning
 
-**Current version:** 12 (set in `config/settings.py:ML_FEATURE_VERSION`)
+**Current version:** 14 (set in `config/settings.py:ML_FEATURE_VERSION`)
 **Storage:** `ml_setups.feature_version` column in PostgreSQL
 **Query training data:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL AND outcome_type NOT IN ('shadow_dedup', 'data_blocked', 'shadow_risk_rejected', 'risk_rejected', 'regime_extreme_fear')`
 
@@ -277,6 +275,14 @@ Reference for VPS sizing when migrating from Nitro 5.
 ---
 
 ## 8. Changelog
+
+### 2026-04-15 — Strategy Audit: Entry Distance + Dead Setup Cleanup
+**What changed:**
+- **Setup A entry distance filter ADDED**: `SETUP_A_MAX_ENTRY_DISTANCE_PCT = 5%`. Consistency with Setup B (4%) and F (5%). Prevents zombie entries at distant OBs.
+- **Setup G evaluation SHORT-CIRCUITED**: Was running full evaluate_setup_g() then discarding because G not in ENABLED/SHADOW lists. Now skips evaluation entirely when disabled.
+- **SETUP_F_MIN_CONFLUENCES comment FIXED**: Comment said "3" but value was 2. Updated comment to match reality.
+
+**Why:** Strategy audit found 3 code/doc mismatches. Setup A was the only setup without an entry distance guard — could produce entries at edge of OB_MAX_DISTANCE_PCT (3%) without explicit limit. Setup G was burning CPU on every 15m candle for 7 pairs to produce setups that were always discarded.
 
 ### 2026-04-14 — Shadow Pipeline Ungate: Maximize ML Data Collection
 **What changed:**

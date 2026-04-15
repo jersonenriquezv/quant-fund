@@ -65,6 +65,11 @@ class CVDSnapshot:
     cvd_1h: float           # Last hour
     buy_volume: float       # Buy volume in the period
     sell_volume: float      # Sell volume in the period
+    warm_windows: tuple[str, ...] = ("5m", "15m", "1h")  # e.g. ("5m", "15m", "1h")
+
+    def is_window_warm(self, window: str) -> bool:
+        """Return True if the CVD window has enough live trade history."""
+        return window in self.warm_windows
 
 
 @dataclass(frozen=True)

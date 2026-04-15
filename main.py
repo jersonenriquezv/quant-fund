@@ -263,6 +263,15 @@ async def on_candle_confirmed(candle: Candle) -> None:
         )
         return
 
+    # --- Emergency halt: block new live trades while monitoring continues ---
+    if settings.TRADING_HALTED:
+        logger.warning(
+            f"TRADING HALTED: {setup.setup_type} {setup.pair} {setup.direction} "
+            f"— new trades blocked (env TRADING_HALTED=true)"
+        )
+        _ml_resolve_outcome(setup.setup_id, "trading_halted")
+        return
+
     # --- Regime gate: reject LIVE setups in systemic crisis ---
     # Positioned after shadow path so shadow still collects ML data during
     # extreme fear. Only blocks real capital deployment.

@@ -236,6 +236,13 @@ class SetupEvaluator:
             rr = self._compute_rr(entry_price, sl_price, tp2)
             if cascade_rank > 0:
                 confluences.append(f"geometry_adjusted_{cascade_rank}")
+            # Entry distance filter — reject zombie entries too far from price
+            if current_price > 0:
+                entry_dist = abs(entry_price - current_price) / current_price
+                if entry_dist > settings.SETUP_A_MAX_ENTRY_DISTANCE_PCT:
+                    logger.debug(f"Setup A [{pair}]: entry too far from price "
+                                 f"({entry_dist:.4f} > {settings.SETUP_A_MAX_ENTRY_DISTANCE_PCT})")
+                    return None
             logger.info(
                 f"Setup A [{pair}]: cascade rank={cascade_rank} "
                 f"tried={candidates_tried} R:R={rr:.2f}"
@@ -249,6 +256,12 @@ class SetupEvaluator:
                 entry_price = best_ob.body_low + body_range * settings.SETUP_A_ENTRY_PCT
             else:
                 entry_price = best_ob.body_high - body_range * settings.SETUP_A_ENTRY_PCT
+            if current_price > 0:
+                entry_dist = abs(entry_price - current_price) / current_price
+                if entry_dist > settings.SETUP_A_MAX_ENTRY_DISTANCE_PCT:
+                    logger.debug(f"Setup A [{pair}]: entry too far from price "
+                                 f"({entry_dist:.4f} > {settings.SETUP_A_MAX_ENTRY_DISTANCE_PCT})")
+                    return None
             if not self._validate_sl_direction(entry_price, sl_price, direction):
                 return None
             if not self._check_sl_distance(entry_price, sl_price, pair, "Setup A"):
@@ -1039,17 +1052,19 @@ class SetupEvaluator:
             price_prev = candles[-4].close
             price_change = (price_now - price_prev) / price_prev if price_prev > 0 else 0
 
-            # Multi-timeframe CVD agreement (5m, 15m, 1h)
+            # Multi-timeframe CVD agreement requires a fully warm 1h CVD window.
+            cvd_1h_warm = getattr(cvd, "is_window_warm", lambda _window: True)("1h")
             cvd_mtf_agree = (
-                (cvd.cvd_5m > 0 and cvd.cvd_15m > 0 and cvd.cvd_1h > 0)
+                cvd_1h_warm and cvd.cvd_5m > 0 and cvd.cvd_15m > 0 and cvd.cvd_1h > 0
                 if direction == "bullish" else
-                (cvd.cvd_5m < 0 and cvd.cvd_15m < 0 and cvd.cvd_1h < 0)
+                cvd_1h_warm and cvd.cvd_5m < 0 and cvd.cvd_15m < 0 and cvd.cvd_1h < 0
             )
 
             # Divergence: price moving against direction but CVD supporting it
             # This is the strongest CVD signal (absorption / accumulation)
-            cvd_bullish = cvd.cvd_15m > 0
-            cvd_bearish = cvd.cvd_15m < 0
+            cvd_15m_warm = getattr(cvd, "is_window_warm", lambda _window: True)("15m")
+            cvd_bullish = cvd_15m_warm and cvd.cvd_15m > 0
+            cvd_bearish = cvd_15m_warm and cvd.cvd_15m < 0
             if direction == "bullish" and cvd_bullish and price_change < -0.001:
                 confluences.append("cvd_divergence_bullish")
             elif direction == "bearish" and cvd_bearish and price_change > 0.001:
