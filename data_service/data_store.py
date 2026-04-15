@@ -735,6 +735,10 @@ class PostgresStore:
                     cur.execute(f"ALTER TABLE ml_setups ADD COLUMN IF NOT EXISTS {col_def}")
                 self._apply_migration(cur, 14, "ml_setups: orderbook, BTC correlation, vol regime, session")
 
+            if current_version < 15:
+                cur.execute("ALTER TABLE ml_setups ADD COLUMN IF NOT EXISTS experiment_id VARCHAR(50)")
+                self._apply_migration(cur, 15, "ml_setups: experiment_id column for freeze protocol")
+
         logger.info("PostgreSQL tables verified/created")
 
     # --- Candle Storage ---
@@ -1192,6 +1196,7 @@ class PostgresStore:
         features: dict,
         risk_context: dict | None = None,
         feature_version: int = 1,
+        experiment_id: str = "",
     ) -> bool:
         """Insert a feature snapshot for a detected setup. Fire-and-forget."""
         for attempt in range(2):
@@ -1232,7 +1237,8 @@ class PostgresStore:
                             rsi_14, rsi_zone, rsi_divergence, avg_body_ratio,
                             spread_bps, book_imbalance_ratio,
                             btc_return_5, btc_return_20, btc_volatility_ratio,
-                            volatility_regime_ratio, trading_session
+                            volatility_regime_ratio, trading_session,
+                            experiment_id
                         ) VALUES (
                             %s, %s, %s,
                             %s, %s, %s,
@@ -1263,7 +1269,8 @@ class PostgresStore:
                             %s, %s, %s, %s,
                             %s, %s,
                             %s, %s, %s,
-                            %s, %s
+                            %s, %s,
+                            %s
                         ) ON CONFLICT (setup_id) DO NOTHING""",
                         (
                             setup_id, feature_version, features.get("timestamp", 0),
@@ -1312,6 +1319,7 @@ class PostgresStore:
                             features.get("btc_volatility_ratio"),
                             features.get("volatility_regime_ratio"),
                             features.get("trading_session"),
+                            experiment_id,
                         ),
                     )
                 logger.debug(f"ML: inserted setup {setup_id} ({features.get('pair')} {features.get('setup_type')})")

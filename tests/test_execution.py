@@ -1117,7 +1117,7 @@ class TestOrphanedTradeReconciliation:
 
         mock_postgres.update_ml_setup_outcome.assert_called_once_with(
             setup_id="abc123def456",
-            outcome_type="filled_timeout",
+            outcome_type="filled_orphaned",
         )
 
     def test_active_trade_not_reconciled(self):

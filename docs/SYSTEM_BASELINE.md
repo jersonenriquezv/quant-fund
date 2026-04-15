@@ -252,7 +252,8 @@ Reference for VPS sizing when migrating from Nitro 5.
 
 **Current version:** 14 (set in `config/settings.py:ML_FEATURE_VERSION`)
 **Storage:** `ml_setups.feature_version` column in PostgreSQL
-**Query training data:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL AND outcome_type NOT IN ('shadow_dedup', 'data_blocked', 'shadow_risk_rejected', 'risk_rejected', 'regime_extreme_fear', 'shadow_orphaned')`
+**Query training data:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL AND outcome_type NOT IN ('shadow_dedup', 'data_blocked', 'shadow_risk_rejected', 'risk_rejected', 'regime_extreme_fear', 'shadow_orphaned', 'filled_orphaned')`
+**Experiment tracking:** `experiment_id` column (migration 15). Current: `freeze_v15_2026_04_16`. Filter: `WHERE experiment_id = 'freeze_v15_2026_04_16'` for clean freeze data.
 
 | Version | Date | Changes | Training Status |
 |---------|------|---------|-----------------|
@@ -277,6 +278,26 @@ Reference for VPS sizing when migrating from Nitro 5.
 ---
 
 ## 8. Changelog
+
+### 2026-04-16 — FREEZE PROTOCOL v15
+**Start:** 2026-04-16 | **End:** 2026-04-30 (14 days)
+**EXPERIMENT_ID:** `freeze_v15_2026_04_16`
+**ML_FEATURE_VERSION:** 14 (unchanged)
+**Mode:** shadow only (all 6 setups: A, B, D_bos, D_choch, F, G)
+
+**Pre-freeze changes:**
+- **4 execution bugs fixed**: `filled_qty` crash, `cancel_order` args swapped, PnL zero-check (breakeven=None), orphan ML mislabel (`filled_timeout`→`filled_orphaned`)
+- **Shadow TP1 tracking**: `_check_tp_sl()` now simulates breakeven SL move when TP1 touched. New `shadow_breakeven` outcome. Fixes artificially low shadow WR — trades that would be breakeven in live were counted as SL losses.
+- **F&G regime gate REMOVED**: Retail signal was blocking institutional SMC setups during fear. `fear_greed_score` kept as ML feature.
+- **`experiment_id` column added** (migration 15): Tracks which parameter regime generated each sample. `feature_version` = what columns mean, `experiment_id` = what rules generated sample.
+
+**FROZEN — no changes allowed:**
+- Thresholds, R:R, distances, confluences
+- Setup detection logic, shadow filters, dedup TTL
+- Feature extraction
+
+**ALLOWED:** Bug fixes (crash, data loss, wrong labels), infrastructure (Docker, monitoring, dashboard)
+**EXIT CRITERIA:** 100+ resolved shadow outcomes OR 14 days. Daily `/pipeline-diagnosis`.
 
 ### 2026-04-15 — Shadow Data Quality: Orphan Fix + Parameter Tuning
 **What changed:**

@@ -51,6 +51,8 @@ class ShadowPosition:
     # Fill quality
     fill_candle_volume_ratio: float = 0.0  # fill candle vol / avg vol
     slippage_estimate_pct: float = 0.0     # worst price in fill candle vs entry
+    # TP1 tracking — simulates live breakeven SL move
+    tp1_touched: bool = False              # True once price touched TP1 (1:1 R:R)
 
 
 class ShadowMonitor:
@@ -304,23 +306,33 @@ class ShadowMonitor:
             self._save_to_redis()
 
     def _check_tp_sl(self, candle, pos: ShadowPosition) -> str | None:
-        """Check if candle hit TP2 or SL. Returns outcome string or None.
+        """Check if candle hit TP1 (breakeven), TP2, or SL.
 
-        Uses TP2 (not TP1) because shadow mode tracks full theoretical outcome.
-        In live trading, TP1 partial close + TP2 remainder is the norm,
-        but for ML labeling we want the terminal outcome.
+        Simulates live breakeven logic: once price touches TP1 (1:1 R:R),
+        SL moves to entry price. Any subsequent SL hit = breakeven, not loss.
+        This prevents artificially low shadow WR — many "SL losses" would
+        actually be breakeven or trailing wins in live.
         """
+        # TP1 tracking — simulate breakeven SL move
+        if not pos.tp1_touched and self._candle_touched_price(candle, pos.tp1_price):
+            pos.tp1_touched = True
+            pos.sl_price = pos.entry_price  # simulate breakeven SL move
+            self._save_to_redis()
+            logger.info(
+                f"Shadow TP1 touched: {pos.setup_type} {pos.pair} {pos.direction} "
+                f"— SL moved to breakeven (entry={pos.entry_price:.2f})"
+            )
+
         hit_tp = self._candle_touched_price(candle, pos.tp2_price)
         hit_sl = self._candle_touched_price(candle, pos.sl_price)
 
         if hit_tp and hit_sl:
-            # Both hit in same candle — conservative: assume SL hit first
-            # (adverse selection bias correction)
-            return "shadow_sl"
+            # Both hit in same candle — conservative: breakeven if TP1 was touched
+            return "shadow_breakeven" if pos.tp1_touched else "shadow_sl"
         if hit_tp:
             return "shadow_tp"
         if hit_sl:
-            return "shadow_sl"
+            return "shadow_breakeven" if pos.tp1_touched else "shadow_sl"
         return None
 
     def _candle_touched_price(self, candle, price: float) -> bool:
@@ -355,6 +367,8 @@ class ShadowMonitor:
                 exit_price = pos.tp2_price
             elif outcome == "shadow_sl":
                 exit_price = pos.sl_price
+            elif outcome == "shadow_breakeven":
+                exit_price = pos.entry_price
             else:
                 exit_price = pos.entry_price  # no fill or unknown
 
@@ -381,6 +395,7 @@ class ShadowMonitor:
         exit_reason_map = {
             "shadow_tp": "tp",
             "shadow_sl": "sl",
+            "shadow_breakeven": "breakeven",
             "shadow_timeout": "timeout",
             "shadow_no_fill": "no_fill",
         }

@@ -200,7 +200,7 @@ class ExecutionService:
                 if setup_id:
                     self._data_service.postgres.update_ml_setup_outcome(
                         setup_id=setup_id,
-                        outcome_type="filled_timeout",
+                        outcome_type="filled_orphaned",
                     )
                 reconciled += 1
                 logger.warning(
@@ -238,13 +238,13 @@ class ExecutionService:
                     # Cancel unfilled entry orders
                     for oid in [pos.entry_order_id, getattr(pos, "entry2_order_id", None)]:
                         if oid:
-                            await self._executor.cancel_order(pair, oid)
+                            await self._executor.cancel_order(oid, pair)
                     results[pair] = "entry_cancelled"
                     logger.info(f"Emergency: cancelled pending entry for {pair}")
                 else:
                     # Market-close active positions
                     await self._executor.close_position_market(
-                        pair, pos.direction, pos.filled_qty,
+                        pair, pos.direction, pos.filled_size,
                     )
                     results[pair] = "market_closed"
                     logger.warning(f"Emergency: market-closed {pair} {pos.direction}")

@@ -705,8 +705,9 @@ class Settings:
     NEWS_EXTREME_GREED_THRESHOLD: int = 85              # F&G > 85 → reject shorts
     # Hard regime gate — reject ALL setups (any direction) when F&G < threshold.
     # Only for systemic crises (Luna/FTX-level). Normal fear is contrarian signal
-    # per SMC thesis — institutions accumulate when retail panics.
-    # Other fixes (ATR SL floor, structural confluence, setup_h disabled) handle quality.
+    # DEPRECATED (freeze_v15): F&G hard gate removed from pipeline.
+    # SMC follows institutional flow — institutions accumulate when retail panics.
+    # F&G kept as ML feature (fear_greed_score column), not as trade gate.
     REGIME_EXTREME_FEAR_GATE: int = int(os.getenv("REGIME_EXTREME_FEAR_GATE", "10"))
 
     # Shadow quality filters — derived from feature importance analysis (2026-04-06).
@@ -866,6 +867,11 @@ class Settings:
     # Feature version — increment when strategy params change in ways that
     # alter feature semantics (e.g. changing OB scoring weights, PD rules).
     ML_FEATURE_VERSION: int = 14  # v14: orderbook spread/imbalance, BTC correlation, vol regime, session
+
+    # Experiment ID — tracks which parameter regime generated a sample.
+    # feature_version = what columns mean. experiment_id = what rules generated sample.
+    # Same features + different gates = contaminated dataset without this.
+    EXPERIMENT_ID: str = os.getenv("EXPERIMENT_ID", "freeze_v15_2026_04_16")
 
     # ========================
     # LIQUIDATION HEATMAP

@@ -272,19 +272,6 @@ async def on_candle_confirmed(candle: Candle) -> None:
         _ml_resolve_outcome(setup.setup_id, "trading_halted")
         return
 
-    # --- Regime gate: reject LIVE setups in systemic crisis ---
-    # Positioned after shadow path so shadow still collects ML data during
-    # extreme fear. Only blocks real capital deployment.
-    if snapshot is not None and snapshot.news_sentiment is not None:
-        fg_score = snapshot.news_sentiment.score
-        if fg_score < settings.REGIME_EXTREME_FEAR_GATE:
-            logger.info(
-                f"Regime gate: F&G={fg_score} < {settings.REGIME_EXTREME_FEAR_GATE} "
-                f"(systemic crisis) | {setup.setup_type} {setup.pair} {setup.direction}"
-            )
-            _ml_resolve_outcome(setup.setup_id, "regime_extreme_fear")
-            return
-
     # Pre-check: can this pair meet exchange minimum order size?
     min_size = settings.MIN_ORDER_SIZES.get(setup.pair, 0)
     if min_size > 0:
@@ -446,6 +433,7 @@ def _ml_log_setup(setup, candle: Candle) -> None:
             features=features,
             risk_context=risk_ctx,
             feature_version=settings.ML_FEATURE_VERSION,
+            experiment_id=settings.EXPERIMENT_ID,
         )
         _emit_metric("ml_setup_insert_ok" if ok else "ml_setup_insert_error", 1, setup.pair)
     except Exception as e:
