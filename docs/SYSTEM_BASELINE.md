@@ -28,9 +28,9 @@
 | D_choch (LTF CHoCH) | **SHADOW** | quick, data collection | 75% backtest |
 | D_bos (LTF BOS) | **SHADOW** | quick, data collection | 20-33% |
 | E (Cascade Reversal) | **DISABLED** | signal folded into confluence | 0W/1L |
-| F (Pure OB Retest) | **LIVE** | swing, AI bypass | 34-59% |
-| G (Breaker Block) | **DISABLED** | — | unvalidated |
-| H (Momentum/Impulse) | **DISABLED** (live+shadow) | — | 11% WR live, 0/12 aligned shadow. Chases impulse tips without OB retest. Needs pullback redesign. |
+| F (Pure OB Retest) | **SHADOW** | swing, was live until 04-15 | 33% (6 trades) |
+| G (Breaker Block) | **SHADOW** | swing, data collection | unvalidated |
+| H (Momentum/Impulse) | **DISABLED** | — | 10.7% WR (28 trades). Removed 04-13. |
 
 ### Risk Guardrails
 | Parameter | Value | Notes |
@@ -283,6 +283,14 @@ Reference for VPS sizing when migrating from Nitro 5.
 - **SETUP_F_MIN_CONFLUENCES comment FIXED**: Comment said "3" but value was 2. Updated comment to match reality.
 
 **Why:** Strategy audit found 3 code/doc mismatches. Setup A was the only setup without an entry distance guard — could produce entries at edge of OB_MAX_DISTANCE_PCT (3%) without explicit limit. Setup G was burning CPU on every 15m candle for 7 pairs to produce setups that were always discarded.
+
+### 2026-04-15 — Shadow-Only Mode: Disable Live Trading
+**What changed:**
+- **ENABLED_SETUPS emptied**: No live trades. All setups run shadow-only for ML data collection.
+- **Setup F moved to SHADOW**: Was last live setup. 6 trades, 33% WR, -$0.60. Not enough data to justify live risk.
+- **Setup G re-added to SHADOW**: Collecting data again (was removed 04-02 at 0/4 WR, now G evaluation short-circuits when not in shadow list).
+
+**Why:** 43 total trades, -$17.27. 28 were setup_h (10.7% WR, -$15.96) — already killed. Remaining setups have too few trades for statistical confidence. Shadow mode collects ML training data without risking capital. DD limit fix (5%→10%) resolved Apr 9 blockage but no reason to keep live while sample size is tiny.
 
 ### 2026-04-14 — Shadow Pipeline Ungate: Maximize ML Data Collection
 **What changed:**

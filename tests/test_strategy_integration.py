@@ -458,21 +458,19 @@ class TestOIDelta:
 class TestEnabledSetups:
     """ENABLED_SETUPS controls which setups reach the pipeline."""
 
-    def test_setup_b_not_in_enabled(self):
-        """Setup B is disabled per audit 03-18."""
-        assert "setup_b" not in settings.ENABLED_SETUPS
+    def test_all_live_disabled_shadow_only(self):
+        """All setups in shadow-only mode since 04-15. No live trading."""
+        assert len(settings.ENABLED_SETUPS) == 0
 
-    def test_setup_a_in_enabled(self):
-        """Setup A should remain enabled."""
-        assert "setup_a" in settings.ENABLED_SETUPS
-
-    def test_setup_f_in_enabled(self):
-        """Setup F should remain enabled (strictly better than B)."""
-        assert "setup_f" in settings.ENABLED_SETUPS
+    def test_shadow_setups_active(self):
+        """A, B, D_choch, D_bos, F, G should be shadow-tracked."""
+        for s in ["setup_a", "setup_b", "setup_d_choch", "setup_d_bos", "setup_f", "setup_g"]:
+            assert s in settings.SHADOW_MODE_SETUPS, f"{s} missing from shadow"
 
     def test_setup_h_removed(self):
         """Setup H removed (04-13): 0/13 WR. Retail momentum chase — adverse selection."""
         assert "setup_h" not in settings.ENABLED_SETUPS
+        assert "setup_h" not in settings.SHADOW_MODE_SETUPS
         assert "setup_h" not in QUICK_SETUP_TYPES
 
     def test_disabled_setup_detected_but_discarded(self):

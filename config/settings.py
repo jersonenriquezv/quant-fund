@@ -264,11 +264,12 @@ class Settings:
     # C, E, F, G pending validation.
     # D_bos: 20-33% WR backtests, 0% live. B: 0-7.7% WR. Bleeding capital.
     # Setup B disabled (audit 03-18): 0-7.7% WR, F is strictly better (F = B minus weak FVG gate)
+    # 2026-04-15: ALL live trading disabled. Shadow-only mode for ML data collection.
+    # Re-enable by adding setup types back (e.g. "setup_f") when shadow data justifies it.
     ENABLED_SETUPS: list = field(default_factory=lambda: [
-        "setup_a", "setup_d_choch", "setup_f",
-        # setup_c removed 2026-04-13: 0 resolved trades. No OB anchor (market order + fixed % SL).
-        # setup_e removed 2026-04-13: 0W/1L. No OB anchor. Both signals now flow as
-        # confluence boosters in _check_volume_confirmation() for OB-anchored setups.
+        # setup_f was last live setup — disabled 04-15 to focus on shadow data collection.
+        # setup_c removed 2026-04-13: 0 resolved trades. No OB anchor.
+        # setup_e removed 2026-04-13: 0W/1L. No OB anchor.
         # setup_h removed 2026-04-13: 0/13 WR, retail momentum chase.
     ])
 
@@ -846,10 +847,9 @@ class Settings:
     # Feeds ml_setups with labeled outcomes for future feature importance analysis.
     # Setups NOT in this list execute normally through the live pipeline.
     SHADOW_MODE_SETUPS: list = field(default_factory=lambda: [
-        "setup_a", "setup_b", "setup_d_choch", "setup_d_bos",
+        "setup_a", "setup_b", "setup_d_choch", "setup_d_bos", "setup_f", "setup_g",
         # "setup_c" — removed 2026-04-13: no OB anchor. Signal is now a confluence booster.
         # "setup_e" — removed 2026-04-13: no OB anchor. Signal is now a confluence booster.
-        # "setup_g" — removed 2026-04-02: 0/4 WR in shadow. Breaker blocks structurally weak.
         # "setup_h" — removed 2026-04-13: 0/13 WR. Retail momentum chase.
     ])
     # Fictional capital for shadow mode position sizing ($500 USDT).
