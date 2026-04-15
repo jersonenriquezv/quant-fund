@@ -85,8 +85,10 @@
 | SETUP_F_MIN_BOS_DISPLACEMENT_PCT | 0.1% | F |
 | SETUP_F_MAX_OB_BOS_GAP_CANDLES | 20 | F |
 | SETUP_F_MIN_OB_SCORE | 0.35 | F |
-| SETUP_F_MAX_ENTRY_DISTANCE_PCT | 5% | F |
+| SETUP_F_MAX_ENTRY_DISTANCE_PCT | 2.5% | F |
 | SETUP_F_MIN_CONFLUENCES | 2 | F |
+| SETUP_B_MAX_BOS_AGE_CANDLES | 12 | B |
+| SETUP_B_MAX_ENTRY_DISTANCE_PCT | 3% | B |
 | ~~SETUP_H_*~~ | removed | H tombstoned 04-13 (0/13 WR). Values in code comments only |
 | SETUP_D_ENTRY_PCT | 85% | D |
 | QUICK_OB_MAX_DISTANCE_PCT | 1.5% | quick |
@@ -96,7 +98,7 @@
 | Parameter | Value |
 |-----------|-------|
 | TP1_RR_RATIO | 1.0 (breakeven trigger) |
-| SETUP_TP2_RR | A=2.5, B/F/G=2.0, D=1.5 (C/E/H removed) |
+| SETUP_TP2_RR | A/B/F/G=2.0, D=1.5 (C/E/H removed) |
 | TRAILING_TP_ENABLED | false |
 | MAX_TRADE_DURATION | 12h swing / 4h quick |
 | ENTRY_TIMEOUT | 24h swing / 1h quick |
@@ -250,7 +252,7 @@ Reference for VPS sizing when migrating from Nitro 5.
 
 **Current version:** 14 (set in `config/settings.py:ML_FEATURE_VERSION`)
 **Storage:** `ml_setups.feature_version` column in PostgreSQL
-**Query training data:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL AND outcome_type NOT IN ('shadow_dedup', 'data_blocked', 'shadow_risk_rejected', 'risk_rejected', 'regime_extreme_fear')`
+**Query training data:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL AND outcome_type NOT IN ('shadow_dedup', 'data_blocked', 'shadow_risk_rejected', 'risk_rejected', 'regime_extreme_fear', 'shadow_orphaned')`
 
 | Version | Date | Changes | Training Status |
 |---------|------|---------|-----------------|
@@ -275,6 +277,16 @@ Reference for VPS sizing when migrating from Nitro 5.
 ---
 
 ## 8. Changelog
+
+### 2026-04-15 — Shadow Data Quality: Orphan Fix + Parameter Tuning
+**What changed:**
+- **Orphaned shadow cleanup**: New `resolve_orphaned_shadow_setups()` in PostgresStore. Runs on ShadowMonitor startup + every 6h. Marks NULL-outcome rows older than entry+trade timeout as `shadow_orphaned`. Fixes 53 stuck rows from April.
+- **Setup B BOS age tightened**: `SETUP_B_MAX_BOS_AGE_CANDLES` 30→12 (~1h on 5m). Was causing 48% dedup rate — same BOS re-detected for 2.5h.
+- **Setup B entry distance tightened**: `SETUP_B_MAX_ENTRY_DISTANCE_PCT` 4%→3%. Distant entries contribute to unfilled timeouts.
+- **Setup F entry distance tightened**: `SETUP_F_MAX_ENTRY_DISTANCE_PCT` 5%→2.5%. 3/5 resolved as unfilled_timeout — OBs too far from price.
+- **Setup A TP2 R:R lowered**: `SETUP_TP2_RR["setup_a"]` 2.5→2.0. 4/4 SL in April shadow at 2.5 RR. Now matches B/F/G at 2.0.
+
+**Why:** April shadow review: 319 detections, only 18 resolved (6%). 53 orphaned (DB rows with no Redis tracking after restart). setup_b 48% dedup = too noisy. setup_f 60% unfilled = entries too far. setup_a 0% WR at 2.5 RR = TP too ambitious. setup_d_bos was only winner (67% WR, 2 TP / 3 resolved).
 
 ### 2026-04-15 — Strategy Audit: Entry Distance + Dead Setup Cleanup
 **What changed:**

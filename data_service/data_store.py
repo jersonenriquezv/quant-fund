@@ -1452,6 +1452,41 @@ class PostgresStore:
             logger.error(f"ML shadow tracking update failed: {setup_id} {e}")
             return False
 
+    def resolve_orphaned_shadow_setups(self, max_age_hours: float = 36.0) -> int:
+        """Resolve ml_setups rows stuck with outcome_type=NULL beyond max age.
+
+        These are shadow positions that were lost on bot restart (Redis state
+        cleared) and never resolved. Marks them as 'shadow_orphaned' so they
+        don't pollute training data or show as perpetually pending.
+
+        Returns number of rows resolved.
+        """
+        if not self._ensure_connected():
+            return 0
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE ml_setups
+                       SET outcome_type = 'shadow_orphaned',
+                           exit_reason = 'orphaned_restart',
+                           resolved_at = NOW()
+                       WHERE outcome_type IS NULL
+                         AND shadow_mode = TRUE
+                         AND created_at < NOW() - INTERVAL '%s hours'
+                       RETURNING setup_id""",
+                    (max_age_hours,),
+                )
+                rows = cur.fetchall()
+                if rows:
+                    logger.info(
+                        f"Resolved {len(rows)} orphaned shadow setups "
+                        f"(older than {max_age_hours}h)"
+                    )
+                return len(rows)
+        except psycopg2.Error as e:
+            logger.error(f"Failed to resolve orphaned shadow setups: {e}")
+            return 0
+
     def update_ml_guardian_shadow(
         self, setup_id: str, check_name: str
     ) -> bool:

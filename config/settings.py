@@ -248,13 +248,13 @@ class Settings:
     FVG_ENTRY_PCT: float = float(os.getenv("FVG_ENTRY_PCT", "0.75"))
 
     # --- Setup B freshness filters (mirrors Setup F pattern) ---
-    # Max candles since BOS to be considered fresh (12 = ~3h on 15m).
-    # Prevents stale detection after large impulse moves have completed.
-    SETUP_B_MAX_BOS_AGE_CANDLES: int = 30
-    # Max distance from current price to entry (4% = allow distant entries near liq clusters).
-    # BTC@84k → max ~$3,360 distance. ETH@2.1k → max ~$84.
-    # Relaxed from 2% for aggressive validation mode (2026-03-15).
-    SETUP_B_MAX_ENTRY_DISTANCE_PCT: float = 0.04
+    # Max candles since BOS to be considered fresh.
+    # Was 30 (2.5h on 5m) — caused 48% dedup rate in April shadow data.
+    # Tightened to 12 (~1h on 5m). If BOS+FVG+OB hasn't filled in 1h, it's stale.
+    SETUP_B_MAX_BOS_AGE_CANDLES: int = 12
+    # Max distance from current price to entry (3% — tightened from 4%).
+    # 4% too far: contributes to unfilled entries. 3% still covers structural OBs.
+    SETUP_B_MAX_ENTRY_DISTANCE_PCT: float = 0.03
 
     # --- Enabled setups ---
     # Only these setup types will be traded. Others are detected but discarded.
@@ -344,9 +344,10 @@ class Settings:
     SETUP_F_MIN_BOS_DISPLACEMENT_PCT: float = 0.001
     # Minimum composite OB score (0-1) from _score_ob(). Rejects low-quality OBs.
     SETUP_F_MIN_OB_SCORE: float = 0.35
-    # Max distance from current price to entry (5% = allow entries near liq clusters).
-    # Relaxed from 3% for aggressive validation mode (2026-03-15).
-    SETUP_F_MAX_ENTRY_DISTANCE_PCT: float = 0.05
+    # Max distance from current price to entry.
+    # Was 5% (aggressive mode) — caused 3/5 unfilled_timeout in April shadow.
+    # Tightened to 2.5%. If OB is >2.5% away, price unlikely to retrace.
+    SETUP_F_MAX_ENTRY_DISTANCE_PCT: float = 0.025
     # Minimum structural confluences for Setup F (BOS + OB = 2 minimum).
     SETUP_F_MIN_CONFLUENCES: int = 2
 
@@ -430,7 +431,7 @@ class Settings:
     # Rationale: reversal setups (A, E) have more energy than continuation (F) or scalps (D).
     # Values are starting estimates — backtest + Optuna will calibrate.
     SETUP_TP2_RR: dict = field(default_factory=lambda: {
-        "setup_a": 2.5,        # Reversal post-sweep — strong energy, targeting higher
+        "setup_a": 2.0,        # Was 2.5 — 4/4 SL in April shadow. Lowered to match B/F.
         "setup_b": 2.0,        # BOS continuation — must meet MIN_RISK_REWARD (2.0)
         # setup_c removed 2026-04-13: no OB anchor, signal is now confluence booster
         "setup_d_choch": 1.5,  # 5m scalp, 4h max — meets MIN_RISK_REWARD_QUICK (1.5)

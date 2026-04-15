@@ -73,7 +73,9 @@ class ShadowMonitor:
         self._data_service = data_service
         self._notifier = notifier
         self._positions: dict[str, ShadowPosition] = {}  # setup_id -> ShadowPosition
+        self._last_orphan_cleanup = 0.0
         self._load_from_redis()
+        self._cleanup_orphaned_db_rows()
 
     @property
     def active_count(self) -> int:
@@ -217,6 +219,11 @@ class ShadowMonitor:
         Called from the pipeline on every confirmed candle.
         """
         now = time.time()
+
+        # Periodic orphan cleanup — every 6 hours
+        if (now - self._last_orphan_cleanup) > 21600:
+            self._cleanup_orphaned_db_rows()
+
         resolved = []
 
         for setup_id, pos in self._positions.items():
@@ -400,6 +407,17 @@ class ShadowMonitor:
         )
 
         self._notify_resolve(pos, outcome, pnl_usd, pnl_pct, status)
+
+    def _cleanup_orphaned_db_rows(self) -> None:
+        """Resolve DB rows stuck with NULL outcome — lost on restart."""
+        self._last_orphan_cleanup = time.time()
+        max_age = settings.SHADOW_ENTRY_TIMEOUT_HOURS + settings.SHADOW_TRADE_TIMEOUT_HOURS
+        if self._data_service and self._data_service.postgres:
+            count = self._data_service.postgres.resolve_orphaned_shadow_setups(
+                max_age_hours=max_age,
+            )
+            if count:
+                logger.info(f"Cleaned up {count} orphaned shadow DB rows on startup")
 
     # --- Redis persistence ---
 
