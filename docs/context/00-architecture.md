@@ -1,5 +1,5 @@
 # Arquitectura del Sistema
-> Última actualización: 2026-03-31
+> Última actualización: 2026-04-16
 > Estado: **5/5 capas implementadas** — pipeline completo Data → Strategy → Risk → Execution. AI filter currently bypassed for all active setups (setup_a in AI_BYPASS_SETUP_TYPES, setup_d variants in QUICK_SETUP_TYPES). ENABLED_SETUPS: setup_a, setup_d_choch. Setup B (0-7.7% WR), D_bos (20-33% WR) and F (34.8% WR) disabled. OB selector upgraded with composite scoring. PnL tracking con fee deduction (0.05% per side). Signal mode disponible (`SIGNAL_ONLY=true`). **ML instrumentation** active: `ml_setups` table captures structured features at detection + outcomes at close.
 
 ## Qué hace (para entenderlo rápido)
@@ -306,7 +306,9 @@ Desde 2026-03-13, el bot registra cada setup detectado con features estructurado
 - Missingness flags (has_funding, has_oi, has_cvd, has_news, has_whales)
 - Risk context (capital, open_positions, daily_dd, weekly_dd)
 - Guardian shadow triggers (counter, momentum, stall, cvd) — set during trade lifetime for feature importance
-- `feature_version` (currently 14; incrementar en `ML_FEATURE_VERSION` cuando cambien params de estrategia)
+- Momentum oscillators (v15+): WaveTrend (Cipher B core) — `wt_wt1`, `wt_wt2`, `wt_cross`, `wt_zone`, `wt_aligned`
+- Technical indicators (v16+): ADX(14) + DI — `adx_14`, `plus_di_14`, `minus_di_14`, `adx_trend_strength`, `adx_direction`; Bollinger(20,2) — `bb_width_pct`, `bb_percent_b`, `bb_squeeze_percentile`, `bb_squeeze`; Stochastic RSI — `stoch_rsi_k`, `stoch_rsi_d`, `stoch_rsi_zone`, `stoch_rsi_cross`
+- `feature_version` (currently 16; incrementar en `ML_FEATURE_VERSION` cuando cambien params de estrategia)
 - `experiment_id` (currently `shadow_tuning_v16_2026_04_16`; tracks parameter regime)
 
 **Al resolver:**

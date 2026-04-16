@@ -406,7 +406,7 @@ def _ml_log_setup(setup, candle: Candle) -> None:
     try:
         snapshot = _data_service.get_market_snapshot(candle.pair)
         current_price = candle.close
-        recent_candles = _data_service.get_candles(candle.pair, candle.timeframe, count=50)
+        recent_candles = _data_service.get_candles(candle.pair, candle.timeframe, count=100)
 
         # Orderbook snapshot for spread/imbalance features
         ob_snapshot = None

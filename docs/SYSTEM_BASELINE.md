@@ -250,7 +250,7 @@ Reference for VPS sizing when migrating from Nitro 5.
 
 ## 7. ML Feature Versioning
 
-**Current version:** 14 (set in `config/settings.py:ML_FEATURE_VERSION`)
+**Current version:** 16 (set in `config/settings.py:ML_FEATURE_VERSION`)
 **Storage:** `ml_setups.feature_version` column in PostgreSQL
 **Query training data:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL AND outcome_type NOT IN ('shadow_dedup', 'data_blocked', 'shadow_risk_rejected', 'risk_rejected', 'regime_extreme_fear', 'shadow_orphaned', 'filled_orphaned')`
 **Experiment tracking:** `experiment_id` column (migration 15). Current: `freeze_v15_2026_04_16`. Filter: `WHERE experiment_id = 'freeze_v15_2026_04_16'` for clean freeze data.
@@ -270,6 +270,8 @@ Reference for VPS sizing when migrating from Nitro 5.
 | v12 | 04-13+ | C/E/H removed, OI cascade confluence booster, sweep touch_count, CHoCH displacement filter | **TRAINING READY** |
 | v13 | 04-14+ | RSI(14) + RSI zone + RSI divergence, avg_body_ratio (candle decisiveness) | **TRAINING READY** |
 | v14 | 04-14+ | Orderbook spread/imbalance, BTC correlation (return + vol ratio), volatility regime, trading session | **TRAINING READY** |
+| v15 | 04-16+ | WaveTrend (Cipher B core): wt_wt1/wt_wt2 oscillator, wt_cross (bull/bear), wt_zone (oversold/overbought/neutral), wt_aligned (cross matches setup direction in extreme zone) | **TRAINING READY** |
+| v16 | 04-16+ | ADX(14) + DI+/DI- (trend strength + direction), Bollinger(20,2) width/%B/squeeze percentile, Stochastic RSI(14,14,3,3) %K/%D/zone/cross | **TRAINING READY** |
 
 **When to bump:** Increment `ML_FEATURE_VERSION` whenever strategy params change in ways that alter feature semantics (OB scoring weights, PD rules, confluence logic, threshold changes).
 
@@ -278,6 +280,28 @@ Reference for VPS sizing when migrating from Nitro 5.
 ---
 
 ## 8. Changelog
+
+### 2026-04-16 — ML Feature Expansion: WT + ADX + BB + StochRSI (v15 → v16)
+**ML_FEATURE_VERSION:** 14 → 15 → 16
+**EXPERIMENT_ID:** unchanged (`shadow_tuning_v16_2026_04_16`)
+
+**What changed:**
+- **v15: WaveTrend (Cipher B core)** added to `shared/ml_features.py`. Helper `_compute_wavetrend()` with LazyBear Pine formula (n1=10, n2=21). Features: `wt_wt1`, `wt_wt2`, `wt_cross` (bullish/bearish), `wt_zone` (oversold/overbought/neutral), `wt_aligned` (cross matches setup direction in opposite extreme zone).
+- **v16: ADX + Bollinger + Stochastic RSI** added. Helpers `_compute_adx()` (Wilder 14), `_compute_bollinger()` (20,2), `_compute_stoch_rsi()` (14,14,3,3). 14 new features: `adx_14`, `plus_di_14`, `minus_di_14`, `adx_trend_strength`, `adx_direction`, `bb_width_pct`, `bb_percent_b`, `bb_squeeze_percentile`, `bb_squeeze`, `stoch_rsi_k`, `stoch_rsi_d`, `stoch_rsi_zone`, `stoch_rsi_cross`.
+
+**Why:**
+- Gap analysis vs existing features: WT covers momentum-exhaustion timing (RSI too slow for reversal detection). ADX covers trend strength (missing — had `volatility_regime_ratio` but no directional strength). BBW covers squeeze/expansion (missing — had `atr_pct` for absolute vol only). StochRSI covers fast momentum reversal (complements RSI with leading signal).
+- MACD/Ichimoku/Supertrend/Parabolic SAR rejected as redundant or poorly suited to crypto volatility.
+
+**Expected impact:**
+- Richer feature space for meta-labeling model (AFML roadmap Phase 2). Discretionary gate still fully structural — these are ML-only inputs.
+- No strategy behavior change (pure observability). Shadow data under `experiment_id=shadow_tuning_v16_2026_04_16` will mix v14/v15/v16 rows; filter by `feature_version >= 16` for cleanest training set once enough outcomes resolved.
+
+**Schema migration 16:** added 18 ml_setups columns (wt_*, adx_*, plus_di_14, minus_di_14, bb_*, stoch_rsi_*). INSERT statement in `data_store.py:insert_ml_setup()` updated accordingly. Without this, features were computed in `ml_features.py` but silently discarded at DB insert.
+
+**Operational:** `main.py` `recent_candles` count raised 50 → 100 to guarantee enough history for ADX (42 bars min) and BB (40) even during backfill phase. Features gracefully return None if history insufficient — no failure path.
+
+**Tests:** 785/785 full suite pass. Fixed stale `test_structural_tp_with_volume_profile` assertion (`tp2 >= 52500` → `>= 52000`) after SETUP_TP2_RR["setup_a"] was lowered from 2.5 to 2.0 in earlier April shadow tuning.
 
 ### 2026-04-16 — Shadow Tuning v16: Data Quality Over Freeze Purity
 **EXPERIMENT_ID:** `shadow_tuning_v16_2026_04_16`

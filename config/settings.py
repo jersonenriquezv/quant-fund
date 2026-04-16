@@ -880,7 +880,7 @@ class Settings:
     # ========================
     # Feature version — increment when strategy params change in ways that
     # alter feature semantics (e.g. changing OB scoring weights, PD rules).
-    ML_FEATURE_VERSION: int = 14  # v14: orderbook spread/imbalance, BTC correlation, vol regime, session
+    ML_FEATURE_VERSION: int = 16  # v16: ADX/DI trend strength, Bollinger width/%B/squeeze, Stochastic RSI
 
     # Experiment ID — tracks which parameter regime generated a sample.
     # feature_version = what columns mean. experiment_id = what rules generated sample.
