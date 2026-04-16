@@ -22,14 +22,14 @@
 ### Setup Status
 | Setup | Status | Type | Historical WR |
 |-------|--------|------|---------------|
-| A (Sweep+CHoCH+OB) | **SHADOW** | swing, data collection | 45-50% |
-| B (BOS+FVG+OB) | **SHADOW** | swing, data collection | 0-7.7% |
+| A (Sweep+CHoCH+OB) | **SHADOW (short only)** | swing, long disabled (5% WR 1/20) | short 33%, long 5% |
+| B (BOS+FVG+OB) | **SHADOW** | swing, max entry dist 2% (was 3%) | 0-7.7% |
 | C (Funding Squeeze) | **DISABLED** | signal folded into confluence | 0 resolved |
 | D_choch (LTF CHoCH) | **SHADOW** | quick, data collection | 75% backtest |
-| D_bos (LTF BOS) | **SHADOW** | quick, data collection | 20-33% |
+| D_bos (LTF BOS) | **SHADOW** | quick, best shadow performer | 50% (2/4 shadow) |
 | E (Cascade Reversal) | **DISABLED** | signal folded into confluence | 0W/1L |
-| F (Pure OB Retest) | **SHADOW** | swing, was live until 04-15 | 33% (6 trades) |
-| G (Breaker Block) | **SHADOW** | swing, data collection | unvalidated |
+| F (Pure OB Retest) | **SHADOW** | swing, was live until 04-15 | 50% (1TP/1SL live) |
+| G (Breaker Block) | **DISABLED** | 0/4 WR. Removed 04-16. | 0% |
 | H (Momentum/Impulse) | **DISABLED** | — | 10.7% WR (28 trades). Removed 04-13. |
 
 ### Risk Guardrails
@@ -279,25 +279,36 @@ Reference for VPS sizing when migrating from Nitro 5.
 
 ## 8. Changelog
 
-### 2026-04-16 — FREEZE PROTOCOL v15
-**Start:** 2026-04-16 | **End:** 2026-04-30 (14 days)
-**EXPERIMENT_ID:** `freeze_v15_2026_04_16`
+### 2026-04-16 — Shadow Tuning v16: Data Quality Over Freeze Purity
+**EXPERIMENT_ID:** `shadow_tuning_v16_2026_04_16`
 **ML_FEATURE_VERSION:** 14 (unchanged)
-**Mode:** shadow only (all 6 setups: A, B, D_bos, D_choch, F, G)
+**Mode:** shadow only (5 setups: A-short, B, D_bos, D_choch, F)
 
-**Pre-freeze changes:**
+**Why freeze was amended (same day):**
+Pipeline diagnosis showed freeze was collecting garbage: setup_a long 5% WR (1/20), setup_b entries 2-3% from market (never fill), setup_g 0/4 WR. Collecting more data on broken setups = more garbage. Amended to focus on viable setups.
+
+**Changes from freeze_v15:**
+- **setup_a long DISABLED** from shadow: 5% WR (1/20) — proven systematically broken. Short-only (33% WR). New `SHADOW_DIRECTION_FILTER` setting.
+- **setup_g REMOVED** from shadow: 0/4 WR, breaker blocks too weak.
+- **SETUP_B_MAX_ENTRY_DISTANCE_PCT**: 3% → 2%. Entries >2% never fill — kill at detection.
+- **SHADOW_ENTRY_TIMEOUT_HOURS**: 24 → 12. Stale OBs meaningless after 12h. Faster slot rotation.
+- **Shadow dedup staleness**: Unfilled shadows >4h old no longer block new shadows. Prevents 1 stale shadow from locking out all detections for 12-24h.
+
+**STILL FROZEN:**
+- Detection logic, feature extraction, R:R, confluence thresholds
+- Only data collection plumbing + proven-broken setup filtering changed
+
+**EXIT CRITERIA:** 100+ resolved shadow outcomes OR 30 days. Daily `/pipeline-diagnosis`.
+
+### 2026-04-16 — FREEZE PROTOCOL v15 (superseded by v16 same day)
+**EXPERIMENT_ID:** `freeze_v15_2026_04_16`
+**Superseded:** Amended to shadow_tuning_v16 after pipeline diagnosis showed garbage data collection.
+
+**Pre-freeze changes (still apply):**
 - **4 execution bugs fixed**: `filled_qty` crash, `cancel_order` args swapped, PnL zero-check (breakeven=None), orphan ML mislabel (`filled_timeout`→`filled_orphaned`)
 - **Shadow TP1 tracking**: `_check_tp_sl()` now simulates breakeven SL move when TP1 touched. New `shadow_breakeven` outcome. Fixes artificially low shadow WR — trades that would be breakeven in live were counted as SL losses.
 - **F&G regime gate REMOVED**: Retail signal was blocking institutional SMC setups during fear. `fear_greed_score` kept as ML feature.
 - **`experiment_id` column added** (migration 15): Tracks which parameter regime generated each sample. `feature_version` = what columns mean, `experiment_id` = what rules generated sample.
-
-**FROZEN — no changes allowed:**
-- Thresholds, R:R, distances, confluences
-- Setup detection logic, shadow filters, dedup TTL
-- Feature extraction
-
-**ALLOWED:** Bug fixes (crash, data loss, wrong labels), infrastructure (Docker, monitoring, dashboard)
-**EXIT CRITERIA:** 100+ resolved shadow outcomes OR 14 days. Daily `/pipeline-diagnosis`.
 
 ### 2026-04-15 — Shadow Data Quality: Orphan Fix + Parameter Tuning
 **What changed:**

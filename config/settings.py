@@ -32,6 +32,13 @@ class Settings:
     OKX_SANDBOX: bool = os.getenv("OKX_SANDBOX", "true").lower() == "true"
 
     # ========================
+    # EXCHANGE — BYBIT (read-only, manual trade log sync)
+    # ========================
+    BYBIT_API_KEY: str = os.getenv("BYBIT_API_KEY", "")
+    BYBIT_API_SECRET: str = os.getenv("BYBIT_API_SECRET", "")
+    BYBIT_TESTNET: bool = os.getenv("BYBIT_TESTNET", "false").lower() == "true"
+
+    # ========================
     # APIs EXTERNAS
     # ========================
     ETHERSCAN_API_KEY: str = os.getenv("ETHERSCAN_API_KEY", "")
@@ -254,7 +261,7 @@ class Settings:
     SETUP_B_MAX_BOS_AGE_CANDLES: int = 12
     # Max distance from current price to entry (3% — tightened from 4%).
     # 4% too far: contributes to unfilled entries. 3% still covers structural OBs.
-    SETUP_B_MAX_ENTRY_DISTANCE_PCT: float = 0.03
+    SETUP_B_MAX_ENTRY_DISTANCE_PCT: float = 0.02  # 2% (was 3% — entries >2% never fill)
 
     # --- Enabled setups ---
     # Only these setup types will be traded. Others are detected but discarded.
@@ -849,16 +856,23 @@ class Settings:
     # Feeds ml_setups with labeled outcomes for future feature importance analysis.
     # Setups NOT in this list execute normally through the live pipeline.
     SHADOW_MODE_SETUPS: list = field(default_factory=lambda: [
-        "setup_a", "setup_b", "setup_d_choch", "setup_d_bos", "setup_f", "setup_g",
+        "setup_a", "setup_b", "setup_d_choch", "setup_d_bos", "setup_f",
+        # "setup_g" — removed 2026-04-16: 0/4 WR. Breaker blocks too weak.
         # "setup_c" — removed 2026-04-13: no OB anchor. Signal is now a confluence booster.
         # "setup_e" — removed 2026-04-13: no OB anchor. Signal is now a confluence booster.
         # "setup_h" — removed 2026-04-13: 0/13 WR. Retail momentum chase.
     ])
+    # Direction filter for shadow mode — restrict setups to specific directions.
+    # Omitted setups track both directions. Empty list = blocked entirely.
+    # setup_a long: 5% WR (1/20) — proven broken. Short only (33% WR, 1/3).
+    SHADOW_DIRECTION_FILTER: dict = field(default_factory=lambda: {
+        "setup_a": ["short"],
+    })
     # Fictional capital for shadow mode position sizing ($500 USDT).
     # Shadow R:R and position sizes reflect realistic trades you'd take later.
     SHADOW_CAPITAL: float = float(os.getenv("SHADOW_CAPITAL", "500"))
     # Shadow mode timeout (hours) — max time to wait for theoretical fill + outcome
-    SHADOW_ENTRY_TIMEOUT_HOURS: int = int(os.getenv("SHADOW_ENTRY_TIMEOUT_HOURS", "24"))
+    SHADOW_ENTRY_TIMEOUT_HOURS: int = int(os.getenv("SHADOW_ENTRY_TIMEOUT_HOURS", "12"))
     SHADOW_TRADE_TIMEOUT_HOURS: int = int(os.getenv("SHADOW_TRADE_TIMEOUT_HOURS", "12"))
 
     # ========================
@@ -871,7 +885,7 @@ class Settings:
     # Experiment ID — tracks which parameter regime generated a sample.
     # feature_version = what columns mean. experiment_id = what rules generated sample.
     # Same features + different gates = contaminated dataset without this.
-    EXPERIMENT_ID: str = os.getenv("EXPERIMENT_ID", "freeze_v15_2026_04_16")
+    EXPERIMENT_ID: str = os.getenv("EXPERIMENT_ID", "shadow_tuning_v16_2026_04_16")
 
     # ========================
     # LIQUIDATION HEATMAP

@@ -101,15 +101,22 @@ class ShadowMonitor:
         if setup.setup_id in self._positions:
             return False
 
-        # Dedup: only block if we already have an UNFILLED shadow for the
+        # Dedup: only block if we already have a RECENT UNFILLED shadow for the
         # same pair/direction/setup_type with a similar entry price (<1% diff).
         # Once filled (tracking outcome), allow new shadows — they represent
         # a new trade idea at a different price level.
+        # Staleness: unfilled shadows older than 4h don't block — OB/FVG has
+        # likely shifted, new detection at similar price is a fresh data point.
+        now = time.time()
+        _DEDUP_STALENESS_SECONDS = 4 * 3600  # 4 hours
         for pos in self._positions.values():
             if (pos.pair == setup.pair
                     and pos.direction == setup.direction
                     and pos.setup_type == setup.setup_type
                     and not pos.filled):
+                age_s = now - pos.detection_time
+                if age_s > _DEDUP_STALENESS_SECONDS:
+                    continue  # Stale unfilled — don't block
                 price_diff = abs(pos.entry_price - setup.entry_price) / pos.entry_price
                 if price_diff < 0.01:
                     logger.debug(

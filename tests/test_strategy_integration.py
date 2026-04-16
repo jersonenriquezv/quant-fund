@@ -463,9 +463,11 @@ class TestEnabledSetups:
         assert len(settings.ENABLED_SETUPS) == 0
 
     def test_shadow_setups_active(self):
-        """A, B, D_choch, D_bos, F, G should be shadow-tracked."""
-        for s in ["setup_a", "setup_b", "setup_d_choch", "setup_d_bos", "setup_f", "setup_g"]:
+        """A, B, D_choch, D_bos, F should be shadow-tracked."""
+        for s in ["setup_a", "setup_b", "setup_d_choch", "setup_d_bos", "setup_f"]:
             assert s in settings.SHADOW_MODE_SETUPS, f"{s} missing from shadow"
+        # setup_g removed 04-16: 0/4 WR, breaker blocks too weak
+        assert "setup_g" not in settings.SHADOW_MODE_SETUPS
 
     def test_setup_h_removed(self):
         """Setup H removed (04-13): 0/13 WR. Retail momentum chase — adverse selection."""

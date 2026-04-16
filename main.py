@@ -221,6 +221,15 @@ async def on_candle_confirmed(candle: Candle) -> None:
 
     # --- Shadow mode: data collection — track ALL setups, minimize filtering ---
     if setup.setup_type in settings.SHADOW_MODE_SETUPS and _shadow_monitor is not None:
+        # Direction filter: reject proven-broken directions (e.g. setup_a long 5% WR)
+        allowed_dirs = settings.SHADOW_DIRECTION_FILTER.get(setup.setup_type)
+        if allowed_dirs is not None and setup.direction not in allowed_dirs:
+            logger.debug(
+                f"Shadow direction filter: {setup.setup_type} {setup.direction} "
+                f"not in {allowed_dirs} — skipping"
+            )
+            _ml_resolve_outcome(setup.setup_id, "shadow_direction_filtered")
+            return
         # Risk check: run but do NOT gate on result. Log as ML feature only.
         risk_approval = None
         if _risk_service is not None:
