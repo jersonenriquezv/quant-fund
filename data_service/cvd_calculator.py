@@ -32,21 +32,14 @@ from config.settings import settings
 from shared.logger import setup_logger
 from shared.models import CVDSnapshot
 from data_service.data_integrity import CVDState, CONTRACT_SIZES
+from data_service.metadata import active_okx_instruments, assert_supported_trading_pairs
 
 logger = setup_logger("data_service")
 
 _OKX_WS_URL = "wss://ws.okx.com:8443/ws/v5/public"
 
-# OKX instrument IDs for our pairs
-_INST_IDS = {
-    "BTC/USDT": "BTC-USDT-SWAP",
-    "ETH/USDT": "ETH-USDT-SWAP",
-    "SOL/USDT": "SOL-USDT-SWAP",
-    "DOGE/USDT": "DOGE-USDT-SWAP",
-    "XRP/USDT": "XRP-USDT-SWAP",
-    "LINK/USDT": "LINK-USDT-SWAP",
-    "AVAX/USDT": "AVAX-USDT-SWAP",
-}
+assert_supported_trading_pairs()
+_INST_IDS = active_okx_instruments()
 
 # Reverse map
 _INST_TO_PAIR = {v: k for k, v in _INST_IDS.items()}
@@ -405,6 +398,7 @@ class CVDCalculator:
             cvd_1h=cvd_1h,
             buy_volume=buy_vol,
             sell_volume=sell_vol,
+            warm_windows=tuple(sorted(self._warm_windows.get(pair, set()))),
         )
 
     def _prune_old_trades(self, pair: str, now_ms: int) -> None:

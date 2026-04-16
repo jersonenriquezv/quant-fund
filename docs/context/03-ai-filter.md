@@ -176,7 +176,7 @@ Antes de llamar a Claude API, `main.py:_pre_filter_for_claude()` ejecuta 3 check
 - Si `snapshot.funding` es None → skip
 
 ### Check 2: Fear & Greed extreme contra dirección
-- Long + `F&G < NEWS_EXTREME_FEAR_THRESHOLD` (15) → rechaza ("Extreme Fear — rejecting long")
+- Long + `F&G < NEWS_EXTREME_FEAR_THRESHOLD` (5) → rechaza ("Extreme Fear — rejecting long")
 - Short + `F&G > NEWS_EXTREME_GREED_THRESHOLD` (85) → rechaza ("Extreme Greed — rejecting short")
 - Si `snapshot.news_sentiment` es None → skip
 

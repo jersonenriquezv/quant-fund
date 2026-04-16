@@ -15,8 +15,15 @@ from unittest.mock import MagicMock
 import pytest
 
 from shared.models import TradeSetup, MarketSnapshot, FundingRate, OpenInterest, CVDSnapshot
-from shared.ml_features import extract_setup_features, extract_risk_context
-from tests.conftest import make_market_snapshot
+from shared.ml_features import (
+    _compute_adx,
+    _compute_bollinger,
+    _compute_stoch_rsi,
+    _compute_wavetrend,
+    extract_risk_context,
+    extract_setup_features,
+)
+from tests.conftest import make_candle_series, make_market_snapshot
 
 
 def _make_setup(**kwargs) -> TradeSetup:
@@ -175,6 +182,111 @@ class TestExtractSetupFeatures:
         features = extract_setup_features(setup, None, 2005.0)
         assert features["has_oi_flush"] is True
         assert features["oi_flush_usd"] == 50000.0
+
+
+class TestWaveTrend:
+    def test_insufficient_candles_returns_none(self):
+        candles = make_candle_series(count=20)
+        assert _compute_wavetrend(candles) is None
+
+    def test_returns_four_tuple(self):
+        candles = make_candle_series(count=60)
+        result = _compute_wavetrend(candles)
+        assert result is not None
+        assert len(result) == 4
+        wt1, wt2, prev_wt1, prev_wt2 = result
+        assert all(isinstance(v, float) for v in result)
+
+    def test_uptrend_produces_positive_wt(self):
+        # Sustained uptrend → wt1 should go positive eventually
+        candles = make_candle_series(
+            count=80, price_changes=[0.5] * 79, base_price=100.0
+        )
+        result = _compute_wavetrend(candles)
+        assert result is not None
+        wt1, _, _, _ = result
+        # Strong uptrend should push wt1 above zero (may saturate at +60+)
+        assert wt1 > 0
+
+    def test_wt_features_populated_with_candles(self):
+        setup = _make_setup()
+        candles = make_candle_series(count=80, price_changes=[0.3] * 79)
+        features = extract_setup_features(setup, None, 2005.0, candles)
+        assert features["wt_wt1"] is not None
+        assert features["wt_wt2"] is not None
+        assert features["wt_zone"] in ("oversold", "overbought", "neutral")
+
+    def test_wt_features_none_without_candles(self):
+        setup = _make_setup()
+        features = extract_setup_features(setup, None, 2005.0)
+        assert features["wt_wt1"] is None
+        assert features["wt_cross"] is None
+        assert features["wt_zone"] is None
+
+
+class TestADX:
+    def test_insufficient_candles(self):
+        candles = make_candle_series(count=20)
+        assert _compute_adx(candles) is None
+
+    def test_strong_uptrend_high_plus_di(self):
+        candles = make_candle_series(count=80, price_changes=[0.5] * 79)
+        result = _compute_adx(candles, period=14)
+        assert result is not None
+        adx, plus_di, minus_di = result
+        assert adx >= 0
+        assert plus_di > minus_di  # uptrend → +DI dominates
+
+    def test_adx_features_in_extract(self):
+        setup = _make_setup()
+        candles = make_candle_series(count=80, price_changes=[0.3] * 79)
+        features = extract_setup_features(setup, None, 2005.0, candles)
+        assert features["adx_14"] is not None
+        assert features["adx_trend_strength"] in ("weak", "moderate", "strong", "very_strong")
+        assert features["adx_direction"] in ("bullish", "bearish")
+
+
+class TestBollinger:
+    def test_insufficient_candles(self):
+        candles = make_candle_series(count=20)
+        assert _compute_bollinger(candles) is None
+
+    def test_returns_three_values(self):
+        candles = make_candle_series(count=60)
+        result = _compute_bollinger(candles, period=20)
+        assert result is not None
+        bb_width, percent_b, percentile = result
+        assert bb_width >= 0
+        assert 0 <= percentile <= 1
+
+    def test_bb_features_in_extract(self):
+        setup = _make_setup()
+        candles = make_candle_series(count=60)
+        features = extract_setup_features(setup, None, 2005.0, candles)
+        assert features["bb_width_pct"] is not None
+        assert features["bb_percent_b"] is not None
+        assert features["bb_squeeze"] in (True, False)
+
+
+class TestStochRSI:
+    def test_insufficient_candles(self):
+        candles = make_candle_series(count=20)
+        assert _compute_stoch_rsi(candles) is None
+
+    def test_returns_four_tuple(self):
+        candles = make_candle_series(count=80)
+        result = _compute_stoch_rsi(candles)
+        assert result is not None
+        k, d, prev_k, prev_d = result
+        assert 0 <= k <= 100
+        assert 0 <= d <= 100
+
+    def test_stoch_rsi_features_in_extract(self):
+        setup = _make_setup()
+        candles = make_candle_series(count=80)
+        features = extract_setup_features(setup, None, 2005.0, candles)
+        assert features["stoch_rsi_k"] is not None
+        assert features["stoch_rsi_zone"] in ("oversold", "overbought", "neutral")
 
 
 class TestExtractRiskContext:

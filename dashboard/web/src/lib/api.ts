@@ -356,3 +356,99 @@ export interface CalcAdvice {
   message: string;
   action: string | null;
 }
+
+// === Bybit manual trade log ===
+
+export interface BybitAnnotation {
+  id: number;
+  symbol: string;
+  side: string;
+  opened_at: string;
+  entry_price: number | null;
+  size: number | null;
+  leverage: number | null;
+  notional_value: number | null;
+  setup_type: string | null;
+  confluences: string[] | null;
+  confidence: number | null;
+  thesis_pre: string | null;
+  lesson_post: string | null;
+  emotional_state: string | null;
+  grade_self: string | null;
+  screenshot_url: string | null;
+  context_snapshot: Record<string, unknown> | null;
+  closed_at: string | null;
+  exit_price: number | null;
+  pnl_usd: number | null;
+  pnl_pct: number | null;
+  status: string;
+  annotated_at: string | null;
+}
+
+export interface BybitAnnotationPatch {
+  setup_type?: string | null;
+  confluences?: string[] | null;
+  confidence?: number | null;
+  thesis_pre?: string | null;
+  lesson_post?: string | null;
+  emotional_state?: string | null;
+  grade_self?: string | null;
+  screenshot_url?: string | null;
+}
+
+export interface BybitSummary {
+  days: number;
+  totals: {
+    closed: number;
+    open: number;
+    wins: number;
+    losses: number;
+    total_pnl: number;
+    avg_pnl: number;
+    annotated: number;
+    graded: number;
+    win_rate_pct: number | null;
+  };
+  by_setup: Array<{ setup_type: string; n: number; pnl: number; wins: number }>;
+}
+
+export interface BybitEquityPoint {
+  t: string;
+  cumulative_pnl: number;
+  trade_pnl: number;
+}
+
+export interface BybitPendingOrder {
+  id: number;
+  order_id: string;
+  symbol: string;
+  side: string;
+  order_type: string | null;
+  stop_order_type: string | null;
+  qty: number | null;
+  price: number | null;
+  trigger_price: number | null;
+  status: string;
+  placed_at: string;
+  filled_at: string | null;
+  cancelled_at: string | null;
+  setup_type: string | null;
+  confluences: string[] | null;
+  confidence: number | null;
+  thesis_pre: string | null;
+  emotional_state: string | null;
+  screenshot_url: string | null;
+  context_snapshot: Record<string, unknown> | null;
+  annotation_id: number | null;
+  placed_to_fill_sec: number | null;
+  placed_to_cancel_sec: number | null;
+}
+
+export interface BybitPendingPatch {
+  setup_type?: string | null;
+  confluences?: string[] | null;
+  confidence?: number | null;
+  thesis_pre?: string | null;
+  emotional_state?: string | null;
+  screenshot_url?: string | null;
+}

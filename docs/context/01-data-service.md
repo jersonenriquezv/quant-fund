@@ -1,5 +1,5 @@
 # Data Service
-> Last updated: 2026-03-31
+> Last updated: 2026-04-15
 > Status: implemented (complete, running in Docker). Audited — 4 CRITICAL fixes applied. Whale tracking with USD enrichment, 3-tier Telegram notifications, new whale wallets (Trump, Jump Trading, a16z, FTX/Alameda, UK Gov BTC). News sentiment (Fear & Greed + headlines) as new data layer. HTF campaigns: 1D candle support + campaigns table.
 
 ## What it does (30 seconds)
@@ -23,14 +23,14 @@ Without real-time market data, the Strategy Service has nothing to analyze. With
 | Etherscan REST | ETH whale movements | Transaction polling, 5 calls/sec limit | Every 5 minutes |
 | mempool.space REST | BTC whale movements | UTXO transaction polling, no API key | Every 5 minutes |
 | alternative.me REST | Fear & Greed Index | `GET /fng/?limit=1`, no API key | Every 5 minutes (cached 30min) |
-| CryptoCompare REST | Crypto news headlines | `GET /data/v2/news/?lang=EN&categories={BTC,ETH}`, free, no API key | Every 5 minutes (cached 5min) |
+| CryptoCompare REST | Crypto news headlines | `GET /data/v2/news/?lang=EN&categories={BTC,ETH}`. Requires API key for reliable results; handler returns `[]` if unavailable. | Every 5 minutes (cached 5min) |
 
 ### Pipeline Flow
 ```
 1. Startup: connect Redis + PostgreSQL
 2. Backfill 500 candles per pair/timeframe via OKX REST (ccxt) → store in PostgreSQL + memory
-3. Connect OKX WebSocket → candle channels (16 total: 4 pairs × 4 timeframes)
-4. Connect OKX WebSocket → trades channel (4 pairs) for CVD calculation
+3. Connect OKX WebSocket → candle channels (35 total: 7 pairs × 5 timeframes)
+4. Connect OKX WebSocket → trades channel (7 pairs) for CVD calculation
 5. Start Etherscan polling loop (whale wallets every 5 min)
 6. Start news sentiment polling (F&G + headlines every 5 min)
 7. Start funding rate polling (every 8 hours) and OI polling (every 5 min)
@@ -45,7 +45,7 @@ All 5 layers run in the same Python process. The Data Service exposes methods th
 ## Implemented Files
 
 ### `shared/models.py` — Typed Dataclasses
-12 frozen dataclasses shared across all layers:
+14 dataclasses shared across all layers:
 - **Candle** — OHLCV with pair, timeframe, confirmed flag
 - **FundingRate** — current rate + next estimated + next funding time + `fetched_at` (actual fetch time, default 0 for backward compat)
 - **OpenInterest** — in contracts, base currency, and USD
@@ -93,13 +93,13 @@ Eight methods:
 
 Auth: API key + secret + passphrase via ccxt. Market data is public, but auth is needed for trading.
 Instrument format: `BTC-USDT-SWAP` (hyphens). ccxt translates `BTC/USDT:USDT` internally.
-Supported pairs: BTC-USDT-SWAP, ETH-USDT-SWAP, SOL-USDT-SWAP, DOGE-USDT-SWAP.
-Contract sizes: BTC=0.01, ETH=0.1, SOL=1.0, DOGE=1000.
+Supported pairs: BTC, ETH, SOL, DOGE, XRP, LINK, AVAX (`/USDT` linear swaps).
+Instrument IDs and contract sizes live in `data_service/metadata.py`; modules fail fast if `TRADING_PAIRS` references unsupported metadata.
 Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, future timestamp → WARNING. All invalid data discarded.
 
 ### `data_service/websocket_feeds.py` — OKX Candle WebSocket
 - Connects to `wss://ws.okx.com:8443/ws/v5/business` (candle channels live here, NOT on `/public`)
-- Subscribes to 16 channels (base): 4 instIds × 4 timeframes (candle5m, candle15m, candle1H, candle4H). When HTF campaigns enabled, adds candle1D (+4 channels).
+- Subscribes to 35 channels: 7 instIds × 5 timeframes (candle5m, candle15m, candle1H, candle4H, candle1D).
 - **Candle confirmation:** OKX sends `confirm="1"` when candle is closed — only these are processed
 - **Volume units:** Uses `candle_data[6]` (volCcy = base currency) instead of `candle_data[5]` (vol = contracts). This matches ccxt REST backfill which returns volume in base currency. OKX candle format: `[ts, o, h, l, c, vol(contracts), volCcy(base), volCcyQuote(quote), confirm]`. Fix applied 2026-03-09 — previously used contracts, causing 100x volume mismatch for BTC (ctVal=0.01) and 10x for ETH (ctVal=0.1), which broke OB volume filter detection.
 - Stores last 600 candles per pair/timeframe in memory
@@ -111,13 +111,13 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Handles OKX text "pong" keepalive messages
 - **OHLC sanity:** Rejects candles where `low > min(open,close)` or `high < max(open,close)`. Tracks `_bad_candle_counts` per pair/tf.
 - **Live candle tracking:** `_live_candle_count` resets to 0 on each connect. Warmup requires ≥1 live candle before `RUNNING`.
-- **Reconnect callback:** `_on_reconnect_cb` fires after WS reconnect (set by DataService for gap backfill).
+- **Reconnect callback:** `_on_reconnect_cb` fires after any established WS connection drops. DataService uses it for RECOVERING state, circuit breaker accounting, and gap backfill.
 - Reconnection: exponential backoff 1s → 2s → 4s → ... → 60s max
 - **Metrics callback:** Optional `metrics_callback` parameter. Emits `ws_reconnection` metric on each disconnect (for Grafana System Health dashboard).
 
 ### `data_service/cvd_calculator.py` — OKX Trades WebSocket + CVD
 - Connects to `wss://ws.okx.com:8443/ws/v5/public` (trades are on `/public`, separate connection from candle feed on `/business`)
-- Subscribes to `trades` channel for BTC-USDT-SWAP, ETH-USDT-SWAP, SOL-USDT-SWAP, and DOGE-USDT-SWAP
+- Subscribes to `trades` channel for all configured pairs in `TRADING_PAIRS`
 - Side: `"buy"` or `"sell"` directly from OKX (no mapping needed)
 - **Batching:** Accumulates raw trades in deques, recalculates every 5 seconds
 - Rolling windows: 5 minutes, 15 minutes, 1 hour
@@ -126,8 +126,13 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Auto-prunes trades older than 1 hour
 - **Contract size normalization:** Trades from OKX are in contracts. Normalized to base currency using `CONTRACT_SIZES` from `data_integrity.py` (BTC: ×0.01, ETH: ×0.1, etc.).
 - **CVD state machine:** Per-pair `CVDState` (WARMING_UP → VALID → INVALID on disconnect → WARMING_UP on reconnect). On reconnect, trade buffer is flushed to prevent stale trades contaminating CVD windows. `get_cvd()` returns `None` when state ≠ VALID.
-- **Per-window progressive warmup:** 5m window valid after 5 min of trades (transitions to VALID immediately — unblocks setups), 15m after 15 min, 1h after 60 min. Each milestone logged. `get_warm_windows(pair)` returns set of warm windows. Replaces single `CVD_WARMUP_SECONDS` (was 3600s = blocked all trading for 1h on startup).
+- **Per-window progressive warmup:** 5m window valid after 5 min of trades (transitions to VALID immediately — unblocks setups), 15m after 15 min, 1h after 60 min. Each `CVDSnapshot` carries `warm_windows`; Strategy only uses 15m/1h CVD signals when those windows are warm.
 - Public methods: `get_cvd(pair)` → `CVDSnapshot | None`, `get_cvd_state(pair)` → `CVDState`, `get_warm_windows(pair)` → `set[str]`
+
+### `data_service/metadata.py` — Exchange Metadata
+- Single source for OKX instrument IDs and perpetual contract sizes.
+- `active_okx_instruments()` derives active subscriptions from `settings.TRADING_PAIRS`.
+- `assert_supported_trading_pairs()` fails fast if a configured pair lacks OKX instrument or contract-size metadata.
 
 ### `data_service/oi_flush_detector.py` — OI Flush Detector
 - Detects liquidation cascades from OI drops (>2% in 5 minutes)
@@ -142,7 +147,7 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Auto-prunes events older than 1 hour
 
 ### `data_service/etherscan_client.py` — ETH Whale Wallet Monitor
-- Polls 46 configured wallets every `ETHERSCAN_CHECK_INTERVAL` seconds (default 300)
+- Polls 33 configured ETH wallets every `ETHERSCAN_CHECK_INTERVAL` seconds (default 300)
 - Wallet categories: individual whales, institutional funds, trading firms (Jump Trading ×2), VC (a16z), political/insider (Trump ×2, WLFI), FTX/Alameda court liquidations (FTX ×2, Alameda), Ethereum Foundation, unlabeled mega-wallets
 - Constructor accepts `price_provider` callback (returns current ETH price in USD) for USD enrichment
 - Detects ALL large transfers from monitored wallets (not just exchange transfers)
@@ -157,7 +162,7 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Log format: `BEARISH|BULLISH|NEUTRAL Whale {action}: {label} → {dest} {amount} ETH (~$USD) [{significance}]`
 
 ### `data_service/btc_whale_client.py` — BTC Whale Wallet Monitor
-- Polls 11 configured wallets every `MEMPOOL_CHECK_INTERVAL` seconds (default 300)
+- Polls 8 configured BTC wallets every `MEMPOOL_CHECK_INTERVAL` seconds (default 300)
 - Wallet categories: government seizures (US Gov Silk Road, UK Government ~61K BTC ×2 wallets), exchange hack recovery (Bitfinex), individual mega-wallets
 - Removed (2026-03-09): El Salvador, Mt. Gox ×2, Block.one, Unknown 79K — mempool.space returns HTTP 400 "Invalid Bitcoin address" for these high-UTXO addresses
 - Constructor accepts `price_provider` callback (returns current BTC price in USD) for USD enrichment
@@ -214,11 +219,16 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - **Auto-reconnection:** `_ensure_connected()` checks connection health (sends `SELECT 1`). All DB methods (`store_candles`, `load_candles`, `insert_trade`, `update_trade`, `insert_ai_decision`, `insert_risk_event`, `insert_metric`) retry once on `psycopg2.OperationalError` / `InterfaceError` — sets `_conn = None` and reconnects.
 - **Operational metrics (Grafana):** `insert_metric(name, value, pair, labels)` writes to `bot_metrics` table. `cleanup_old_metrics(retention_days=30)` deletes old rows. Both fire-and-forget.
 
+### `data_service/liquidation_estimator.py` — Liquidation Heatmap Estimator
+- Estimates long/short liquidation clusters from recent 5m candles, current OI, leverage-tier weights, and pair-specific price bins.
+- Used by Telegram liquidation alerts and dashboard heatmap support.
+- Approximation only — not exchange-provided liquidation data.
+
 ### `data_service/data_integrity.py` — Data Integrity Module (NEW)
 Central hub for data quality types and gating logic:
 - **`DataServiceState`** enum: `RECOVERING` (startup/reconnect), `RUNNING` (all checks pass), `DEGRADED` (circuit breaker tripped)
 - **`CVDState`** enum: `VALID`, `WARMING_UP`, `INVALID`
-- **`CONTRACT_SIZES`** dict: single source of truth for OKX contract sizes (used by CVD + exchange_client)
+- **`CONTRACT_SIZES`**: re-export from `data_service/metadata.py` for existing imports/tests
 - **`SETUP_DATA_DEPS`** dict: per-setup data dependencies (setup_c needs candles+funding+cvd, setup_e needs candles+oi, rest only need candles)
 - **`can_trade_setup()`**: checks service state + per-setup deps. Returns `(allowed, reason)`.
 - **`validate_candle_continuity()`**: checks timestamps are sequential per timeframe (tolerance 1.5×). Returns `(is_continuous, gap_count)`.
@@ -252,7 +262,6 @@ Central hub for data quality types and gating logic:
 | Setting | Default | Used by |
 |---|---|---|
 | `INITIAL_CAPITAL` | `100` (env) | Fallback capital if exchange balance fetch fails |
-| `TRADE_CAPITAL_PCT` | `0.15` (15%) | % of capital as notional per trade (replaces FIXED_TRADE_MARGIN) |
 | `OKX_SANDBOX` | `true` | exchange_client — demo vs live |
 | `OKX_API_KEY` | `""` | exchange_client — auth |
 | `OKX_SECRET` | `""` | exchange_client — auth |
@@ -274,14 +283,14 @@ Central hub for data quality types and gating logic:
 | `OI_DROP_WINDOW_SECONDS` | `300` (5min) | OI proxy measurement window |
 | `RECONNECT_BACKOFF_FACTOR` | `2.0` | Backoff multiplier |
 | `STARTUP_WARMUP_CANDLE_MIN` | `50` | Min candles per pair/tf before RUNNING |
-| `CVD_WARMUP_SECONDS` | `3600` | CVD trade span before VALID (60 min) |
+| CVD warm windows | 5m/15m/1h progressive | Internal constants in `cvd_calculator.py`; `CVDSnapshot.warm_windows` tells consumers which windows are valid |
 | `CIRCUIT_BREAKER_MAX_RECONNECTS` | `5` | Reconnects before DEGRADED |
 | `CIRCUIT_BREAKER_WINDOW_SECONDS` | `300` | Sliding window for circuit breaker |
 | `CIRCUIT_BREAKER_STABLE_SECONDS` | `120` | Stability before auto-reset |
 | `OI_SNAPSHOT_MAX_AGE_FACTOR` | `2.0` | Max age multiplier for OI snapshots |
 | `NEWS_SENTIMENT_ENABLED` | `True` | Enable/disable news sentiment fetching |
 | `NEWS_FEAR_GREED_URL` | `https://api.alternative.me/fng/` | Fear & Greed API endpoint |
-| `NEWS_HEADLINES_URL` | `https://min-api.cryptocompare.com/data/v2/news/` | CryptoCompare news API endpoint (free, no key) |
+| `NEWS_HEADLINES_URL` | `https://min-api.cryptocompare.com/data/v2/news/` | CryptoCompare news API endpoint; handler degrades to empty headlines if unavailable |
 | `NEWS_POLL_INTERVAL` | `300` (5min) | News sentiment polling interval |
 | `NEWS_FEAR_GREED_CACHE_TTL` | `1800` (30min) | Redis cache TTL for F&G score |
 | `NEWS_HEADLINES_CACHE_TTL` | `300` (5min) | Redis cache TTL for headlines |

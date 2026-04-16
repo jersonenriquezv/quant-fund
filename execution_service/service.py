@@ -200,7 +200,7 @@ class ExecutionService:
                 if setup_id:
                     self._data_service.postgres.update_ml_setup_outcome(
                         setup_id=setup_id,
-                        outcome_type="filled_timeout",
+                        outcome_type="filled_orphaned",
                     )
                 reconciled += 1
                 logger.warning(
@@ -220,6 +220,39 @@ class ExecutionService:
         if self._monitor is not None:
             await self._monitor.stop()
         logger.info("Execution Service stopped")
+
+    async def close_all_positions(self) -> dict[str, str]:
+        """Emergency: market-close all active positions and cancel all pending entries.
+
+        Returns a dict of {pair: result_status} for each position processed.
+        """
+        results: dict[str, str] = {}
+        if self._monitor is None or self._executor is None:
+            logger.warning("close_all_positions called but monitor/executor not initialized")
+            return results
+
+        for pos in list(self._monitor.positions.values()):
+            pair = pos.pair
+            try:
+                if pos.phase == "pending_entry":
+                    # Cancel unfilled entry orders
+                    for oid in [pos.entry_order_id, getattr(pos, "entry2_order_id", None)]:
+                        if oid:
+                            await self._executor.cancel_order(oid, pair)
+                    results[pair] = "entry_cancelled"
+                    logger.info(f"Emergency: cancelled pending entry for {pair}")
+                else:
+                    # Market-close active positions
+                    await self._executor.close_position_market(
+                        pair, pos.direction, pos.filled_size,
+                    )
+                    results[pair] = "market_closed"
+                    logger.warning(f"Emergency: market-closed {pair} {pos.direction}")
+            except Exception as e:
+                results[pair] = f"error: {e}"
+                logger.error(f"Emergency close failed for {pair}: {e}")
+
+        return results
 
     async def execute(
         self, setup: TradeSetup, approval: RiskApproval, ai_confidence: float

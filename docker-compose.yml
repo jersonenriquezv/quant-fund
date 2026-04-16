@@ -74,6 +74,38 @@ services:
     environment:
       PORT: "3000"
 
+  bybit-watcher:
+    build:
+      context: .
+      network: host
+    image: quant-fund-bot
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./config/.env:/app/config/.env:ro
+      - ./logs:/app/logs
+    command: ["python", "-u", "-m", "data_service.bybit_watcher"]
+    stop_grace_period: 15s
+
+  explain-bot:
+    build:
+      context: .
+      network: host
+    image: quant-fund-bot
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./config/.env:/app/config/.env:ro
+      - ./logs:/app/logs
+    command: ["python", "-u", "scripts/explain_bot.py"]
+    stop_grace_period: 15s
+
   grafana:
     image: grafana/grafana-oss:latest
     restart: unless-stopped

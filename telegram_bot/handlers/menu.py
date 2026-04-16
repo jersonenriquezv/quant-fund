@@ -1,10 +1,14 @@
 """Main menu handler and callback router."""
 
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
+from config.settings import settings
+from shared.logger import setup_logger
 from telegram_bot import keyboards, formatters
 from telegram_bot.data_bridge import DataBridge
+
+logger = setup_logger("telegram_bot")
 
 
 def _get_bridge(context: ContextTypes.DEFAULT_TYPE) -> DataBridge:
@@ -38,6 +42,30 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
+async def emergency_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /emergency — 2-step confirm before closing all positions."""
+    if not _is_authorized(update, context):
+        return
+    bridge = _get_bridge(context)
+    positions = bridge.get_positions()
+    count = len(positions) if positions else 0
+    text = (
+        "\u26a0\ufe0f <b>EMERGENCY HALT</b>\n\n"
+        f"This will:\n"
+        f"1. Halt all new trade execution\n"
+        f"2. Cancel all pending entries\n"
+        f"3. Market-close {count} active position(s)\n\n"
+        f"<b>Are you sure?</b>"
+    )
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("\u2705 CONFIRM", callback_data="emergency:confirm"),
+            InlineKeyboardButton("\u274c Cancel", callback_data="emergency:cancel"),
+        ]
+    ])
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=kb)
+
+
 async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Route all callback queries to the appropriate handler."""
     query = update.callback_query
@@ -48,6 +76,13 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.answer()
     data = query.data
     bridge = _get_bridge(context)
+
+    if data == "emergency:confirm":
+        await _execute_emergency(query, bridge)
+        return
+    if data == "emergency:cancel":
+        await query.edit_message_text("Emergency cancelled.")
+        return
 
     if data == "back:menu":
         await query.edit_message_text(
@@ -135,3 +170,35 @@ async def _show_obs(query, bridge: DataBridge, pair_filter: str) -> None:
         text, parse_mode="HTML",
         reply_markup=keyboards.back_and_refresh("obs"),
     )
+
+
+async def _execute_emergency(query, bridge: DataBridge) -> None:
+    """Execute emergency halt: freeze execution + close all positions."""
+    lines = ["\u26a0\ufe0f <b>EMERGENCY EXECUTING</b>\n"]
+
+    # Step 1: Halt new trades
+    settings.TRADING_HALTED = True
+    lines.append("\u2705 Trading halted (TRADING_HALTED=true)")
+
+    # Step 2: Close all positions
+    es = bridge._es
+    if es is not None:
+        try:
+            results = await es.close_all_positions()
+            if results:
+                for pair, status in results.items():
+                    lines.append(f"  {pair}: {status}")
+            else:
+                lines.append("  No active positions to close")
+        except Exception as e:
+            lines.append(f"\u274c close_all_positions error: {e}")
+            logger.error(f"Emergency close_all_positions failed: {e}")
+    else:
+        lines.append("  Execution service not available")
+
+    lines.append(
+        "\n<b>To resume:</b> set TRADING_HALTED=false in .env and restart, "
+        "or restart the bot (flag is not persisted)."
+    )
+
+    await query.edit_message_text("\n".join(lines), parse_mode="HTML")

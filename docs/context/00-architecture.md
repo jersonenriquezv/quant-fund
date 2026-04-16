@@ -1,5 +1,5 @@
 # Arquitectura del Sistema
-> Última actualización: 2026-03-31
+> Última actualización: 2026-04-16
 > Estado: **5/5 capas implementadas** — pipeline completo Data → Strategy → Risk → Execution. AI filter currently bypassed for all active setups (setup_a in AI_BYPASS_SETUP_TYPES, setup_d variants in QUICK_SETUP_TYPES). ENABLED_SETUPS: setup_a, setup_d_choch. Setup B (0-7.7% WR), D_bos (20-33% WR) and F (34.8% WR) disabled. OB selector upgraded with composite scoring. PnL tracking con fee deduction (0.05% per side). Signal mode disponible (`SIGNAL_ONLY=true`). **ML instrumentation** active: `ml_setups` table captures structured features at detection + outcomes at close.
 
 ## Qué hace (para entenderlo rápido)
@@ -88,7 +88,9 @@ Sin esta arquitectura, tendríamos un solo programa gigante donde todo está mez
 
 **Regime gate (después de shadow path, antes de live execution):** Si Fear & Greed Index < `REGIME_EXTREME_FEAR_GATE` (10), se rechazan setups LIVE (cualquier dirección). Setups en shadow mode pasan y colectan datos ML durante extreme fear. Outcome ML: `regime_extreme_fear`.
 
-**Shadow dedup (en `ShadowMonitor.add_shadow()`):** Además del dedup de pipeline (1h TTL por pair/direction/setup_type), el shadow monitor rechaza si ya existe una posición shadow activa (filled o unfilled) para el mismo combo. Posiciones activas se persisten en Redis (`qf:bot:shadow_positions`, TTL 48h) y se restauran on startup — el dedup sobrevive restarts. Evita tracking duplicado + notificaciones Telegram repetidas.
+**Shadow direction filter (en `main.py`, antes de shadow dedup):** `SHADOW_DIRECTION_FILTER` dict restringe setups a direcciones específicas. E.g. `{"setup_a": ["short"]}` bloquea setup_a longs (5% WR, 1/20 — proven broken). Outcome: `shadow_direction_filtered`.
+
+**Shadow dedup (en `ShadowMonitor.add_shadow()`):** Además del dedup de pipeline (5min TTL por pair/direction/setup_type), el shadow monitor rechaza si ya existe una posición shadow UNFILLED RECIENTE (<4h) para el mismo combo con entry price similar (<1% diff). Shadows unfilled >4h se consideran stale y no bloquean — el OB/FVG probablemente cambió. Posiciones activas se persisten en Redis (`qf:bot:shadow_positions`, TTL 48h) y se restauran on startup. Entry timeout: 12h (SHADOW_ENTRY_TIMEOUT_HOURS).
 
 **Regla clave:** Si CUALQUIER servicio dice NO, el trade se descarta. No hay "pero" ni "tal vez".
 
@@ -304,10 +306,13 @@ Desde 2026-03-13, el bot registra cada setup detectado con features estructurado
 - Missingness flags (has_funding, has_oi, has_cvd, has_news, has_whales)
 - Risk context (capital, open_positions, daily_dd, weekly_dd)
 - Guardian shadow triggers (counter, momentum, stall, cvd) — set during trade lifetime for feature importance
-- `feature_version` (incrementar en `ML_FEATURE_VERSION` cuando cambien params de estrategia)
+- Momentum oscillators (v15+): WaveTrend (Cipher B core) — `wt_wt1`, `wt_wt2`, `wt_cross`, `wt_zone`, `wt_aligned`
+- Technical indicators (v16+): ADX(14) + DI — `adx_14`, `plus_di_14`, `minus_di_14`, `adx_trend_strength`, `adx_direction`; Bollinger(20,2) — `bb_width_pct`, `bb_percent_b`, `bb_squeeze_percentile`, `bb_squeeze`; Stochastic RSI — `stoch_rsi_k`, `stoch_rsi_d`, `stoch_rsi_zone`, `stoch_rsi_cross`
+- `feature_version` (currently 16; incrementar en `ML_FEATURE_VERSION` cuando cambien params de estrategia)
+- `experiment_id` (currently `shadow_tuning_v16_2026_04_16`; tracks parameter regime)
 
 **Al resolver:**
-- `outcome_type`: filled_tp, filled_sl, filled_trailing, filled_timeout, filled_guardian, unfilled_timeout, risk_rejected, deduped, replaced, data_blocked, shadow_tp, shadow_sl, shadow_no_fill, shadow_risk_rejected, shadow_dedup, regime_extreme_fear
+- `outcome_type`: filled_tp, filled_sl, filled_trailing, filled_timeout, filled_guardian, unfilled_timeout, risk_rejected, deduped, replaced, data_blocked, shadow_tp, shadow_sl, shadow_no_fill, shadow_breakeven, shadow_timeout, shadow_risk_rejected, shadow_dedup, shadow_direction_filtered, shadow_orphaned, regime_extreme_fear
 - PnL, actual entry/exit, exit_reason, fill_duration_ms, trade_duration_ms
 
 ### Non-stationary features (AFML Ch.5) — excluir del training
@@ -350,6 +355,7 @@ Desde 2026-03-13, el bot registra cada setup detectado con features estructurado
 - Hasta entonces: solo recolección de datos
 
 ## Cambios recientes
+- 2026-04-16: **Shadow Tuning v16 — data quality over freeze purity.** Pipeline diagnosis showed freeze v15 was collecting garbage: setup_a long 5% WR (1/20), setup_b entries 2-3% from market (never fill), setup_g 0/4 WR. Changes: `SHADOW_DIRECTION_FILTER` added (setup_a short-only), setup_g removed from shadow, `SETUP_B_MAX_ENTRY_DISTANCE_PCT` 3%→2%, `SHADOW_ENTRY_TIMEOUT_HOURS` 24→12, shadow dedup staleness limit (unfilled >4h don't block). New `EXPERIMENT_ID`: `shadow_tuning_v16_2026_04_16`. Active shadow: A(short), B, D_bos, D_choch, F.
 - 2026-03-19: **ML v6 — daily_vol feature + AFML training pipeline.** `_get_daily_vol()` (AFML Ch.3 getDailyVol) computes EWMA std of close-to-close log-returns (span=100). New `daily_vol` column in `ml_setups` with safe ALTER TABLE migration. `scripts/feature_importance.py` rewritten: `max_features=1` for MDI, `neg_log_loss` for MDA, sample uniqueness weighting (AFML Ch.4), triple-barrier labels (`--label barrier`), non-stationary feature exclusion (AFML Ch.5), Kendall tau triangulation. Guardian shadow columns added for future feature importance.
 - 2026-03-19: **Setup H disabled** — 27 trades, 11% WR, PF 0.10. Entry at impulse completion = adverse selection. Code kept for recalibration.
 - 2026-03-19: **Guardian → shadow mode** — All guardian checks log-only (no closes, no SL changes). Triple barrier handles all exits for clean ML labels. Shadow triggers stored in ml_setups for AFML Ch.8 feature importance.

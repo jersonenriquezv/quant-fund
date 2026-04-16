@@ -40,6 +40,7 @@ logger = setup_logger("main")
 # Key: (pair, direction, setup_type, entry_price), Value: unix timestamp of last eval.
 _setup_dedup_cache: dict[tuple, float] = {}
 _SETUP_DEDUP_TTL_SECONDS = 3600  # 1 hour — prevents re-sending same setup while limit order is pending
+_SHADOW_DEDUP_TTL_SECONDS = 300  # 5 min — shadow is data collection, only dedup same-candle repeats
 
 # Module-level references set by main() so the callback can access them
 _data_service: DataService | None = None
@@ -205,7 +206,9 @@ async def on_candle_confirmed(candle: Candle) -> None:
     dedup_key = (setup.pair, setup.direction, setup.setup_type)
     now = time.time()
     last_eval = _setup_dedup_cache.get(dedup_key)
-    if last_eval and (now - last_eval) < _SETUP_DEDUP_TTL_SECONDS:
+    is_shadow = setup.setup_type in settings.SHADOW_MODE_SETUPS
+    dedup_ttl = _SHADOW_DEDUP_TTL_SECONDS if is_shadow else _SETUP_DEDUP_TTL_SECONDS
+    if last_eval and (now - last_eval) < dedup_ttl:
         logger.debug(
             f"Setup dedup (pipeline): {setup.pair} {setup.direction} "
             f"{setup.setup_type} entry={setup.entry_price:.2f} — "
@@ -216,23 +219,18 @@ async def on_candle_confirmed(candle: Candle) -> None:
     # --- ML: capture feature snapshot AFTER dedup (dedup adds no ML value) ---
     _ml_log_setup(setup, candle)
 
-    # --- Shadow mode: run full pipeline (risk check) but don't execute ---
+    # --- Shadow mode: data collection — track ALL setups, minimize filtering ---
     if setup.setup_type in settings.SHADOW_MODE_SETUPS and _shadow_monitor is not None:
-        # Shadow quality filters (data-driven, 2026-04-06 feature importance analysis).
-        # Hour filter: 0% WR before 11 UTC across 23 shadow trades.
-        current_hour = datetime.now(timezone.utc).hour
-        if current_hour < settings.SHADOW_MIN_HOUR_UTC:
+        # Direction filter: reject proven-broken directions (e.g. setup_a long 5% WR)
+        allowed_dirs = settings.SHADOW_DIRECTION_FILTER.get(setup.setup_type)
+        if allowed_dirs is not None and setup.direction not in allowed_dirs:
             logger.debug(
-                f"Shadow hour filter: {current_hour} UTC < {settings.SHADOW_MIN_HOUR_UTC} "
-                f"| {setup.setup_type} {setup.pair} {setup.direction}"
+                f"Shadow direction filter: {setup.setup_type} {setup.direction} "
+                f"not in {allowed_dirs} — skipping"
             )
-            _ml_resolve_outcome(setup.setup_id, "shadow_hour_filtered")
-            _setup_dedup_cache[dedup_key] = time.time()
+            _ml_resolve_outcome(setup.setup_id, "shadow_direction_filtered")
             return
-
-        # F&G score logged as ML feature (fear_greed_score column in ml_setups).
-        # Previously filtered longs in fear — removed: let ML learn when fear matters.
-        # Risk check (dry_run=True + SHADOW_CAPITAL: sizes against $500 virtual account)
+        # Risk check: run but do NOT gate on result. Log as ML feature only.
         risk_approval = None
         if _risk_service is not None:
             risk_approval = _risk_service.check(
@@ -240,7 +238,7 @@ async def on_candle_confirmed(candle: Candle) -> None:
                 capital_override=settings.SHADOW_CAPITAL,
             )
 
-            # Persist risk check result to ml_setups (separate from outcome)
+            # Persist risk check result to ml_setups (ML feature, not a gate)
             if _data_service is not None and _data_service.postgres is not None:
                 _data_service.postgres.update_ml_risk_check(
                     setup.setup_id,
@@ -249,13 +247,10 @@ async def on_candle_confirmed(candle: Candle) -> None:
                 )
 
             if not risk_approval.approved:
-                logger.info(
-                    f"Shadow risk rejected: {setup.setup_type} {setup.pair} "
-                    f"{setup.direction} — {risk_approval.reason}"
+                logger.debug(
+                    f"Shadow risk would reject: {setup.setup_type} {setup.pair} "
+                    f"{setup.direction} — {risk_approval.reason} (tracking anyway)"
                 )
-                _ml_resolve_outcome(setup.setup_id, "shadow_risk_rejected")
-                _setup_dedup_cache[dedup_key] = time.time()
-                return
 
         # Fetch orderbook snapshot for fill quality estimation
         ob_snapshot = None
@@ -267,34 +262,24 @@ async def on_candle_confirmed(candle: Candle) -> None:
         )
         _setup_dedup_cache[dedup_key] = time.time()
         if not accepted:
-            # Shadow dedup rejected — resolve ML row so it doesn't stay pending
             _ml_resolve_outcome(setup.setup_id, "shadow_dedup")
             return
-        if risk_approval and risk_approval.approved:
-            logger.info(
-                f"Shadow mode: {setup.setup_type} {setup.pair} {setup.direction} "
-                f"size={risk_approval.position_size:.6f} leverage={risk_approval.leverage:.1f}x "
-                f"— tracking (${settings.SHADOW_CAPITAL} virtual)"
-            )
-        else:
-            logger.info(
-                f"Shadow mode: {setup.setup_type} {setup.pair} {setup.direction} "
-                f"— skipped (no valid risk approval)"
-            )
+        logger.info(
+            f"Shadow mode: {setup.setup_type} {setup.pair} {setup.direction} "
+            f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
+            f"risk_ok={risk_approval.approved if risk_approval else 'N/A'} "
+            f"— tracking (${settings.SHADOW_CAPITAL} virtual)"
+        )
         return
 
-    # --- Regime gate: reject LIVE setups in systemic crisis ---
-    # Positioned after shadow path so shadow still collects ML data during
-    # extreme fear. Only blocks real capital deployment.
-    if snapshot is not None and snapshot.news_sentiment is not None:
-        fg_score = snapshot.news_sentiment.score
-        if fg_score < settings.REGIME_EXTREME_FEAR_GATE:
-            logger.info(
-                f"Regime gate: F&G={fg_score} < {settings.REGIME_EXTREME_FEAR_GATE} "
-                f"(systemic crisis) | {setup.setup_type} {setup.pair} {setup.direction}"
-            )
-            _ml_resolve_outcome(setup.setup_id, "regime_extreme_fear")
-            return
+    # --- Emergency halt: block new live trades while monitoring continues ---
+    if settings.TRADING_HALTED:
+        logger.warning(
+            f"TRADING HALTED: {setup.setup_type} {setup.pair} {setup.direction} "
+            f"— new trades blocked (env TRADING_HALTED=true)"
+        )
+        _ml_resolve_outcome(setup.setup_id, "trading_halted")
+        return
 
     # Pre-check: can this pair meet exchange minimum order size?
     min_size = settings.MIN_ORDER_SIZES.get(setup.pair, 0)
@@ -421,7 +406,7 @@ def _ml_log_setup(setup, candle: Candle) -> None:
     try:
         snapshot = _data_service.get_market_snapshot(candle.pair)
         current_price = candle.close
-        recent_candles = _data_service.get_candles(candle.pair, candle.timeframe, count=50)
+        recent_candles = _data_service.get_candles(candle.pair, candle.timeframe, count=100)
 
         # Orderbook snapshot for spread/imbalance features
         ob_snapshot = None
@@ -457,6 +442,7 @@ def _ml_log_setup(setup, candle: Candle) -> None:
             features=features,
             risk_context=risk_ctx,
             feature_version=settings.ML_FEATURE_VERSION,
+            experiment_id=settings.EXPERIMENT_ID,
         )
         _emit_metric("ml_setup_insert_ok" if ok else "ml_setup_insert_error", 1, setup.pair)
     except Exception as e:

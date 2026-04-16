@@ -21,20 +21,14 @@ from config.settings import settings
 from shared.logger import setup_logger
 from shared.models import Candle, FundingRate, OpenInterest
 from data_service.data_integrity import CONTRACT_SIZES
+from data_service.metadata import OKX_SWAP_INSTRUMENTS, assert_supported_trading_pairs
 
 logger = setup_logger("data_service")
 
 # OKX uses instId format "BTC-USDT-SWAP" for perpetuals.
 # ccxt accepts "BTC/USDT:USDT" and translates internally.
-_PAIR_TO_SYMBOL = {
-    "BTC/USDT": "BTC-USDT-SWAP",
-    "ETH/USDT": "ETH-USDT-SWAP",
-    "SOL/USDT": "SOL-USDT-SWAP",
-    "DOGE/USDT": "DOGE-USDT-SWAP",
-    "XRP/USDT": "XRP-USDT-SWAP",
-    "LINK/USDT": "LINK-USDT-SWAP",
-    "AVAX/USDT": "AVAX-USDT-SWAP",
-}
+assert_supported_trading_pairs()
+_PAIR_TO_SYMBOL = OKX_SWAP_INSTRUMENTS
 
 # OKX max candles per request
 _MAX_CANDLES_PER_REQUEST = 100

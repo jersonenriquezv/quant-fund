@@ -51,6 +51,8 @@ class ShadowPosition:
     # Fill quality
     fill_candle_volume_ratio: float = 0.0  # fill candle vol / avg vol
     slippage_estimate_pct: float = 0.0     # worst price in fill candle vs entry
+    # TP1 tracking — simulates live breakeven SL move
+    tp1_touched: bool = False              # True once price touched TP1 (1:1 R:R)
 
 
 class ShadowMonitor:
@@ -73,7 +75,9 @@ class ShadowMonitor:
         self._data_service = data_service
         self._notifier = notifier
         self._positions: dict[str, ShadowPosition] = {}  # setup_id -> ShadowPosition
+        self._last_orphan_cleanup = 0.0
         self._load_from_redis()
+        self._cleanup_orphaned_db_rows()
 
     @property
     def active_count(self) -> int:
@@ -97,28 +101,49 @@ class ShadowMonitor:
         if setup.setup_id in self._positions:
             return False
 
-        # Dedup: skip if we already have an active (unfilled or tracking)
-        # shadow for the same pair/direction/setup_type.  The 1h pipeline
-        # dedup TTL expires before shadow positions resolve, so without this
-        # the same trade idea gets re-tracked (and re-notified) repeatedly.
+        # Dedup: only block if we already have a RECENT UNFILLED shadow for the
+        # same pair/direction/setup_type with a similar entry price (<1% diff).
+        # Once filled (tracking outcome), allow new shadows — they represent
+        # a new trade idea at a different price level.
+        # Staleness: unfilled shadows older than 4h don't block — OB/FVG has
+        # likely shifted, new detection at similar price is a fresh data point.
+        now = time.time()
+        _DEDUP_STALENESS_SECONDS = 4 * 3600  # 4 hours
         for pos in self._positions.values():
             if (pos.pair == setup.pair
                     and pos.direction == setup.direction
-                    and pos.setup_type == setup.setup_type):
-                logger.debug(
-                    f"Shadow dedup: {setup.setup_type} {setup.pair} "
-                    f"{setup.direction} — already tracking {pos.setup_id}"
-                )
+                    and pos.setup_type == setup.setup_type
+                    and not pos.filled):
+                age_s = now - pos.detection_time
+                if age_s > _DEDUP_STALENESS_SECONDS:
+                    continue  # Stale unfilled — don't block
+                price_diff = abs(pos.entry_price - setup.entry_price) / pos.entry_price
+                if price_diff < 0.01:
+                    logger.debug(
+                        f"Shadow dedup: {setup.setup_type} {setup.pair} "
+                        f"{setup.direction} entry={setup.entry_price:.2f} — "
+                        f"already tracking unfilled {pos.setup_id} at {pos.entry_price:.2f}"
+                    )
+                    return False
+
+        # Fallback sizing if risk_approval is missing or rejected —
+        # shadow is data collection, always track
+        if risk_approval is None or risk_approval.position_size <= 0:
+            fallback_margin = settings.SHADOW_CAPITAL * 0.05  # 5% of virtual capital
+            fallback_leverage = settings.MAX_LEVERAGE
+            fallback_notional = fallback_margin * fallback_leverage
+            fallback_size = fallback_notional / setup.entry_price if setup.entry_price > 0 else 0
+            if fallback_size <= 0:
+                logger.warning(f"Shadow: cannot size {setup.setup_id}, skipping")
                 return False
 
-        # Require risk_approval — standalone sizing removed to prevent
-        # data quality issues (wrong capital, missing guardrails)
-        if risk_approval is None or risk_approval.position_size <= 0:
-            logger.warning(
-                f"Shadow: no valid risk_approval for {setup.setup_id}, "
-                f"skipping (risk service unavailable or rejected)"
-            )
-            return False
+            # Create a minimal approval-like object for sizing
+            class _FallbackApproval:
+                approved = False
+                position_size = fallback_size
+                leverage = fallback_leverage
+                reason = "fallback_sizing"
+            risk_approval = _FallbackApproval()
 
         risk = abs(setup.entry_price - setup.sl_price)
         if risk <= 0 or setup.entry_price <= 0:
@@ -203,6 +228,11 @@ class ShadowMonitor:
         Called from the pipeline on every confirmed candle.
         """
         now = time.time()
+
+        # Periodic orphan cleanup — every 6 hours
+        if (now - self._last_orphan_cleanup) > 21600:
+            self._cleanup_orphaned_db_rows()
+
         resolved = []
 
         for setup_id, pos in self._positions.items():
@@ -283,23 +313,33 @@ class ShadowMonitor:
             self._save_to_redis()
 
     def _check_tp_sl(self, candle, pos: ShadowPosition) -> str | None:
-        """Check if candle hit TP2 or SL. Returns outcome string or None.
+        """Check if candle hit TP1 (breakeven), TP2, or SL.
 
-        Uses TP2 (not TP1) because shadow mode tracks full theoretical outcome.
-        In live trading, TP1 partial close + TP2 remainder is the norm,
-        but for ML labeling we want the terminal outcome.
+        Simulates live breakeven logic: once price touches TP1 (1:1 R:R),
+        SL moves to entry price. Any subsequent SL hit = breakeven, not loss.
+        This prevents artificially low shadow WR — many "SL losses" would
+        actually be breakeven or trailing wins in live.
         """
+        # TP1 tracking — simulate breakeven SL move
+        if not pos.tp1_touched and self._candle_touched_price(candle, pos.tp1_price):
+            pos.tp1_touched = True
+            pos.sl_price = pos.entry_price  # simulate breakeven SL move
+            self._save_to_redis()
+            logger.info(
+                f"Shadow TP1 touched: {pos.setup_type} {pos.pair} {pos.direction} "
+                f"— SL moved to breakeven (entry={pos.entry_price:.2f})"
+            )
+
         hit_tp = self._candle_touched_price(candle, pos.tp2_price)
         hit_sl = self._candle_touched_price(candle, pos.sl_price)
 
         if hit_tp and hit_sl:
-            # Both hit in same candle — conservative: assume SL hit first
-            # (adverse selection bias correction)
-            return "shadow_sl"
+            # Both hit in same candle — conservative: breakeven if TP1 was touched
+            return "shadow_breakeven" if pos.tp1_touched else "shadow_sl"
         if hit_tp:
             return "shadow_tp"
         if hit_sl:
-            return "shadow_sl"
+            return "shadow_breakeven" if pos.tp1_touched else "shadow_sl"
         return None
 
     def _candle_touched_price(self, candle, price: float) -> bool:
@@ -334,6 +374,8 @@ class ShadowMonitor:
                 exit_price = pos.tp2_price
             elif outcome == "shadow_sl":
                 exit_price = pos.sl_price
+            elif outcome == "shadow_breakeven":
+                exit_price = pos.entry_price
             else:
                 exit_price = pos.entry_price  # no fill or unknown
 
@@ -360,6 +402,7 @@ class ShadowMonitor:
         exit_reason_map = {
             "shadow_tp": "tp",
             "shadow_sl": "sl",
+            "shadow_breakeven": "breakeven",
             "shadow_timeout": "timeout",
             "shadow_no_fill": "no_fill",
         }
@@ -386,6 +429,17 @@ class ShadowMonitor:
         )
 
         self._notify_resolve(pos, outcome, pnl_usd, pnl_pct, status)
+
+    def _cleanup_orphaned_db_rows(self) -> None:
+        """Resolve DB rows stuck with NULL outcome — lost on restart."""
+        self._last_orphan_cleanup = time.time()
+        max_age = settings.SHADOW_ENTRY_TIMEOUT_HOURS + settings.SHADOW_TRADE_TIMEOUT_HOURS
+        if self._data_service and self._data_service.postgres:
+            count = self._data_service.postgres.resolve_orphaned_shadow_setups(
+                max_age_hours=max_age,
+            )
+            if count:
+                logger.info(f"Cleaned up {count} orphaned shadow DB rows on startup")
 
     # --- Redis persistence ---
 

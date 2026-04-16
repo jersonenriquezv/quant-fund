@@ -1323,7 +1323,7 @@ class PositionMonitor:
 
         logger.info(
             f"Position CLOSED: {pos.pair} {pos.direction} reason={reason} "
-            f"pnl={pos.pnl_pct*100:.2f}% (${pos.pnl_usd:+.2f})"
+            f"pnl={(pos.pnl_pct or 0)*100:.2f}% (${(pos.pnl_usd or 0):+.2f})"
         )
 
         # Telegram: trade closed (skip cancelled entries — no real trade)
@@ -1346,7 +1346,7 @@ class PositionMonitor:
                 self._risk.on_trade_cancelled(pos.pair, pos.direction)
             else:
                 self._risk.on_trade_closed(
-                    pos.pair, pos.direction, pos.pnl_pct, pos.closed_at
+                    pos.pair, pos.direction, pos.pnl_pct or 0.0, pos.closed_at
                 )
 
         # Remove from tracking
@@ -1391,7 +1391,7 @@ class PositionMonitor:
         try:
             # Use pnl_usd stored directly by _calculate_pnl (avoids re-derivation bugs).
             # Falls back to raw price calculation if pnl_usd was not set.
-            pnl_usd = pos.pnl_usd if pos.pnl_usd != 0.0 else None
+            pnl_usd = pos.pnl_usd
             if pnl_usd is None and pos.actual_entry_price and pos.filled_size and pos.actual_exit_price:
                 if pos.direction == "long":
                     pnl_usd = (pos.actual_exit_price - pos.actual_entry_price) * pos.filled_size
@@ -1401,12 +1401,12 @@ class PositionMonitor:
                 exit_notional = pos.actual_exit_price * pos.filled_size
                 pnl_usd -= (entry_notional + exit_notional) * settings.TRADING_FEE_RATE
 
-            pnl_pct = pos.pnl_pct if pos.pnl_pct != 0.0 else None
+            pnl_pct = pos.pnl_pct
 
             logger.info(
                 f"Persisting trade close: id={trade_id} {pos.pair} "
                 f"entry={pos.actual_entry_price} exit={pos.actual_exit_price} "
-                f"size={pos.filled_size} pnl_pct={pos.pnl_pct:.6f} "
+                f"size={pos.filled_size} pnl_pct={(pos.pnl_pct or 0):.6f} "
                 f"pnl_usd={pnl_usd}"
             )
 
@@ -1466,7 +1466,7 @@ class PositionMonitor:
                 trade_duration_ms = (pos.closed_at - pos.filled_at) * 1000
 
             # PnL — use stored value from _calculate_pnl
-            pnl_usd = pos.pnl_usd if pos.pnl_usd != 0.0 else None
+            pnl_usd = pos.pnl_usd
 
             # Extract guardian close reason if applicable
             guardian_reason = None
@@ -1476,7 +1476,7 @@ class PositionMonitor:
             ok = self._data_store.postgres.update_ml_setup_outcome(
                 setup_id=pos.setup_id,
                 outcome_type=outcome_type,
-                pnl_pct=pos.pnl_pct if pos.pnl_pct != 0 else None,
+                pnl_pct=pos.pnl_pct,
                 pnl_usd=pnl_usd,
                 actual_entry=pos.actual_entry_price,
                 actual_exit=pos.actual_exit_price,

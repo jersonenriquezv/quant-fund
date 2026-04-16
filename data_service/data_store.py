@@ -735,6 +735,39 @@ class PostgresStore:
                     cur.execute(f"ALTER TABLE ml_setups ADD COLUMN IF NOT EXISTS {col_def}")
                 self._apply_migration(cur, 14, "ml_setups: orderbook, BTC correlation, vol regime, session")
 
+            if current_version < 15:
+                cur.execute("ALTER TABLE ml_setups ADD COLUMN IF NOT EXISTS experiment_id VARCHAR(50)")
+                self._apply_migration(cur, 15, "ml_setups: experiment_id column for freeze protocol")
+
+            if current_version < 16:
+                # WaveTrend (Cipher B) + ADX/DI + Bollinger + Stochastic RSI (feature_version 15/16)
+                for col_def in [
+                    # v15: WaveTrend
+                    "wt_wt1 DOUBLE PRECISION",
+                    "wt_wt2 DOUBLE PRECISION",
+                    "wt_cross TEXT",
+                    "wt_zone TEXT",
+                    "wt_aligned BOOLEAN",
+                    # v16: ADX/DI
+                    "adx_14 DOUBLE PRECISION",
+                    "plus_di_14 DOUBLE PRECISION",
+                    "minus_di_14 DOUBLE PRECISION",
+                    "adx_trend_strength TEXT",
+                    "adx_direction TEXT",
+                    # v16: Bollinger
+                    "bb_width_pct DOUBLE PRECISION",
+                    "bb_percent_b DOUBLE PRECISION",
+                    "bb_squeeze_percentile DOUBLE PRECISION",
+                    "bb_squeeze BOOLEAN",
+                    # v16: Stochastic RSI
+                    "stoch_rsi_k DOUBLE PRECISION",
+                    "stoch_rsi_d DOUBLE PRECISION",
+                    "stoch_rsi_zone TEXT",
+                    "stoch_rsi_cross TEXT",
+                ]:
+                    cur.execute(f"ALTER TABLE ml_setups ADD COLUMN IF NOT EXISTS {col_def}")
+                self._apply_migration(cur, 16, "ml_setups: WaveTrend + ADX/DI + Bollinger + Stochastic RSI")
+
         logger.info("PostgreSQL tables verified/created")
 
     # --- Candle Storage ---
@@ -1192,6 +1225,7 @@ class PostgresStore:
         features: dict,
         risk_context: dict | None = None,
         feature_version: int = 1,
+        experiment_id: str = "",
     ) -> bool:
         """Insert a feature snapshot for a detected setup. Fire-and-forget."""
         for attempt in range(2):
@@ -1232,7 +1266,15 @@ class PostgresStore:
                             rsi_14, rsi_zone, rsi_divergence, avg_body_ratio,
                             spread_bps, book_imbalance_ratio,
                             btc_return_5, btc_return_20, btc_volatility_ratio,
-                            volatility_regime_ratio, trading_session
+                            volatility_regime_ratio, trading_session,
+                            experiment_id,
+                            wt_wt1, wt_wt2, wt_cross, wt_zone, wt_aligned,
+                            adx_14, plus_di_14, minus_di_14,
+                            adx_trend_strength, adx_direction,
+                            bb_width_pct, bb_percent_b,
+                            bb_squeeze_percentile, bb_squeeze,
+                            stoch_rsi_k, stoch_rsi_d,
+                            stoch_rsi_zone, stoch_rsi_cross
                         ) VALUES (
                             %s, %s, %s,
                             %s, %s, %s,
@@ -1263,6 +1305,14 @@ class PostgresStore:
                             %s, %s, %s, %s,
                             %s, %s,
                             %s, %s, %s,
+                            %s, %s,
+                            %s,
+                            %s, %s, %s, %s, %s,
+                            %s, %s, %s,
+                            %s, %s,
+                            %s, %s,
+                            %s, %s,
+                            %s, %s,
                             %s, %s
                         ) ON CONFLICT (setup_id) DO NOTHING""",
                         (
@@ -1312,6 +1362,20 @@ class PostgresStore:
                             features.get("btc_volatility_ratio"),
                             features.get("volatility_regime_ratio"),
                             features.get("trading_session"),
+                            experiment_id,
+                            features.get("wt_wt1"), features.get("wt_wt2"),
+                            features.get("wt_cross"), features.get("wt_zone"),
+                            features.get("wt_aligned"),
+                            features.get("adx_14"), features.get("plus_di_14"),
+                            features.get("minus_di_14"),
+                            features.get("adx_trend_strength"),
+                            features.get("adx_direction"),
+                            features.get("bb_width_pct"), features.get("bb_percent_b"),
+                            features.get("bb_squeeze_percentile"),
+                            features.get("bb_squeeze"),
+                            features.get("stoch_rsi_k"), features.get("stoch_rsi_d"),
+                            features.get("stoch_rsi_zone"),
+                            features.get("stoch_rsi_cross"),
                         ),
                     )
                 logger.debug(f"ML: inserted setup {setup_id} ({features.get('pair')} {features.get('setup_type')})")
@@ -1451,6 +1515,41 @@ class PostgresStore:
         except psycopg2.Error as e:
             logger.error(f"ML shadow tracking update failed: {setup_id} {e}")
             return False
+
+    def resolve_orphaned_shadow_setups(self, max_age_hours: float = 36.0) -> int:
+        """Resolve ml_setups rows stuck with outcome_type=NULL beyond max age.
+
+        These are shadow positions that were lost on bot restart (Redis state
+        cleared) and never resolved. Marks them as 'shadow_orphaned' so they
+        don't pollute training data or show as perpetually pending.
+
+        Returns number of rows resolved.
+        """
+        if not self._ensure_connected():
+            return 0
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE ml_setups
+                       SET outcome_type = 'shadow_orphaned',
+                           exit_reason = 'orphaned_restart',
+                           resolved_at = NOW()
+                       WHERE outcome_type IS NULL
+                         AND shadow_mode = TRUE
+                         AND created_at < NOW() - INTERVAL '%s hours'
+                       RETURNING setup_id""",
+                    (max_age_hours,),
+                )
+                rows = cur.fetchall()
+                if rows:
+                    logger.info(
+                        f"Resolved {len(rows)} orphaned shadow setups "
+                        f"(older than {max_age_hours}h)"
+                    )
+                return len(rows)
+        except psycopg2.Error as e:
+            logger.error(f"Failed to resolve orphaned shadow setups: {e}")
+            return 0
 
     def update_ml_guardian_shadow(
         self, setup_id: str, check_name: str

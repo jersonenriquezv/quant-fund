@@ -284,9 +284,9 @@ class TestStructuralTPs:
             volume_profile=vp,
         )
 
-        # Fixed TP1 = 51000 (1:1), fixed TP2 = 52500 (2.5:1 for setup_a)
+        # Fixed TP1 = 51000 (1:1), fixed TP2 = 52000 (2.0:1 for setup_a)
         # VP has HVN at 51500, POC at 52000, HVN at 53000, VAH at 53500
         # TP1 should be >= fixed TP1
         assert tp1 >= 51000.0
         # TP2 should be >= fixed TP2 or a structural level above it
-        assert tp2 >= 52500.0
+        assert tp2 >= 52000.0

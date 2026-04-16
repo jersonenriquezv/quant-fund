@@ -14,6 +14,7 @@ import time
 from enum import Enum
 
 from shared.models import SnapshotHealth
+from data_service.metadata import CONTRACT_SIZES
 
 
 # ================================================================
@@ -39,15 +40,7 @@ class CVDState(Enum):
 # Shared between exchange_client.py and cvd_calculator.py
 # ================================================================
 
-CONTRACT_SIZES = {
-    "BTC/USDT": 0.01,    # 1 contract = 0.01 BTC
-    "ETH/USDT": 0.1,     # 1 contract = 0.1 ETH
-    "SOL/USDT": 1.0,     # 1 contract = 1 SOL
-    "DOGE/USDT": 1000.0, # 1 contract = 1000 DOGE
-    "XRP/USDT": 100.0,   # 1 contract = 100 XRP
-    "LINK/USDT": 1.0,    # 1 contract = 1 LINK
-    "AVAX/USDT": 1.0,    # 1 contract = 1 AVAX
-}
+# Re-exported for existing imports/tests. Source of truth: data_service.metadata.
 
 
 # ================================================================

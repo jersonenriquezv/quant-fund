@@ -1,5 +1,5 @@
 # Execution Service (Layer 5)
-> Última actualización: 2026-03-15 (Periodic SL verification + progressive trailing SL.)
+> Última actualización: 2026-04-15 (Shadow orphan cleanup on startup + periodic)
 > Estado: **Fase 1 — COMPLETADA**. Entry + SL + TP atómicos (attached). Progressive trailing SL (0.5 R:R steps) with ceiling TP at 5:1 R:R. Legacy breakeven+trailing behind `TRAILING_TP_ENABLED=false`. CampaignMonitor para HTF position trades. PnL tracking con fee deduction (TRADING_FEE_RATE 0.05% per side).
 
 El brazo ejecutor del bot. Recibe trades aprobados por Risk Service y los ejecuta en OKX via ccxt.
@@ -338,8 +338,15 @@ All exit paths now compute PnL before closing:
 - `manual_close` mapeado a `filled_timeout` en ML outcome (no es un outcome distinto — trade cerró sin alcanzar SL/TP).
 - Orphaned trades on restart: `sync_exchange_positions()` resuelve ML outcome como `filled_timeout` si tiene `setup_id`.
 
+### Shadow Monitor — orphan cleanup (2026-04-15)
+- `ShadowMonitor._cleanup_orphaned_db_rows()` corre al startup y cada 6h.
+- Llama `PostgresStore.resolve_orphaned_shadow_setups(max_age_hours)` donde max_age = SHADOW_ENTRY_TIMEOUT + SHADOW_TRADE_TIMEOUT (36h default).
+- Marca rows con `outcome_type=NULL AND shadow_mode=TRUE` más viejas que max_age como `shadow_orphaned` con `exit_reason='orphaned_restart'`.
+- Problema original: bot restart pierde estado Redis → shadow positions nunca se resuelven → rows NULL perpetuas en ml_setups.
+
 ## Limitaciones conocidas
 
 - Estado de posiciones se pierde en restart (SL/TP siguen en exchange, positions re-adopted via sync_exchange_positions)
 - Orphaned trades reconciled on startup (closed as `orphaned_restart`)
+- Shadow orphaned rows cleaned up on startup + every 6h (`shadow_orphaned` outcome)
 - `AIDecision.adjustments` no se aplica a SL/TP (v2)

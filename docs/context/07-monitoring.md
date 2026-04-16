@@ -55,11 +55,23 @@ Creada automáticamente por `_create_tables()` en `data_service/data_store.py`.
 
 | metric_name | Dónde | Frecuencia | Labels |
 |---|---|---|---|
-| `pipeline_latency_ms` | `main.py` (on_candle_confirmed) | Cada candle (~5min) | pair |
-| `claude_latency_ms` | `main.py` (_evaluate_with_claude) | Cada evaluación | pair |
-| `okx_order_latency_ms` | `executor.py` (place_limit/stop/tp) | Cada orden | pair, type |
-| `ws_reconnection` | `websocket_feeds.py` (start loop) | Cada reconexión | feed |
-| `health_status` | `data_service/service.py` (health check) | Cada 30s | — |
+| `pipeline_latency_ms` | `main.py` | Cada candle (~5min) | pair |
+| `claude_latency_ms` | `main.py` | Cada evaluación AI | pair |
+| `health_status` | `data_service/service.py` | Cada 30s | — |
+| `asyncio_tasks` | `data_service/service.py` | Cada 30s | — |
+| `data_service_state` | `data_service/service.py` | On state change | state |
+| `ws_reconnect` | `data_service/service.py` | Cada reconexión | — |
+| `circuit_breaker_tripped` | `data_service/service.py` | On trip | — |
+| `gap_backfill_unrecoverable` | `data_service/service.py` | On gap failure | — |
+| `ml_training_outcomes` | `data_service/service.py` | Cada 30s | — |
+| `ml_training_ready` | `data_service/service.py` | When threshold met | — |
+| `ml_setup_insert_ok/error` | `main.py` | Cada setup logged | pair |
+| `ml_outcome_update_ok/error` | `main.py` / `monitor.py` | Cada outcome | pair |
+| `pending_filled` | `monitor.py` | On entry fill | pair |
+| `pending_timeout` | `monitor.py` | On entry timeout | pair |
+| `pending_replaced` | `monitor.py` | On entry replace | pair |
+| `time_to_fill_seconds` | `monitor.py` | On entry fill | pair |
+| `timeout_exit_spread_pct` | `monitor.py` | On timeout close | pair |
 
 ### Retention
 - Cleanup automático cada ~50 min (100 health checks × 30s)

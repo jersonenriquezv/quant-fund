@@ -279,6 +279,108 @@ def extract_setup_features(
     # High = decisive moves (strong trend), low = indecision (dojis/wicks).
     features["avg_body_ratio"] = _avg_body_ratio(recent_candles, n=5) if recent_candles else None
 
+    # --- WaveTrend / Cipher B (v15) ---
+    # Momentum exhaustion oscillator. Complements SMC structural detection
+    # by timing entries within OB/FVG zones when momentum is reversing.
+    # wt_cross in extreme zone (|wt1| > 60) aligned with setup direction =
+    # momentum confirmation.
+    features["wt_wt1"] = None
+    features["wt_wt2"] = None
+    features["wt_cross"] = None
+    features["wt_zone"] = None
+    features["wt_aligned"] = None
+    if recent_candles:
+        wt_result = _compute_wavetrend(recent_candles)
+        if wt_result is not None:
+            wt1, wt2, prev_wt1, prev_wt2 = wt_result
+            features["wt_wt1"] = wt1
+            features["wt_wt2"] = wt2
+            if prev_wt1 <= prev_wt2 and wt1 > wt2:
+                features["wt_cross"] = "bullish"
+            elif prev_wt1 >= prev_wt2 and wt1 < wt2:
+                features["wt_cross"] = "bearish"
+            if wt1 <= -60:
+                features["wt_zone"] = "oversold"
+            elif wt1 >= 60:
+                features["wt_zone"] = "overbought"
+            else:
+                features["wt_zone"] = "neutral"
+            # Alignment: bullish cross + oversold for long, bearish cross + overbought for short
+            if setup.direction == "long":
+                features["wt_aligned"] = (
+                    features["wt_cross"] == "bullish" and wt1 < 0
+                )
+            elif setup.direction == "short":
+                features["wt_aligned"] = (
+                    features["wt_cross"] == "bearish" and wt1 > 0
+                )
+
+    # --- ADX / DI (v16) ---
+    # ADX measures trend STRENGTH. DI+/DI- show direction.
+    # Filters setups in choppy ranges (ADX<20) from trending markets (>25).
+    features["adx_14"] = None
+    features["plus_di_14"] = None
+    features["minus_di_14"] = None
+    features["adx_trend_strength"] = None
+    features["adx_direction"] = None
+    if recent_candles:
+        adx_result = _compute_adx(recent_candles, period=14)
+        if adx_result is not None:
+            adx, plus_di, minus_di = adx_result
+            features["adx_14"] = adx
+            features["plus_di_14"] = plus_di
+            features["minus_di_14"] = minus_di
+            if adx < 20:
+                features["adx_trend_strength"] = "weak"
+            elif adx < 25:
+                features["adx_trend_strength"] = "moderate"
+            elif adx < 40:
+                features["adx_trend_strength"] = "strong"
+            else:
+                features["adx_trend_strength"] = "very_strong"
+            features["adx_direction"] = "bullish" if plus_di > minus_di else "bearish"
+
+    # --- Bollinger Bands (v16) ---
+    # Volatility compression/expansion + relative price position.
+    # bbw_percentile low = squeeze → breakout imminent.
+    # percent_b > 1 = above upper band, < 0 = below lower (extreme).
+    features["bb_width_pct"] = None
+    features["bb_percent_b"] = None
+    features["bb_squeeze_percentile"] = None
+    features["bb_squeeze"] = None
+    if recent_candles:
+        bb_result = _compute_bollinger(recent_candles, period=20, std_mult=2.0)
+        if bb_result is not None:
+            bb_width, percent_b, percentile = bb_result
+            features["bb_width_pct"] = bb_width
+            features["bb_percent_b"] = percent_b
+            features["bb_squeeze_percentile"] = percentile
+            features["bb_squeeze"] = percentile is not None and percentile < 0.20
+
+    # --- Stochastic RSI (v16) ---
+    # Momentum of RSI — detects reversals faster than raw RSI.
+    # Cross of %K above %D in oversold = bullish timing trigger.
+    features["stoch_rsi_k"] = None
+    features["stoch_rsi_d"] = None
+    features["stoch_rsi_zone"] = None
+    features["stoch_rsi_cross"] = None
+    if recent_candles:
+        stoch_result = _compute_stoch_rsi(recent_candles)
+        if stoch_result is not None:
+            k, d, prev_k, prev_d = stoch_result
+            features["stoch_rsi_k"] = k
+            features["stoch_rsi_d"] = d
+            if k <= 20:
+                features["stoch_rsi_zone"] = "oversold"
+            elif k >= 80:
+                features["stoch_rsi_zone"] = "overbought"
+            else:
+                features["stoch_rsi_zone"] = "neutral"
+            if prev_k <= prev_d and k > d:
+                features["stoch_rsi_cross"] = "bullish"
+            elif prev_k >= prev_d and k < d:
+                features["stoch_rsi_cross"] = "bearish"
+
     # --- Orderbook microstructure (v14) ---
     # Spread: cost of entry in basis points. Wide spread = thin book = slippage risk.
     features["spread_bps"] = None
@@ -483,6 +585,222 @@ def _detect_rsi_divergence(candles: list, lookback: int = 20) -> str | None:
         return "bearish"
 
     return None
+
+
+def _compute_adx(candles: list, period: int = 14) -> tuple | None:
+    """Compute Wilder's ADX(14) + DI+/DI- from candles.
+
+    Returns (adx, plus_di, minus_di) or None if insufficient data.
+    ADX measures trend STRENGTH (not direction). DI+/DI- show direction.
+    - ADX < 20: weak trend / ranging
+    - ADX 20-25: moderate trend
+    - ADX > 25: strong trend
+    """
+    min_len = period * 3  # need warmup for double smoothing
+    if not candles or len(candles) < min_len:
+        return None
+
+    highs = [c.high for c in candles]
+    lows = [c.low for c in candles]
+    closes = [c.close for c in candles]
+
+    plus_dm = [0.0]
+    minus_dm = [0.0]
+    tr = [0.0]
+    for i in range(1, len(candles)):
+        up_move = highs[i] - highs[i - 1]
+        down_move = lows[i - 1] - lows[i]
+        plus_dm.append(up_move if up_move > down_move and up_move > 0 else 0.0)
+        minus_dm.append(down_move if down_move > up_move and down_move > 0 else 0.0)
+        hl = highs[i] - lows[i]
+        hc = abs(highs[i] - closes[i - 1])
+        lc = abs(lows[i] - closes[i - 1])
+        tr.append(max(hl, hc, lc))
+
+    # Wilder smoothing (seed with sum, then RMA)
+    def _wilder(data: list, p: int) -> list:
+        if len(data) < p + 1:
+            return []
+        out = [sum(data[1:p + 1])]  # skip index 0 (seed)
+        for i in range(p + 1, len(data)):
+            out.append(out[-1] - (out[-1] / p) + data[i])
+        return out
+
+    sm_tr = _wilder(tr, period)
+    sm_plus = _wilder(plus_dm, period)
+    sm_minus = _wilder(minus_dm, period)
+    if not sm_tr or len(sm_tr) < period:
+        return None
+
+    plus_di_series = [100.0 * sm_plus[i] / sm_tr[i] if sm_tr[i] > 0 else 0.0 for i in range(len(sm_tr))]
+    minus_di_series = [100.0 * sm_minus[i] / sm_tr[i] if sm_tr[i] > 0 else 0.0 for i in range(len(sm_tr))]
+
+    dx = []
+    for i in range(len(plus_di_series)):
+        s = plus_di_series[i] + minus_di_series[i]
+        dx.append(100.0 * abs(plus_di_series[i] - minus_di_series[i]) / s if s > 0 else 0.0)
+
+    if len(dx) < period:
+        return None
+
+    # ADX = Wilder smoothed DX
+    adx = sum(dx[:period]) / period
+    for v in dx[period:]:
+        adx = (adx * (period - 1) + v) / period
+
+    return (adx, plus_di_series[-1], minus_di_series[-1])
+
+
+def _compute_bollinger(candles: list, period: int = 20, std_mult: float = 2.0) -> tuple | None:
+    """Compute Bollinger Bands width + %B.
+
+    Returns (bb_width_pct, percent_b, bbw_percentile) or None.
+    - bb_width_pct: (upper - lower) / middle — volatility proxy
+    - percent_b: (close - lower) / (upper - lower) — position in band
+    - bbw_percentile: current BBW rank vs last 100 bars (0-1, low = squeeze)
+    """
+    if not candles or len(candles) < period + 20:
+        return None
+
+    closes = [c.close for c in candles if c.close and c.close > 0]
+    if len(closes) < period + 20:
+        return None
+
+    def _bbw_at(idx: int) -> tuple | None:
+        window = closes[idx - period + 1:idx + 1]
+        if len(window) < period:
+            return None
+        mean = sum(window) / period
+        var = sum((x - mean) ** 2 for x in window) / period
+        sd = var ** 0.5
+        upper = mean + std_mult * sd
+        lower = mean - std_mult * sd
+        bbw = (upper - lower) / mean if mean > 0 else 0.0
+        pb = (closes[idx] - lower) / (upper - lower) if (upper - lower) > 0 else 0.5
+        return (bbw, pb)
+
+    curr = _bbw_at(len(closes) - 1)
+    if curr is None:
+        return None
+    bb_width, percent_b = curr
+
+    # BBW percentile rank over last 100 bars
+    hist = []
+    start = max(period - 1, len(closes) - 100)
+    for i in range(start, len(closes)):
+        v = _bbw_at(i)
+        if v is not None:
+            hist.append(v[0])
+    if hist:
+        below = sum(1 for v in hist if v < bb_width)
+        percentile = below / len(hist)
+    else:
+        percentile = None
+
+    return (bb_width, percent_b, percentile)
+
+
+def _compute_stoch_rsi(
+    candles: list, rsi_period: int = 14, stoch_period: int = 14,
+    k_smooth: int = 3, d_smooth: int = 3,
+) -> tuple | None:
+    """Compute Stochastic RSI (%K, %D) + prior bar for cross detection.
+
+    Returns (k, d, prev_k, prev_d) or None.
+    - StochRSI = (RSI - minRSI) / (maxRSI - minRSI) over stoch_period
+    - %K = SMA(StochRSI, k_smooth) * 100
+    - %D = SMA(%K, d_smooth)
+    """
+    need = rsi_period + stoch_period + k_smooth + d_smooth + 2
+    if not candles or len(candles) < need:
+        return None
+
+    # Compute rolling RSI series (one per bar)
+    rsi_series = []
+    for end in range(rsi_period + 1, len(candles) + 1):
+        r = _compute_rsi(candles[:end], period=rsi_period)
+        if r is None:
+            return None
+        rsi_series.append(r)
+
+    if len(rsi_series) < stoch_period + k_smooth + d_smooth:
+        return None
+
+    # StochRSI raw
+    stoch_raw = []
+    for i in range(stoch_period - 1, len(rsi_series)):
+        window = rsi_series[i - stoch_period + 1:i + 1]
+        mn, mx = min(window), max(window)
+        stoch_raw.append((rsi_series[i] - mn) / (mx - mn) if mx > mn else 0.5)
+
+    # %K = SMA(stoch_raw, k_smooth) * 100
+    k_series = []
+    for i in range(k_smooth - 1, len(stoch_raw)):
+        k_series.append(sum(stoch_raw[i - k_smooth + 1:i + 1]) / k_smooth * 100.0)
+
+    if len(k_series) < d_smooth + 1:
+        return None
+
+    # %D = SMA(%K, d_smooth)
+    d_series = []
+    for i in range(d_smooth - 1, len(k_series)):
+        d_series.append(sum(k_series[i - d_smooth + 1:i + 1]) / d_smooth)
+
+    if len(d_series) < 2:
+        return None
+
+    return (k_series[-1], d_series[-1], k_series[-2], d_series[-2])
+
+
+def _compute_wavetrend(
+    candles: list, n1: int = 10, n2: int = 21
+) -> tuple | None:
+    """Compute WaveTrend oscillator (Cipher B core) from candles.
+
+    Pine Script reference (LazyBear):
+        ap = hlc3
+        esa = ema(ap, n1)
+        d = ema(abs(ap - esa), n1)
+        ci = (ap - esa) / (0.015 * d)
+        tci = ema(ci, n2)   // WT1
+        wt2 = sma(tci, 4)
+
+    Returns (wt1, wt2, prev_wt1, prev_wt2) — current + prior bar for cross
+    detection. None if insufficient data.
+    """
+    min_len = n1 + n2 + 4
+    if not candles or len(candles) < min_len:
+        return None
+
+    ap = [(c.high + c.low + c.close) / 3.0 for c in candles if c.close and c.close > 0]
+    if len(ap) < min_len:
+        return None
+
+    def _ema(data: list, period: int) -> list:
+        k = 2.0 / (period + 1)
+        out = [data[0]]
+        for v in data[1:]:
+            out.append(v * k + out[-1] * (1 - k))
+        return out
+
+    esa = _ema(ap, n1)
+    abs_diff = [abs(ap[i] - esa[i]) for i in range(len(ap))]
+    d = _ema(abs_diff, n1)
+
+    ci = []
+    for i in range(len(ap)):
+        denom = 0.015 * d[i] if d[i] > 0 else 1e-9
+        ci.append((ap[i] - esa[i]) / denom)
+
+    wt1_series = _ema(ci, n2)
+    if len(wt1_series) < 5:
+        return None
+
+    # WT2 = SMA(WT1, 4)
+    wt2_curr = sum(wt1_series[-4:]) / 4.0
+    wt2_prev = sum(wt1_series[-5:-1]) / 4.0
+
+    return (wt1_series[-1], wt2_curr, wt1_series[-2], wt2_prev)
 
 
 def _avg_body_ratio(candles: list, n: int = 5) -> float | None:

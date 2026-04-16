@@ -32,6 +32,13 @@ class Settings:
     OKX_SANDBOX: bool = os.getenv("OKX_SANDBOX", "true").lower() == "true"
 
     # ========================
+    # EXCHANGE — BYBIT (read-only, manual trade log sync)
+    # ========================
+    BYBIT_API_KEY: str = os.getenv("BYBIT_API_KEY", "")
+    BYBIT_API_SECRET: str = os.getenv("BYBIT_API_SECRET", "")
+    BYBIT_TESTNET: bool = os.getenv("BYBIT_TESTNET", "false").lower() == "true"
+
+    # ========================
     # APIs EXTERNAS
     # ========================
     ETHERSCAN_API_KEY: str = os.getenv("ETHERSCAN_API_KEY", "")
@@ -248,13 +255,13 @@ class Settings:
     FVG_ENTRY_PCT: float = float(os.getenv("FVG_ENTRY_PCT", "0.75"))
 
     # --- Setup B freshness filters (mirrors Setup F pattern) ---
-    # Max candles since BOS to be considered fresh (12 = ~3h on 15m).
-    # Prevents stale detection after large impulse moves have completed.
-    SETUP_B_MAX_BOS_AGE_CANDLES: int = 30
-    # Max distance from current price to entry (4% = allow distant entries near liq clusters).
-    # BTC@84k → max ~$3,360 distance. ETH@2.1k → max ~$84.
-    # Relaxed from 2% for aggressive validation mode (2026-03-15).
-    SETUP_B_MAX_ENTRY_DISTANCE_PCT: float = 0.04
+    # Max candles since BOS to be considered fresh.
+    # Was 30 (2.5h on 5m) — caused 48% dedup rate in April shadow data.
+    # Tightened to 12 (~1h on 5m). If BOS+FVG+OB hasn't filled in 1h, it's stale.
+    SETUP_B_MAX_BOS_AGE_CANDLES: int = 12
+    # Max distance from current price to entry (3% — tightened from 4%).
+    # 4% too far: contributes to unfilled entries. 3% still covers structural OBs.
+    SETUP_B_MAX_ENTRY_DISTANCE_PCT: float = 0.02  # 2% (was 3% — entries >2% never fill)
 
     # --- Enabled setups ---
     # Only these setup types will be traded. Others are detected but discarded.
@@ -264,11 +271,12 @@ class Settings:
     # C, E, F, G pending validation.
     # D_bos: 20-33% WR backtests, 0% live. B: 0-7.7% WR. Bleeding capital.
     # Setup B disabled (audit 03-18): 0-7.7% WR, F is strictly better (F = B minus weak FVG gate)
+    # 2026-04-15: ALL live trading disabled. Shadow-only mode for ML data collection.
+    # Re-enable by adding setup types back (e.g. "setup_f") when shadow data justifies it.
     ENABLED_SETUPS: list = field(default_factory=lambda: [
-        "setup_a", "setup_d_choch", "setup_f",
-        # setup_c removed 2026-04-13: 0 resolved trades. No OB anchor (market order + fixed % SL).
-        # setup_e removed 2026-04-13: 0W/1L. No OB anchor. Both signals now flow as
-        # confluence boosters in _check_volume_confirmation() for OB-anchored setups.
+        # setup_f was last live setup — disabled 04-15 to focus on shadow data collection.
+        # setup_c removed 2026-04-13: 0 resolved trades. No OB anchor.
+        # setup_e removed 2026-04-13: 0W/1L. No OB anchor.
         # setup_h removed 2026-04-13: 0/13 WR, retail momentum chase.
     ])
 
@@ -296,6 +304,12 @@ class Settings:
     # Mirrors SETUP_F_MIN_BOS_DISPLACEMENT_PCT. Rejects micro-CHoCH noise on 15m.
     SETUP_A_MIN_CHOCH_DISPLACEMENT_PCT: float = float(
         os.getenv("SETUP_A_MIN_CHOCH_DISPLACEMENT_PCT", "0.002")
+    )
+
+    # Max entry distance from current price (consistent with B=4%, F=5%).
+    # OB_MAX_DISTANCE_PCT bounds OB selection, this bounds computed entry.
+    SETUP_A_MAX_ENTRY_DISTANCE_PCT: float = float(
+        os.getenv("SETUP_A_MAX_ENTRY_DISTANCE_PCT", "0.05")
     )
 
     # --- Setup A temporal ---
@@ -337,10 +351,11 @@ class Settings:
     SETUP_F_MIN_BOS_DISPLACEMENT_PCT: float = 0.001
     # Minimum composite OB score (0-1) from _score_ob(). Rejects low-quality OBs.
     SETUP_F_MIN_OB_SCORE: float = 0.35
-    # Max distance from current price to entry (5% = allow entries near liq clusters).
-    # Relaxed from 3% for aggressive validation mode (2026-03-15).
-    SETUP_F_MAX_ENTRY_DISTANCE_PCT: float = 0.05
-    # Minimum confluences (3 = BOS + OB + one of PD/volume). Higher than generic 2.
+    # Max distance from current price to entry.
+    # Was 5% (aggressive mode) — caused 3/5 unfilled_timeout in April shadow.
+    # Tightened to 2.5%. If OB is >2.5% away, price unlikely to retrace.
+    SETUP_F_MAX_ENTRY_DISTANCE_PCT: float = 0.025
+    # Minimum structural confluences for Setup F (BOS + OB = 2 minimum).
     SETUP_F_MIN_CONFLUENCES: int = 2
 
     # Setup C — Funding Squeeze
@@ -423,7 +438,7 @@ class Settings:
     # Rationale: reversal setups (A, E) have more energy than continuation (F) or scalps (D).
     # Values are starting estimates — backtest + Optuna will calibrate.
     SETUP_TP2_RR: dict = field(default_factory=lambda: {
-        "setup_a": 2.5,        # Reversal post-sweep — strong energy, targeting higher
+        "setup_a": 2.0,        # Was 2.5 — 4/4 SL in April shadow. Lowered to match B/F.
         "setup_b": 2.0,        # BOS continuation — must meet MIN_RISK_REWARD (2.0)
         # setup_c removed 2026-04-13: no OB anchor, signal is now confluence booster
         "setup_d_choch": 1.5,  # 5m scalp, 4h max — meets MIN_RISK_REWARD_QUICK (1.5)
@@ -697,8 +712,9 @@ class Settings:
     NEWS_EXTREME_GREED_THRESHOLD: int = 85              # F&G > 85 → reject shorts
     # Hard regime gate — reject ALL setups (any direction) when F&G < threshold.
     # Only for systemic crises (Luna/FTX-level). Normal fear is contrarian signal
-    # per SMC thesis — institutions accumulate when retail panics.
-    # Other fixes (ATR SL floor, structural confluence, setup_h disabled) handle quality.
+    # DEPRECATED (freeze_v15): F&G hard gate removed from pipeline.
+    # SMC follows institutional flow — institutions accumulate when retail panics.
+    # F&G kept as ML feature (fear_greed_score column), not as trade gate.
     REGIME_EXTREME_FEAR_GATE: int = int(os.getenv("REGIME_EXTREME_FEAR_GATE", "10"))
 
     # Shadow quality filters — derived from feature importance analysis (2026-04-06).
@@ -712,6 +728,13 @@ class Settings:
     # When True, bot detects setups and sends Telegram signals but does NOT
     # execute. User opens trades manually; bot monitors via position adoption.
     SIGNAL_ONLY: bool = os.getenv("SIGNAL_ONLY", "false").lower() == "true"
+
+    # ========================
+    # EMERGENCY HALT — freeze trade execution
+    # ========================
+    # When True, bot continues monitoring positions and collecting data
+    # but will NOT place new trades. Set via env var or /emergency Telegram command.
+    TRADING_HALTED: bool = os.getenv("TRADING_HALTED", "false").lower() == "true"
 
     # ========================
     # EXECUTION SERVICE
@@ -833,17 +856,23 @@ class Settings:
     # Feeds ml_setups with labeled outcomes for future feature importance analysis.
     # Setups NOT in this list execute normally through the live pipeline.
     SHADOW_MODE_SETUPS: list = field(default_factory=lambda: [
-        "setup_a", "setup_b", "setup_d_choch", "setup_d_bos",
+        "setup_a", "setup_b", "setup_d_choch", "setup_d_bos", "setup_f",
+        # "setup_g" — removed 2026-04-16: 0/4 WR. Breaker blocks too weak.
         # "setup_c" — removed 2026-04-13: no OB anchor. Signal is now a confluence booster.
         # "setup_e" — removed 2026-04-13: no OB anchor. Signal is now a confluence booster.
-        # "setup_g" — removed 2026-04-02: 0/4 WR in shadow. Breaker blocks structurally weak.
         # "setup_h" — removed 2026-04-13: 0/13 WR. Retail momentum chase.
     ])
+    # Direction filter for shadow mode — restrict setups to specific directions.
+    # Omitted setups track both directions. Empty list = blocked entirely.
+    # setup_a long: 5% WR (1/20) — proven broken. Short only (33% WR, 1/3).
+    SHADOW_DIRECTION_FILTER: dict = field(default_factory=lambda: {
+        "setup_a": ["short"],
+    })
     # Fictional capital for shadow mode position sizing ($500 USDT).
     # Shadow R:R and position sizes reflect realistic trades you'd take later.
     SHADOW_CAPITAL: float = float(os.getenv("SHADOW_CAPITAL", "500"))
     # Shadow mode timeout (hours) — max time to wait for theoretical fill + outcome
-    SHADOW_ENTRY_TIMEOUT_HOURS: int = int(os.getenv("SHADOW_ENTRY_TIMEOUT_HOURS", "24"))
+    SHADOW_ENTRY_TIMEOUT_HOURS: int = int(os.getenv("SHADOW_ENTRY_TIMEOUT_HOURS", "12"))
     SHADOW_TRADE_TIMEOUT_HOURS: int = int(os.getenv("SHADOW_TRADE_TIMEOUT_HOURS", "12"))
 
     # ========================
@@ -851,7 +880,12 @@ class Settings:
     # ========================
     # Feature version — increment when strategy params change in ways that
     # alter feature semantics (e.g. changing OB scoring weights, PD rules).
-    ML_FEATURE_VERSION: int = 14  # v14: orderbook spread/imbalance, BTC correlation, vol regime, session
+    ML_FEATURE_VERSION: int = 16  # v16: ADX/DI trend strength, Bollinger width/%B/squeeze, Stochastic RSI
+
+    # Experiment ID — tracks which parameter regime generated a sample.
+    # feature_version = what columns mean. experiment_id = what rules generated sample.
+    # Same features + different gates = contaminated dataset without this.
+    EXPERIMENT_ID: str = os.getenv("EXPERIMENT_ID", "shadow_tuning_v16_2026_04_16")
 
     # ========================
     # LIQUIDATION HEATMAP

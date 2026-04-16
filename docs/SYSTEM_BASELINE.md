@@ -3,7 +3,7 @@
 > Source of truth for system state. Updated on every material change.
 > Reflects code reality — if code and doc disagree, fix the doc.
 
-**Last updated:** 2026-04-14
+**Last updated:** 2026-04-15
 **ML Feature Version:** 14
 **Bot status:** LIVE (OKX_SANDBOX=false, ~$86 capital)
 
@@ -19,18 +19,18 @@
 | LTF_TIMEFRAMES | 15m, 5m |
 | SWING_SETUP_TIMEFRAMES | 15m |
 
-### Enabled Setups
+### Setup Status
 | Setup | Status | Type | Historical WR |
 |-------|--------|------|---------------|
-| A (Sweep+CHoCH+OB) | **ENABLED** | swing, AI bypass | 45-50% |
-| B (BOS+FVG+OB) | **DISABLED** | — | 0-7.7% |
-| C (Funding Squeeze) | **ENABLED** | quick | live, collecting data |
-| D_choch (LTF CHoCH) | **ENABLED** | quick | 75% backtest |
-| D_bos (LTF BOS) | **DISABLED** | — | 20-33% |
-| E (Cascade Reversal) | **ENABLED** | quick | live, collecting data |
-| F (Pure OB Retest) | **ENABLED** | swing, AI bypass | 34-59% |
-| G (Breaker Block) | **DISABLED** | — | unvalidated |
-| H (Momentum/Impulse) | **DISABLED** (live+shadow) | — | 11% WR live, 0/12 aligned shadow. Chases impulse tips without OB retest. Needs pullback redesign. |
+| A (Sweep+CHoCH+OB) | **SHADOW (short only)** | swing, long disabled (5% WR 1/20) | short 33%, long 5% |
+| B (BOS+FVG+OB) | **SHADOW** | swing, max entry dist 2% (was 3%) | 0-7.7% |
+| C (Funding Squeeze) | **DISABLED** | signal folded into confluence | 0 resolved |
+| D_choch (LTF CHoCH) | **SHADOW** | quick, data collection | 75% backtest |
+| D_bos (LTF BOS) | **SHADOW** | quick, best shadow performer | 50% (2/4 shadow) |
+| E (Cascade Reversal) | **DISABLED** | signal folded into confluence | 0W/1L |
+| F (Pure OB Retest) | **SHADOW** | swing, was live until 04-15 | 50% (1TP/1SL live) |
+| G (Breaker Block) | **DISABLED** | 0/4 WR. Removed 04-16. | 0% |
+| H (Momentum/Impulse) | **DISABLED** | — | 10.7% WR (28 trades). Removed 04-13. |
 
 ### Risk Guardrails
 | Parameter | Value | Notes |
@@ -48,8 +48,9 @@
 | ATR_SL_FLOOR_MULTIPLIER | 4.5 | SL widened to 4.5× ATR(14) if structural SL is tighter |
 | MAX_SL_PCT | 4% | SL-too-far cap — rejects setups with OB SL > 4% |
 | REGIME_EXTREME_FEAR_GATE | 10 | F&G < 10 → reject ALL live setups (systemic crisis only) |
-| ~~SHADOW_FEAR_LONG_GATE~~ | removed | F&G kept as ML feature, not used as gate. SMC follows institutional flow; fear = accumulation opportunity |
-| SHADOW_MIN_HOUR_UTC | 11 | Skip shadow setups before 11 UTC (0% WR across 23 trades) |
+| ~~SHADOW_FEAR_LONG_GATE~~ | removed | F&G kept as ML feature, not used as gate |
+| ~~SHADOW_MIN_HOUR_UTC~~ | removed | Hour captured as ML feature (created_at), not used as gate |
+| SHADOW_DEDUP_TTL | 5 min | Pipeline dedup for shadow (live remains 1h) |
 | MAX_PORTFOLIO_HEAT_PCT | 6% | Sum of (size × SL_distance) across all positions |
 | MAX_SLIPPAGE_PCT | 0.3% | emergency close if exceeded |
 | FIXED_TRADE_MARGIN | $20 | Fallback only (if PositionSizer fails) |
@@ -70,25 +71,25 @@
 | SETUP_A_ENTRY_PCT | 50% | deepened from 65% (04-02): shadow 9% WR, SL within noise |
 | SETUP_A_MODE | continuation | changed from "both" (04-02): 17/17 SL on counter-trend |
 | SETUP_A_MAX_SWEEP_CHOCH_GAP | 60 | aggressive mode (Optuna: 45) |
-| FUNDING_EXTREME_THRESHOLD | 0.0003 | symmetric for both long/short |
+| SETUP_A_MAX_ENTRY_DISTANCE_PCT | 5% | added 04-15: consistency with B/F |
+| FUNDING_MILD_THRESHOLD | 0.0001 | 0.01% — mild directional crowding |
+| FUNDING_MODERATE_THRESHOLD | 0.0003 | 0.03% — was EXTREME, now moderate |
+| FUNDING_EXTREME_THRESHOLD | 0.0006 | 0.06% — extreme crowding, high reversal risk |
 | PD_AS_CONFLUENCE | true | aggressive mode |
 | PD_OVERRIDE_MIN_CONFLUENCES | 5 | |
 
 ### Setup-Specific Parameters
 | Parameter | Value | Setup |
 |-----------|-------|-------|
-| SETUP_F_MAX_BOS_AGE_CANDLES | 40 | F |
+| SETUP_F_MAX_BOS_AGE_CANDLES | 60 | F |
 | SETUP_F_MIN_BOS_DISPLACEMENT_PCT | 0.1% | F |
 | SETUP_F_MAX_OB_BOS_GAP_CANDLES | 20 | F |
 | SETUP_F_MIN_OB_SCORE | 0.35 | F |
-| SETUP_F_MAX_ENTRY_DISTANCE_PCT | 5% | F |
+| SETUP_F_MAX_ENTRY_DISTANCE_PCT | 2.5% | F |
 | SETUP_F_MIN_CONFLUENCES | 2 | F |
-| SETUP_H_MIN_DIRECTIONAL_PCT | 60% | H |
-| SETUP_H_MIN_IMPULSE_PCT | 0.3% | H |
-| SETUP_H_VOLUME_SPIKE_RATIO | 1.5x | H |
-| SETUP_H_MAX_SL_PCT | 3% | H |
-| SETUP_H_DECEL_RATIO | 0.4 | H |
-| SETUP_H_MAX_EXTENDED_PCT | 1.5% | H |
+| SETUP_B_MAX_BOS_AGE_CANDLES | 12 | B |
+| SETUP_B_MAX_ENTRY_DISTANCE_PCT | 3% | B |
+| ~~SETUP_H_*~~ | removed | H tombstoned 04-13 (0/13 WR). Values in code comments only |
 | SETUP_D_ENTRY_PCT | 85% | D |
 | QUICK_OB_MAX_DISTANCE_PCT | 1.5% | quick |
 | QUICK_SETUP_COOLDOWN | 1h | quick |
@@ -97,7 +98,7 @@
 | Parameter | Value |
 |-----------|-------|
 | TP1_RR_RATIO | 1.0 (breakeven trigger) |
-| SETUP_TP2_RR | A=2.5, B/F/G/H=2.0, C/E=2.0, D=1.5 |
+| SETUP_TP2_RR | A/B/F/G=2.0, D=1.5 (C/E/H removed) |
 | TRAILING_TP_ENABLED | false |
 | MAX_TRADE_DURATION | 12h swing / 4h quick |
 | ENTRY_TIMEOUT | 24h swing / 1h quick |
@@ -113,16 +114,22 @@ Candle confirmed → StrategyService.evaluate()
   ├── Swing setups (15m only): A → B → F → G
   │     Each: detect pattern → PD check → OB selection → volume confirmation
   │     → structural confluence ≥ 2 (metrics don't count)
-  │     Post-detection: ATR SL floor (widen to 3× ATR if tight) → ATR filter → target space filter
-  ├── Quick setups (5m): C → D → E (with per-type cooldown)
+  │     Post-detection: ATR SL floor (widen to 4.5× ATR if tight) → ATR filter → target space filter
+  ├── Quick setup candidates (5m): D only (C/E removed 04-13)
   └── TradeSetup produced
         ├── ENABLED_SETUPS / SHADOW_MODE_SETUPS check
         ├── Data integrity gate (DEGRADED blocks all; RECOVERING allows candle-only setups)
-        ├── Regime gate (F&G < 20 → BLOCK all)
-        ├── Dedup cache (1h TTL) + shadow dedup (active position check)
-        ├── AI filter → BYPASSED for all active setups (synthetic approval)
-        ├── Risk Service → guardrails, position sizing
-        └── Execution Service → limit order + SL + TP
+        ├── **Shadow path** (setup in SHADOW_MODE_SETUPS):
+        │     ├── Dedup cache (5min TTL — short, for data collection)
+        │     ├── Risk check → logged as ML feature, NOT a gate (tracks anyway)
+        │     ├── Shadow monitor dedup (only blocks unfilled + same entry ±1%)
+        │     └── Fallback sizing if risk rejects (5% of SHADOW_CAPITAL)
+        ├── **Live path** (setup_f):
+        │     ├── Regime gate (F&G < 10 → BLOCK)
+        │     ├── Dedup cache (1h TTL)
+        │     ├── AI filter → BYPASSED (synthetic approval)
+        │     ├── Risk Service → guardrails, position sizing
+        │     └── Execution Service → limit order + SL + TP
 ```
 
 ### Key Signal Hierarchy (audit 03-18)
@@ -131,10 +138,10 @@ Candle confirmed → StrategyService.evaluate()
 | HTF bias (4H/1H) | **Hard gate** | Blocks all if undefined (~60% of time in range) |
 | Sweep (Setup A only) | **Core trigger** | Strongest microstructure signal |
 | CHoCH / BOS | **Core trigger** | Required for all setups |
-| Order Block | **Core trigger** | Required for 5/6 enabled setups |
+| Order Block | **Core trigger** | Required for live swing setup and most shadow-tracked setups |
 | CVD (divergence + MTF) | Confluence | Upgraded: price vs CVD direction, 3-TF agreement |
 | OI delta | Confluence | Upgraded: tracks delta between evaluations |
-| Funding rate | Confluence | Fixed: symmetric threshold (0.0003) |
+| Funding rate | Confluence | 3-tier graduated: mild 0.01% / moderate 0.03% / extreme 0.06% |
 | PD zone | Confluence | Demoted from hard gate (PD_AS_CONFLUENCE=true) |
 | OB volume | Confluence | Restored: 1.3x minimum (was 1.0 = disabled) |
 | Whale flows | Logging only | Collected, never used in decisions |
@@ -243,9 +250,10 @@ Reference for VPS sizing when migrating from Nitro 5.
 
 ## 7. ML Feature Versioning
 
-**Current version:** 12 (set in `config/settings.py:ML_FEATURE_VERSION`)
+**Current version:** 16 (set in `config/settings.py:ML_FEATURE_VERSION`)
 **Storage:** `ml_setups.feature_version` column in PostgreSQL
-**Query training data:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL AND outcome_type NOT IN ('shadow_dedup', 'data_blocked', 'shadow_risk_rejected', 'risk_rejected', 'regime_extreme_fear')`
+**Query training data:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL AND outcome_type NOT IN ('shadow_dedup', 'data_blocked', 'shadow_risk_rejected', 'risk_rejected', 'regime_extreme_fear', 'shadow_orphaned', 'filled_orphaned')`
+**Experiment tracking:** `experiment_id` column (migration 15). Current: `freeze_v15_2026_04_16`. Filter: `WHERE experiment_id = 'freeze_v15_2026_04_16'` for clean freeze data.
 
 | Version | Date | Changes | Training Status |
 |---------|------|---------|-----------------|
@@ -262,6 +270,8 @@ Reference for VPS sizing when migrating from Nitro 5.
 | v12 | 04-13+ | C/E/H removed, OI cascade confluence booster, sweep touch_count, CHoCH displacement filter | **TRAINING READY** |
 | v13 | 04-14+ | RSI(14) + RSI zone + RSI divergence, avg_body_ratio (candle decisiveness) | **TRAINING READY** |
 | v14 | 04-14+ | Orderbook spread/imbalance, BTC correlation (return + vol ratio), volatility regime, trading session | **TRAINING READY** |
+| v15 | 04-16+ | WaveTrend (Cipher B core): wt_wt1/wt_wt2 oscillator, wt_cross (bull/bear), wt_zone (oversold/overbought/neutral), wt_aligned (cross matches setup direction in extreme zone) | **TRAINING READY** |
+| v16 | 04-16+ | ADX(14) + DI+/DI- (trend strength + direction), Bollinger(20,2) width/%B/squeeze percentile, Stochastic RSI(14,14,3,3) %K/%D/zone/cross | **TRAINING READY** |
 
 **When to bump:** Increment `ML_FEATURE_VERSION` whenever strategy params change in ways that alter feature semantics (OB scoring weights, PD rules, confluence logic, threshold changes).
 
@@ -270,6 +280,110 @@ Reference for VPS sizing when migrating from Nitro 5.
 ---
 
 ## 8. Changelog
+
+### 2026-04-16 — ML Feature Expansion: WT + ADX + BB + StochRSI (v15 → v16)
+**ML_FEATURE_VERSION:** 14 → 15 → 16
+**EXPERIMENT_ID:** unchanged (`shadow_tuning_v16_2026_04_16`)
+
+**What changed:**
+- **v15: WaveTrend (Cipher B core)** added to `shared/ml_features.py`. Helper `_compute_wavetrend()` with LazyBear Pine formula (n1=10, n2=21). Features: `wt_wt1`, `wt_wt2`, `wt_cross` (bullish/bearish), `wt_zone` (oversold/overbought/neutral), `wt_aligned` (cross matches setup direction in opposite extreme zone).
+- **v16: ADX + Bollinger + Stochastic RSI** added. Helpers `_compute_adx()` (Wilder 14), `_compute_bollinger()` (20,2), `_compute_stoch_rsi()` (14,14,3,3). 14 new features: `adx_14`, `plus_di_14`, `minus_di_14`, `adx_trend_strength`, `adx_direction`, `bb_width_pct`, `bb_percent_b`, `bb_squeeze_percentile`, `bb_squeeze`, `stoch_rsi_k`, `stoch_rsi_d`, `stoch_rsi_zone`, `stoch_rsi_cross`.
+
+**Why:**
+- Gap analysis vs existing features: WT covers momentum-exhaustion timing (RSI too slow for reversal detection). ADX covers trend strength (missing — had `volatility_regime_ratio` but no directional strength). BBW covers squeeze/expansion (missing — had `atr_pct` for absolute vol only). StochRSI covers fast momentum reversal (complements RSI with leading signal).
+- MACD/Ichimoku/Supertrend/Parabolic SAR rejected as redundant or poorly suited to crypto volatility.
+
+**Expected impact:**
+- Richer feature space for meta-labeling model (AFML roadmap Phase 2). Discretionary gate still fully structural — these are ML-only inputs.
+- No strategy behavior change (pure observability). Shadow data under `experiment_id=shadow_tuning_v16_2026_04_16` will mix v14/v15/v16 rows; filter by `feature_version >= 16` for cleanest training set once enough outcomes resolved.
+
+**Schema migration 16:** added 18 ml_setups columns (wt_*, adx_*, plus_di_14, minus_di_14, bb_*, stoch_rsi_*). INSERT statement in `data_store.py:insert_ml_setup()` updated accordingly. Without this, features were computed in `ml_features.py` but silently discarded at DB insert.
+
+**Operational:** `main.py` `recent_candles` count raised 50 → 100 to guarantee enough history for ADX (42 bars min) and BB (40) even during backfill phase. Features gracefully return None if history insufficient — no failure path.
+
+**Tests:** 785/785 full suite pass. Fixed stale `test_structural_tp_with_volume_profile` assertion (`tp2 >= 52500` → `>= 52000`) after SETUP_TP2_RR["setup_a"] was lowered from 2.5 to 2.0 in earlier April shadow tuning.
+
+### 2026-04-16 — Shadow Tuning v16: Data Quality Over Freeze Purity
+**EXPERIMENT_ID:** `shadow_tuning_v16_2026_04_16`
+**ML_FEATURE_VERSION:** 14 (unchanged)
+**Mode:** shadow only (5 setups: A-short, B, D_bos, D_choch, F)
+
+**Why freeze was amended (same day):**
+Pipeline diagnosis showed freeze was collecting garbage: setup_a long 5% WR (1/20), setup_b entries 2-3% from market (never fill), setup_g 0/4 WR. Collecting more data on broken setups = more garbage. Amended to focus on viable setups.
+
+**Changes from freeze_v15:**
+- **setup_a long DISABLED** from shadow: 5% WR (1/20) — proven systematically broken. Short-only (33% WR). New `SHADOW_DIRECTION_FILTER` setting.
+- **setup_g REMOVED** from shadow: 0/4 WR, breaker blocks too weak.
+- **SETUP_B_MAX_ENTRY_DISTANCE_PCT**: 3% → 2%. Entries >2% never fill — kill at detection.
+- **SHADOW_ENTRY_TIMEOUT_HOURS**: 24 → 12. Stale OBs meaningless after 12h. Faster slot rotation.
+- **Shadow dedup staleness**: Unfilled shadows >4h old no longer block new shadows. Prevents 1 stale shadow from locking out all detections for 12-24h.
+
+**STILL FROZEN:**
+- Detection logic, feature extraction, R:R, confluence thresholds
+- Only data collection plumbing + proven-broken setup filtering changed
+
+**EXIT CRITERIA:** 100+ resolved shadow outcomes OR 30 days. Daily `/pipeline-diagnosis`.
+
+### 2026-04-16 — FREEZE PROTOCOL v15 (superseded by v16 same day)
+**EXPERIMENT_ID:** `freeze_v15_2026_04_16`
+**Superseded:** Amended to shadow_tuning_v16 after pipeline diagnosis showed garbage data collection.
+
+**Pre-freeze changes (still apply):**
+- **4 execution bugs fixed**: `filled_qty` crash, `cancel_order` args swapped, PnL zero-check (breakeven=None), orphan ML mislabel (`filled_timeout`→`filled_orphaned`)
+- **Shadow TP1 tracking**: `_check_tp_sl()` now simulates breakeven SL move when TP1 touched. New `shadow_breakeven` outcome. Fixes artificially low shadow WR — trades that would be breakeven in live were counted as SL losses.
+- **F&G regime gate REMOVED**: Retail signal was blocking institutional SMC setups during fear. `fear_greed_score` kept as ML feature.
+- **`experiment_id` column added** (migration 15): Tracks which parameter regime generated each sample. `feature_version` = what columns mean, `experiment_id` = what rules generated sample.
+
+### 2026-04-15 — Shadow Data Quality: Orphan Fix + Parameter Tuning
+**What changed:**
+- **Orphaned shadow cleanup**: New `resolve_orphaned_shadow_setups()` in PostgresStore. Runs on ShadowMonitor startup + every 6h. Marks NULL-outcome rows older than entry+trade timeout as `shadow_orphaned`. Fixes 53 stuck rows from April.
+- **Setup B BOS age tightened**: `SETUP_B_MAX_BOS_AGE_CANDLES` 30→12 (~1h on 5m). Was causing 48% dedup rate — same BOS re-detected for 2.5h.
+- **Setup B entry distance tightened**: `SETUP_B_MAX_ENTRY_DISTANCE_PCT` 4%→3%. Distant entries contribute to unfilled timeouts.
+- **Setup F entry distance tightened**: `SETUP_F_MAX_ENTRY_DISTANCE_PCT` 5%→2.5%. 3/5 resolved as unfilled_timeout — OBs too far from price.
+- **Setup A TP2 R:R lowered**: `SETUP_TP2_RR["setup_a"]` 2.5→2.0. 4/4 SL in April shadow at 2.5 RR. Now matches B/F/G at 2.0.
+
+**Why:** April shadow review: 319 detections, only 18 resolved (6%). 53 orphaned (DB rows with no Redis tracking after restart). setup_b 48% dedup = too noisy. setup_f 60% unfilled = entries too far. setup_a 0% WR at 2.5 RR = TP too ambitious. setup_d_bos was only winner (67% WR, 2 TP / 3 resolved).
+
+### 2026-04-15 — Strategy Audit: Entry Distance + Dead Setup Cleanup
+**What changed:**
+- **Setup A entry distance filter ADDED**: `SETUP_A_MAX_ENTRY_DISTANCE_PCT = 5%`. Consistency with Setup B (4%) and F (5%). Prevents zombie entries at distant OBs.
+- **Setup G evaluation SHORT-CIRCUITED**: Was running full evaluate_setup_g() then discarding because G not in ENABLED/SHADOW lists. Now skips evaluation entirely when disabled.
+- **SETUP_F_MIN_CONFLUENCES comment FIXED**: Comment said "3" but value was 2. Updated comment to match reality.
+
+**Why:** Strategy audit found 3 code/doc mismatches. Setup A was the only setup without an entry distance guard — could produce entries at edge of OB_MAX_DISTANCE_PCT (3%) without explicit limit. Setup G was burning CPU on every 15m candle for 7 pairs to produce setups that were always discarded.
+
+### 2026-04-15 — Shadow-Only Mode: Disable Live Trading
+**What changed:**
+- **ENABLED_SETUPS emptied**: No live trades. All setups run shadow-only for ML data collection.
+- **Setup F moved to SHADOW**: Was last live setup. 6 trades, 33% WR, -$0.60. Not enough data to justify live risk.
+- **Setup G re-added to SHADOW**: Collecting data again (was removed 04-02 at 0/4 WR, now G evaluation short-circuits when not in shadow list).
+
+**Why:** 43 total trades, -$17.27. 28 were setup_h (10.7% WR, -$15.96) — already killed. Remaining setups have too few trades for statistical confidence. Shadow mode collects ML training data without risking capital. DD limit fix (5%→10%) resolved Apr 9 blockage but no reason to keep live while sample size is tiny.
+
+### 2026-04-14 — Shadow Pipeline Ungate: Maximize ML Data Collection
+**What changed:**
+- **Hour filter REMOVED** from shadow: `SHADOW_MIN_HOUR_UTC` no longer gates shadow setups. Hour is already captured as an ML feature via `created_at`. Was killing 21% of all shadow detections.
+- **Fear-long filter REMOVED** from shadow: Already removed in code but old deploy was still producing `shadow_fear_long_filtered` outcomes. Confirmed current deploy has no fear gate. Was killing 33% of all shadow detections.
+- **Risk rejection NO LONGER gates shadow**: Risk check still runs and result is stored as ML feature (`risk_approved`, `risk_reject_reason`), but rejected setups proceed to tracking with fallback sizing (5% of SHADOW_CAPITAL × MAX_LEVERAGE).
+- **Shadow monitor dedup RELAXED**: Previously blocked any new shadow if same (pair, direction, setup_type) was already tracking — up to 36h block. Now only blocks if an unfilled shadow exists with entry price within 1%. Filled shadows don't block new ones.
+- **Pipeline dedup TTL reduced for shadow**: 5 min (was 1h). Shadow is data collection — only dedup same-candle repeats.
+- **Updated `/trade-review` and `/pipeline-diagnosis` skills**: Now filter disabled setups from queries, include "Known Context" section to avoid repeating known issues, and focus on what changed since last run.
+- **Updated `/status` skill**: Fixed psql/redis commands to go through Docker instead of host.
+
+**Why:** Shadow pipeline was collecting almost no resolved data — 93% of detections were filtered before reaching tracking. In 14 days: 190 detections → only 13 resolved (2 TP, 9 SL, 2 no_fill). User confirmed manual setups exist that bot was filtering. Shadow mode exists to collect ML training data; aggressive filtering defeats its purpose. Risk check result and hour are stored as features — ML can learn to use them without hard-gating.
+
+**Starting point (14-day shadow baseline before this change):**
+| Metric | Value |
+|--------|-------|
+| Total detections | 190 |
+| fear_long_filtered | 62 (33%) |
+| hour_filtered | 39 (21%) |
+| shadow_dedup | 38 (20%) |
+| Resolved (TP/SL/no_fill) | 13 (7%) |
+| Shadow WR (resolved) | 15% (2 TP / 13 resolved) |
+| Pending | 38 (20%) |
+
+**Expected impact:** 3-5× more shadow setups reaching tracking and resolving. More ML training data, faster path to model training. Trade-off: noisier data, but ML is designed to handle that.
 
 ### 2026-04-13 — Institutional Strategy Overhaul: Remove Retail Setups, Harden Setup A
 **What changed:**
