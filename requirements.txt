@@ -13,3 +13,4 @@ aiohttp>=3.9.0
 optuna>=4.0.0
 scikit-learn>=1.5.0
 python-telegram-bot>=21.0
+pybit==5.15.0
