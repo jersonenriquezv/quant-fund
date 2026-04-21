@@ -386,6 +386,9 @@ class StrategyService:
                 setup = self._quick_setups.evaluate_setup_d(
                     pair, htf_bias, state_5m, active_obs_5m, pd_zone, candles_5m,
                     snapshot=market_snapshot,
+                    swing_highs_htf=state_4h.swing_highs + state_1h.swing_highs,
+                    swing_lows_htf=state_4h.swing_lows + state_1h.swing_lows,
+                    volume_profile=volume_profile,
                 )
                 if setup is not None:
                     self._quick_setup_last[(pair, "setup_d")] = now

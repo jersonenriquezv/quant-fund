@@ -378,6 +378,12 @@ class TestSetupDDisplacement:
                 "BTC/USDT", "bullish", state, [ob], pd, candles,
             )
             assert result is not None
+            assert result.setup_type == "setup_d_choch"
+            assert result.direction == "long"
+            # Entry must be inside OB body range (per SETUP_D_ENTRY_PCT)
+            assert 99.5 <= result.entry_price <= 100.5
+            # SL must be below entry (long) and equal to OB low
+            assert result.sl_price == pytest.approx(99.0, abs=0.001)
         finally:
             settings.SETUP_D_MIN_DISPLACEMENT_PCT = original
 
@@ -414,6 +420,9 @@ class TestSetupDDisplacement:
                 "BTC/USDT", "bullish", state, [ob], pd, candles,
             )
             assert result is not None
+            # Confluence list must include the CHoCH + OB (core signals for setup_d)
+            assert "choch_5m" in result.confluences
+            assert any("order_block" in c for c in result.confluences)
         finally:
             settings.SETUP_D_MIN_DISPLACEMENT_PCT = original
 
@@ -478,6 +487,164 @@ class TestSetupDPDAsConfluence:
             assert "pd_zone_discount" in result.confluences
         finally:
             settings.PD_AS_CONFLUENCE = original
+
+
+# ================================================================
+# Setup D — Structural TP (Batch 4, 2026-04-21)
+# ================================================================
+
+from strategy_service.volume_profile import VolumeProfile
+
+
+def _make_vp(poc=103.0, vah=105.0, val=98.0, hvns=None):
+    return VolumeProfile(
+        poc_price=poc, vah=vah, val=val,
+        high_volume_nodes=hvns or [],
+        low_volume_nodes=[], total_volume=10000.0,
+        price_low=95.0, price_high=110.0, bin_size=0.1,
+        computed_at=int(time.time() * 1000),
+    )
+
+
+class TestSetupDStructuralTP:
+    """Batch 4 port — setup_d must use _calculate_tp_levels (structural when
+    available, fixed R:R fallback). Prior to Batch 4 it hardcoded fixed R:R
+    at TP1_RR_RATIO / SETUP_TP2_RR[variant].
+    """
+
+    def test_falls_back_to_fixed_rr_when_no_structural_data(self, evaluator):
+        """No HTF swings + no VP → identical output to pre-Batch-4 math."""
+        state = _make_structure_state("choch", "bullish")
+        ob = _make_ob(direction="bullish", entry_price=100.0)
+        pd = _make_pd_zone("discount")
+        candles = make_candle_series(
+            base_price=100.0, count=50, timeframe="5m",
+            price_changes=[0.0] * 50,
+        )
+
+        result = evaluator.evaluate_setup_d(
+            "BTC/USDT", "bullish", state, [ob], pd, candles,
+            snapshot=None,
+        )
+        assert result is not None
+        risk = abs(result.entry_price - result.sl_price)
+        expected_tp1 = result.entry_price + risk * settings.TP1_RR_RATIO
+        tp2_rr = settings.SETUP_TP2_RR.get("setup_d_choch", settings.TP2_RR_RATIO)
+        expected_tp2 = result.entry_price + risk * tp2_rr
+        assert result.tp1_price == pytest.approx(expected_tp1, abs=0.001)
+        assert result.tp2_price == pytest.approx(expected_tp2, abs=0.001)
+
+    def test_uses_structural_tp2_when_swing_beats_fixed_rr(self, evaluator):
+        """HTF swing high above fixed TP2 → tp2 snaps to structural level.
+
+        Risk is tiny in this test (100.0 - 99.0 = 1.0), so fixed TP2 at
+        1.5x is 101.5. A swing high at 108 sits far above — must be
+        structural_tp2 (beats fixed).
+        """
+        state = _make_structure_state("choch", "bullish")
+        ob = _make_ob(direction="bullish", entry_price=100.0,
+                      body_low=99.5, body_high=100.5, low=99.0, high=101.0)
+        pd = _make_pd_zone("discount")
+        candles = make_candle_series(
+            base_price=100.0, count=50, timeframe="5m",
+            price_changes=[0.0] * 50,
+        )
+
+        swing_highs = [
+            SwingPoint(price=103.5, timestamp=1000, index=10, swing_type="high"),
+            SwingPoint(price=108.0, timestamp=2000, index=20, swing_type="high"),
+        ]
+
+        result = evaluator.evaluate_setup_d(
+            "BTC/USDT", "bullish", state, [ob], pd, candles,
+            snapshot=None,
+            swing_highs_htf=swing_highs,
+            swing_lows_htf=[],
+        )
+        assert result is not None
+        # TP2 must be structural, not the tight fixed fallback
+        assert result.tp2_price in (103.5, 108.0), (
+            f"tp2 must pick a structural swing high, got {result.tp2_price}"
+        )
+        # And must be strictly above entry (we're long)
+        assert result.tp2_price > result.entry_price
+
+    def test_short_uses_swing_lows(self, evaluator):
+        """Bearish setup_d: must prefer swing lows below entry."""
+        state = _make_structure_state("bos", "bearish", timeframe="5m")
+        ob = _make_ob(direction="bearish", entry_price=100.0,
+                      body_low=99.5, body_high=100.5, low=99.0, high=101.0)
+        pd = _make_pd_zone("premium")
+        candles = make_candle_series(
+            base_price=100.0, count=50, timeframe="5m",
+            price_changes=[0.0] * 50,
+        )
+
+        swing_lows = [
+            SwingPoint(price=96.5, timestamp=1000, index=10, swing_type="low"),
+            SwingPoint(price=92.0, timestamp=2000, index=20, swing_type="low"),
+        ]
+
+        result = evaluator.evaluate_setup_d(
+            "BTC/USDT", "bearish", state, [ob], pd, candles,
+            snapshot=None,
+            swing_highs_htf=[],
+            swing_lows_htf=swing_lows,
+        )
+        assert result is not None
+        assert result.tp2_price in (96.5, 92.0)
+        assert result.tp2_price < result.entry_price
+
+    def test_volume_profile_poc_as_tp_candidate(self, evaluator):
+        """VP POC above entry for long → viable TP candidate."""
+        state = _make_structure_state("choch", "bullish")
+        ob = _make_ob(direction="bullish", entry_price=100.0)
+        pd = _make_pd_zone("discount")
+        candles = make_candle_series(
+            base_price=100.0, count=50, timeframe="5m",
+            price_changes=[0.0] * 50,
+        )
+        vp = _make_vp(poc=104.0, vah=106.0, val=97.0)
+
+        result = evaluator.evaluate_setup_d(
+            "BTC/USDT", "bullish", state, [ob], pd, candles,
+            snapshot=None,
+            volume_profile=vp,
+        )
+        assert result is not None
+        # TP must be at one of: POC 104, VAH 106, or fallback fixed
+        # Fixed TP2 = entry + risk*1.5 ≈ 100 + 1.0*1.5 = 101.5
+        # With structural candidates [104, 106] both beat fixed → should snap
+        assert result.tp2_price in (104.0, 106.0, pytest.approx(101.5, abs=0.01))
+        assert result.tp2_price > result.entry_price
+
+    def test_tp2_rr_never_below_fixed_minimum(self, evaluator):
+        """If all structural levels are closer than fixed TP2, fixed wins."""
+        state = _make_structure_state("choch", "bullish")
+        ob = _make_ob(direction="bullish", entry_price=100.0,
+                      body_low=99.5, body_high=100.5, low=99.0, high=101.0)
+        pd = _make_pd_zone("discount")
+        candles = make_candle_series(
+            base_price=100.0, count=50, timeframe="5m",
+            price_changes=[0.0] * 50,
+        )
+        # Swing highs too close — fail R:R gate
+        swing_highs = [
+            SwingPoint(price=100.05, timestamp=1000, index=10, swing_type="high"),
+        ]
+
+        result = evaluator.evaluate_setup_d(
+            "BTC/USDT", "bullish", state, [ob], pd, candles,
+            snapshot=None,
+            swing_highs_htf=swing_highs,
+            swing_lows_htf=[],
+        )
+        assert result is not None
+        # Should have fallen back to fixed TP2 at ~101.5 (100 + 1.0*1.5)
+        risk = abs(result.entry_price - result.sl_price)
+        tp2_rr = settings.SETUP_TP2_RR.get("setup_d_choch", settings.TP2_RR_RATIO)
+        expected_fixed_tp2 = result.entry_price + risk * tp2_rr
+        assert result.tp2_price == pytest.approx(expected_fixed_tp2, abs=0.01)
 
 
 # ================================================================
