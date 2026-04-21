@@ -441,7 +441,7 @@ def extract_setup_features(
     return features
 
 
-def extract_risk_context(risk_service) -> dict:
+def extract_risk_context(risk_service, capital_override: float | None = None) -> dict:
     """Extract risk/portfolio state features at risk check time.
 
     These features encode recent trade outcomes and portfolio state.
@@ -450,13 +450,18 @@ def extract_risk_context(risk_service) -> dict:
 
     Args:
         risk_service: The RiskService instance.
+        capital_override: If provided, overrides risk_capital. Used by shadow
+            mode to align the ml_setups.risk_capital column with SHADOW_CAPITAL
+            (virtual sizing) instead of live OKX balance. Keeps analytics and
+            shadow_position_size consistent for the same row.
 
     Returns:
         Dict of risk-context features.
     """
     state = risk_service._state
+    capital = capital_override if capital_override is not None else state.get_capital()
     return {
-        "risk_capital": state.get_capital(),
+        "risk_capital": capital,
         "risk_open_positions": state.get_open_positions_count(),
         "risk_daily_dd_pct": state.get_daily_dd_pct(),
         "risk_weekly_dd_pct": state.get_weekly_dd_pct(),

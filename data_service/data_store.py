@@ -768,6 +768,23 @@ class PostgresStore:
                     cur.execute(f"ALTER TABLE ml_setups ADD COLUMN IF NOT EXISTS {col_def}")
                 self._apply_migration(cur, 16, "ml_setups: WaveTrend + ADX/DI + Bollinger + Stochastic RSI")
 
+            if current_version < 17:
+                # Shadow resolution candle trace — records the exact candle
+                # (timeframe + OHLC) that caused the shadow_monitor to resolve
+                # the position. Enables deterministic replay + engine/DB
+                # parity validation. Captured at _resolve() time.
+                for col_def in [
+                    "shadow_resolve_candle_ts BIGINT",
+                    "shadow_resolve_candle_tf VARCHAR(5)",
+                    "shadow_resolve_candle_high DOUBLE PRECISION",
+                    "shadow_resolve_candle_low DOUBLE PRECISION",
+                    "shadow_resolve_candle_close DOUBLE PRECISION",
+                    "shadow_fill_candle_ts BIGINT",
+                    "shadow_fill_candle_tf VARCHAR(5)",
+                ]:
+                    cur.execute(f"ALTER TABLE ml_setups ADD COLUMN IF NOT EXISTS {col_def}")
+                self._apply_migration(cur, 17, "ml_setups: shadow resolution candle trace")
+
         logger.info("PostgreSQL tables verified/created")
 
     # --- Candle Storage ---
@@ -1403,6 +1420,11 @@ class PostgresStore:
         trade_duration_ms: int | None = None,
         risk_context: dict | None = None,
         guardian_reason: str | None = None,
+        resolve_candle_ts: int | None = None,
+        resolve_candle_tf: str | None = None,
+        resolve_candle_high: float | None = None,
+        resolve_candle_low: float | None = None,
+        resolve_candle_close: float | None = None,
     ) -> bool:
         """Update outcome columns for an ml_setup row. Fire-and-forget."""
         for attempt in range(2):
@@ -1436,6 +1458,23 @@ class PostgresStore:
                 if guardian_reason is not None:
                     fields.append("guardian_close_reason = %s")
                     values.append(guardian_reason)
+                # Shadow resolve-candle trace (migration 17) — exact candle
+                # that triggered resolution. Enables deterministic replay.
+                if resolve_candle_ts is not None:
+                    fields.append("shadow_resolve_candle_ts = %s")
+                    values.append(resolve_candle_ts)
+                if resolve_candle_tf is not None:
+                    fields.append("shadow_resolve_candle_tf = %s")
+                    values.append(resolve_candle_tf)
+                if resolve_candle_high is not None:
+                    fields.append("shadow_resolve_candle_high = %s")
+                    values.append(resolve_candle_high)
+                if resolve_candle_low is not None:
+                    fields.append("shadow_resolve_candle_low = %s")
+                    values.append(resolve_candle_low)
+                if resolve_candle_close is not None:
+                    fields.append("shadow_resolve_candle_close = %s")
+                    values.append(resolve_candle_close)
                 # Risk context — SAFETY: only whitelisted column names are used in SQL
                 _RISK_COLUMNS = frozenset({"risk_capital", "risk_open_positions",
                                            "risk_daily_dd_pct", "risk_weekly_dd_pct",
@@ -1498,6 +1537,8 @@ class PostgresStore:
                 "shadow_margin", "shadow_spread_at_detection",
                 "shadow_depth_at_entry", "shadow_fill_time_ms",
                 "shadow_fill_candle_volume_ratio", "shadow_slippage_estimate_pct",
+                # Migration 17 — fill-candle trace for deterministic replay
+                "shadow_fill_candle_ts", "shadow_fill_candle_tf",
             }
             for key, val in shadow_data.items():
                 if key in allowed and val is not None:

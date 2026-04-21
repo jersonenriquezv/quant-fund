@@ -1264,16 +1264,14 @@ class PositionMonitor:
 
         pos.actual_exit_price = exit_price
 
-        if pos.direction == "long":
-            pnl_usd = (exit_price - pos.actual_entry_price) * pos.filled_size
-        else:
-            pnl_usd = (pos.actual_entry_price - exit_price) * pos.filled_size
-
-        # Deduct entry + exit fees
+        from shared.pnl_engine import compute_pnl
+        pnl_result = compute_pnl(
+            entry=pos.actual_entry_price, exit_price=exit_price,
+            size=pos.filled_size, direction=pos.direction,
+            fee_rate=settings.TRADING_FEE_RATE,
+        )
+        pnl_usd = pnl_result.net_usd
         entry_notional = pos.actual_entry_price * pos.filled_size
-        exit_notional = exit_price * pos.filled_size
-        total_fees = (entry_notional + exit_notional) * settings.TRADING_FEE_RATE
-        pnl_usd -= total_fees
 
         # Estimate funding cost: positions crossing 8h settlement windows
         # pay/receive funding. Use last known funding rate × notional × settlements.
@@ -1393,13 +1391,13 @@ class PositionMonitor:
             # Falls back to raw price calculation if pnl_usd was not set.
             pnl_usd = pos.pnl_usd
             if pnl_usd is None and pos.actual_entry_price and pos.filled_size and pos.actual_exit_price:
-                if pos.direction == "long":
-                    pnl_usd = (pos.actual_exit_price - pos.actual_entry_price) * pos.filled_size
-                else:
-                    pnl_usd = (pos.actual_entry_price - pos.actual_exit_price) * pos.filled_size
-                entry_notional = pos.actual_entry_price * pos.filled_size
-                exit_notional = pos.actual_exit_price * pos.filled_size
-                pnl_usd -= (entry_notional + exit_notional) * settings.TRADING_FEE_RATE
+                from shared.pnl_engine import compute_pnl
+                pnl = compute_pnl(
+                    entry=pos.actual_entry_price, exit_price=pos.actual_exit_price,
+                    size=pos.filled_size, direction=pos.direction,
+                    fee_rate=settings.TRADING_FEE_RATE,
+                )
+                pnl_usd = pnl.net_usd
 
             pnl_pct = pos.pnl_pct
 

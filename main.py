@@ -432,10 +432,16 @@ def _ml_log_setup(setup, candle: Candle) -> None:
         features["tp1_price"] = setup.tp1_price
         features["tp2_price"] = setup.tp2_price
 
-        # Risk context at detection time (before risk check)
+        # Risk context at detection time (before risk check).
+        # Shadow setups: override risk_capital with SHADOW_CAPITAL so the
+        # ml_setups row reflects the virtual capital the shadow will size
+        # against, not live OKX balance. Keeps risk_capital consistent with
+        # shadow_position_size and shadow_margin on the same row.
         risk_ctx = None
         if _risk_service is not None:
-            risk_ctx = extract_risk_context(_risk_service)
+            is_shadow = setup.setup_type in settings.SHADOW_MODE_SETUPS
+            override = settings.SHADOW_CAPITAL if is_shadow else None
+            risk_ctx = extract_risk_context(_risk_service, capital_override=override)
 
         ok = _data_service.postgres.insert_ml_setup(
             setup_id=setup.setup_id,

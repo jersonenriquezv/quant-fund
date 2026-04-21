@@ -24,6 +24,13 @@ from config.settings import settings
 from shared.logger import setup_logger
 from shared.models import TradeSetup
 from shared.notifier import TelegramNotifier
+from shared.pnl_engine import (
+    CandleSlice,
+    Outcome,
+    Position,
+    compute_pnl,
+    step as pnl_step,
+)
 
 logger = setup_logger("shadow_monitor")
 
@@ -266,7 +273,8 @@ class ShadowMonitor:
                         candle, pos.entry_price, pos.direction
                     )
 
-                    # Update fill tracking in DB
+                    # Update fill tracking in DB (includes fill-candle trace
+                    # for deterministic replay — see migration 17).
                     if self._data_service and self._data_service.postgres:
                         self._data_service.postgres.update_ml_shadow_tracking(
                             setup_id,
@@ -274,6 +282,8 @@ class ShadowMonitor:
                                 "shadow_fill_time_ms": fill_duration_ms,
                                 "shadow_fill_candle_volume_ratio": pos.fill_candle_volume_ratio,
                                 "shadow_slippage_estimate_pct": pos.slippage_estimate_pct,
+                                "shadow_fill_candle_ts": int(getattr(candle, "timestamp", 0)),
+                                "shadow_fill_candle_tf": getattr(candle, "timeframe", None),
                             },
                         )
 
@@ -290,7 +300,7 @@ class ShadowMonitor:
                     # Check if this same candle also hit TP or SL
                     outcome = self._check_tp_sl(candle, pos)
                     if outcome:
-                        self._resolve(pos, outcome)
+                        self._resolve(pos, outcome, resolve_candle=candle)
                         resolved.append(setup_id)
 
             else:
@@ -298,13 +308,13 @@ class ShadowMonitor:
                 trade_timeout_s = settings.SHADOW_TRADE_TIMEOUT_HOURS * 3600
                 if (now - pos.fill_time) > trade_timeout_s:
                     # Timeout — compute PnL at current price
-                    self._resolve(pos, "shadow_timeout", exit_price=candle.close)
+                    self._resolve(pos, "shadow_timeout", exit_price=candle.close, resolve_candle=candle)
                     resolved.append(setup_id)
                     continue
 
                 outcome = self._check_tp_sl(candle, pos)
                 if outcome:
-                    self._resolve(pos, outcome)
+                    self._resolve(pos, outcome, resolve_candle=candle)
                     resolved.append(setup_id)
 
         for sid in resolved:
@@ -313,34 +323,38 @@ class ShadowMonitor:
             self._save_to_redis()
 
     def _check_tp_sl(self, candle, pos: ShadowPosition) -> str | None:
-        """Check if candle hit TP1 (breakeven), TP2, or SL.
+        """Delegate to shared pnl_engine. See `shared/pnl_engine.py`.
 
-        Simulates live breakeven logic: once price touches TP1 (1:1 R:R),
-        SL moves to entry price. Any subsequent SL hit = breakeven, not loss.
-        This prevents artificially low shadow WR — many "SL losses" would
-        actually be breakeven or trailing wins in live.
+        be_confirm_closes=0 preserves legacy behavior (any TP1 touch arms BE).
+        Batch 1 will bump this to 1 after backtest validation.
         """
-        # TP1 tracking — simulate breakeven SL move
-        if not pos.tp1_touched and self._candle_touched_price(candle, pos.tp1_price):
+        engine_pos = Position(
+            direction=pos.direction,
+            entry_price=pos.entry_price,
+            sl_price=pos.sl_price,
+            tp1_price=pos.tp1_price,
+            tp2_price=pos.tp2_price,
+            position_size=pos.position_size,
+            filled=True,
+            tp1_touched=pos.tp1_touched,
+            be_confirm_closes=settings.BE_CONFIRM_CLOSES,
+        )
+        slice_ = CandleSlice(high=candle.high, low=candle.low, close=candle.close)
+        outcome = pnl_step(engine_pos, slice_)
+
+        # Sync state back to ShadowPosition
+        if engine_pos.tp1_touched and not pos.tp1_touched:
             pos.tp1_touched = True
-            pos.sl_price = pos.entry_price  # simulate breakeven SL move
+            pos.sl_price = engine_pos.sl_price
             self._save_to_redis()
             logger.info(
                 f"Shadow TP1 touched: {pos.setup_type} {pos.pair} {pos.direction} "
                 f"— SL moved to breakeven (entry={pos.entry_price:.2f})"
             )
 
-        hit_tp = self._candle_touched_price(candle, pos.tp2_price)
-        hit_sl = self._candle_touched_price(candle, pos.sl_price)
-
-        if hit_tp and hit_sl:
-            # Both hit in same candle — conservative: breakeven if TP1 was touched
-            return "shadow_breakeven" if pos.tp1_touched else "shadow_sl"
-        if hit_tp:
-            return "shadow_tp"
-        if hit_sl:
-            return "shadow_breakeven" if pos.tp1_touched else "shadow_sl"
-        return None
+        if outcome == Outcome.PENDING:
+            return None
+        return f"shadow_{outcome.value}"
 
     def _candle_touched_price(self, candle, price: float) -> bool:
         """Check if candle's high-low range reached the target price."""
@@ -365,9 +379,16 @@ class ShadowMonitor:
             return max(0, (entry_price - worst) / entry_price)
 
     def _resolve(
-        self, pos: ShadowPosition, outcome: str, exit_price: float | None = None
+        self, pos: ShadowPosition, outcome: str,
+        exit_price: float | None = None,
+        resolve_candle=None,
     ) -> None:
-        """Write theoretical outcome to ml_setups."""
+        """Write theoretical outcome to ml_setups.
+
+        resolve_candle: the specific candle that triggered resolution. When
+        provided, its OHLC + timestamp + timeframe are persisted for
+        deterministic replay (migration 17).
+        """
         # Determine exit price and PnL
         if exit_price is None:
             if outcome == "shadow_tp":
@@ -380,15 +401,13 @@ class ShadowMonitor:
                 exit_price = pos.entry_price  # no fill or unknown
 
         if pos.filled and pos.entry_price > 0:
-            if pos.direction == "long":
-                pnl_pct = (exit_price - pos.entry_price) / pos.entry_price
-            else:
-                pnl_pct = (pos.entry_price - exit_price) / pos.entry_price
-
-            pnl_usd = pnl_pct * pos.position_size * pos.entry_price
-            # Deduct fees (both sides)
-            fee = (pos.position_size * pos.entry_price + pos.position_size * exit_price) * settings.TRADING_FEE_RATE
-            pnl_usd -= fee
+            pnl = compute_pnl(
+                entry=pos.entry_price, exit_price=exit_price,
+                size=pos.position_size, direction=pos.direction,
+                fee_rate=settings.TRADING_FEE_RATE,
+            )
+            pnl_usd = pnl.net_usd
+            pnl_pct = pnl.pct
         else:
             pnl_pct = 0.0
             pnl_usd = 0.0
@@ -408,6 +427,15 @@ class ShadowMonitor:
         }
 
         if self._data_service and self._data_service.postgres:
+            trace = {}
+            if resolve_candle is not None:
+                trace = {
+                    "resolve_candle_ts": int(getattr(resolve_candle, "timestamp", 0)) or None,
+                    "resolve_candle_tf": getattr(resolve_candle, "timeframe", None),
+                    "resolve_candle_high": float(resolve_candle.high),
+                    "resolve_candle_low": float(resolve_candle.low),
+                    "resolve_candle_close": float(resolve_candle.close),
+                }
             self._data_service.postgres.update_ml_setup_outcome(
                 setup_id=pos.setup_id,
                 outcome_type=outcome,
@@ -418,6 +446,7 @@ class ShadowMonitor:
                 exit_reason=exit_reason_map.get(outcome, outcome),
                 fill_duration_ms=fill_duration_ms,
                 trade_duration_ms=trade_duration_ms,
+                **trace,
             )
 
         status = "WIN" if pnl_usd > 0 else "LOSS" if pnl_usd < 0 else "FLAT"
