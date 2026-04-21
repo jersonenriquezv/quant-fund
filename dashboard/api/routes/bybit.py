@@ -45,6 +45,11 @@ class AnnotationOut(BaseModel):
     grade_self: str | None
     screenshot_url: str | None
     context_snapshot: dict[str, Any] | None
+    auto_setup_type: str | None
+    auto_confluences: list[str] | None
+    auto_detractors: list[str] | None
+    auto_grade: str | None
+    auto_classifier_version: int | None
     closed_at: datetime | None
     exit_price: float | None
     pnl_usd: float | None
@@ -53,19 +58,20 @@ class AnnotationOut(BaseModel):
     annotated_at: datetime | None
 
 
+def _maybe_json(val: Any) -> Any:
+    if isinstance(val, str):
+        try:
+            return json.loads(val)
+        except Exception:
+            return None
+    return val
+
+
 def _row_to_out(r: dict) -> AnnotationOut:
-    confluences = r.get("confluences")
-    if isinstance(confluences, str):
-        try:
-            confluences = json.loads(confluences)
-        except Exception:
-            confluences = None
-    context = r.get("context_snapshot")
-    if isinstance(context, str):
-        try:
-            context = json.loads(context)
-        except Exception:
-            context = None
+    confluences = _maybe_json(r.get("confluences"))
+    context = _maybe_json(r.get("context_snapshot"))
+    auto_conflu = _maybe_json(r.get("auto_confluences"))
+    auto_detr = _maybe_json(r.get("auto_detractors"))
     return AnnotationOut(
         id=r["id"],
         symbol=r["symbol"],
@@ -84,6 +90,11 @@ def _row_to_out(r: dict) -> AnnotationOut:
         grade_self=r.get("grade_self"),
         screenshot_url=r.get("screenshot_url"),
         context_snapshot=context,
+        auto_setup_type=r.get("auto_setup_type"),
+        auto_confluences=auto_conflu,
+        auto_detractors=auto_detr,
+        auto_grade=r.get("auto_grade"),
+        auto_classifier_version=r.get("auto_classifier_version"),
         closed_at=r.get("closed_at"),
         exit_price=r.get("exit_price"),
         pnl_usd=r.get("pnl_usd"),

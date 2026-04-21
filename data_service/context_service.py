@@ -30,8 +30,15 @@ from shared.ml_features import (
     _avg_body_ratio,
     _get_daily_vol,
 )
+from strategy_service.market_structure import MarketStructureAnalyzer
+from strategy_service.order_blocks import OrderBlockDetector
+from strategy_service.fvg import FVGDetector
+from strategy_service.liquidity import LiquidityAnalyzer
+from strategy_service.volume_profile import VolumeProfileAnalyzer
 
 logger = setup_logger("context_service")
+
+CONTEXT_CLASSIFIER_VERSION = 1
 
 
 def bybit_symbol_to_pair(symbol: str) -> str | None:
@@ -334,6 +341,220 @@ def _current_price(pair: str) -> float | None:
     return float(row["close"]) if row else None
 
 
+def _smc_structure(pair: str, direction: str, current_price: float) -> dict[str, Any]:
+    """Run SMC detectors (OB, FVG, sweep, BOS/CHoCH) across multiple TFs.
+
+    Returns nearest OB/FVG on each TF, most recent sweep aligned with trade,
+    most recent structure break aligned with trade.
+    """
+    out: dict[str, Any] = {}
+    now_ms = int(time.time() * 1000)
+    trade_dir_smc = "bullish" if direction == "long" else "bearish"
+
+    timeframes = [("5m", 200), ("15m", 200), ("1h", 200), ("4h", 200)]
+    nearest_obs: dict[str, Any] = {}
+    nearest_fvgs: dict[str, Any] = {}
+    recent_sweeps: list[dict[str, Any]] = []
+    recent_breaks: list[dict[str, Any]] = []
+
+    for tf, limit in timeframes:
+        candles = _fetch_candles(pair, tf, limit=limit)
+        if len(candles) < 2 * settings.SWING_LOOKBACK + 2:
+            continue
+
+        ms_analyzer = MarketStructureAnalyzer()
+        state = ms_analyzer.analyze(candles, pair, tf)
+
+        ob_detector = OrderBlockDetector()
+        obs = ob_detector.update(candles, state.structure_breaks, pair, tf, now_ms)
+
+        fvg_detector = FVGDetector()
+        fvgs = fvg_detector.update(candles, pair, tf, now_ms)
+
+        # Nearest OB aligned with trade direction
+        dir_obs = [ob for ob in obs if ob.direction == trade_dir_smc and not ob.mitigated]
+        if dir_obs and current_price:
+            nearest = min(dir_obs, key=lambda o: abs(o.entry_price - current_price))
+            dist_pct = (nearest.entry_price - current_price) / current_price * 100
+            age_h = (now_ms - nearest.timestamp) / 3_600_000
+            nearest_obs[tf] = {
+                "entry": round(nearest.entry_price, 6),
+                "high": round(nearest.high, 6),
+                "low": round(nearest.low, 6),
+                "direction": nearest.direction,
+                "distance_pct": round(dist_pct, 3),
+                "age_hours": round(age_h, 2),
+                "volume_ratio": round(nearest.volume_ratio, 2),
+                "retest_count": nearest.retest_count,
+                "impulse_score": round(nearest.impulse_score, 3),
+                "in_zone": nearest.low <= current_price <= nearest.high,
+            }
+
+        # Nearest fresh FVG aligned
+        dir_fvgs = [f for f in fvgs if f.direction == trade_dir_smc and not f.fully_filled]
+        if dir_fvgs and current_price:
+            nearest_f = min(dir_fvgs, key=lambda f: abs(((f.high + f.low) / 2) - current_price))
+            mid = (nearest_f.high + nearest_f.low) / 2
+            dist_pct = (mid - current_price) / current_price * 100
+            age_h = (now_ms - nearest_f.timestamp) / 3_600_000
+            nearest_fvgs[tf] = {
+                "high": round(nearest_f.high, 6),
+                "low": round(nearest_f.low, 6),
+                "size_pct": round(nearest_f.size_pct * 100, 3),
+                "filled_pct": round(nearest_f.filled_pct, 3),
+                "distance_pct": round(dist_pct, 3),
+                "age_hours": round(age_h, 2),
+                "in_zone": nearest_f.low <= current_price <= nearest_f.high,
+            }
+
+        # Recent sweep (last ~6h) aligned with trade direction
+        liq_analyzer = LiquidityAnalyzer()
+        liq_analyzer.update(candles, state.swing_highs, state.swing_lows, pair, tf, None, now_ms)
+        sweeps = liq_analyzer.get_recent_sweeps(pair, tf)
+        dir_sweeps = [s for s in sweeps if s.direction == trade_dir_smc]
+        if dir_sweeps:
+            latest = max(dir_sweeps, key=lambda s: s.timestamp)
+            age_h = (now_ms - latest.timestamp) / 3_600_000
+            if age_h <= 12:
+                recent_sweeps.append({
+                    "tf": tf,
+                    "swept_level": round(latest.swept_level, 6),
+                    "wick": round(latest.wick_price, 6),
+                    "close": round(latest.close_price, 6),
+                    "volume_ratio": round(latest.volume_ratio, 2),
+                    "touch_count": latest.swept_level_touch_count,
+                    "age_hours": round(age_h, 2),
+                })
+
+        # Recent structure break aligned
+        if state.latest_break and state.latest_break.direction == trade_dir_smc:
+            brk = state.latest_break
+            age_h = (now_ms - brk.timestamp) / 3_600_000
+            if age_h <= 24:
+                disp_pct = abs(brk.break_price - brk.broken_level) / brk.broken_level * 100
+                recent_breaks.append({
+                    "tf": tf,
+                    "type": brk.break_type,  # bos or choch
+                    "direction": brk.direction,
+                    "broken_level": round(brk.broken_level, 6),
+                    "break_price": round(brk.break_price, 6),
+                    "displacement_pct": round(disp_pct, 3),
+                    "age_hours": round(age_h, 2),
+                })
+
+    out["obs_nearest"] = nearest_obs
+    out["fvgs_nearest"] = nearest_fvgs
+    out["recent_sweeps"] = recent_sweeps
+    out["recent_breaks"] = recent_breaks
+    return out
+
+
+def _volume_profile_context(pair: str, current_price: float) -> dict[str, Any]:
+    """Compute 4H volume profile over last ~7 days, classify current price zone."""
+    candles_4h = _fetch_candles(pair, "4h", limit=60)
+    if len(candles_4h) < 20:
+        return {}
+    analyzer = VolumeProfileAnalyzer()
+    profile = analyzer.update(pair, candles_4h)
+    if not profile:
+        return {}
+
+    if current_price >= profile.vah:
+        zone = "above_va"
+    elif current_price <= profile.val:
+        zone = "below_va"
+    else:
+        zone = "inside_va"
+
+    dist_poc_pct = (current_price - profile.poc_price) / profile.poc_price * 100 if profile.poc_price else None
+    hvn_prices = [p for p, _ in profile.high_volume_nodes[:5]]
+    near_hvn = None
+    if hvn_prices and current_price:
+        closest = min(hvn_prices, key=lambda p: abs(p - current_price))
+        near_hvn = {
+            "price": round(closest, 6),
+            "distance_pct": round((closest - current_price) / current_price * 100, 3),
+        }
+
+    return {
+        "poc": round(profile.poc_price, 6),
+        "vah": round(profile.vah, 6),
+        "val": round(profile.val, 6),
+        "zone": zone,
+        "distance_to_poc_pct": round(dist_poc_pct, 3) if dist_poc_pct is not None else None,
+        "near_hvn": near_hvn,
+        "hvn_count": len(profile.high_volume_nodes),
+        "lvn_count": len(profile.low_volume_nodes),
+    }
+
+
+def _volume_absorption(pair: str) -> dict[str, Any]:
+    """Last 5m candle volume vs 20-period average. Detects absorption spikes."""
+    candles = _fetch_candles(pair, "5m", limit=21)
+    if len(candles) < 20:
+        return {}
+    last = candles[-1]
+    prior = candles[-21:-1] if len(candles) >= 21 else candles[:-1]
+    avg_vol = sum(c.volume for c in prior) / len(prior) if prior else 0
+    if avg_vol <= 0:
+        return {}
+    ratio = last.volume / avg_vol
+    body = abs(last.close - last.open)
+    rng = last.high - last.low
+    body_ratio = body / rng if rng > 0 else 0
+    direction_last = "bullish" if last.close > last.open else "bearish"
+    # Absorption = high volume + small body (rejection) OR high volume + big body (displacement)
+    is_absorption = ratio >= 2.0 and body_ratio < 0.35
+    is_displacement = ratio >= 2.0 and body_ratio >= 0.60
+    return {
+        "volume_ratio_5m": round(ratio, 2),
+        "body_ratio_5m": round(body_ratio, 3),
+        "last_candle_direction": direction_last,
+        "absorption_detected": is_absorption,
+        "displacement_detected": is_displacement,
+    }
+
+
+def _bybit_orderbook(symbol: str) -> dict[str, Any]:
+    """Fetch Bybit L2 orderbook, compute spread, depth and imbalance (top 20)."""
+    try:
+        import httpx
+        url = "https://api.bybit.com/v5/market/orderbook"
+        params = {"category": "linear", "symbol": symbol, "limit": 50}
+        with httpx.Client(timeout=5.0) as c:
+            resp = c.get(url, params=params)
+            data = resp.json()
+    except Exception as exc:
+        logger.warning(f"bybit orderbook failed: {exc}")
+        return {}
+
+    result = (data or {}).get("result") or {}
+    bids = result.get("b") or []  # [[price, size], ...]
+    asks = result.get("a") or []
+    if not bids or not asks:
+        return {}
+
+    best_bid = float(bids[0][0])
+    best_ask = float(asks[0][0])
+    mid = (best_bid + best_ask) / 2
+    spread_bps = (best_ask - best_bid) / mid * 10000 if mid > 0 else None
+
+    top_n = 20
+    bid_depth = sum(float(p) * float(s) for p, s in bids[:top_n])
+    ask_depth = sum(float(p) * float(s) for p, s in asks[:top_n])
+    total = bid_depth + ask_depth
+    imbalance = (bid_depth - ask_depth) / total if total > 0 else 0
+
+    return {
+        "best_bid": best_bid,
+        "best_ask": best_ask,
+        "spread_bps": round(spread_bps, 2) if spread_bps is not None else None,
+        "bid_depth_usd_top20": round(bid_depth, 2),
+        "ask_depth_usd_top20": round(ask_depth, 2),
+        "imbalance_top20": round(imbalance, 3),
+    }
+
+
 def build_context_snapshot(symbol: str, side: str) -> dict[str, Any]:
     """Build context snapshot for a Bybit trade.
 
@@ -415,6 +636,32 @@ def build_context_snapshot(symbol: str, side: str) -> dict[str, Any]:
     except Exception as exc:
         logger.warning(f"liq cluster failed: {exc}")
 
+    try:
+        if snap.get("current_price"):
+            snap["smc"] = _smc_structure(pair, direction, snap["current_price"])
+    except Exception as exc:
+        logger.warning(f"smc_structure failed: {exc}")
+        snap["smc"] = {}
+
+    try:
+        if snap.get("current_price"):
+            snap["volume_profile"] = _volume_profile_context(pair, snap["current_price"])
+    except Exception as exc:
+        logger.warning(f"volume_profile failed: {exc}")
+        snap["volume_profile"] = {}
+
+    try:
+        snap["absorption"] = _volume_absorption(pair)
+    except Exception as exc:
+        logger.warning(f"volume_absorption failed: {exc}")
+        snap["absorption"] = {}
+
+    try:
+        snap["orderbook"] = _bybit_orderbook(symbol)
+    except Exception as exc:
+        logger.warning(f"orderbook failed: {exc}")
+        snap["orderbook"] = {}
+
     # Warnings — qualitative flags
     warnings: list[str] = []
     if snap["htf_bias"].get("aligned_with_trade") is False:
@@ -435,6 +682,30 @@ def build_context_snapshot(symbol: str, side: str) -> dict[str, Any]:
             warnings.append("CVD 1h negativo (sellers dominando)")
         elif direction == "short" and cvd1h > 0:
             warnings.append("CVD 1h positivo (buyers dominando)")
-    snap["warnings"] = warnings
+    ob_best = snap.get("smc", {}).get("obs_nearest", {})
+    if ob_best:
+        # Flag if no OB is near (<1.5%) on any TF
+        min_dist = min(
+            (abs(v.get("distance_pct", 999)) for v in ob_best.values() if isinstance(v, dict)),
+            default=None,
+        )
+        if min_dist is not None and min_dist > 1.5:
+            warnings.append(f"OB más cercano {min_dist:.1f}% away")
 
+    vp = snap.get("volume_profile") or {}
+    if vp.get("zone") == "above_va" and direction == "long":
+        warnings.append("longueando sobre VAH (extendido)")
+    if vp.get("zone") == "below_va" and direction == "short":
+        warnings.append("shorteando bajo VAL (extendido)")
+
+    ob_book = snap.get("orderbook") or {}
+    imb = ob_book.get("imbalance_top20")
+    if imb is not None:
+        if direction == "long" and imb < -0.25:
+            warnings.append(f"orderbook ask-heavy ({imb:+.2f})")
+        elif direction == "short" and imb > 0.25:
+            warnings.append(f"orderbook bid-heavy ({imb:+.2f})")
+
+    snap["warnings"] = warnings
+    snap["classifier_version"] = CONTEXT_CLASSIFIER_VERSION
     return snap
