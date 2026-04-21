@@ -150,6 +150,11 @@ class Settings:
     # Deducted from PnL: total_fees = (entry_notional + exit_notional) * rate
     TRADING_FEE_RATE: float = float(os.getenv("TRADING_FEE_RATE", "0.0005"))
 
+    # Breakeven confirmation — candle CLOSES through TP1 needed before
+    # SL → entry. 0 = legacy (any touch/wick arms BE). 1+ = require close.
+    # Raising to 1 prevents wick-only scratches. Batch 1 knob.
+    BE_CONFIRM_CLOSES: int = int(os.getenv("BE_CONFIRM_CLOSES", "0"))
+
     # Backtest fill model
     # "optimistic" = touch entry price = fill (current behavior)
     # "conservative" = price must penetrate beyond entry by FILL_BUFFER_PCT
@@ -426,9 +431,12 @@ class Settings:
     # ========================
     # TAKE PROFITS
     # ========================
-    # TP1: cerrar X% de posición a 1:1 RR
+    # TP1: cerrar X% de posición + trigger breakeven SL move
+    # Raised from 1.0 to 1.3 on 2026-04-20 (Batch 1) after 30d shadow replay
+    # showed 1.0 wicks trigger BE → scratch, 1.3 delivers WR 53.7% / PF 1.65
+    # vs baseline 48.5% / 1.30. See docs/SYSTEM_BASELINE.md §8 changelog.
     TP1_CLOSE_PCT: float = 0.50  # 50%
-    TP1_RR_RATIO: float = 1.0
+    TP1_RR_RATIO: float = float(os.getenv("TP1_RR_RATIO", "1.3"))
 
     # TP2: cerrar X% a 1:3 RR
     TP2_CLOSE_PCT: float = 0.30  # 30%
@@ -885,7 +893,7 @@ class Settings:
     # Experiment ID — tracks which parameter regime generated a sample.
     # feature_version = what columns mean. experiment_id = what rules generated sample.
     # Same features + different gates = contaminated dataset without this.
-    EXPERIMENT_ID: str = os.getenv("EXPERIMENT_ID", "shadow_tuning_v16_2026_04_16")
+    EXPERIMENT_ID: str = os.getenv("EXPERIMENT_ID", "batch1_tp1_rr_1_3_2026_04_20")
 
     # ========================
     # LIQUIDATION HEATMAP

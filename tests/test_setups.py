@@ -403,7 +403,8 @@ class TestTPCalculation:
     """Test take profit level calculation."""
 
     def test_bullish_tp_levels(self):
-        """TP1=1:1, TP2=1:2 (no liquidity levels)."""
+        """TP1 = entry + risk × TP1_RR_RATIO, TP2 = entry + risk × TP2_RR_RATIO."""
+        from config.settings import settings
         evaluator = SetupEvaluator()
 
         entry = 100.0
@@ -412,11 +413,14 @@ class TestTPCalculation:
             entry, sl, "bullish", [],
         )
 
-        assert tp1 == pytest.approx(103.0, abs=0.01)   # 100 + 3*1.0
-        assert tp2 == pytest.approx(106.0, abs=0.01)   # 100 + 3*2.0
+        expected_tp1 = entry + 3.0 * settings.TP1_RR_RATIO
+        expected_tp2 = entry + 3.0 * settings.TP2_RR_RATIO
+        assert tp1 == pytest.approx(expected_tp1, abs=0.01)
+        assert tp2 == pytest.approx(expected_tp2, abs=0.01)
 
     def test_bearish_tp_levels(self):
         """Bearish TP levels go below entry."""
+        from config.settings import settings
         evaluator = SetupEvaluator()
 
         entry = 100.0
@@ -425,8 +429,10 @@ class TestTPCalculation:
             entry, sl, "bearish", [],
         )
 
-        assert tp1 == pytest.approx(97.0, abs=0.01)
-        assert tp2 == pytest.approx(94.0, abs=0.01)
+        expected_tp1 = entry - 3.0 * settings.TP1_RR_RATIO
+        expected_tp2 = entry - 3.0 * settings.TP2_RR_RATIO
+        assert tp1 == pytest.approx(expected_tp1, abs=0.01)
+        assert tp2 == pytest.approx(expected_tp2, abs=0.01)
 
 
 # ============================================================
