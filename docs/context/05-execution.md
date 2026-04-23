@@ -1,5 +1,5 @@
 # Execution Service (Layer 5)
-> Última actualización: 2026-04-23 (Orphan reconcile no inventa PnL; downstream filtra orphaned_restart)
+> Última actualización: 2026-04-23 (ALLOW_BOT_WITH_MANUAL contract + filled_slippage label + metric counters)
 > Estado: **Fase 1 — COMPLETADA**. Entry + SL + TP atómicos (attached). Progressive trailing SL (0.5 R:R steps) with ceiling TP at 5:1 R:R. Legacy breakeven+trailing behind `TRAILING_TP_ENABLED=false`. CampaignMonitor para HTF position trades. PnL tracking con fee deduction (TRADING_FEE_RATE 0.05% per side).
 
 El brazo ejecutor del bot. Recibe trades aprobados por Risk Service y los ejecuta en OKX via ccxt.
@@ -186,7 +186,12 @@ Complementa el SL vanished fallback. Cada `SL_VERIFY_INTERVAL_SECONDS` (default 
 Al startup, `sync_exchange_positions()` consulta OKX por posiciones abiertas. Las no trackeadas se adoptan como `ManagedPosition(setup_type="manual")`:
 - Monitor las vigila via `fetch_position()` polling
 - Si la posición desaparece → `manual_close`
-- Permite nueva entry del bot en el mismo par (OKX net mode stacking)
+
+### Bot + manual coexistence contract (`ALLOW_BOT_WITH_MANUAL`)
+
+Default `false`: bot signals are **rejected** while a manual position is open on that pair. Portfolio-heat guardrails rely on visible SL levels; a stacked bot leg on top of an unseen manual SL would leave real exposure unmeasured. Rejections emit metric `bot_signal_blocked_by_manual`.
+
+Opt-in (`ALLOW_BOT_WITH_MANUAL=true`): legacy behavior — manual is dropped from the risk tracker via `on_trade_cancelled` and the bot entry opens alongside on OKX net mode. Only enable if you understand portfolio heat will undercount the manual leg.
 
 ## Adopted position SL recovery
 
@@ -299,6 +304,14 @@ El monitor emite métricas a `bot_metrics` en PostgreSQL (fire-and-forget):
 | `pending_timeout` | Limit order expirada sin fill (count=1 per event) |
 | `pending_filled` | Limit order filled exitosamente (count=1 per event) |
 | `time_to_fill_seconds` | Segundos entre placement y fill (label: setup_type) |
+| `timeout_exit_spread_pct` | Spread% al ejecutar market close por timeout (liquidity proxy) |
+| `orphan_reconcile_count` / `_error` | Startup-reconcile de trades huérfanos — success count y errors |
+| `bot_signal_blocked_by_manual` | Bot signal rechazada por coexistence contract (default off) |
+| `on_sl_hit_callback_error` | Fallo en callback que marca OB como failed (labels: `source`) |
+| `shadow_outcome_resolved_ok` / `_error` | Persistencia de outcome de shadow position (labels: `outcome`) |
+| `shadow_redis_save_error` / `shadow_redis_load_error` | Fallos persistencia Redis de shadow state |
+
+Silent-failure guard: `_emit_metric` cuenta fallos in-memory y emite WARNING cada ≥5 min si Postgres está degradado. Antes era `except Exception: pass` puro.
 
 **Fill rate**: `pending_filled / (pending_filled + pending_timeout + pending_replaced)` — calculable desde Grafana.
 

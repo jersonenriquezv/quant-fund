@@ -1,5 +1,5 @@
 # Risk Service
-> Última actualización: 2026-03-26
+> Última actualización: 2026-04-23 (balance cache 5min TTL + refresh on close bypass)
 > Estado: implementado. Dynamic position sizing via PositionSizer: `size = (capital × 1%) / SL_distance`. Leverage dynamic (capped at 7x). Portfolio heat tracking (6% max). MAX_SL_PCT (4%) cap. R:R minimums: swing 2.0, quick 1.5. Trade journal in PostgreSQL (trade_rejections table + r_multiple on trades).
 
 ## Qué hace (30 segundos)
@@ -92,7 +92,7 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 - **Método principal:** `check(setup: TradeSetup, ai_confidence: float = 1.0, dry_run: bool = False) -> RiskApproval`
   - `dry_run=True`: Shadow mode — skips balance fetch, capital mutation, and risk event persistence.
   1. Corre los 7 guardrails en orden (fail fast): min risk distance, R:R ratio, cooldown, max trades/day, max positions, daily DD, weekly DD
-  2. **Balance query:** Fetches live USDT balance from OKX via `_query_account_balance()`. Falls back to tracked capital if query fails. Updates tracked capital on success.
+  2. **Balance query:** Fetches live USDT balance from OKX via `_query_account_balance()` (TTL-cached 5 min to avoid rate-limit hits on bursts of signals). Falls back to tracked capital if query fails. Updates tracked capital on success. `refresh_capital_from_exchange(force=True)` bypasses the cache and is called after every realized close.
   3. **Dynamic position sizing via PositionSizer:** `position_size = (capital × RISK_PER_TRADE) / SL_distance`. Leverage derived from notional, capped at MAX_LEVERAGE. Falls back to FIXED_TRADE_MARGIN flat sizing if PositionSizer raises.
   4. **Bet sizing (optional, AFML Ch.10):** Si `BET_SIZING_ENABLED=true` y `ai_confidence < 1.0`: scales position_size by Kelly factor. Inactivo cuando AI está bypassed (confidence=1.0).
   5. **Hard risk cap:** `risk_pct` capped at `MAX_MARGIN_PCT_OF_CAPITAL` (25%). Re-runs PositionSizer with capped risk if exceeded.

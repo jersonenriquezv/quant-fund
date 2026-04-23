@@ -1,5 +1,5 @@
 # Data Service
-> Last updated: 2026-04-15
+> Last updated: 2026-04-23 (VALID_OUTCOMES + NON_MARKET_OUTCOMES + orphan-restart SQL filter)
 > Status: implemented (complete, running in Docker). Audited — 4 CRITICAL fixes applied. Whale tracking with USD enrichment, 3-tier Telegram notifications, new whale wallets (Trump, Jump Trading, a16z, FTX/Alameda, UK Gov BTC). News sentiment (Fear & Greed + headlines) as new data layer. HTF campaigns: 1D candle support + campaigns table.
 
 ## What it does (30 seconds)
@@ -218,6 +218,11 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - **Campaigns:** `insert_campaign(campaign)` → DB id, `update_campaign(campaign)` on close. Stores HTF campaign lifecycle (campaign_id, pair, direction, initial/weighted entry, total size/margin, adds detail as JSONB, SL, PnL, close reason, timestamps).
 - **Auto-reconnection:** `_ensure_connected()` checks connection health (sends `SELECT 1`). All DB methods (`store_candles`, `load_candles`, `insert_trade`, `update_trade`, `insert_ai_decision`, `insert_risk_event`, `insert_metric`) retry once on `psycopg2.OperationalError` / `InterfaceError` — sets `_conn = None` and reconnects.
 - **Operational metrics (Grafana):** `insert_metric(name, value, pair, labels)` writes to `bot_metrics` table. `cleanup_old_metrics(retention_days=30)` deletes old rows. Both fire-and-forget.
+- **ML outcome contracts** (module-level constants):
+  - `VALID_OUTCOMES`: frozenset autoritativo para `ml_setups.outcome_type`. `update_ml_setup_outcome` loggea WARNING si el label no matchea, y `return False` si `rowcount == 0` (orphan row — insert anterior falló o shadow nunca grabado).
+  - `NON_MARKET_OUTCOMES`: subset a excluir en training/edge queries (rechazos pre-exec, unfilled, replaced, filled_orphaned).
+  - `ml_market_outcome_filter_sql(column="outcome_type")`: helper que emite el WHERE fragment canónico. Usarlo en scripts nuevos para evitar drift entre lugares.
+- **Orphan-restart filter**: queries agregadas sobre `trades` (`fetch_closed_trades_pnl`, `fetch_recent_closed_trades`, `get_journal_summary`) filtran `exit_reason IS DISTINCT FROM 'orphaned_restart'` — sintéticos no contaminan DD reconcile ni dashboard. Regression tests en `tests/test_data_store_filters.py`.
 
 ### `data_service/liquidation_estimator.py` — Liquidation Heatmap Estimator
 - Estimates long/short liquidation clusters from recent 5m candles, current OI, leverage-tier weights, and pair-specific price bins.
