@@ -711,12 +711,18 @@ def _persist_risk_event(event_type: str, details: dict) -> None:
 
 
 def _log_trade_rejection(setup, reason: str) -> None:
-    """Log a rejected trade to the trade_rejections table (fire-and-forget)."""
+    """Log a rejected trade to the trade_rejections table (fire-and-forget).
+
+    Defensive math: guard every denominator. Rejected setups occasionally
+    have malformed prices (entry=0 from a stale snapshot, sl==entry from
+    an ATR collapse) and a single ZeroDivisionError would swallow the log.
+    """
     if _data_service is None:
         return
     try:
-        sl_dist = abs(setup.entry_price - setup.sl_price) / setup.entry_price if setup.entry_price > 0 else None
+        entry = setup.entry_price if setup.entry_price > 0 else 0.0
         risk = abs(setup.entry_price - setup.sl_price)
+        sl_dist = (risk / entry) if entry > 0 else None
         rr = abs(setup.tp2_price - setup.entry_price) / risk if risk > 0 else None
         _data_service.postgres.insert_trade_rejection(
             pair=setup.pair,
@@ -749,7 +755,13 @@ async def _daily_summary_loop() -> None:
 # Trading session alerts
 # ================================================================
 
-# Sessions defined as (name, start_hour_utc, end_hour_utc, label)
+# Sessions defined as (name, start_hour_utc, end_hour_utc, label).
+# Intentionally OVERLAPPING — used only to trigger Telegram session-open
+# alerts ("europe opens", "us opens"), so end_hour is informational.
+# For ML labels (non-overlapping categorical), see `trading_session`
+# feature in shared/ml_features.py (asia 0-8, europe 8-14, us 14-21,
+# overlap 21-24). The two definitions serve different purposes; do not
+# collapse them.
 TRADING_SESSIONS = [
     ("asia", 0, 9, "00:00-09:00"),
     ("europe", 7, 16, "07:00-16:00"),

@@ -348,6 +348,17 @@ Three storages hold trade-like rows. Only ONE is authoritative for ML training /
 
 ## 8. Changelog
 
+### 2026-04-23 — Audit fase 4.3: §BAJA hardening
+**Files:** `main.py`, `risk_service/state_tracker.py`
+
+**What changed:**
+- **`_trades_today` placeholders** usan sentinel `{"_placeholder": True}` en vez de `{"pair": "reconciled/restored", "pnl_pct": 0, "timestamp": 0}`. Cualquier iteración futura sobre fields falsos explota visible.
+- **`_log_trade_rejection` divisors** blindados. `entry`, `risk` validados antes de dividir; previene ZeroDivisionError si setup llega con precios malformados.
+- **`reconcile_drawdown_from_db` asimetría** documentada explícitamente + log INFO cuando Redis es peor que DB (antes silencioso). Comportamiento idéntico — min(Redis,DB) by design — pero la decisión queda visible al operador.
+- **`TRADING_SESSIONS` clarity comment** explicando por qué coexiste con `trading_session` feature de ml_features (overlapping Telegram alerts vs non-overlapping ML categorical).
+
+**Why:** audit §BAJA — hardening no-comportamental, cierra remaining observations. No hay cambios de lógica de guardrails ni de labels.
+
 ### 2026-04-23 — Audit fase 4.2: Bybit link robustness + dataset ground truth §7.0
 **Files:** `data_service/bybit_watcher.py`, `docs/SYSTEM_BASELINE.md`
 

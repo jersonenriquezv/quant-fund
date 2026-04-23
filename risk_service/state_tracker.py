@@ -293,8 +293,12 @@ class RiskStateTracker:
             db_weekly = pnl["weekly_pnl_pct"]
             db_count = pnl["trade_count"]
 
-            # Use the worse (more negative) of Redis vs PostgreSQL values.
-            # This ensures drawdown is never under-counted after restart.
+            # ASYMMETRY BY DESIGN: take min(Redis, DB) for PnL — never undercount
+            # drawdown after a restart. Tradeoff: if Redis carries a worse value
+            # than DB because a closing trade has not yet been persisted, the
+            # conservative value sticks. Net effect skews DD up slightly after
+            # restarts. Accepted: false-positive DD limit = no-op, false-negative
+            # would let the bot trade past a legitimate cutoff.
             reconciled = False
             if db_daily < self._daily_pnl_pct:
                 logger.warning(
@@ -303,6 +307,12 @@ class RiskStateTracker:
                 )
                 self._daily_pnl_pct = db_daily
                 reconciled = True
+            elif db_daily > self._daily_pnl_pct:
+                # Redis is the worse number — keep it, but log for operator.
+                logger.info(
+                    f"Drawdown reconciliation: Redis daily={self._daily_pnl_pct:.4f} "
+                    f"is worse than DB={db_daily:.4f} — keeping Redis (conservative)"
+                )
 
             if db_weekly < self._weekly_pnl_pct:
                 logger.warning(
@@ -311,6 +321,11 @@ class RiskStateTracker:
                 )
                 self._weekly_pnl_pct = db_weekly
                 reconciled = True
+            elif db_weekly > self._weekly_pnl_pct:
+                logger.info(
+                    f"Drawdown reconciliation: Redis weekly={self._weekly_pnl_pct:.4f} "
+                    f"is worse than DB={db_weekly:.4f} — keeping Redis (conservative)"
+                )
 
             # Also reconcile trade count if DB has more
             if db_count > len(self._trades_today):
@@ -318,7 +333,10 @@ class RiskStateTracker:
                     f"Drawdown reconciliation: trades today Redis={len(self._trades_today)} "
                     f"DB={db_count} — using DB count"
                 )
-                self._trades_today = [{"pair": "reconciled", "pnl_pct": 0, "timestamp": 0}] * db_count
+                # Placeholders are count-only — guardrails read len() not fields.
+                # `_placeholder: True` makes accidental iteration over real-looking
+                # fields obvious in review. Do not add real-looking defaults.
+                self._trades_today = [{"_placeholder": True}] * db_count
                 reconciled = True
 
             if reconciled:
@@ -356,9 +374,10 @@ class RiskStateTracker:
                 trades_today = self._redis.get_bot_state("risk_trades_today")
                 if trades_today is not None:
                     # Reconstruct _trades_today as a list with N placeholder entries
-                    # (we only need the count for guardrails)
+                    # — only the count matters for MAX_TRADES_PER_DAY guardrail.
+                    # Sentinel key flags any accidental iteration over fake fields.
                     count = int(trades_today)
-                    self._trades_today = [{"pair": "restored", "pnl_pct": 0, "timestamp": 0}] * count
+                    self._trades_today = [{"_placeholder": True}] * count
 
             # Restore weekly values only if same week
             saved_week = self._redis.get_bot_state("risk_state_week")
