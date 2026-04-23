@@ -121,6 +121,24 @@ class TestExtractSetupFeatures:
         features = extract_setup_features(setup, None, 2005.0)
         assert features["pd_aligned"] is False
 
+    def test_pd_equilibrium_not_aligned(self):
+        """Regression: equilibrium used to be treated as aligned for both
+        sides, which polluted the feature in its most ambiguous zone."""
+        setup_long = _make_setup(
+            direction="long",
+            confluences=["choch_bullish", "pd_zone_equilibrium"],
+        )
+        features = extract_setup_features(setup_long, None, 2005.0)
+        assert features["pd_zone"] == "equilibrium"
+        assert features["pd_aligned"] is False
+
+        setup_short = _make_setup(
+            direction="short",
+            confluences=["bos_15m", "pd_zone_equilibrium"],
+        )
+        features = extract_setup_features(setup_short, None, 2005.0)
+        assert features["pd_aligned"] is False
+
     def test_missingness_no_snapshot(self):
         """When snapshot is None, all has_* flags should be False."""
         setup = _make_setup()

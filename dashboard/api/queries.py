@@ -85,6 +85,7 @@ async def get_trade_stats() -> dict:
                 COALESCE(ABS(SUM(pnl_usd) FILTER (WHERE pnl_usd < 0)), 0)::float AS gross_loss
             FROM trades
             WHERE status = 'closed'
+              AND exit_reason IS DISTINCT FROM 'orphaned_restart'
         """)
     d = dict(row)
     total = d["total_trades"]

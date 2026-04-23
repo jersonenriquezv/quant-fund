@@ -56,6 +56,9 @@ class QuickSetupEvaluator:
         pd_zone: Optional[PremiumDiscountZone],
         candles: list[Candle],
         snapshot: Optional[MarketSnapshot] = None,
+        swing_highs_htf: Optional[list] = None,
+        swing_lows_htf: Optional[list] = None,
+        volume_profile=None,
     ) -> Optional[TradeSetup]:
         """Setup D — LTF Structure Scalp.
 
@@ -149,14 +152,17 @@ class QuickSetupEvaluator:
         # Variant split: setup_d_bos or setup_d_choch for per-variant measurement
         variant = f"setup_d_{latest_break.break_type}"
 
-        # TPs from settings (breakeven trigger + per-setup TP2)
-        tp2_rr = settings.SETUP_TP2_RR.get(variant, settings.TP2_RR_RATIO)
-        if direction == "bullish":
-            tp1 = entry_price + risk * settings.TP1_RR_RATIO
-            tp2 = entry_price + risk * tp2_rr
-        else:
-            tp1 = entry_price - risk * settings.TP1_RR_RATIO
-            tp2 = entry_price - risk * tp2_rr
+        # TPs: structural targeting when enabled (swing highs/lows + VP POC/VAH/VAL).
+        # Falls back to fixed R:R (TP1_RR_RATIO / SETUP_TP2_RR[variant]) when no
+        # structural level meets the R:R minimums. Delegates to SetupEvaluator for
+        # single source of truth — matches swing setups A/B/F/G logic.
+        tp1, tp2 = self._ob_scorer._calculate_tp_levels(
+            entry_price, sl_price, direction, [],
+            setup_type=variant,
+            swing_highs_htf=swing_highs_htf,
+            swing_lows_htf=swing_lows_htf,
+            volume_profile=volume_profile,
+        )
 
         confluences = [
             f"{latest_break.break_type}_5m",

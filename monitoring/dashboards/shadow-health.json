@@ -1,0 +1,211 @@
+{
+  "uid": "shadow-health",
+  "title": "Shadow Health — Batch 1 BE Fix",
+  "tags": ["shadow", "ml", "batch1"],
+  "timezone": "browser",
+  "refresh": "5m",
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "BE Rate — Current Experiment (7d)",
+      "type": "stat",
+      "description": "Breakeven rate on the active experiment_id. Batch 1 exit bar is <40%. Was 79% pre-fix.",
+      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 0},
+      "datasource": {"type": "grafana-postgresql-datasource", "uid": "postgres"},
+      "targets": [{
+        "rawSql": "SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE outcome_type = 'shadow_breakeven')::numeric / NULLIF(COUNT(*) FILTER (WHERE outcome_type IN ('shadow_tp','shadow_sl','shadow_breakeven')), 0), 1) AS \"BE Rate %\" FROM ml_setups WHERE experiment_id = 'batch1_tp1_rr_1_3_2026_04_20' AND created_at > NOW() - INTERVAL '7 days'",
+        "format": "table",
+        "refId": "A",
+        "rawQuery": true
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 40},
+              {"color": "red", "value": 50}
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      }
+    },
+    {
+      "id": 2,
+      "title": "Resolved N — Current Experiment",
+      "type": "stat",
+      "description": "Count of TP/SL/BE outcomes on current experiment. Need N≥20 to call Batch 1 decided.",
+      "gridPos": {"h": 5, "w": 6, "x": 6, "y": 0},
+      "datasource": {"type": "grafana-postgresql-datasource", "uid": "postgres"},
+      "targets": [{
+        "rawSql": "SELECT COUNT(*) AS \"Resolved\" FROM ml_setups WHERE experiment_id = 'batch1_tp1_rr_1_3_2026_04_20' AND outcome_type IN ('shadow_tp','shadow_sl','shadow_breakeven')",
+        "format": "table",
+        "refId": "A",
+        "rawQuery": true
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "yellow", "value": 10},
+              {"color": "green", "value": 20}
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 3,
+      "title": "Win Rate — Current Experiment",
+      "type": "stat",
+      "description": "TP / (TP + SL). Ignores breakevens. Batch 1 expected: 53% (replay sim).",
+      "gridPos": {"h": 5, "w": 6, "x": 12, "y": 0},
+      "datasource": {"type": "grafana-postgresql-datasource", "uid": "postgres"},
+      "targets": [{
+        "rawSql": "SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE outcome_type = 'shadow_tp')::numeric / NULLIF(COUNT(*) FILTER (WHERE outcome_type IN ('shadow_tp','shadow_sl')), 0), 1) AS \"WR %\" FROM ml_setups WHERE experiment_id = 'batch1_tp1_rr_1_3_2026_04_20'",
+        "format": "table",
+        "refId": "A",
+        "rawQuery": true
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "yellow", "value": 45},
+              {"color": "green", "value": 55}
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background"
+      }
+    },
+    {
+      "id": 4,
+      "title": "Orphan Count (24h)",
+      "type": "stat",
+      "description": "Shadows resolved as shadow_orphaned in last 24h. Indicates restart losing positions. Batch 0 goal: <5/day.",
+      "gridPos": {"h": 5, "w": 6, "x": 18, "y": 0},
+      "datasource": {"type": "grafana-postgresql-datasource", "uid": "postgres"},
+      "targets": [{
+        "rawSql": "SELECT COUNT(*) AS \"Orphans 24h\" FROM ml_setups WHERE outcome_type = 'shadow_orphaned' AND resolved_at > NOW() - INTERVAL '24 hours'",
+        "format": "table",
+        "refId": "A",
+        "rawQuery": true
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 5},
+              {"color": "red", "value": 10}
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background"
+      }
+    },
+    {
+      "id": 5,
+      "title": "Outcome Breakdown by Setup — Current Experiment",
+      "type": "table",
+      "description": "TP/SL/BE counts per setup_type. Reveals which setup drives the most breakevens.",
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 5},
+      "datasource": {"type": "grafana-postgresql-datasource", "uid": "postgres"},
+      "targets": [{
+        "rawSql": "SELECT setup_type AS \"Setup\", COUNT(*) FILTER (WHERE outcome_type = 'shadow_tp') AS \"TP\", COUNT(*) FILTER (WHERE outcome_type = 'shadow_sl') AS \"SL\", COUNT(*) FILTER (WHERE outcome_type = 'shadow_breakeven') AS \"BE\", COUNT(*) FILTER (WHERE outcome_type = 'shadow_no_fill') AS \"No Fill\", ROUND(100.0 * COUNT(*) FILTER (WHERE outcome_type = 'shadow_tp')::numeric / NULLIF(COUNT(*) FILTER (WHERE outcome_type IN ('shadow_tp','shadow_sl')), 0), 1) AS \"WR %\", ROUND(100.0 * COUNT(*) FILTER (WHERE outcome_type = 'shadow_breakeven')::numeric / NULLIF(COUNT(*) FILTER (WHERE outcome_type IN ('shadow_tp','shadow_sl','shadow_breakeven')), 0), 1) AS \"BE %\" FROM ml_setups WHERE experiment_id = 'batch1_tp1_rr_1_3_2026_04_20' GROUP BY setup_type ORDER BY setup_type",
+        "format": "table",
+        "refId": "A",
+        "rawQuery": true
+      }]
+    },
+    {
+      "id": 6,
+      "title": "Experiment Comparison — Before vs After Batch 1",
+      "type": "table",
+      "description": "Side-by-side of prior experiment vs current. BE rate should drop, WR should rise.",
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 5},
+      "datasource": {"type": "grafana-postgresql-datasource", "uid": "postgres"},
+      "targets": [{
+        "rawSql": "SELECT experiment_id AS \"Experiment\", COUNT(*) FILTER (WHERE outcome_type IN ('shadow_tp','shadow_sl','shadow_breakeven')) AS \"Resolved\", COUNT(*) FILTER (WHERE outcome_type = 'shadow_tp') AS \"TP\", COUNT(*) FILTER (WHERE outcome_type = 'shadow_sl') AS \"SL\", COUNT(*) FILTER (WHERE outcome_type = 'shadow_breakeven') AS \"BE\", ROUND(100.0 * COUNT(*) FILTER (WHERE outcome_type = 'shadow_tp')::numeric / NULLIF(COUNT(*) FILTER (WHERE outcome_type IN ('shadow_tp','shadow_sl')), 0), 1) AS \"WR %\", ROUND(100.0 * COUNT(*) FILTER (WHERE outcome_type = 'shadow_breakeven')::numeric / NULLIF(COUNT(*) FILTER (WHERE outcome_type IN ('shadow_tp','shadow_sl','shadow_breakeven')), 0), 1) AS \"BE %\" FROM ml_setups WHERE experiment_id IN ('shadow_tuning_v16_2026_04_18_be_fix','batch1_tp1_rr_1_3_2026_04_20') AND outcome_type IS NOT NULL GROUP BY experiment_id ORDER BY MIN(created_at)",
+        "format": "table",
+        "refId": "A",
+        "rawQuery": true
+      }]
+    },
+    {
+      "id": 7,
+      "title": "Daily Outcome Distribution — Last 14 Days",
+      "type": "barchart",
+      "description": "Shadow outcomes per day. Watch for the BE bar (yellow) shrinking after 2026-04-20.",
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 14},
+      "datasource": {"type": "grafana-postgresql-datasource", "uid": "postgres"},
+      "targets": [{
+        "rawSql": "SELECT DATE_TRUNC('day', resolved_at) AS time, outcome_type AS metric, COUNT(*) AS value FROM ml_setups WHERE resolved_at > NOW() - INTERVAL '14 days' AND outcome_type IN ('shadow_tp','shadow_sl','shadow_breakeven') GROUP BY DATE_TRUNC('day', resolved_at), outcome_type ORDER BY time",
+        "format": "time_series",
+        "refId": "A",
+        "rawQuery": true
+      }],
+      "options": {
+        "orientation": "vertical",
+        "stacking": {"mode": "normal"},
+        "showValue": "auto"
+      }
+    },
+    {
+      "id": 8,
+      "title": "Dedup Rate by Setup (24h)",
+      "type": "table",
+      "description": "Shadow dedup = same unfilled setup detected again within 4h window. High dedup (>60%) indicates stale setup detection.",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 23},
+      "datasource": {"type": "grafana-postgresql-datasource", "uid": "postgres"},
+      "targets": [{
+        "rawSql": "SELECT setup_type AS \"Setup\", COUNT(*) AS \"Total 24h\", COUNT(*) FILTER (WHERE outcome_type = 'shadow_dedup') AS \"Deduped\", ROUND(100.0 * COUNT(*) FILTER (WHERE outcome_type = 'shadow_dedup')::numeric / NULLIF(COUNT(*), 0), 1) AS \"Dedup %\" FROM ml_setups WHERE created_at > NOW() - INTERVAL '24 hours' GROUP BY setup_type ORDER BY \"Total 24h\" DESC",
+        "format": "table",
+        "refId": "A",
+        "rawQuery": true
+      }]
+    },
+    {
+      "id": 9,
+      "title": "Avg Time to Resolution by Outcome (Current Experiment)",
+      "type": "table",
+      "description": "How long shadows take to resolve. BE resolving fast (<30min) suggests wick triggers — Batch 1 goal is to extend this.",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 23},
+      "datasource": {"type": "grafana-postgresql-datasource", "uid": "postgres"},
+      "targets": [{
+        "rawSql": "SELECT outcome_type AS \"Outcome\", COUNT(*) AS \"N\", ROUND(AVG(EXTRACT(EPOCH FROM (resolved_at - created_at))/60)::numeric, 1) AS \"Avg Min\", ROUND(MIN(EXTRACT(EPOCH FROM (resolved_at - created_at))/60)::numeric, 1) AS \"Min\", ROUND(MAX(EXTRACT(EPOCH FROM (resolved_at - created_at))/60)::numeric, 1) AS \"Max\" FROM ml_setups WHERE experiment_id = 'batch1_tp1_rr_1_3_2026_04_20' AND outcome_type IN ('shadow_tp','shadow_sl','shadow_breakeven','shadow_timeout') AND resolved_at IS NOT NULL GROUP BY outcome_type ORDER BY outcome_type",
+        "format": "table",
+        "refId": "A",
+        "rawQuery": true
+      }]
+    }
+  ],
+  "schemaVersion": 39,
+  "version": 1
+}

@@ -190,14 +190,25 @@ class BybitWatcher:
             logger.warning(f"context snapshot failed for {key.symbol}: {exc}")
             return {"error": str(exc)}
 
-    def _upsert_pending(self, p: PendingOrder, context: dict) -> int:
+    def _classify(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        """Run deterministic auto-classifier on snapshot. Empty dict on error."""
+        try:
+            from strategy_service.trade_classifier import classify
+            return classify(snapshot)
+        except Exception as exc:
+            logger.warning(f"classify failed: {exc}")
+            return {}
+
+    def _upsert_pending(self, p: PendingOrder, context: dict, auto: dict) -> int:
         sql = """
         INSERT INTO bybit_pending_orders (
             order_id, order_link_id, symbol, side, order_type,
             qty, price, trigger_price, stop_order_type, time_in_force,
             reduce_only, position_idx, placed_at, context_snapshot,
+            auto_setup_type, auto_confluences, auto_detractors,
+            auto_grade, auto_classifier_version,
             status, last_seen_at, updated_at
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'pending',NOW(),NOW())
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'pending',NOW(),NOW())
         ON CONFLICT (order_id) DO UPDATE SET
             qty = EXCLUDED.qty,
             price = EXCLUDED.price,
@@ -211,6 +222,11 @@ class BybitWatcher:
                 p.order_id, p.order_link_id, p.symbol, p.side, p.order_type,
                 p.qty, p.price, p.trigger_price, p.stop_order_type, p.time_in_force,
                 p.reduce_only, p.position_idx, p.placed_at, Json(context),
+                auto.get("auto_setup_type"),
+                Json(auto.get("auto_confluences")) if auto.get("auto_confluences") is not None else None,
+                Json(auto.get("auto_detractors")) if auto.get("auto_detractors") is not None else None,
+                auto.get("auto_grade"),
+                auto.get("auto_classifier_version"),
             ))
             row = cur.fetchone()
             conn.commit()
@@ -237,23 +253,70 @@ class BybitWatcher:
             conn.commit()
             return dict(row) if row else None
 
-    def _link_annotation_from_pending(self, symbol: str, side: str, annotation_id: int) -> dict | None:
-        """When a position opens, try to carry forward the most recent pending order's thesis.
-        Matches by (symbol, side) filled within last 5 min.
+    def _link_annotation_from_pending(
+        self, symbol: str, side: str, annotation_id: int,
+        size: float | None = None, entry_price: float | None = None,
+    ) -> dict | None:
+        """When a position opens, try to carry forward the most recent pending
+        order's thesis. Prefers qty+price proximity over pure time heuristic
+        so two similar pendings in the same window don't cross-link.
+
+        Strategy (best match wins):
+          1. Filled within 10 min, annotation unattached.
+          2. Rank by qty_diff / entry_price_diff (smaller = better). Ties
+             broken by most-recent filled_at.
+          3. If neither size nor entry_price available, fall back to the
+             legacy most-recent-in-5-min heuristic.
         """
         with self._conn() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT * FROM bybit_pending_orders
-                WHERE symbol = %s AND side = %s
-                  AND status = 'filled'
-                  AND filled_at >= NOW() - INTERVAL '5 minutes'
-                  AND annotation_id IS NULL
-                ORDER BY filled_at DESC LIMIT 1
-                """,
-                (symbol, side),
-            )
-            pending = cur.fetchone()
+            if size is None or entry_price is None or entry_price <= 0:
+                cur.execute(
+                    """
+                    SELECT * FROM bybit_pending_orders
+                    WHERE symbol = %s AND side = %s
+                      AND status = 'filled'
+                      AND filled_at >= NOW() - INTERVAL '5 minutes'
+                      AND annotation_id IS NULL
+                    ORDER BY filled_at DESC LIMIT 1
+                    """,
+                    (symbol, side),
+                )
+                pending = cur.fetchone()
+            else:
+                cur.execute(
+                    """
+                    SELECT *,
+                           ABS(COALESCE(qty, 0) - %s) / NULLIF(GREATEST(%s, 1e-9), 0) AS qty_rel,
+                           ABS(COALESCE(price, 0) - %s) / NULLIF(%s, 0) AS price_rel
+                    FROM bybit_pending_orders
+                    WHERE symbol = %s AND side = %s
+                      AND status = 'filled'
+                      AND filled_at >= NOW() - INTERVAL '10 minutes'
+                      AND annotation_id IS NULL
+                    ORDER BY (
+                        COALESCE(ABS(COALESCE(qty, 0) - %s) / NULLIF(GREATEST(%s, 1e-9), 0), 1.0)
+                      + COALESCE(ABS(COALESCE(price, 0) - %s) / NULLIF(%s, 0), 1.0)
+                    ) ASC,
+                    filled_at DESC LIMIT 1
+                    """,
+                    (size, size, entry_price, entry_price,
+                     symbol, side,
+                     size, size, entry_price, entry_price),
+                )
+                pending = cur.fetchone()
+                # Guard: reject match if either dimension is way off (>20%).
+                # Prevents wrong-link when only one pending exists but it is
+                # clearly a different trade (e.g. resized after edit).
+                if pending is not None:
+                    qty_rel = pending.get("qty_rel")
+                    price_rel = pending.get("price_rel")
+                    if ((qty_rel is not None and qty_rel > 0.20)
+                            or (price_rel is not None and price_rel > 0.02)):
+                        logger.info(
+                            f"bybit link: rejected pending {pending.get('order_id')} "
+                            f"for {symbol} {side} — qty_rel={qty_rel} price_rel={price_rel}"
+                        )
+                        pending = None
             if not pending:
                 return None
             # migrate thesis
@@ -287,15 +350,23 @@ class BybitWatcher:
             conn.commit()
             return dict(pending)
 
-    def _insert_annotation(self, st: PositionState, context: dict) -> int:
+    def _insert_annotation(self, st: PositionState, context: dict, auto: dict) -> int:
         notional = st.size * st.entry_price
         sql = """
         INSERT INTO bybit_trade_annotations (
             symbol, side, opened_at, entry_price, size, leverage,
-            notional_value, context_snapshot, status
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'open')
+            notional_value, context_snapshot,
+            auto_setup_type, auto_confluences, auto_detractors,
+            auto_grade, auto_classifier_version,
+            status
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'open')
         ON CONFLICT (symbol, side, opened_at) DO UPDATE
-            SET context_snapshot = EXCLUDED.context_snapshot
+            SET context_snapshot = EXCLUDED.context_snapshot,
+                auto_setup_type = EXCLUDED.auto_setup_type,
+                auto_confluences = EXCLUDED.auto_confluences,
+                auto_detractors = EXCLUDED.auto_detractors,
+                auto_grade = EXCLUDED.auto_grade,
+                auto_classifier_version = EXCLUDED.auto_classifier_version
         RETURNING id
         """
         with self._conn() as conn, conn.cursor() as cur:
@@ -303,6 +374,11 @@ class BybitWatcher:
                 st.key.symbol, st.key.side, st.updated_at,
                 st.entry_price, st.size, st.leverage,
                 notional, Json(context),
+                auto.get("auto_setup_type"),
+                Json(auto.get("auto_confluences")) if auto.get("auto_confluences") is not None else None,
+                Json(auto.get("auto_detractors")) if auto.get("auto_detractors") is not None else None,
+                auto.get("auto_grade"),
+                auto.get("auto_classifier_version"),
             ))
             row = cur.fetchone()
             conn.commit()
@@ -368,7 +444,24 @@ class BybitWatcher:
                 "entry_price": float(updated["entry_price"]) if updated["entry_price"] else None,
             }
 
-    def _fmt_open_alert(self, st: PositionState, annotation_id: int, ctx: dict) -> str:
+    def _fmt_auto_block(self, auto: dict) -> list[str]:
+        """Shared auto-classifier summary block for alerts."""
+        if not auto:
+            return []
+        setup = auto.get("auto_setup_type") or "?"
+        grade = auto.get("auto_grade") or "?"
+        conflu = auto.get("auto_confluences") or []
+        detr = auto.get("auto_detractors") or []
+        lines = [
+            f"🧠 <b>{setup}</b> · grade <b>{grade}</b> · +{len(conflu)} / -{len(detr)}",
+        ]
+        if conflu:
+            lines.append("✅ " + ", ".join(conflu[:6]) + ("…" if len(conflu) > 6 else ""))
+        if detr:
+            lines.append("❌ " + ", ".join(detr[:4]) + ("…" if len(detr) > 4 else ""))
+        return lines
+
+    def _fmt_open_alert(self, st: PositionState, annotation_id: int, ctx: dict, auto: dict) -> str:
         side_emoji = "🟢 LONG" if st.side == "Buy" else "🔴 SHORT"
         url = f"{self._dashboard_base}/annotate/{annotation_id}"
         lines = [
@@ -376,6 +469,9 @@ class BybitWatcher:
             f"{side_emoji} · size <code>{st.size}</code> · entry <code>{st.entry_price:.4f}</code> · lev <code>{st.leverage:g}x</code>",
             "",
         ]
+        lines.extend(self._fmt_auto_block(auto))
+        if auto:
+            lines.append("")
         # Include selected context highlights
         htf = ctx.get("htf_bias") or {}
         if htf:
@@ -391,6 +487,9 @@ class BybitWatcher:
         liq = ctx.get("nearest_liq_cluster") or {}
         if liq:
             lines.append(f"• Liq cluster: <b>{liq.get('side')}</b> @ <code>{liq.get('price')}</code> ({liq.get('distance_pct', 0):+.2f}%)")
+        vp = ctx.get("volume_profile") or {}
+        if vp:
+            lines.append(f"• VP zone: <b>{vp.get('zone', '?')}</b> · POC <code>{vp.get('poc')}</code>")
         warn = ctx.get("warnings") or []
         if warn:
             lines.append("")
@@ -399,7 +498,7 @@ class BybitWatcher:
         lines.append(f'<a href="{url}">📝 Anotar trade</a>')
         return "\n".join(lines)
 
-    def _fmt_pending_alert(self, p: PendingOrder, pending_id: int, ctx: dict) -> str:
+    def _fmt_pending_alert(self, p: PendingOrder, pending_id: int, ctx: dict, auto: dict) -> str:
         side_emoji = "🟢 LONG" if p.side == "Buy" else "🔴 SHORT"
         type_tag = p.stop_order_type or p.order_type or "LIMIT"
         price_str = f"{p.price:.4f}" if p.price else (f"trig {p.trigger_price:.4f}" if p.trigger_price else "?")
@@ -409,6 +508,9 @@ class BybitWatcher:
             f"{side_emoji} · <code>{type_tag}</code> · qty <code>{p.qty}</code> @ <code>{price_str}</code>",
             "",
         ]
+        lines.extend(self._fmt_auto_block(auto))
+        if auto:
+            lines.append("")
         htf = ctx.get("htf_bias") or {}
         if htf:
             align = htf.get("aligned_with_trade")
@@ -464,9 +566,10 @@ class BybitWatcher:
         for oid in new_ids:
             p = curr[oid]
             ctx = self._context_snapshot(PositionKey(symbol=p.symbol, side=p.side))
-            pid = self._upsert_pending(p, ctx)
-            await self._send_telegram(self._fmt_pending_alert(p, pid, ctx))
-            logger.info(f"PENDING_NEW {p.symbol} {p.side} qty={p.qty} price={p.price} id={pid}")
+            auto = self._classify(ctx)
+            pid = self._upsert_pending(p, ctx, auto)
+            await self._send_telegram(self._fmt_pending_alert(p, pid, ctx, auto))
+            logger.info(f"PENDING_NEW {p.symbol} {p.side} qty={p.qty} price={p.price} id={pid} auto={auto.get('auto_setup_type')}/{auto.get('auto_grade')}")
 
         for oid in gone_ids:
             p = prev[oid]
@@ -501,13 +604,17 @@ class BybitWatcher:
         for k in opened:
             st = curr[k]
             ctx = self._context_snapshot(k)
-            annot_id = self._insert_annotation(st, ctx)
+            auto = self._classify(ctx)
+            annot_id = self._insert_annotation(st, ctx, auto)
             # Try to carry forward thesis from matching recently-filled pending order
-            carried = self._link_annotation_from_pending(k.symbol, k.side, annot_id)
+            carried = self._link_annotation_from_pending(
+                k.symbol, k.side, annot_id,
+                size=st.size, entry_price=st.entry_price,
+            )
             if carried:
                 logger.info(f"OPEN {k.symbol} {k.side} carried thesis from pending order {carried.get('order_id')}")
-            await self._send_telegram(self._fmt_open_alert(st, annot_id, ctx))
-            logger.info(f"OPEN {k.symbol} {k.side} size={st.size} entry={st.entry_price} annot_id={annot_id}")
+            await self._send_telegram(self._fmt_open_alert(st, annot_id, ctx, auto))
+            logger.info(f"OPEN {k.symbol} {k.side} size={st.size} entry={st.entry_price} annot_id={annot_id} auto={auto.get('auto_setup_type')}/{auto.get('auto_grade')}")
 
         for k in closed:
             prev_st = prev[k]
@@ -549,7 +656,8 @@ class BybitWatcher:
             # Insert existing pending into DB without alerting
             for p in curr_pending.values():
                 ctx = self._context_snapshot(PositionKey(symbol=p.symbol, side=p.side))
-                self._upsert_pending(p, ctx)
+                auto = self._classify(ctx)
+                self._upsert_pending(p, ctx, auto)
             self._last_state = curr_pos
             self._last_pending = curr_pending
             return

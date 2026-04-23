@@ -12,6 +12,7 @@ Usage:
 
 import asyncio
 import json
+import os
 import signal
 import sys
 import time
@@ -412,16 +413,16 @@ def _ml_log_setup(setup, candle: Candle) -> None:
         ob_snapshot = None
         try:
             ob_snapshot = _data_service.get_orderbook_snapshot(candle.pair)
-        except Exception:
-            pass  # Non-critical — features will be None
+        except Exception as e:
+            logger.debug(f"orderbook snapshot miss ({candle.pair}): {e}")
 
         # BTC candles for correlation features (altcoins only)
         btc_candles = None
         if candle.pair != "BTC/USDT":
             try:
                 btc_candles = _data_service.get_candles("BTC/USDT", candle.timeframe, count=50)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"BTC candle fetch miss ({candle.pair}): {e}")
 
         features = extract_setup_features(
             setup, snapshot, current_price, recent_candles,
@@ -432,10 +433,16 @@ def _ml_log_setup(setup, candle: Candle) -> None:
         features["tp1_price"] = setup.tp1_price
         features["tp2_price"] = setup.tp2_price
 
-        # Risk context at detection time (before risk check)
+        # Risk context at detection time (before risk check).
+        # Shadow setups: override risk_capital with SHADOW_CAPITAL so the
+        # ml_setups row reflects the virtual capital the shadow will size
+        # against, not live OKX balance. Keeps risk_capital consistent with
+        # shadow_position_size and shadow_margin on the same row.
         risk_ctx = None
         if _risk_service is not None:
-            risk_ctx = extract_risk_context(_risk_service)
+            is_shadow = setup.setup_type in settings.SHADOW_MODE_SETUPS
+            override = settings.SHADOW_CAPITAL if is_shadow else None
+            risk_ctx = extract_risk_context(_risk_service, capital_override=override)
 
         ok = _data_service.postgres.insert_ml_setup(
             setup_id=setup.setup_id,
@@ -532,14 +539,31 @@ async def _evaluate_htf_pipeline(candle: Candle) -> None:
 # Metrics helper (fire-and-forget to PostgreSQL for Grafana)
 # ================================================================
 
+# In-memory counter of emit_metric failures — surfaced periodically so a
+# silent Postgres outage does not remain invisible indefinitely.
+_EMIT_METRIC_FAILURES: list[int] = [0]
+_EMIT_METRIC_LAST_WARN: list[float] = [0.0]
+
+
 def _emit_metric(name: str, value: float, pair: str | None = None, labels: dict | None = None) -> None:
-    """Write an operational metric to PostgreSQL. Non-blocking, swallows errors."""
+    """Write an operational metric to PostgreSQL. Non-blocking.
+
+    Errors are counted in-memory and surfaced via a WARNING every 5 minutes
+    (max) so a broken metrics path does not silently hide all observability.
+    """
     if _data_service is None:
         return
     try:
         _data_service.postgres.insert_metric(name, value, pair=pair, labels=labels)
-    except Exception:
-        pass  # Fire-and-forget — never block the pipeline
+    except Exception as e:
+        _EMIT_METRIC_FAILURES[0] += 1
+        now = time.time()
+        if now - _EMIT_METRIC_LAST_WARN[0] > 300:
+            logger.warning(
+                f"_emit_metric failures: {_EMIT_METRIC_FAILURES[0]} since last warn "
+                f"(last error: {e}). Metrics path may be degraded."
+            )
+            _EMIT_METRIC_LAST_WARN[0] = now
 
 
 # ================================================================
@@ -687,12 +711,18 @@ def _persist_risk_event(event_type: str, details: dict) -> None:
 
 
 def _log_trade_rejection(setup, reason: str) -> None:
-    """Log a rejected trade to the trade_rejections table (fire-and-forget)."""
+    """Log a rejected trade to the trade_rejections table (fire-and-forget).
+
+    Defensive math: guard every denominator. Rejected setups occasionally
+    have malformed prices (entry=0 from a stale snapshot, sl==entry from
+    an ATR collapse) and a single ZeroDivisionError would swallow the log.
+    """
     if _data_service is None:
         return
     try:
-        sl_dist = abs(setup.entry_price - setup.sl_price) / setup.entry_price if setup.entry_price > 0 else None
+        entry = setup.entry_price if setup.entry_price > 0 else 0.0
         risk = abs(setup.entry_price - setup.sl_price)
+        sl_dist = (risk / entry) if entry > 0 else None
         rr = abs(setup.tp2_price - setup.entry_price) / risk if risk > 0 else None
         _data_service.postgres.insert_trade_rejection(
             pair=setup.pair,
@@ -725,7 +755,13 @@ async def _daily_summary_loop() -> None:
 # Trading session alerts
 # ================================================================
 
-# Sessions defined as (name, start_hour_utc, end_hour_utc, label)
+# Sessions defined as (name, start_hour_utc, end_hour_utc, label).
+# Intentionally OVERLAPPING — used only to trigger Telegram session-open
+# alerts ("europe opens", "us opens"), so end_hour is informational.
+# For ML labels (non-overlapping categorical), see `trading_session`
+# feature in shared/ml_features.py (asia 0-8, europe 8-14, us 14-21,
+# overlap 21-24). The two definitions serve different purposes; do not
+# collapse them.
 TRADING_SESSIONS = [
     ("asia", 0, 9, "00:00-09:00"),
     ("europe", 7, 16, "07:00-16:00"),
@@ -1048,6 +1084,16 @@ def validate_config() -> bool:
     logger.info(f"Risk per trade: {settings.RISK_PER_TRADE*100:.1f}%")
     logger.info(f"Max leverage: {settings.MAX_LEVERAGE}x")
     logger.info(f"Max daily DD: {settings.MAX_DAILY_DRAWDOWN*100:.1f}%")
+
+    # ML data-collection identity — every ml_setups row written this session
+    # is tagged with these two values. Log them prominently so dashboards,
+    # training queries, and post-hoc analysis can reconstruct the regime.
+    env_exp = os.getenv("EXPERIMENT_ID")
+    exp_source = "env override" if env_exp else "settings default"
+    logger.info(
+        f"ML tagging: feature_version={settings.ML_FEATURE_VERSION} "
+        f"experiment_id='{settings.EXPERIMENT_ID}' ({exp_source})"
+    )
 
     if settings.HTF_CAMPAIGN_ENABLED:
         logger.info(

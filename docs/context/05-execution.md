@@ -1,5 +1,5 @@
 # Execution Service (Layer 5)
-> Última actualización: 2026-04-15 (Shadow orphan cleanup on startup + periodic)
+> Última actualización: 2026-04-23 (Orphan reconcile no inventa PnL; downstream filtra orphaned_restart)
 > Estado: **Fase 1 — COMPLETADA**. Entry + SL + TP atómicos (attached). Progressive trailing SL (0.5 R:R steps) with ceiling TP at 5:1 R:R. Legacy breakeven+trailing behind `TRAILING_TP_ENABLED=false`. CampaignMonitor para HTF position trades. PnL tracking con fee deduction (TRADING_FEE_RATE 0.05% per side).
 
 El brazo ejecutor del bot. Recibe trades aprobados por Risk Service y los ejecuta en OKX via ccxt.
@@ -188,15 +188,31 @@ Al startup, `sync_exchange_positions()` consulta OKX por posiciones abiertas. La
 - Si la posición desaparece → `manual_close`
 - Permite nueva entry del bot en el mismo par (OKX net mode stacking)
 
+## Adopted position SL recovery
+
+Cuando `sync_exchange_positions` adopta una posición (manual del usuario o superviviente a restart), `_extract_adopted_sl` recupera el SL para que `portfolio_heat` no quede ciego:
+
+1. Consulta `find_pending_algo_orders(pair)` buscando `slTriggerPx` o `triggerPx`.
+2. Filtra candidatos en el lado correcto (long: trigger < entry, short: trigger > entry).
+3. Long: toma `max(candidates)` (SL más cercano al entry). Short: `min(candidates)`.
+4. Si no hay candidato → fallback conservador `entry ± entry × MAX_SL_PCT` (4%). Loggea WARNING. No es el SL real — solo asegura que la posición consuma heat.
+
+Resultado: `on_trade_opened(sl_price=<real or fallback>)` → `get_portfolio_heat_usd` ya lo contabiliza en `MAX_PORTFOLIO_HEAT_PCT`.
+
 ## Orphaned trade reconciliation
 
 Al startup, después de `sync_exchange_positions()`, `_reconcile_orphaned_trades()` detecta trades "huérfanos":
 1. Consulta PostgreSQL por todos los trades con `status='open'`
 2. Para cada trade: verifica si existe una posición activa en OKX para ese par
-3. Si no hay posición en exchange → marca el trade como `status='closed', exit_reason='orphaned_restart'` con PnL 0
-4. Logea WARNING por cada trade reconciliado
+3. Si no hay posición en exchange → marca el trade como `status='closed', exit_reason='orphaned_restart'`. **PnL queda NULL** (no se inventa SL-based estimate — antes contaminaba DD reconcile y stats del dashboard con losses sintéticos).
+4. Logea WARNING por cada trade reconciliado.
 
 Esto resuelve el bug donde trades quedaban como "open" en la DB permanentemente después de un reinicio, porque el PositionMonitor perdía su estado in-memory.
+
+**Downstream readers** (DD reconcile, trade stats, dashboard) filtran `exit_reason IS DISTINCT FROM 'orphaned_restart'` para excluir filas sin PnL real:
+- `data_store.fetch_closed_trades_pnl` (DD daily/weekly)
+- `data_store.fetch_trade_stats` + `fetch_recent_closed_trades`
+- `dashboard/api/queries.get_trade_stats`
 
 ## Archivos
 

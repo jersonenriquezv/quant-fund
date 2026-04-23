@@ -129,6 +129,12 @@ class BybitSync:
             screenshot_url TEXT,
             -- context snapshot at entry (auto)
             context_snapshot JSONB,
+            -- auto-classification from snapshot (set at entry)
+            auto_setup_type VARCHAR(30),
+            auto_confluences JSONB,
+            auto_detractors JSONB,
+            auto_grade CHAR(1),
+            auto_classifier_version SMALLINT,
             -- outcome (filled from bybit_closed_pnl match)
             closed_at TIMESTAMPTZ,
             exit_price DOUBLE PRECISION,
@@ -146,6 +152,11 @@ class BybitSync:
         CREATE INDEX IF NOT EXISTS idx_bybit_annot_opened ON bybit_trade_annotations(opened_at DESC);
         CREATE INDEX IF NOT EXISTS idx_bybit_annot_status ON bybit_trade_annotations(status);
         CREATE INDEX IF NOT EXISTS idx_bybit_annot_symbol ON bybit_trade_annotations(symbol);
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS auto_setup_type VARCHAR(30);
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS auto_confluences JSONB;
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS auto_detractors JSONB;
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS auto_grade CHAR(1);
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS auto_classifier_version SMALLINT;
         """
         ddl_pending = """
         CREATE TABLE IF NOT EXISTS bybit_pending_orders (
@@ -176,6 +187,11 @@ class BybitSync:
             emotional_state VARCHAR(30),
             screenshot_url TEXT,
             context_snapshot JSONB,
+            auto_setup_type VARCHAR(30),
+            auto_confluences JSONB,
+            auto_detractors JSONB,
+            auto_grade CHAR(1),
+            auto_classifier_version SMALLINT,
             -- link to resulting annotation when order fills
             annotation_id BIGINT REFERENCES bybit_trade_annotations(id) ON DELETE SET NULL,
             placed_to_fill_sec INT,
@@ -186,6 +202,11 @@ class BybitSync:
         CREATE INDEX IF NOT EXISTS idx_bybit_pending_status ON bybit_pending_orders(status);
         CREATE INDEX IF NOT EXISTS idx_bybit_pending_symbol ON bybit_pending_orders(symbol);
         CREATE INDEX IF NOT EXISTS idx_bybit_pending_placed ON bybit_pending_orders(placed_at DESC);
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS auto_setup_type VARCHAR(30);
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS auto_confluences JSONB;
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS auto_detractors JSONB;
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS auto_grade CHAR(1);
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS auto_classifier_version SMALLINT;
         """
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(ddl_executions)

@@ -220,19 +220,22 @@ class TestStructuralTPs:
 
     def test_structural_tp_falls_back_to_fixed_rr(self):
         """With no structural levels, should use fixed R:R."""
+        from config.settings import settings
         from strategy_service.setups import SetupEvaluator
 
         evaluator = SetupEvaluator()
         entry = 50000.0
-        sl = 49000.0
+        sl = 49000.0  # risk = 1000
 
         tp1, tp2 = evaluator._calculate_tp_levels(
             entry, sl, "bullish", [], "setup_f",
         )
 
-        # Fixed R:R: TP1 = 51000, TP2 = 52000 (2.0x for setup_f)
-        assert abs(tp1 - 51000.0) < 1.0
-        assert abs(tp2 - 52000.0) < 1.0
+        tp2_rr = settings.SETUP_TP2_RR.get("setup_f", settings.TP2_RR_RATIO)
+        expected_tp1 = entry + 1000.0 * settings.TP1_RR_RATIO
+        expected_tp2 = entry + 1000.0 * tp2_rr
+        assert abs(tp1 - expected_tp1) < 1.0
+        assert abs(tp2 - expected_tp2) < 1.0
 
     def test_structural_tp_short_direction(self):
         """Structural TP should work for short setups too."""

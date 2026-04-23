@@ -20,6 +20,12 @@ logger = setup_logger("risk_service")
 class RiskService:
     """Layer 4 — enforces non-negotiable guardrails before trade execution."""
 
+    # Balance cache TTL — sizing calls within this window reuse the
+    # previous fetch instead of hammering the exchange. Live capital
+    # is only refetched explicitly after realized closes via
+    # refresh_capital_from_exchange(), so 5 min is safe for sizing.
+    _BALANCE_CACHE_TTL_SEC: float = 300.0
+
     def __init__(self, capital: float, data_service=None) -> None:
         self._sizer = PositionSizer()
         self._guardrails = Guardrails()
@@ -28,6 +34,8 @@ class RiskService:
         self._data_service = data_service
         self._persist_failures: int = 0
         self._balance_ever_fetched: bool = False
+        self._balance_cache_value: float | None = None
+        self._balance_cache_ts: float = 0.0
         logger.info(f"Risk Service initialized with capital=${capital:.2f}")
 
     # ================================================================
@@ -117,9 +125,10 @@ class RiskService:
                 if not self._balance_ever_fetched and capital == settings.INITIAL_CAPITAL:
                     return RiskApproval(
                         approved=False,
+                        position_size=0.0,
+                        leverage=0.0,
+                        risk_pct=0.0,
                         reason="Never fetched live balance — refusing to size from INITIAL_CAPITAL",
-                        position_size=0.0, leverage=0, margin=0.0,
-                        risk_amount=0.0, risk_pct=0.0,
                     )
             else:
                 self._balance_ever_fetched = True
@@ -296,38 +305,80 @@ class RiskService:
             phase=phase, sl_price=sl_price, position_size=position_size,
         )
 
-    def on_trade_filled(self, pair: str, direction: str) -> None:
+    def on_trade_filled(
+        self, pair: str, direction: str, opened_timestamp: int | None = None,
+    ) -> None:
         """Notify Risk Service that a pending entry was filled (now active)."""
-        self._state.record_trade_filled(pair, direction)
+        self._state.record_trade_filled(pair, direction, opened_timestamp)
 
     def on_trade_closed(
-        self, pair: str, direction: str, pnl_pct: float, timestamp: int
+        self, pair: str, direction: str, pnl_pct: float, timestamp: int,
+        *, opened_timestamp: int | None = None,
     ) -> None:
-        """Notify Risk Service that a trade was closed."""
-        self._state.record_trade_closed(pair, direction, pnl_pct, timestamp)
+        """Notify Risk Service that a trade was closed.
 
-    def on_trade_cancelled(self, pair: str, direction: str) -> None:
+        opened_timestamp: when provided, matches the exact position instead of
+        first-match by (pair, direction). Prevents removing the wrong entry
+        when multiple concurrent positions share pair+direction.
+        """
+        self._state.record_trade_closed(
+            pair, direction, pnl_pct, timestamp,
+            opened_timestamp=opened_timestamp,
+        )
+
+    def on_trade_cancelled(
+        self, pair: str, direction: str, opened_timestamp: int | None = None,
+    ) -> None:
         """Notify Risk Service that a pending entry was cancelled (never filled).
 
         Removes from open positions count without counting as a trade
         or affecting P&L tracking.
         """
-        self._state.record_trade_cancelled(pair, direction)
+        self._state.record_trade_cancelled(pair, direction, opened_timestamp)
 
     def update_capital(self, amount: float) -> None:
         """Update tracked capital (e.g. from exchange balance query)."""
         self._state.set_capital(amount)
 
-    def _query_account_balance(self) -> float | None:
-        """Query live USDT balance from OKX. Returns None on failure."""
+    def refresh_capital_from_exchange(self) -> float | None:
+        """Refetch live USDT balance and update tracked capital.
+
+        Called after every realized trade close so position sizing, portfolio
+        heat, and DD reconcile use current balance instead of a stale snapshot
+        from startup. Returns new balance or None if fetch failed.
+
+        Bypasses the balance cache — a realized close is exactly when the
+        cached value is known to be stale.
+        """
+        balance = self._query_account_balance(force=True)
+        if balance is not None:
+            self._balance_ever_fetched = True
+            self._state.set_capital(balance)
+            logger.info(f"Capital refreshed from exchange: ${balance:.2f}")
+        return balance
+
+    def _query_account_balance(self, force: bool = False) -> float | None:
+        """Query live USDT balance from OKX. Returns None on failure.
+
+        Cached for `_BALANCE_CACHE_TTL_SEC`. When `force=True` (explicit
+        refresh after a close) the cache is bypassed. Sizing calls in
+        the same 5-minute window reuse the last good value, keeping the
+        exchange below rate limits when many signals fire in a burst.
+        """
         if self._data_service is None:
             return None
+
+        now = time.time()
+        if (not force
+                and self._balance_cache_value is not None
+                and (now - self._balance_cache_ts) < self._BALANCE_CACHE_TTL_SEC):
+            return self._balance_cache_value
+
         try:
-            exchange = getattr(self._data_service, 'exchange', None)
-            if exchange is None:
-                return None
-            balance = exchange.fetch_usdt_balance()
+            balance = self._data_service.fetch_usdt_balance()
             if balance is not None and balance > 0:
+                self._balance_cache_value = balance
+                self._balance_cache_ts = now
                 return balance
             return None
         except Exception as e:

@@ -99,6 +99,12 @@ class ExecutionService:
             # ccxt returns contracts count — convert to base currency
             base_size = self._executor.contracts_to_base(pair, contracts)
 
+            # Recover SL so portfolio_heat is not blind.
+            # Priority: (1) SL attached to the position on OKX, (2) conservative
+            # fallback at MAX_SL_PCT distance from entry. The fallback is not the
+            # true SL — it just ensures this position consumes heat budget.
+            sl_price = await self._extract_adopted_sl(pair, direction, entry_price)
+
             adopted = ManagedPosition(
                 pair=pair,
                 direction=direction,
@@ -106,6 +112,8 @@ class ExecutionService:
                 phase="active",
                 entry_price=entry_price,
                 actual_entry_price=entry_price,
+                sl_price=sl_price,
+                current_sl_price=sl_price,
                 filled_size=base_size,
                 leverage=leverage,
                 created_at=int(time.time()),
@@ -119,13 +127,66 @@ class ExecutionService:
                 self._risk.on_trade_opened(
                     pair, direction, entry_price, int(time.time()),
                     phase="active",
-                    sl_price=0.0, position_size=base_size,
+                    sl_price=sl_price, position_size=base_size,
                 )
 
             logger.info(
                 f"Adopted exchange position: {pair} {direction} "
-                f"size={contracts} entry={entry_price:.2f} leverage={leverage:.0f}x"
+                f"size={contracts} entry={entry_price:.2f} "
+                f"sl={sl_price:.2f} leverage={leverage:.0f}x"
             )
+
+    async def _extract_adopted_sl(
+        self, pair: str, direction: str, entry_price: float,
+    ) -> float:
+        """Recover SL trigger price for an adopted position.
+
+        Looks for attached SL (slTriggerPx) or standalone stop-market (triggerPx)
+        in pending algo orders for the pair. Returns the trigger price on the
+        side opposite to the trade direction (long SL < entry, short SL > entry).
+
+        If no SL is found on exchange, returns a conservative fallback at
+        MAX_SL_PCT distance from entry. The fallback is NOT the true SL — it
+        ensures portfolio heat accounts for this position instead of being zero.
+        """
+        if entry_price <= 0:
+            return 0.0
+        try:
+            algos = await self._executor.find_pending_algo_orders(pair)
+        except Exception as e:
+            logger.warning(f"Adopted SL lookup failed for {pair}: {e}")
+            algos = []
+
+        candidates: list[float] = []
+        for algo in algos:
+            trigger = float(
+                algo.get("slTriggerPx", 0) or algo.get("triggerPx", 0) or 0
+            )
+            if trigger <= 0:
+                continue
+            if direction == "long" and trigger < entry_price:
+                candidates.append(trigger)
+            elif direction == "short" and trigger > entry_price:
+                candidates.append(trigger)
+
+        if candidates:
+            # Long: closest SL below entry = max. Short: closest above = min.
+            sl = max(candidates) if direction == "long" else min(candidates)
+            logger.info(
+                f"Adopted SL found on exchange: {pair} {direction} "
+                f"entry={entry_price:.2f} sl={sl:.2f}"
+            )
+            return sl
+
+        # Fallback: conservative SL at MAX_SL_PCT distance so heat is accounted.
+        dist = entry_price * settings.MAX_SL_PCT
+        sl = entry_price - dist if direction == "long" else entry_price + dist
+        logger.warning(
+            f"Adopted SL not found on exchange: {pair} {direction} "
+            f"— using conservative fallback sl={sl:.2f} "
+            f"(entry={entry_price:.2f}, MAX_SL_PCT={settings.MAX_SL_PCT*100:.1f}%)"
+        )
+        return sl
 
     async def _reconcile_orphaned_trades(self) -> None:
         """Close trades stuck as 'open' in PostgreSQL with no matching exchange position.
@@ -161,41 +222,19 @@ class ExecutionService:
             if pair in active_pairs:
                 continue  # Position exists on exchange — trade is genuinely open
 
-            # No position on exchange → orphaned trade
-            # Try to estimate PnL from SL (most likely exit) instead of hardcoding $0
+            # No position on exchange → orphaned trade.
+            # Do NOT invent PnL: SL estimate contaminates trades/DD/dashboard
+            # with synthetic losses that were never realized. Leave PnL NULL;
+            # downstream readers must filter exit_reason='orphaned_restart'.
             direction = trade.get("direction", "long")
-            entry = trade.get("actual_entry") or trade.get("entry_price") or 0
-            sl = trade.get("sl_price") or 0
-            size = trade.get("position_size") or 0
-
-            pnl_usd = 0.0
-            pnl_pct = 0.0
-            actual_exit = None
-
-            if entry > 0 and sl > 0 and size > 0:
-                # Estimate PnL assuming SL was hit (worst case)
-                if direction == "long":
-                    pnl_usd = (sl - entry) * size
-                    pnl_pct = (sl - entry) / entry
-                else:
-                    pnl_usd = (entry - sl) * size
-                    pnl_pct = (entry - sl) / entry
-                actual_exit = sl
-                logger.info(
-                    f"Orphaned trade id={trade_id} {pair}: "
-                    f"estimated PnL=${pnl_usd:.4f} (SL-based)"
-                )
 
             try:
                 self._data_service.postgres.update_trade(
                     trade_id=trade_id,
                     status="closed",
                     exit_reason="orphaned_restart",
-                    pnl_usd=pnl_usd,
-                    pnl_pct=pnl_pct,
-                    actual_exit=actual_exit,
                 )
-                # Resolve ML setup outcome so label is not lost
+                # Resolve ML setup outcome so label is not lost (no PnL set).
                 setup_id = trade.get("setup_id")
                 if setup_id:
                     self._data_service.postgres.update_ml_setup_outcome(
@@ -206,13 +245,15 @@ class ExecutionService:
                 logger.warning(
                     f"Reconciled orphaned trade: id={trade_id} {pair} "
                     f"{direction} — no matching exchange position "
-                    f"(estimated PnL=${pnl_usd:.4f})"
+                    f"(PnL left NULL, outcome recorded as orphaned)"
                 )
             except Exception as e:
                 logger.error(f"Failed to reconcile trade id={trade_id}: {e}")
+                self._emit_metric("orphan_reconcile_error", 1, pair=pair)
 
         if reconciled > 0:
             logger.info(f"Reconciliation complete: {reconciled} orphaned trade(s) closed")
+            self._emit_metric("orphan_reconcile_count", reconciled)
 
     async def stop(self) -> None:
         """Stop the monitor. Cancel unfilled entries, leave filled positions
@@ -309,15 +350,36 @@ class ExecutionService:
                     )
                     return False
                 if self._risk is not None:
-                    self._risk.on_trade_cancelled(setup.pair, old.direction)
+                    self._risk.on_trade_cancelled(
+                        setup.pair, old.direction,
+                        opened_timestamp=old.created_at,
+                    )
             elif existing.setup_type == "manual":
-                # Adopted position — allow bot to open its own entry alongside it.
-                # On OKX net mode, same-direction entries stack.
-                # Stop tracking the manual position (user manages their own SL/TP).
+                # Adopted (user-managed) position on this pair.
+                # Default contract: block the bot entry — portfolio heat
+                # guardrails cannot see the manual SL so stacking a bot
+                # leg on top would leave real exposure unmeasured.
+                # Opt-in coexistence via ALLOW_BOT_WITH_MANUAL drops the
+                # manual from tracker and opens alongside it (legacy).
+                if not settings.ALLOW_BOT_WITH_MANUAL:
+                    logger.info(
+                        f"Bot signal blocked: manual position on {setup.pair} "
+                        f"(ALLOW_BOT_WITH_MANUAL=false). Close the manual or "
+                        f"enable coexistence to proceed."
+                    )
+                    self._emit_metric(
+                        "bot_signal_blocked_by_manual", 1, pair=setup.pair,
+                    )
+                    return False
                 logger.info(
                     f"Adopted position exists for {setup.pair} — "
-                    f"allowing new bot entry alongside it"
+                    f"coexistence enabled, dropping manual from tracker"
                 )
+                if self._risk is not None:
+                    self._risk.on_trade_cancelled(
+                        setup.pair, existing.direction,
+                        opened_timestamp=existing.created_at,
+                    )
                 self._monitor.positions.pop(setup.pair, None)
             else:
                 # Active bot-managed position — don't open a second one
@@ -452,6 +514,16 @@ class ExecutionService:
                 sl_price=setup.sl_price, position_size=approval.position_size,
             )
 
+        # Snapshot tracked capital at open. Used as pnl_pct denominator on
+        # close so the historical row stays accurate even if live capital
+        # drifts between open and close (compounding wins/losses).
+        capital_snapshot = 0.0
+        if self._risk is not None and hasattr(self._risk, "_state"):
+            try:
+                capital_snapshot = float(self._risk._state.get_capital())
+            except Exception:
+                capital_snapshot = 0.0
+
         # Create managed position and register with monitor
         pos = ManagedPosition(
             pair=setup.pair,
@@ -468,6 +540,7 @@ class ExecutionService:
             entry_order_id=order.get("id"),
             ai_confidence=ai_confidence,
             created_at=int(time.time()),
+            capital_at_trade=capital_snapshot,
         )
 
         if is_split:

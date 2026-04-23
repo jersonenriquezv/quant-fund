@@ -150,6 +150,11 @@ class Settings:
     # Deducted from PnL: total_fees = (entry_notional + exit_notional) * rate
     TRADING_FEE_RATE: float = float(os.getenv("TRADING_FEE_RATE", "0.0005"))
 
+    # Breakeven confirmation — candle CLOSES through TP1 needed before
+    # SL → entry. 0 = legacy (any touch/wick arms BE). 1+ = require close.
+    # Raising to 1 prevents wick-only scratches. Batch 1 knob.
+    BE_CONFIRM_CLOSES: int = int(os.getenv("BE_CONFIRM_CLOSES", "0"))
+
     # Backtest fill model
     # "optimistic" = touch entry price = fill (current behavior)
     # "conservative" = price must penetrate beyond entry by FILL_BUFFER_PCT
@@ -426,9 +431,12 @@ class Settings:
     # ========================
     # TAKE PROFITS
     # ========================
-    # TP1: cerrar X% de posición a 1:1 RR
+    # TP1: cerrar X% de posición + trigger breakeven SL move
+    # Raised from 1.0 to 1.3 on 2026-04-20 (Batch 1) after 30d shadow replay
+    # showed 1.0 wicks trigger BE → scratch, 1.3 delivers WR 53.7% / PF 1.65
+    # vs baseline 48.5% / 1.30. See docs/SYSTEM_BASELINE.md §8 changelog.
     TP1_CLOSE_PCT: float = 0.50  # 50%
-    TP1_RR_RATIO: float = 1.0
+    TP1_RR_RATIO: float = float(os.getenv("TP1_RR_RATIO", "1.3"))
 
     # TP2: cerrar X% a 1:3 RR
     TP2_CLOSE_PCT: float = 0.30  # 30%
@@ -737,6 +745,19 @@ class Settings:
     TRADING_HALTED: bool = os.getenv("TRADING_HALTED", "false").lower() == "true"
 
     # ========================
+    # BOT + MANUAL COEXISTENCE
+    # ========================
+    # When False (default): if an adopted manual position exists on a pair,
+    # bot signals for that pair are rejected. Prevents stacking positions on
+    # OKX net-mode accounts where the bot cannot see or manage the user's
+    # manual SL/TP — which makes portfolio-heat guardrails blind to the
+    # real exposure.
+    # When True: legacy behavior — drop the manual from risk tracker and
+    # open the bot entry alongside it. Only enable if you understand that
+    # portfolio heat will undercount the manual leg.
+    ALLOW_BOT_WITH_MANUAL: bool = os.getenv("ALLOW_BOT_WITH_MANUAL", "false").lower() == "true"
+
+    # ========================
     # EXECUTION SERVICE
     # ========================
     # Seconds to wait for entry order to fill before cancelling (swing setups)
@@ -809,7 +830,7 @@ class Settings:
     HTF_OB_MAX_DISTANCE_PCT: float = 0.10  # 10% (vs 5% intraday)
     HTF_OB_PROXIMITY_PCT: float = 0.015    # 1.5% (vs 0.3% intraday)
     HTF_FVG_MAX_AGE_HOURS: int = 168       # 7 days
-    HTF_MIN_RISK_DISTANCE_PCT: float = 0.005  # 0.5% (vs 0.2% intraday)
+    HTF_MIN_RISK_DISTANCE_PCT: float = 0.005  # 0.5% — matches MIN_RISK_DISTANCE_PCT intraday
     # Exchange minimum order sizes per pair (base currency).
     # Pre-check to avoid wasting Claude API tokens on impossible trades.
     # OKX BTC-USDT-SWAP: min 0.01 contracts × 0.01 BTC/contract = 0.0001 BTC.
@@ -880,12 +901,12 @@ class Settings:
     # ========================
     # Feature version — increment when strategy params change in ways that
     # alter feature semantics (e.g. changing OB scoring weights, PD rules).
-    ML_FEATURE_VERSION: int = 16  # v16: ADX/DI trend strength, Bollinger width/%B/squeeze, Stochastic RSI
+    ML_FEATURE_VERSION: int = 17  # v17: pd_aligned strict (equilibrium no longer counts as aligned)
 
     # Experiment ID — tracks which parameter regime generated a sample.
     # feature_version = what columns mean. experiment_id = what rules generated sample.
     # Same features + different gates = contaminated dataset without this.
-    EXPERIMENT_ID: str = os.getenv("EXPERIMENT_ID", "shadow_tuning_v16_2026_04_16")
+    EXPERIMENT_ID: str = os.getenv("EXPERIMENT_ID", "batch1_tp1_rr_1_3_2026_04_20")
 
     # ========================
     # LIQUIDATION HEATMAP
@@ -955,7 +976,7 @@ class Settings:
 
 
 # Quick setup type identifiers (bypass AI + use short entry timeout)
-QUICK_SETUP_TYPES = ("setup_c", "setup_d", "setup_d_bos", "setup_d_choch", "setup_e")
+QUICK_SETUP_TYPES = ("setup_c", "setup_d_bos", "setup_d_choch", "setup_e")
 
 # Setup types that bypass AI filter but keep normal (swing) entry timeout.
 # setup_a: AI v2 approval rate 89.6% = no value added. Bypass until recalibrated.

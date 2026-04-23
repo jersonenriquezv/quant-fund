@@ -29,6 +29,60 @@ from shared.models import Candle, CVDSnapshot, FundingRate, OpenInterest
 logger = setup_logger("data_service")
 
 
+# ============================================================
+# ML outcome_type whitelist — single source of truth for valid
+# labels written to ml_setups.outcome_type. Every emitter in the
+# codebase must use one of these. update_ml_setup_outcome logs a
+# warning for any unknown label to catch drift early.
+# ============================================================
+VALID_OUTCOMES: frozenset[str] = frozenset({
+    # Live pipeline pre-execution rejections
+    "data_blocked", "shadow_direction_filtered", "shadow_dedup",
+    "trading_halted", "risk_rejected", "ai_rejected",
+    # Live trade resolutions (monitor._ml_resolve_close)
+    "filled_tp", "filled_sl", "filled_trailing", "filled_timeout",
+    "filled_guardian", "filled_slippage",
+    "unfilled_timeout", "replaced", "filled_orphaned",
+    # Shadow tracking (shadow_monitor + orphan cleanup)
+    "shadow_tp", "shadow_sl", "shadow_breakeven", "shadow_timeout",
+    "shadow_no_fill", "shadow_orphaned",
+})
+
+
+# ============================================================
+# Non-market outcomes — labels that reflect bookkeeping or
+# pipeline state (gate, orphan, duplicate, timeout before fill)
+# rather than an executed trade resolving against the market.
+#
+# EVERY training / edge-analysis query MUST exclude these.
+# Including them inflates sample count without providing signal
+# and corrupts win-rate / PnL estimates.
+#
+# Callers should use `ml_market_outcome_filter_sql()` to emit the
+# SQL fragment so the set stays in one place.
+# ============================================================
+NON_MARKET_OUTCOMES: frozenset[str] = frozenset({
+    # Pre-execution gates — setup never hit the market
+    "data_blocked", "shadow_direction_filtered", "shadow_dedup",
+    "trading_halted", "risk_rejected", "ai_rejected",
+    # Bookkeeping / no-trade resolutions
+    "unfilled_timeout", "replaced",
+    "filled_orphaned", "shadow_orphaned",
+})
+
+
+def ml_market_outcome_filter_sql(column: str = "outcome_type") -> str:
+    """SQL WHERE fragment that keeps only market-resolved outcomes.
+
+    Usage:
+        WHERE feature_version >= 4
+          AND {ml_market_outcome_filter_sql()}
+          AND outcome_type IS NOT NULL
+    """
+    quoted = ", ".join(f"'{o}'" for o in sorted(NON_MARKET_OUTCOMES))
+    return f"{column} NOT IN ({quoted})"
+
+
 # ================================================================
 # Redis key patterns
 # ================================================================
@@ -768,6 +822,34 @@ class PostgresStore:
                     cur.execute(f"ALTER TABLE ml_setups ADD COLUMN IF NOT EXISTS {col_def}")
                 self._apply_migration(cur, 16, "ml_setups: WaveTrend + ADX/DI + Bollinger + Stochastic RSI")
 
+            if current_version < 17:
+                # Shadow resolution candle trace — records the exact candle
+                # (timeframe + OHLC) that caused the shadow_monitor to resolve
+                # the position. Enables deterministic replay + engine/DB
+                # parity validation. Captured at _resolve() time.
+                for col_def in [
+                    "shadow_resolve_candle_ts BIGINT",
+                    "shadow_resolve_candle_tf VARCHAR(5)",
+                    "shadow_resolve_candle_high DOUBLE PRECISION",
+                    "shadow_resolve_candle_low DOUBLE PRECISION",
+                    "shadow_resolve_candle_close DOUBLE PRECISION",
+                    "shadow_fill_candle_ts BIGINT",
+                    "shadow_fill_candle_tf VARCHAR(5)",
+                ]:
+                    cur.execute(f"ALTER TABLE ml_setups ADD COLUMN IF NOT EXISTS {col_def}")
+                self._apply_migration(cur, 17, "ml_setups: shadow resolution candle trace")
+
+            if current_version < 18:
+                # capital_at_trade — snapshot of tracked capital at open time.
+                # Used as denominator for pnl_pct on close so historical rows
+                # stay correct even when current capital has drifted
+                # (compounding wins/losses between open and close).
+                cur.execute(
+                    "ALTER TABLE trades ADD COLUMN IF NOT EXISTS "
+                    "capital_at_trade DOUBLE PRECISION"
+                )
+                self._apply_migration(cur, 18, "trades: capital_at_trade snapshot")
+
         logger.info("PostgreSQL tables verified/created")
 
     # --- Candle Storage ---
@@ -865,6 +947,7 @@ class PostgresStore:
         actual_entry: float | None = None,
         tp3_price: float = 0.0,
         setup_id: str | None = None,
+        capital_at_trade: float | None = None,
     ) -> int | None:
         """Insert a new trade record. Returns trade id or None on failure."""
         for attempt in range(2):
@@ -876,12 +959,14 @@ class PostgresStore:
                         """INSERT INTO trades
                            (pair, direction, setup_type, entry_price, sl_price,
                             tp1_price, tp2_price, tp3_price, position_size,
-                            ai_confidence, actual_entry, setup_id, opened_at, status)
-                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), 'open')
+                            ai_confidence, actual_entry, setup_id,
+                            capital_at_trade, opened_at, status)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), 'open')
                            RETURNING id""",
                         (pair, direction, setup_type, entry_price, sl_price,
                          tp1_price, tp2_price, tp3_price, position_size,
-                         ai_confidence, actual_entry, setup_id),
+                         ai_confidence, actual_entry, setup_id,
+                         capital_at_trade),
                     )
                     row = cur.fetchone()
                     trade_id = row[0] if row else None
@@ -1016,9 +1101,12 @@ class PostgresStore:
             try:
                 with self._conn.cursor() as cur:
                     # Daily: trades closed today
+                    # Exclude orphaned_restart — synthetic close on restart
+                    # has no real PnL and must not contaminate DD reconcile.
                     cur.execute(
                         "SELECT COALESCE(SUM(pnl_usd), 0), COUNT(*) "
                         "FROM trades WHERE status = 'closed' "
+                        "AND exit_reason IS DISTINCT FROM 'orphaned_restart' "
                         "AND closed_at >= %s::date",
                         (since_date,)
                     )
@@ -1032,6 +1120,7 @@ class PostgresStore:
                     cur.execute(
                         "SELECT COALESCE(SUM(pnl_usd), 0) "
                         "FROM trades WHERE status = 'closed' "
+                        "AND exit_reason IS DISTINCT FROM 'orphaned_restart' "
                         "AND EXTRACT(ISOYEAR FROM closed_at) = EXTRACT(ISOYEAR FROM CURRENT_DATE) "
                         "AND EXTRACT(WEEK FROM closed_at) = EXTRACT(WEEK FROM CURRENT_DATE)"
                     )
@@ -1063,6 +1152,7 @@ class PostgresStore:
                         "actual_entry, actual_exit, exit_reason, pnl_usd, pnl_pct, "
                         "opened_at, closed_at "
                         "FROM trades WHERE status = 'closed' "
+                        "AND exit_reason IS DISTINCT FROM 'orphaned_restart' "
                         "ORDER BY closed_at DESC NULLS LAST LIMIT %s",
                         (limit,),
                     )
@@ -1154,7 +1244,7 @@ class PostgresStore:
                                COALESCE(SUM(pnl_usd), 0),
                                COALESCE(AVG(r_multiple), 0)
                         FROM trades
-                        WHERE status = 'closed' AND closed_at >= {since}
+                        WHERE status = 'closed' AND exit_reason IS DISTINCT FROM 'orphaned_restart' AND closed_at >= {since}
                     """)
                     row = cur.fetchone()
                     if row and row[0] > 0:
@@ -1171,7 +1261,7 @@ class PostgresStore:
                                SUM(CASE WHEN pnl_usd > 0 THEN 1 ELSE 0 END),
                                COALESCE(SUM(pnl_usd), 0)
                         FROM trades
-                        WHERE status = 'closed' AND closed_at >= {since}
+                        WHERE status = 'closed' AND exit_reason IS DISTINCT FROM 'orphaned_restart' AND closed_at >= {since}
                         GROUP BY pair ORDER BY pair
                     """)
                     for row in cur.fetchall():
@@ -1187,7 +1277,7 @@ class PostgresStore:
                                SUM(CASE WHEN pnl_usd > 0 THEN 1 ELSE 0 END),
                                COALESCE(SUM(pnl_usd), 0)
                         FROM trades
-                        WHERE status = 'closed' AND closed_at >= {since}
+                        WHERE status = 'closed' AND exit_reason IS DISTINCT FROM 'orphaned_restart' AND closed_at >= {since}
                         GROUP BY setup_type ORDER BY setup_type
                     """)
                     for row in cur.fetchall():
@@ -1403,8 +1493,19 @@ class PostgresStore:
         trade_duration_ms: int | None = None,
         risk_context: dict | None = None,
         guardian_reason: str | None = None,
+        resolve_candle_ts: int | None = None,
+        resolve_candle_tf: str | None = None,
+        resolve_candle_high: float | None = None,
+        resolve_candle_low: float | None = None,
+        resolve_candle_close: float | None = None,
     ) -> bool:
         """Update outcome columns for an ml_setup row. Fire-and-forget."""
+        if outcome_type not in VALID_OUTCOMES:
+            logger.warning(
+                f"ML outcome drift: '{outcome_type}' not in VALID_OUTCOMES. "
+                f"setup_id={setup_id} — writing anyway, but fix the emitter "
+                f"or add it to VALID_OUTCOMES."
+            )
         for attempt in range(2):
             if not self._ensure_connected():
                 return False
@@ -1436,6 +1537,23 @@ class PostgresStore:
                 if guardian_reason is not None:
                     fields.append("guardian_close_reason = %s")
                     values.append(guardian_reason)
+                # Shadow resolve-candle trace (migration 17) — exact candle
+                # that triggered resolution. Enables deterministic replay.
+                if resolve_candle_ts is not None:
+                    fields.append("shadow_resolve_candle_ts = %s")
+                    values.append(resolve_candle_ts)
+                if resolve_candle_tf is not None:
+                    fields.append("shadow_resolve_candle_tf = %s")
+                    values.append(resolve_candle_tf)
+                if resolve_candle_high is not None:
+                    fields.append("shadow_resolve_candle_high = %s")
+                    values.append(resolve_candle_high)
+                if resolve_candle_low is not None:
+                    fields.append("shadow_resolve_candle_low = %s")
+                    values.append(resolve_candle_low)
+                if resolve_candle_close is not None:
+                    fields.append("shadow_resolve_candle_close = %s")
+                    values.append(resolve_candle_close)
                 # Risk context — SAFETY: only whitelisted column names are used in SQL
                 _RISK_COLUMNS = frozenset({"risk_capital", "risk_open_positions",
                                            "risk_daily_dd_pct", "risk_weekly_dd_pct",
@@ -1452,6 +1570,18 @@ class PostgresStore:
                         f"UPDATE ml_setups SET {', '.join(fields)} WHERE setup_id = %s",
                         values,
                     )
+                    affected = cur.rowcount
+                if affected == 0:
+                    # Insert/outcome race or missing setup_id — the outcome
+                    # has no feature row to attach to. Silent UPDATE of 0 rows
+                    # would hide the orphan indefinitely; surface it instead.
+                    logger.warning(
+                        f"ML outcome orphan: no ml_setups row matched "
+                        f"setup_id={setup_id} (outcome={outcome_type}). "
+                        f"Either insert_ml_setup failed earlier or emitter "
+                        f"resolved a shadow that was never recorded."
+                    )
+                    return False
                 logger.debug(f"ML: updated setup {setup_id} outcome={outcome_type}")
                 return True
             except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
@@ -1498,6 +1628,8 @@ class PostgresStore:
                 "shadow_margin", "shadow_spread_at_detection",
                 "shadow_depth_at_entry", "shadow_fill_time_ms",
                 "shadow_fill_candle_volume_ratio", "shadow_slippage_estimate_pct",
+                # Migration 17 — fill-candle trace for deterministic replay
+                "shadow_fill_candle_ts", "shadow_fill_candle_tf",
             }
             for key, val in shadow_data.items():
                 if key in allowed and val is not None:

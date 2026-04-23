@@ -61,6 +61,9 @@ class PositionMonitor:
         self._pending_filled: int = 0
         # Per-setup fill tracking: setup_type -> list of fill times (seconds)
         self._fill_times: dict[str, list[int]] = {}
+        # _emit_metric failure surfacing (see _emit_metric body)
+        self._emit_metric_failures: int = 0
+        self._emit_metric_last_warn: float = 0.0
 
     @property
     def positions(self) -> dict[str, ManagedPosition]:
@@ -496,6 +499,15 @@ class PositionMonitor:
                 close_price = self._extract_close_price(result, pos)
                 if close_price is not None:
                     self._calculate_pnl(pos, close_price)
+                # Mark OB failed if the slippage close realized a loss.
+                # Slippage on a fresh OB is a signal the zone doesn't hold.
+                if self._on_sl_hit and (pos.pnl_pct or 0) < 0:
+                    try:
+                        self._on_sl_hit(pos.pair, pos.sl_price, pos.entry_price)
+                    except Exception as e:
+                        logger.error(f"on_sl_hit callback error (slippage): {pos.pair} {e}")
+                        self._emit_metric("on_sl_hit_callback_error", 1, pos.pair,
+                                          {"source": "excessive_slippage"})
                 self._close_position(pos, "excessive_slippage")
                 return
 
@@ -528,6 +540,13 @@ class PositionMonitor:
                 close_price = self._extract_close_price(result, pos)
                 if close_price is not None:
                     self._calculate_pnl(pos, close_price)
+                if self._on_sl_hit and (pos.pnl_pct or 0) < 0:
+                    try:
+                        self._on_sl_hit(pos.pair, pos.sl_price, pos.entry_price)
+                    except Exception as e:
+                        logger.error(f"on_sl_hit callback error (sl_too_close): {pos.pair} {e}")
+                        self._emit_metric("on_sl_hit_callback_error", 1, pos.pair,
+                                          {"source": "sl_too_close"})
                 self._close_position(pos, "sl_too_close")
                 return
 
@@ -602,7 +621,9 @@ class PositionMonitor:
 
         # Notify Risk Service: pending → active
         if self._risk is not None:
-            self._risk.on_trade_filled(pos.pair, pos.direction)
+            self._risk.on_trade_filled(
+                pos.pair, pos.direction, opened_timestamp=pos.created_at,
+            )
 
         # Persist trade to PostgreSQL
         self._persist_trade_open(pos)
@@ -678,6 +699,8 @@ class PositionMonitor:
                         self._on_sl_hit(pos.pair, pos.sl_price, pos.entry_price)
                     except Exception as e:
                         logger.error(f"on_sl_hit callback error: {pos.pair} {e}")
+                        self._emit_metric("on_sl_hit_callback_error", 1, pos.pair,
+                                          {"source": "sl_status_closed"})
                 if pos.trailing_sl_moved:
                     sl_reason = "trailing_sl"
                 elif pos.breakeven_hit:
@@ -802,6 +825,8 @@ class PositionMonitor:
                     self._on_sl_hit(pos.pair, pos.sl_price, pos.entry_price)
                 except Exception as e:
                     logger.error(f"on_sl_hit callback error: {pos.pair} {e}")
+                    self._emit_metric("on_sl_hit_callback_error", 1, pos.pair,
+                                      {"source": "sl_verify"})
             if pos.trailing_sl_moved:
                 sl_reason = "trailing_sl"
             elif pos.breakeven_hit:
@@ -1037,6 +1062,8 @@ class PositionMonitor:
                     self._on_sl_hit(pos.pair, pos.sl_price, pos.entry_price)
                 except Exception as e:
                     logger.error(f"on_sl_hit callback error: {pos.pair} {e}")
+                    self._emit_metric("on_sl_hit_callback_error", 1, pos.pair,
+                                      {"source": "sl_vanished"})
             if pos.trailing_sl_moved:
                 sl_reason = "trailing_sl"
             elif pos.breakeven_hit:
@@ -1159,8 +1186,8 @@ class PositionMonitor:
                             f"bid={bid:.2f} ask={ask:.2f} spread={spread_pct:.3f}%"
                         )
                     self._emit_metric("timeout_exit_spread_pct", spread_pct, pos.pair)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Timeout spread probe failed: {pos.pair} {e}")
 
         # Market close remaining
         close_side = "sell" if pos.direction == "long" else "buy"
@@ -1176,13 +1203,24 @@ class PositionMonitor:
     def _emit_metric(self, name: str, value: float,
                      pair: str | None = None,
                      labels: dict | None = None) -> None:
-        """Write execution metric to PostgreSQL (fire-and-forget)."""
+        """Write execution metric to PostgreSQL (fire-and-forget).
+
+        Errors are counted and surfaced via WARNING at most every 5 min
+        so a broken metrics path does not stay invisible indefinitely.
+        """
         if self._data_store is None:
             return
         try:
             self._data_store.postgres.insert_metric(name, value, pair=pair, labels=labels)
-        except Exception:
-            pass
+        except Exception as e:
+            self._emit_metric_failures += 1
+            now = time.time()
+            if now - self._emit_metric_last_warn > 300:
+                logger.warning(
+                    f"_emit_metric failures: {self._emit_metric_failures} "
+                    f"since last warn (last error: {e}). Metrics path degraded."
+                )
+                self._emit_metric_last_warn = now
 
     def _record_pending_replaced(self, pos: ManagedPosition) -> None:
         """Record a pending entry being replaced by a new setup."""
@@ -1264,16 +1302,14 @@ class PositionMonitor:
 
         pos.actual_exit_price = exit_price
 
-        if pos.direction == "long":
-            pnl_usd = (exit_price - pos.actual_entry_price) * pos.filled_size
-        else:
-            pnl_usd = (pos.actual_entry_price - exit_price) * pos.filled_size
-
-        # Deduct entry + exit fees
+        from shared.pnl_engine import compute_pnl
+        pnl_result = compute_pnl(
+            entry=pos.actual_entry_price, exit_price=exit_price,
+            size=pos.filled_size, direction=pos.direction,
+            fee_rate=settings.TRADING_FEE_RATE,
+        )
+        pnl_usd = pnl_result.net_usd
         entry_notional = pos.actual_entry_price * pos.filled_size
-        exit_notional = exit_price * pos.filled_size
-        total_fees = (entry_notional + exit_notional) * settings.TRADING_FEE_RATE
-        pnl_usd -= total_fees
 
         # Estimate funding cost: positions crossing 8h settlement windows
         # pay/receive funding. Use last known funding rate × notional × settlements.
@@ -1292,16 +1328,18 @@ class PositionMonitor:
                         else:
                             funding_cost = -entry_notional * funding_rate * settlements
                         pnl_usd -= funding_cost
-            except Exception:
-                pass  # Best-effort; don't break PnL on funding lookup failure
+            except Exception as e:
+                logger.debug(f"Funding cost estimate skipped ({pos.pair}): {e}")
 
         # Store absolute USD PnL on position for DB persistence
         pos.pnl_usd = pnl_usd
 
-        # Denominator = tracked capital for accurate DD measurement.
-        # Falls back to entry_notional if risk service unavailable.
-        capital = 0.0
-        if self._risk is not None and hasattr(self._risk, '_state'):
+        # Denominator = capital snapshot at open time. Using current tracked
+        # capital would drift when realized PnL compounds between open and
+        # close. Fallback to live capital then entry_notional if snapshot
+        # missing (e.g. adopted position where capital_at_trade=0).
+        capital = float(getattr(pos, "capital_at_trade", 0.0) or 0.0)
+        if capital <= 0 and self._risk is not None and hasattr(self._risk, '_state'):
             try:
                 raw = self._risk._state.get_capital()
                 if isinstance(raw, (int, float)):
@@ -1343,11 +1381,22 @@ class PositionMonitor:
         if self._risk is not None:
             if reason == "cancelled":
                 # Pending entry cancelled — remove from open count without PnL impact
-                self._risk.on_trade_cancelled(pos.pair, pos.direction)
+                self._risk.on_trade_cancelled(
+                    pos.pair, pos.direction, opened_timestamp=pos.created_at,
+                )
             else:
                 self._risk.on_trade_closed(
-                    pos.pair, pos.direction, pos.pnl_pct or 0.0, pos.closed_at
+                    pos.pair, pos.direction, pos.pnl_pct or 0.0, pos.closed_at,
+                    opened_timestamp=pos.created_at,
                 )
+                # Refresh tracked capital from exchange. Realized PnL moves
+                # the balance; without a refresh the next position sizing uses
+                # stale capital (drift grows trade-over-trade).
+                if hasattr(self._risk, "refresh_capital_from_exchange"):
+                    try:
+                        self._risk.refresh_capital_from_exchange()
+                    except Exception as e:
+                        logger.warning(f"Capital refresh failed after close: {e}")
 
         # Remove from tracking
         self._positions.pop(pos.pair, None)
@@ -1374,6 +1423,7 @@ class PositionMonitor:
                 tp3_price=0.0,
                 position_size=pos.filled_size,
                 ai_confidence=pos.ai_confidence,
+                capital_at_trade=pos.capital_at_trade or None,
                 actual_entry=pos.actual_entry_price,
                 setup_id=pos.setup_id,
             )
@@ -1393,13 +1443,13 @@ class PositionMonitor:
             # Falls back to raw price calculation if pnl_usd was not set.
             pnl_usd = pos.pnl_usd
             if pnl_usd is None and pos.actual_entry_price and pos.filled_size and pos.actual_exit_price:
-                if pos.direction == "long":
-                    pnl_usd = (pos.actual_exit_price - pos.actual_entry_price) * pos.filled_size
-                else:
-                    pnl_usd = (pos.actual_entry_price - pos.actual_exit_price) * pos.filled_size
-                entry_notional = pos.actual_entry_price * pos.filled_size
-                exit_notional = pos.actual_exit_price * pos.filled_size
-                pnl_usd -= (entry_notional + exit_notional) * settings.TRADING_FEE_RATE
+                from shared.pnl_engine import compute_pnl
+                pnl = compute_pnl(
+                    entry=pos.actual_entry_price, exit_price=pos.actual_exit_price,
+                    size=pos.filled_size, direction=pos.direction,
+                    fee_rate=settings.TRADING_FEE_RATE,
+                )
+                pnl_usd = pnl.net_usd
 
             pnl_pct = pos.pnl_pct
 
@@ -1444,8 +1494,10 @@ class PositionMonitor:
                 "trailing_sl": "filled_trailing",
                 "timeout": "filled_timeout",
                 "emergency": "filled_timeout",
-                "excessive_slippage": "filled_timeout",
-                "sl_too_close": "filled_timeout",
+                # Slippage-driven closes — distinct label so ML can learn
+                # that the OB zone did not hold the entry. Not a TP/SL/timeout.
+                "excessive_slippage": "filled_slippage",
+                "sl_too_close": "filled_slippage",
                 "cancelled": "unfilled_timeout",
                 "replaced": "replaced",
                 "manual_close": "filled_timeout",

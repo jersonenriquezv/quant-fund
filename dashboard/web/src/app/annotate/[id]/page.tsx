@@ -5,40 +5,14 @@ import Link from "next/link";
 import { fetchApi, patchApi } from "@/lib/api";
 import type { BybitAnnotation, BybitAnnotationPatch } from "@/lib/api";
 
-const SETUP_TYPES = [
-  "A_swing_long",
-  "A_swing_short",
-  "B_sweep",
-  "C_continuation",
-  "D_choch",
-  "D_bos",
-  "F_breakout",
-  "discretion",
-  "news_play",
-  "other",
-];
-
-const CONFLUENCE_OPTIONS = [
-  "OB_4H",
-  "OB_1H",
-  "OB_15m",
-  "FVG",
-  "sweep",
-  "CHoCH",
-  "BOS",
-  "RSI_divergence",
-  "volume_absorption",
-  "liq_cluster_magnet",
-  "value_area_bounce",
-  "funding_extreme",
-  "OI_divergence",
-  "CVD_divergence",
-  "htf_aligned",
-  "news_catalyst",
-];
-
 const EMOTIONAL_STATES = ["calm", "confident", "FOMO", "revenge", "tired", "uncertain"];
-const GRADES = ["A", "B", "C", "D", "F"];
+
+const GRADE_COLORS: Record<string, string> = {
+  A: "#b2fd02",
+  B: "#9ca3af",
+  C: "#f59e0b",
+  D: "#ff4d4d",
+};
 
 function fmt(n: number | null | undefined, d: number = 2): string {
   if (n == null || Number.isNaN(n)) return "—";
@@ -56,13 +30,9 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string>("");
 
-  const [setupType, setSetupType] = useState("");
-  const [confluences, setConfluences] = useState<Set<string>>(new Set());
-  const [confidence, setConfidence] = useState<number | null>(null);
   const [thesis, setThesis] = useState("");
   const [lesson, setLesson] = useState("");
   const [emotional, setEmotional] = useState("");
-  const [grade, setGrade] = useState("");
   const [screenshot, setScreenshot] = useState("");
 
   const load = useCallback(async () => {
@@ -71,13 +41,9 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
     try {
       const a = await fetchApi<BybitAnnotation>(`/bybit/annotations/${annotationId}`);
       setAnnot(a);
-      setSetupType(a.setup_type || "");
-      setConfluences(new Set(a.confluences || []));
-      setConfidence(a.confidence);
       setThesis(a.thesis_pre || "");
       setLesson(a.lesson_post || "");
       setEmotional(a.emotional_state || "");
-      setGrade(a.grade_self || "");
       setScreenshot(a.screenshot_url || "");
     } catch (e) {
       setError(e instanceof Error ? e.message : "load failed");
@@ -88,28 +54,15 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
 
   useEffect(() => { load(); }, [load]);
 
-  const toggleConfluence = (c: string) => {
-    setConfluences((prev) => {
-      const next = new Set(prev);
-      if (next.has(c)) next.delete(c);
-      else next.add(c);
-      return next;
-    });
-  };
-
   const save = async () => {
     setSaving(true);
     setSaved(false);
     setError("");
     try {
       const payload: BybitAnnotationPatch = {
-        setup_type: setupType || null,
-        confluences: confluences.size ? Array.from(confluences) : null,
-        confidence,
         thesis_pre: thesis || null,
         lesson_post: lesson || null,
         emotional_state: emotional || null,
-        grade_self: grade || null,
         screenshot_url: screenshot || null,
       };
       const updated = await patchApi<BybitAnnotation>(
@@ -232,7 +185,55 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
                 </li>
               );
             })()}
+            {(ctx.volume_profile as Record<string, unknown> | undefined)?.zone != null && (() => {
+              const vp = ctx.volume_profile as Record<string, unknown>;
+              return (
+                <li>
+                  <span className="cl">VP</span>
+                  <span className="cv">{String(vp.zone)} · POC {fmt(vp.poc as number, 2)}</span>
+                </li>
+              );
+            })()}
+            {(ctx.orderbook as Record<string, unknown> | undefined)?.imbalance_top20 != null && (() => {
+              const ob = ctx.orderbook as Record<string, unknown>;
+              return (
+                <li>
+                  <span className="cl">OB IMB</span>
+                  <span className="cv">{fmt(ob.imbalance_top20 as number, 2)} · spread {fmt(ob.spread_bps as number, 1)}bps</span>
+                </li>
+              );
+            })()}
+            {(ctx.absorption as Record<string, unknown> | undefined)?.volume_ratio_5m != null && (() => {
+              const ab = ctx.absorption as Record<string, unknown>;
+              return (
+                <li>
+                  <span className="cl">VOL-5m</span>
+                  <span className="cv">{fmt(ab.volume_ratio_5m as number, 2)}x{ab.absorption_detected ? " · absorption" : ab.displacement_detected ? " · displacement" : ""}</span>
+                </li>
+              );
+            })()}
           </ul>
+          {(() => {
+            const smc = ctx.smc as Record<string, unknown> | undefined;
+            if (!smc) return null;
+            const obs = (smc.obs_nearest as Record<string, Record<string, unknown>> | undefined) || {};
+            const sweeps = (smc.recent_sweeps as Array<Record<string, unknown>> | undefined) || [];
+            const breaks = (smc.recent_breaks as Array<Record<string, unknown>> | undefined) || [];
+            const tags: string[] = [];
+            Object.entries(obs).forEach(([tf, ob]) => {
+              const inZone = ob.in_zone;
+              const dist = ob.distance_pct as number;
+              tags.push(`OB ${tf} ${inZone ? "IN ZONE" : `${fmt(dist, 2)}%`}`);
+            });
+            sweeps.forEach((s) => tags.push(`sweep ${s.tf} ×${s.touch_count}`));
+            breaks.forEach((b) => tags.push(`${String(b.type).toUpperCase()} ${b.tf}`));
+            if (!tags.length) return null;
+            return (
+              <div className="smc-row">
+                {tags.map((t, i) => <span key={i} className="smc-tag">{t}</span>)}
+              </div>
+            );
+          })()}
           {warnings.length > 0 && (
             <div className="warn-row">
               {warnings.map((w, i) => <span key={i} className="warn-flag">⚠ {w}</span>)}
@@ -241,61 +242,54 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
         </section>
       )}
 
+      {annot.auto_setup_type && (
+        <section className="auto-block">
+          <div className="ctx-eyebrow">AUTO CLASSIFICATION · v{annot.auto_classifier_version ?? "?"}</div>
+          <div className="auto-head">
+            <div className="auto-setup">
+              <span className="al">SETUP</span>
+              <span className="av">{annot.auto_setup_type}</span>
+            </div>
+            {annot.auto_grade && (
+              <div className="auto-grade" style={{ color: GRADE_COLORS[annot.auto_grade] || "#fff" }}>
+                <span className="al">GRADE</span>
+                <span className="av" style={{ color: GRADE_COLORS[annot.auto_grade] || "#fff" }}>
+                  {annot.auto_grade}
+                </span>
+              </div>
+            )}
+            <div className="auto-counts">
+              <span className="pos">+{annot.auto_confluences?.length ?? 0}</span>
+              <span className="neg">-{annot.auto_detractors?.length ?? 0}</span>
+            </div>
+          </div>
+          {(annot.auto_confluences?.length ?? 0) > 0 && (
+            <div className="auto-chips">
+              {annot.auto_confluences!.map((c) => (
+                <span key={c} className="auto-chip pos">✓ {c}</span>
+              ))}
+            </div>
+          )}
+          {(annot.auto_detractors?.length ?? 0) > 0 && (
+            <div className="auto-chips">
+              {annot.auto_detractors!.map((c) => (
+                <span key={c} className="auto-chip neg">✗ {c}</span>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
       <main className="form">
-        <Field label="SETUP">
+        <Field label="EMOTIONAL STATE (OPTIONAL)">
           <div className="chips">
             <button
               type="button"
-              className={`chip ${!setupType ? "on" : ""}`}
-              onClick={() => setSetupType("")}
+              className={`chip ${!emotional ? "on" : ""}`}
+              onClick={() => setEmotional("")}
             >
               none
             </button>
-            {SETUP_TYPES.map((s) => (
-              <button
-                type="button"
-                key={s}
-                className={`chip ${setupType === s ? "on" : ""}`}
-                onClick={() => setSetupType(s)}
-              >
-                {s}
-              </button>
-            ))}
-          </div>
-        </Field>
-
-        <Field label="CONFLUENCES">
-          <div className="chips">
-            {CONFLUENCE_OPTIONS.map((c) => (
-              <button
-                type="button"
-                key={c}
-                className={`chip ${confluences.has(c) ? "on" : ""}`}
-                onClick={() => toggleConfluence(c)}
-              >
-                {c}
-              </button>
-            ))}
-          </div>
-        </Field>
-
-        <Field label="CONFIDENCE">
-          <div className="chips">
-            {[1, 2, 3, 4, 5].map((n) => (
-              <button
-                type="button"
-                key={n}
-                className={`chip star ${confidence === n ? "on" : ""}`}
-                onClick={() => setConfidence(n)}
-              >
-                {"★".repeat(n)}{"☆".repeat(5 - n)}
-              </button>
-            ))}
-          </div>
-        </Field>
-
-        <Field label="EMOTIONAL STATE">
-          <div className="chips">
             {EMOTIONAL_STATES.map((e) => (
               <button
                 type="button"
@@ -309,41 +303,24 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
           </div>
         </Field>
 
-        <Field label="THESIS / WHY I ENTERED">
+        <Field label="THESIS / WHY I ENTERED (OPTIONAL)">
           <textarea
             rows={4}
             value={thesis}
             onChange={(e) => setThesis(e.target.value)}
-            placeholder="what I saw, what I was playing for…"
+            placeholder="lo que vi, por qué tomé el trade…"
           />
         </Field>
 
         {isClosed && (
-          <>
-            <Field label="LESSON / WHAT I'D DO DIFFERENT">
-              <textarea
-                rows={4}
-                value={lesson}
-                onChange={(e) => setLesson(e.target.value)}
-                placeholder="the honest post-mortem…"
-              />
-            </Field>
-
-            <Field label="SELF GRADE — DECISION QUALITY, NOT OUTCOME">
-              <div className="chips grade-chips">
-                {GRADES.map((g) => (
-                  <button
-                    type="button"
-                    key={g}
-                    className={`chip gchip g-${g} ${grade === g ? "on" : ""}`}
-                    onClick={() => setGrade(g)}
-                  >
-                    {g}
-                  </button>
-                ))}
-              </div>
-            </Field>
-          </>
+          <Field label="LESSON / WHAT I'D DO DIFFERENT">
+            <textarea
+              rows={4}
+              value={lesson}
+              onChange={(e) => setLesson(e.target.value)}
+              placeholder="post-mortem honesto…"
+            />
+          </Field>
         )}
 
         <Field label="SCREENSHOT URL (OPTIONAL)">
@@ -481,6 +458,75 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
           border-radius: 2px;
           letter-spacing: 0.03em;
         }
+        .smc-row {
+          margin-top: 14px;
+          display: flex; flex-wrap: wrap; gap: 6px;
+        }
+        .smc-tag {
+          font-family: "JetBrains Mono", monospace;
+          font-size: 10px;
+          letter-spacing: 0.05em;
+          color: rgba(178, 253, 2, 0.85);
+          border: 1px solid rgba(178, 253, 2, 0.2);
+          background: rgba(178, 253, 2, 0.04);
+          padding: 3px 9px;
+          border-radius: 2px;
+        }
+
+        .auto-block {
+          max-width: 720px;
+          margin: 0 auto;
+          padding: 4px 24px 20px 24px;
+          animation: fade 0.75s 0.12s ease both;
+        }
+        .auto-head {
+          display: flex;
+          gap: 28px;
+          align-items: flex-end;
+          padding: 14px 16px;
+          border: 1px solid rgba(255,255,255,0.12);
+          border-radius: 2px;
+          background: rgba(255,255,255,0.02);
+        }
+        .auto-setup, .auto-grade {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+        }
+        .auto-head .al { font-size: 9px; letter-spacing: 0.2em; color: rgba(255,255,255,0.4); }
+        .auto-head .av {
+          font-family: "Fraunces", serif;
+          font-size: 22px;
+          letter-spacing: -0.01em;
+          line-height: 1;
+        }
+        .auto-grade .av { font-weight: 600; font-size: 26px; }
+        .auto-counts {
+          margin-left: auto;
+          display: flex;
+          gap: 10px;
+          font-family: "JetBrains Mono", monospace;
+          font-size: 12px;
+          letter-spacing: 0.1em;
+        }
+        .auto-counts .pos { color: #b2fd02; }
+        .auto-counts .neg { color: #ff4d4d; }
+        .auto-chips {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+          margin-top: 12px;
+        }
+        .auto-chip {
+          font-family: "JetBrains Mono", monospace;
+          font-size: 10px;
+          letter-spacing: 0.03em;
+          padding: 4px 10px;
+          border-radius: 2px;
+          border: 1px solid rgba(255,255,255,0.08);
+        }
+        .auto-chip.pos { color: #b2fd02; background: rgba(178,253,2,0.05); border-color: rgba(178,253,2,0.2); }
+        .auto-chip.neg { color: #ff4d4d; background: rgba(255,77,77,0.05); border-color: rgba(255,77,77,0.2); }
 
         .form {
           max-width: 720px;

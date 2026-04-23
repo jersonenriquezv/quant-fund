@@ -97,6 +97,11 @@ class ManagedPosition:
     # Database tracking
     db_trade_id: Optional[int] = None
 
+    # Capital snapshot at open — used as denominator for pnl_pct on close so
+    # historical rows stay accurate even when live capital has drifted
+    # between open and close (compounding across trades).
+    capital_at_trade: float = 0.0
+
 
 @dataclass
 class CampaignAdd:

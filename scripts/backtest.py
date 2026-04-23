@@ -32,6 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data_service.data_store import PostgresStore
 from shared.models import Candle, TradeSetup, AIDecision, FundingRate, OpenInterest, CVDSnapshot, MarketSnapshot
+from shared.pnl_engine import compute_pnl
 from strategy_service.service import StrategyService
 from shared.logger import setup_logger
 from config.settings import settings, QUICK_SETUP_TYPES
@@ -884,15 +885,13 @@ class TradeSimulator:
         trade.close_time_ms = timestamp_ms
         trade.exit_reason = reason
 
-        # Compute PnL (net of fees)
-        if trade.direction == "long":
-            trade.pnl_usd = (price - trade.entry_price) * trade.position_size
-        else:
-            trade.pnl_usd = (trade.entry_price - price) * trade.position_size
-        entry_notional = trade.entry_price * trade.position_size
-        exit_notional = price * trade.position_size
-        total_fees = (entry_notional + exit_notional) * settings.TRADING_FEE_RATE
-        trade.pnl_usd -= total_fees
+        # Compute PnL (net of fees) via shared engine
+        pnl = compute_pnl(
+            entry=trade.entry_price, exit_price=price,
+            size=trade.position_size, direction=trade.direction,
+            fee_rate=settings.TRADING_FEE_RATE,
+        )
+        trade.pnl_usd = pnl.net_usd
 
         # Update equity
         self.equity += trade.pnl_usd
@@ -1165,17 +1164,13 @@ class CampaignSimulator:
         c.close_time_ms = timestamp_ms
         c.exit_reason = reason
 
-        # PnL
-        if c.direction == "long":
-            c.pnl_usd = (price - c.weighted_entry) * c.total_size
-        else:
-            c.pnl_usd = (c.weighted_entry - price) * c.total_size
-
-        # Fees (entry + exit notional × fee rate)
-        entry_notional = c.weighted_entry * c.total_size
-        exit_notional = price * c.total_size
-        total_fees = (entry_notional + exit_notional) * settings.TRADING_FEE_RATE
-        c.pnl_usd -= total_fees
+        # PnL net of fees via shared engine
+        pnl = compute_pnl(
+            entry=c.weighted_entry, exit_price=price,
+            size=c.total_size, direction=c.direction,
+            fee_rate=settings.TRADING_FEE_RATE,
+        )
+        c.pnl_usd = pnl.net_usd
 
         self.equity += c.pnl_usd
         self.equity_curve.append((timestamp_ms, self.equity))

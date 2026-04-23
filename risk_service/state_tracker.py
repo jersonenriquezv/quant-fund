@@ -75,16 +75,26 @@ class RiskStateTracker:
         })
         self._save_to_redis()
 
-    def record_trade_filled(self, pair: str, direction: str) -> None:
-        """Mark a pending position as active (limit order filled)."""
+    def record_trade_filled(
+        self, pair: str, direction: str, opened_timestamp: int | None = None,
+    ) -> None:
+        """Mark a pending position as active (limit order filled).
+
+        opened_timestamp: if provided, match the exact entry by (pair, direction,
+        timestamp). Prevents acting on the wrong row when multiple concurrent
+        positions exist on the same pair/direction.
+        """
         for pos in self._open_positions:
-            if pos["pair"] == pair and pos["direction"] == direction and pos.get("phase") == "pending":
+            if not self._matches(pos, pair, direction, opened_timestamp):
+                continue
+            if pos.get("phase") == "pending":
                 pos["phase"] = "active"
                 self._save_to_redis()
                 return
 
     def record_trade_closed(
-        self, pair: str, direction: str, pnl_pct: float, timestamp: int
+        self, pair: str, direction: str, pnl_pct: float, timestamp: int,
+        *, opened_timestamp: int | None = None,
     ) -> None:
         """Record a position closed.
 
@@ -92,13 +102,17 @@ class RiskStateTracker:
             pair: Trading pair.
             direction: "long" or "short" — matches the exact position.
             pnl_pct: P&L as fraction of capital (positive = profit, negative = loss).
-            timestamp: Unix timestamp in seconds.
+            timestamp: Unix timestamp in seconds (the CLOSE time).
+            opened_timestamp: Unix timestamp when the position was OPENED.
+                When provided, matches exact row. Without it, first-match by
+                (pair, direction) can remove the wrong position when two
+                concurrent trades share pair+direction (e.g. adopted + bot).
         """
         self._check_date_reset()
 
-        # Remove from open positions (match by pair AND direction)
+        # Remove the exact position by timestamp when available, else first-match.
         for i, pos in enumerate(self._open_positions):
-            if pos["pair"] == pair and pos["direction"] == direction:
+            if self._matches(pos, pair, direction, opened_timestamp):
                 self._open_positions.pop(i)
                 break
 
@@ -122,17 +136,33 @@ class RiskStateTracker:
 
         self._save_to_redis()
 
-    def record_trade_cancelled(self, pair: str, direction: str) -> None:
+    def record_trade_cancelled(
+        self, pair: str, direction: str, opened_timestamp: int | None = None,
+    ) -> None:
         """Remove a cancelled pending entry from open positions tracking.
 
         Unlike record_trade_closed, this does NOT add to trades_today or
         affect P&L — the order never filled, so it's not a real trade.
+
+        opened_timestamp: when provided, matches the exact row instead of
+        first-match. Required when multiple concurrent positions could share
+        the same (pair, direction).
         """
         for i, pos in enumerate(self._open_positions):
-            if pos["pair"] == pair and pos["direction"] == direction:
+            if self._matches(pos, pair, direction, opened_timestamp):
                 self._open_positions.pop(i)
                 break
         self._save_to_redis()
+
+    @staticmethod
+    def _matches(
+        pos: dict, pair: str, direction: str, opened_timestamp: int | None,
+    ) -> bool:
+        if pos["pair"] != pair or pos["direction"] != direction:
+            return False
+        if opened_timestamp is None:
+            return True
+        return pos.get("timestamp") == opened_timestamp
 
     # ================================================================
     # Capital
@@ -263,8 +293,12 @@ class RiskStateTracker:
             db_weekly = pnl["weekly_pnl_pct"]
             db_count = pnl["trade_count"]
 
-            # Use the worse (more negative) of Redis vs PostgreSQL values.
-            # This ensures drawdown is never under-counted after restart.
+            # ASYMMETRY BY DESIGN: take min(Redis, DB) for PnL — never undercount
+            # drawdown after a restart. Tradeoff: if Redis carries a worse value
+            # than DB because a closing trade has not yet been persisted, the
+            # conservative value sticks. Net effect skews DD up slightly after
+            # restarts. Accepted: false-positive DD limit = no-op, false-negative
+            # would let the bot trade past a legitimate cutoff.
             reconciled = False
             if db_daily < self._daily_pnl_pct:
                 logger.warning(
@@ -273,6 +307,12 @@ class RiskStateTracker:
                 )
                 self._daily_pnl_pct = db_daily
                 reconciled = True
+            elif db_daily > self._daily_pnl_pct:
+                # Redis is the worse number — keep it, but log for operator.
+                logger.info(
+                    f"Drawdown reconciliation: Redis daily={self._daily_pnl_pct:.4f} "
+                    f"is worse than DB={db_daily:.4f} — keeping Redis (conservative)"
+                )
 
             if db_weekly < self._weekly_pnl_pct:
                 logger.warning(
@@ -281,6 +321,11 @@ class RiskStateTracker:
                 )
                 self._weekly_pnl_pct = db_weekly
                 reconciled = True
+            elif db_weekly > self._weekly_pnl_pct:
+                logger.info(
+                    f"Drawdown reconciliation: Redis weekly={self._weekly_pnl_pct:.4f} "
+                    f"is worse than DB={db_weekly:.4f} — keeping Redis (conservative)"
+                )
 
             # Also reconcile trade count if DB has more
             if db_count > len(self._trades_today):
@@ -288,7 +333,10 @@ class RiskStateTracker:
                     f"Drawdown reconciliation: trades today Redis={len(self._trades_today)} "
                     f"DB={db_count} — using DB count"
                 )
-                self._trades_today = [{"pair": "reconciled", "pnl_pct": 0, "timestamp": 0}] * db_count
+                # Placeholders are count-only — guardrails read len() not fields.
+                # `_placeholder: True` makes accidental iteration over real-looking
+                # fields obvious in review. Do not add real-looking defaults.
+                self._trades_today = [{"_placeholder": True}] * db_count
                 reconciled = True
 
             if reconciled:
@@ -326,9 +374,10 @@ class RiskStateTracker:
                 trades_today = self._redis.get_bot_state("risk_trades_today")
                 if trades_today is not None:
                     # Reconstruct _trades_today as a list with N placeholder entries
-                    # (we only need the count for guardrails)
+                    # — only the count matters for MAX_TRADES_PER_DAY guardrail.
+                    # Sentinel key flags any accidental iteration over fake fields.
                     count = int(trades_today)
-                    self._trades_today = [{"pair": "restored", "pnl_pct": 0, "timestamp": 0}] * count
+                    self._trades_today = [{"_placeholder": True}] * count
 
             # Restore weekly values only if same week
             saved_week = self._redis.get_bot_state("risk_state_week")

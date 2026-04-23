@@ -377,6 +377,11 @@ export interface BybitAnnotation {
   grade_self: string | null;
   screenshot_url: string | null;
   context_snapshot: Record<string, unknown> | null;
+  auto_setup_type: string | null;
+  auto_confluences: string[] | null;
+  auto_detractors: string[] | null;
+  auto_grade: string | null;
+  auto_classifier_version: number | null;
   closed_at: string | null;
   exit_price: number | null;
   pnl_usd: number | null;

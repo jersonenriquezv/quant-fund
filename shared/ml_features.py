@@ -102,6 +102,11 @@ def extract_setup_features(
     # PD zone
     pd_match = re.search(r"pd_zone_(\w+)", conf_str)
     features["pd_zone"] = pd_match.group(1) if pd_match else "undefined"
+    # pd_aligned now strictly means discount-long or premium-short.
+    # Previously equilibrium was treated as "aligned for both sides" —
+    # that made the feature positive in the most ambiguous zone and
+    # diluted predictive power. `pd_zone` categorical still carries the
+    # equilibrium signal on its own.
     features["pd_aligned"] = _is_pd_aligned(features["pd_zone"], setup.direction)
 
     # OB features from confluences
@@ -441,7 +446,7 @@ def extract_setup_features(
     return features
 
 
-def extract_risk_context(risk_service) -> dict:
+def extract_risk_context(risk_service, capital_override: float | None = None) -> dict:
     """Extract risk/portfolio state features at risk check time.
 
     These features encode recent trade outcomes and portfolio state.
@@ -450,13 +455,18 @@ def extract_risk_context(risk_service) -> dict:
 
     Args:
         risk_service: The RiskService instance.
+        capital_override: If provided, overrides risk_capital. Used by shadow
+            mode to align the ml_setups.risk_capital column with SHADOW_CAPITAL
+            (virtual sizing) instead of live OKX balance. Keeps analytics and
+            shadow_position_size consistent for the same row.
 
     Returns:
         Dict of risk-context features.
     """
     state = risk_service._state
+    capital = capital_override if capital_override is not None else state.get_capital()
     return {
-        "risk_capital": state.get_capital(),
+        "risk_capital": capital,
         "risk_open_positions": state.get_open_positions_count(),
         "risk_daily_dd_pct": state.get_daily_dd_pct(),
         "risk_weekly_dd_pct": state.get_weekly_dd_pct(),
@@ -831,11 +841,14 @@ def _extract_float(text: str, pattern: str) -> float:
 
 
 def _is_pd_aligned(pd_zone: str, direction: str) -> bool:
-    """Check if PD zone aligns with trade direction."""
+    """Check if PD zone aligns with trade direction.
+
+    Strict alignment: only discount-long and premium-short count.
+    Equilibrium is NOT treated as aligned — it is exposed separately as
+    feature `pd_zone_equilibrium` so models can learn its effect directly.
+    """
     if pd_zone == "discount" and direction == "long":
         return True
     if pd_zone == "premium" and direction == "short":
         return True
-    if pd_zone == "equilibrium":
-        return True  # Equilibrium is allowed for both
     return False
