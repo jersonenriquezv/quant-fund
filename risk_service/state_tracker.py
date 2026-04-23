@@ -75,16 +75,26 @@ class RiskStateTracker:
         })
         self._save_to_redis()
 
-    def record_trade_filled(self, pair: str, direction: str) -> None:
-        """Mark a pending position as active (limit order filled)."""
+    def record_trade_filled(
+        self, pair: str, direction: str, opened_timestamp: int | None = None,
+    ) -> None:
+        """Mark a pending position as active (limit order filled).
+
+        opened_timestamp: if provided, match the exact entry by (pair, direction,
+        timestamp). Prevents acting on the wrong row when multiple concurrent
+        positions exist on the same pair/direction.
+        """
         for pos in self._open_positions:
-            if pos["pair"] == pair and pos["direction"] == direction and pos.get("phase") == "pending":
+            if not self._matches(pos, pair, direction, opened_timestamp):
+                continue
+            if pos.get("phase") == "pending":
                 pos["phase"] = "active"
                 self._save_to_redis()
                 return
 
     def record_trade_closed(
-        self, pair: str, direction: str, pnl_pct: float, timestamp: int
+        self, pair: str, direction: str, pnl_pct: float, timestamp: int,
+        *, opened_timestamp: int | None = None,
     ) -> None:
         """Record a position closed.
 
@@ -92,13 +102,17 @@ class RiskStateTracker:
             pair: Trading pair.
             direction: "long" or "short" — matches the exact position.
             pnl_pct: P&L as fraction of capital (positive = profit, negative = loss).
-            timestamp: Unix timestamp in seconds.
+            timestamp: Unix timestamp in seconds (the CLOSE time).
+            opened_timestamp: Unix timestamp when the position was OPENED.
+                When provided, matches exact row. Without it, first-match by
+                (pair, direction) can remove the wrong position when two
+                concurrent trades share pair+direction (e.g. adopted + bot).
         """
         self._check_date_reset()
 
-        # Remove from open positions (match by pair AND direction)
+        # Remove the exact position by timestamp when available, else first-match.
         for i, pos in enumerate(self._open_positions):
-            if pos["pair"] == pair and pos["direction"] == direction:
+            if self._matches(pos, pair, direction, opened_timestamp):
                 self._open_positions.pop(i)
                 break
 
@@ -122,17 +136,33 @@ class RiskStateTracker:
 
         self._save_to_redis()
 
-    def record_trade_cancelled(self, pair: str, direction: str) -> None:
+    def record_trade_cancelled(
+        self, pair: str, direction: str, opened_timestamp: int | None = None,
+    ) -> None:
         """Remove a cancelled pending entry from open positions tracking.
 
         Unlike record_trade_closed, this does NOT add to trades_today or
         affect P&L — the order never filled, so it's not a real trade.
+
+        opened_timestamp: when provided, matches the exact row instead of
+        first-match. Required when multiple concurrent positions could share
+        the same (pair, direction).
         """
         for i, pos in enumerate(self._open_positions):
-            if pos["pair"] == pair and pos["direction"] == direction:
+            if self._matches(pos, pair, direction, opened_timestamp):
                 self._open_positions.pop(i)
                 break
         self._save_to_redis()
+
+    @staticmethod
+    def _matches(
+        pos: dict, pair: str, direction: str, opened_timestamp: int | None,
+    ) -> bool:
+        if pos["pair"] != pair or pos["direction"] != direction:
+            return False
+        if opened_timestamp is None:
+            return True
+        return pos.get("timestamp") == opened_timestamp
 
     # ================================================================
     # Capital

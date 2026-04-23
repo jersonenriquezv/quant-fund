@@ -3,7 +3,7 @@
 > Source of truth for system state. Updated on every material change.
 > Reflects code reality — if code and doc disagree, fix the doc.
 
-**Last updated:** 2026-04-21
+**Last updated:** 2026-04-23
 **ML Feature Version:** 16
 **Bot status:** SHADOW-ONLY (OKX_SANDBOX=false, ENABLED_SETUPS=[], ~$86 capital untouched)
 **Active experiment:** `batch1_tp1_rr_1_3_2026_04_20` (TP1_RR=1.3 BE fix)
@@ -302,6 +302,63 @@ Reference for VPS sizing when migrating from Nitro 5.
 ---
 
 ## 8. Changelog
+
+### 2026-04-23 — Audit fix #8: capital refresh tras realized close
+**Files:** `risk_service/service.py`, `execution_service/monitor.py`, `execution_service/campaign_monitor.py`, `tests/test_risk_service.py`
+
+**What changed:**
+- Nuevo método `RiskService.refresh_capital_from_exchange()`: refetch vía `_query_account_balance`, actualiza tracked capital, setea `_balance_ever_fetched`.
+- `PositionMonitor._close_position` y `CampaignMonitor._close_campaign` lo llaman tras `on_trade_closed` (nunca en `cancelled`). Fire-and-forget con warning en fallo.
+
+**Why:** capital tracked se seteaba solo al arranque. Cada close realizado movía el balance en OKX pero risk tracker seguía usando el snapshot viejo → `pnl_pct` denominado por capital estático → DD drift al compoundear. En cuentas chicas ($100) 3 losses seguidas daban -7.8% real vs -7.5% sumado (no negligible al 5% DD cap).
+
+**Tests:** `TestCapitalRefresh` (2): actualiza al éxito, no-op al fallo.
+
+### 2026-04-23 — Audit fix #7: risk tracker row match por opened_timestamp
+**Files:** `risk_service/state_tracker.py`, `risk_service/service.py`, `execution_service/monitor.py`, `execution_service/service.py`, `execution_service/campaign_monitor.py`
+
+**What changed:**
+- `record_trade_filled/closed/cancelled` aceptan `opened_timestamp: int | None`. Cuando se provee, matchean la fila exacta (pair, direction, timestamp). Sin él, fallback first-match (backward compat).
+- Todos los callers en monitor/service/campaign_monitor ahora pasan `opened_timestamp=pos.created_at` (o `c.created_at` para campaigns).
+- `_matches` helper estático centraliza la lógica de match.
+
+**Why:** ante dos posiciones concurrentes con el mismo `(pair, direction)` — ej. bot + adopted manual pre-fix #6, o HTF campaign corriendo junto a intraday — first-match popeaba la fila equivocada, dejando ghosts permanentes. Agotaba `MAX_OPEN_POSITIONS` silenciosamente.
+
+**Tests:** `TestConcurrentSamePairDirection` (3): close/cancel por timestamp, backward compat sin timestamp.
+
+### 2026-04-23 — Audit fix #6: bot+manual coexistence phantom fix
+**Files:** `execution_service/service.py`, `tests/test_execution.py`
+
+**What changed:**
+- Al abrir trade del bot sobre un pair con posición adoptada (manual), `execute()` ahora llama `risk.on_trade_cancelled(pair, existing.direction)` ANTES del `monitor.positions.pop()`. Inmediatamente después `on_trade_opened` del nuevo trade añade la entrada real.
+
+**Why:** sin el cancel previo, el risk tracker mantenía la entrada adopted + añadía la nueva = 2 entradas. `record_trade_closed` después popeaba la primera match (el phantom), dejando la del bot viva permanentemente. Cada ciclo bot-sobre-manual agotaba silenciosamente `MAX_OPEN_POSITIONS`.
+
+**Tests:** `TestBotAlongsideManual::test_adopted_cancelled_before_new_bot_entry` — verifica orden cancel→open.
+
+### 2026-04-23 — Audit fix #5: adopted position SL recovery
+**Files:** `execution_service/service.py`, `tests/test_execution.py`, `docs/context/05-execution.md`
+
+**What changed:**
+- **`sync_exchange_positions` ya no hardcodea `sl_price=0.0`** para adopted positions. Nuevo helper `_extract_adopted_sl`: (1) busca SL real en algo orders de OKX (`slTriggerPx` / `triggerPx` en lado correcto), (2) fallback a `entry ± entry × MAX_SL_PCT` (4%) si no hay SL en exchange.
+- Adopted positions ahora se registran con `sl_price` no-cero en monitor + risk tracker.
+
+**Why:** `get_portfolio_heat_usd` salta entradas con `sl<=0` → una posición manual abierta en OKX era invisible al heat guardrail. `MAX_PORTFOLIO_HEAT_PCT` (6%) podía exceder silenciosamente cuando bot + manual coexistían. Fallback MAX_SL_PCT es conservador: no es el SL real, solo fuerza contabilización.
+
+**Tests:** `TestSyncExchangeAdoptedSL` (4 tests): attached SL, standalone trigger, fallback, ignora triggers en lado equivocado.
+
+### 2026-04-23 — Audit fixes fase 0 (risk + restart safety)
+**Files:** `risk_service/service.py`, `execution_service/service.py`, `data_service/data_store.py`, `dashboard/api/queries.py`, tests
+
+**What changed:**
+- **RiskApproval kwargs fix** — `risk_service/service.py` pasaba `margin=`/`risk_amount=` al construir `RiskApproval`, campos inexistentes → TypeError latente en el camino "refuse when `INITIAL_CAPITAL` + balance never fetched". Ahora usa los 5 kwargs reales. Test regresión añadido.
+- **`_query_account_balance` atributo fix** — usaba `getattr(data_service, 'exchange', None)` siempre None → `_balance_ever_fetched` nunca pasaba a True → capital tracked congelado post-arranque. Ahora llama `self._data_service.fetch_usdt_balance()` directo. Tests `TestBalanceQueryWiring` (happy + fallback).
+- **Orphan reconcile no inventa PnL** — `_reconcile_orphaned_trades` estimaba `pnl_usd = (sl-entry)*size` como "worst case", contaminando `trades` table con losses sintéticos que nunca ocurrieron. Ahora deja PnL/actual_exit NULL, solo marca `exit_reason='orphaned_restart'` + `outcome_type='filled_orphaned'` en ml_setups.
+- **Filtro `orphaned_restart` en readers** — `data_store.fetch_closed_trades_pnl` (DD reconcile daily+weekly), `fetch_recent_closed_trades`, stats agregadas (total/by pair/by setup), `dashboard/api/queries.get_trade_stats`. Todos añaden `exit_reason IS DISTINCT FROM 'orphaned_restart'`. Previene DD inflado + dashboard sesgado por orphans.
+
+**Why:** audit 2026-04-23 detectó agujeros en restart safety. PnL sintético entraba en DD reconcile → guardrails bloqueaban trades reales falsamente. TypeError latente podía crashear pipeline en arranque con balance fetch fallido.
+
+**ML impact:** ninguno. `ml_setups` ya se resolvía con `outcome_type='filled_orphaned'` sin PnL; training query ya los excluye. Solo limpia `trades` table.
 
 ### 2026-04-21 — Batch 6: Test brutality pass
 **Files:** `tests/test_market_structure_invariants.py` (new), `tests/test_order_block_invariants.py` (new), `tests/test_real_candle_integration.py` (new), `tests/test_quick_setups.py`

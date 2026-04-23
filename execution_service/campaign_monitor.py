@@ -733,11 +733,19 @@ class CampaignMonitor:
         # Notify risk service
         if self._risk is not None:
             if reason == "cancelled":
-                self._risk.on_trade_cancelled(c.pair, c.direction)
+                self._risk.on_trade_cancelled(
+                    c.pair, c.direction, opened_timestamp=c.created_at,
+                )
             else:
                 self._risk.on_trade_closed(
-                    c.pair, c.direction, c.pnl_pct, c.closed_at
+                    c.pair, c.direction, c.pnl_pct, c.closed_at,
+                    opened_timestamp=c.created_at,
                 )
+                if hasattr(self._risk, "refresh_capital_from_exchange"):
+                    try:
+                        self._risk.refresh_capital_from_exchange()
+                    except Exception as e:
+                        logger.warning(f"Capital refresh failed after campaign close: {e}")
 
     # ================================================================
     # Helpers

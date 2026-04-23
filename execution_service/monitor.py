@@ -602,7 +602,9 @@ class PositionMonitor:
 
         # Notify Risk Service: pending → active
         if self._risk is not None:
-            self._risk.on_trade_filled(pos.pair, pos.direction)
+            self._risk.on_trade_filled(
+                pos.pair, pos.direction, opened_timestamp=pos.created_at,
+            )
 
         # Persist trade to PostgreSQL
         self._persist_trade_open(pos)
@@ -1341,11 +1343,22 @@ class PositionMonitor:
         if self._risk is not None:
             if reason == "cancelled":
                 # Pending entry cancelled — remove from open count without PnL impact
-                self._risk.on_trade_cancelled(pos.pair, pos.direction)
+                self._risk.on_trade_cancelled(
+                    pos.pair, pos.direction, opened_timestamp=pos.created_at,
+                )
             else:
                 self._risk.on_trade_closed(
-                    pos.pair, pos.direction, pos.pnl_pct or 0.0, pos.closed_at
+                    pos.pair, pos.direction, pos.pnl_pct or 0.0, pos.closed_at,
+                    opened_timestamp=pos.created_at,
                 )
+                # Refresh tracked capital from exchange. Realized PnL moves
+                # the balance; without a refresh the next position sizing uses
+                # stale capital (drift grows trade-over-trade).
+                if hasattr(self._risk, "refresh_capital_from_exchange"):
+                    try:
+                        self._risk.refresh_capital_from_exchange()
+                    except Exception as e:
+                        logger.warning(f"Capital refresh failed after close: {e}")
 
         # Remove from tracking
         self._positions.pop(pos.pair, None)

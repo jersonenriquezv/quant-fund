@@ -1033,9 +1033,12 @@ class PostgresStore:
             try:
                 with self._conn.cursor() as cur:
                     # Daily: trades closed today
+                    # Exclude orphaned_restart — synthetic close on restart
+                    # has no real PnL and must not contaminate DD reconcile.
                     cur.execute(
                         "SELECT COALESCE(SUM(pnl_usd), 0), COUNT(*) "
                         "FROM trades WHERE status = 'closed' "
+                        "AND exit_reason IS DISTINCT FROM 'orphaned_restart' "
                         "AND closed_at >= %s::date",
                         (since_date,)
                     )
@@ -1049,6 +1052,7 @@ class PostgresStore:
                     cur.execute(
                         "SELECT COALESCE(SUM(pnl_usd), 0) "
                         "FROM trades WHERE status = 'closed' "
+                        "AND exit_reason IS DISTINCT FROM 'orphaned_restart' "
                         "AND EXTRACT(ISOYEAR FROM closed_at) = EXTRACT(ISOYEAR FROM CURRENT_DATE) "
                         "AND EXTRACT(WEEK FROM closed_at) = EXTRACT(WEEK FROM CURRENT_DATE)"
                     )
@@ -1080,6 +1084,7 @@ class PostgresStore:
                         "actual_entry, actual_exit, exit_reason, pnl_usd, pnl_pct, "
                         "opened_at, closed_at "
                         "FROM trades WHERE status = 'closed' "
+                        "AND exit_reason IS DISTINCT FROM 'orphaned_restart' "
                         "ORDER BY closed_at DESC NULLS LAST LIMIT %s",
                         (limit,),
                     )
@@ -1171,7 +1176,7 @@ class PostgresStore:
                                COALESCE(SUM(pnl_usd), 0),
                                COALESCE(AVG(r_multiple), 0)
                         FROM trades
-                        WHERE status = 'closed' AND closed_at >= {since}
+                        WHERE status = 'closed' AND exit_reason IS DISTINCT FROM 'orphaned_restart' AND closed_at >= {since}
                     """)
                     row = cur.fetchone()
                     if row and row[0] > 0:
@@ -1188,7 +1193,7 @@ class PostgresStore:
                                SUM(CASE WHEN pnl_usd > 0 THEN 1 ELSE 0 END),
                                COALESCE(SUM(pnl_usd), 0)
                         FROM trades
-                        WHERE status = 'closed' AND closed_at >= {since}
+                        WHERE status = 'closed' AND exit_reason IS DISTINCT FROM 'orphaned_restart' AND closed_at >= {since}
                         GROUP BY pair ORDER BY pair
                     """)
                     for row in cur.fetchall():
@@ -1204,7 +1209,7 @@ class PostgresStore:
                                SUM(CASE WHEN pnl_usd > 0 THEN 1 ELSE 0 END),
                                COALESCE(SUM(pnl_usd), 0)
                         FROM trades
-                        WHERE status = 'closed' AND closed_at >= {since}
+                        WHERE status = 'closed' AND exit_reason IS DISTINCT FROM 'orphaned_restart' AND closed_at >= {since}
                         GROUP BY setup_type ORDER BY setup_type
                     """)
                     for row in cur.fetchall():

@@ -273,6 +273,171 @@ class TestBetSizing:
 # Portfolio heat integration
 # ============================================================
 
+class TestCapitalRefresh:
+    """After each realized close, capital must refetch from exchange so sizing
+    does not drift on a stale snapshot from startup.
+    """
+
+    def test_refresh_updates_tracked_capital(self, monkeypatch):
+        class _DS:
+            redis = None
+            def __init__(self, value):
+                self.value = value
+                self.calls = 0
+            def fetch_usdt_balance(self):
+                self.calls += 1
+                return self.value
+
+        ds = _DS(110.0)
+        risk = RiskService(capital=100.0, data_service=ds)
+
+        assert risk._state.get_capital() == 100.0
+        ds.value = 115.5
+        new = risk.refresh_capital_from_exchange()
+        assert new == pytest.approx(115.5)
+        assert risk._state.get_capital() == pytest.approx(115.5)
+        assert risk._balance_ever_fetched is True
+
+    def test_refresh_noop_on_fetch_failure(self):
+        class _DS:
+            redis = None
+            def fetch_usdt_balance(self):
+                return None
+
+        risk = RiskService(capital=200.0, data_service=_DS())
+        new = risk.refresh_capital_from_exchange()
+        assert new is None
+        # Tracked capital unchanged
+        assert risk._state.get_capital() == 200.0
+
+
+class TestConcurrentSamePairDirection:
+    """Two positions on same (pair, direction) must not collide on close.
+
+    Before fix: record_trade_closed popped first match by (pair, direction),
+    leaving the wrong row alive. Now callers pass opened_timestamp and the
+    exact row is removed.
+    """
+
+    def test_close_matches_opened_timestamp(self):
+        risk = RiskService(capital=5000.0)
+        t0 = 1_700_000_000
+        t1 = 1_700_000_100
+
+        risk.on_trade_opened("BTC/USDT", "long", 50000, t0, phase="active",
+                             sl_price=49000.0, position_size=0.01)
+        risk.on_trade_opened("BTC/USDT", "long", 51000, t1, phase="active",
+                             sl_price=50000.0, position_size=0.01)
+        assert risk._state.get_open_positions_count() == 2
+
+        # Close the first one by timestamp
+        risk.on_trade_closed(
+            "BTC/USDT", "long", 0.01, t0 + 3600, opened_timestamp=t0,
+        )
+
+        remaining = risk._state._open_positions
+        assert len(remaining) == 1
+        assert remaining[0]["timestamp"] == t1
+        assert remaining[0]["entry_price"] == 51000
+
+    def test_cancel_matches_opened_timestamp(self):
+        risk = RiskService(capital=5000.0)
+        t0 = 1_700_000_000
+        t1 = 1_700_000_100
+
+        risk.on_trade_opened("BTC/USDT", "long", 50000, t0, phase="pending",
+                             sl_price=49000.0, position_size=0.01)
+        risk.on_trade_opened("BTC/USDT", "long", 51000, t1, phase="pending",
+                             sl_price=50000.0, position_size=0.01)
+
+        risk.on_trade_cancelled("BTC/USDT", "long", opened_timestamp=t1)
+
+        remaining = risk._state._open_positions
+        assert len(remaining) == 1
+        assert remaining[0]["timestamp"] == t0
+
+    def test_backward_compat_no_timestamp_first_match(self):
+        """Callers without opened_timestamp still work (first-match fallback)."""
+        risk = RiskService(capital=5000.0)
+        t0 = 1_700_000_000
+        risk.on_trade_opened("ETH/USDT", "short", 3000, t0, phase="active",
+                             sl_price=3050.0, position_size=0.1)
+        risk.on_trade_closed("ETH/USDT", "short", -0.01, t0 + 60)
+        assert risk._state.get_open_positions_count() == 0
+
+
+class TestBalanceQueryWiring:
+    """Regression: _query_account_balance must call data_service.fetch_usdt_balance
+    directly (not via a non-existent `exchange` attribute).
+    """
+
+    def test_fetches_from_data_service(self, monkeypatch):
+        monkeypatch.setattr(settings, "RISK_PER_TRADE", 0.01)
+
+        class _FakeDS:
+            redis = None
+            def __init__(self):
+                self.call_count = 0
+            def fetch_usdt_balance(self):
+                self.call_count += 1
+                return 250.0
+
+        ds = _FakeDS()
+        risk = RiskService(capital=100.0, data_service=ds)
+
+        setup = _make_setup(entry=50000, sl=49000, tp2=52000)
+        result = risk.check(setup)
+
+        assert result.approved is True
+        assert ds.call_count >= 1
+        assert risk._balance_ever_fetched is True
+        assert risk._state.get_capital() == pytest.approx(250.0)
+
+    def test_balance_none_falls_back_to_tracked(self, monkeypatch):
+        monkeypatch.setattr(settings, "RISK_PER_TRADE", 0.01)
+
+        class _FakeDS:
+            redis = None
+            def fetch_usdt_balance(self):
+                return None
+
+        risk = RiskService(capital=5000.0, data_service=_FakeDS())
+
+        setup = _make_setup(entry=50000, sl=49000, tp2=52000)
+        result = risk.check(setup)
+
+        assert result.approved is True
+        assert risk._balance_ever_fetched is False
+        assert risk._state.get_capital() == pytest.approx(5000.0)
+
+
+class TestInitialCapitalRefusePath:
+    """Regression: RiskApproval kwargs must match dataclass (no margin/risk_amount).
+
+    Triggered when balance fetch never succeeds AND tracked capital equals
+    INITIAL_CAPITAL. Previously passed `margin=` / `risk_amount=` to
+    RiskApproval, which has only 5 fields → TypeError in pipeline.
+    """
+
+    def test_refuses_without_crashing(self, monkeypatch):
+        monkeypatch.setattr(settings, "RISK_PER_TRADE", 0.01)
+        monkeypatch.setattr(settings, "INITIAL_CAPITAL", 100.0)
+        risk = RiskService(capital=settings.INITIAL_CAPITAL)
+
+        # Guarantee _query_account_balance returns None so we hit the fallback
+        risk._data_service = None
+        risk._balance_ever_fetched = False
+
+        setup = _make_setup(entry=50000, sl=49000, tp2=52000)
+        result = risk.check(setup)
+
+        assert result.approved is False
+        assert "INITIAL_CAPITAL" in result.reason
+        assert result.position_size == 0.0
+        assert result.leverage == 0.0
+        assert result.risk_pct == 0.0
+
+
 class TestPortfolioHeat:
 
     def test_heat_blocks_new_trade(self, risk, monkeypatch):

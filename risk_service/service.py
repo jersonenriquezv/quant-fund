@@ -117,9 +117,10 @@ class RiskService:
                 if not self._balance_ever_fetched and capital == settings.INITIAL_CAPITAL:
                     return RiskApproval(
                         approved=False,
+                        position_size=0.0,
+                        leverage=0.0,
+                        risk_pct=0.0,
                         reason="Never fetched live balance — refusing to size from INITIAL_CAPITAL",
-                        position_size=0.0, leverage=0, margin=0.0,
-                        risk_amount=0.0, risk_pct=0.0,
                     )
             else:
                 self._balance_ever_fetched = True
@@ -296,37 +297,61 @@ class RiskService:
             phase=phase, sl_price=sl_price, position_size=position_size,
         )
 
-    def on_trade_filled(self, pair: str, direction: str) -> None:
+    def on_trade_filled(
+        self, pair: str, direction: str, opened_timestamp: int | None = None,
+    ) -> None:
         """Notify Risk Service that a pending entry was filled (now active)."""
-        self._state.record_trade_filled(pair, direction)
+        self._state.record_trade_filled(pair, direction, opened_timestamp)
 
     def on_trade_closed(
-        self, pair: str, direction: str, pnl_pct: float, timestamp: int
+        self, pair: str, direction: str, pnl_pct: float, timestamp: int,
+        *, opened_timestamp: int | None = None,
     ) -> None:
-        """Notify Risk Service that a trade was closed."""
-        self._state.record_trade_closed(pair, direction, pnl_pct, timestamp)
+        """Notify Risk Service that a trade was closed.
 
-    def on_trade_cancelled(self, pair: str, direction: str) -> None:
+        opened_timestamp: when provided, matches the exact position instead of
+        first-match by (pair, direction). Prevents removing the wrong entry
+        when multiple concurrent positions share pair+direction.
+        """
+        self._state.record_trade_closed(
+            pair, direction, pnl_pct, timestamp,
+            opened_timestamp=opened_timestamp,
+        )
+
+    def on_trade_cancelled(
+        self, pair: str, direction: str, opened_timestamp: int | None = None,
+    ) -> None:
         """Notify Risk Service that a pending entry was cancelled (never filled).
 
         Removes from open positions count without counting as a trade
         or affecting P&L tracking.
         """
-        self._state.record_trade_cancelled(pair, direction)
+        self._state.record_trade_cancelled(pair, direction, opened_timestamp)
 
     def update_capital(self, amount: float) -> None:
         """Update tracked capital (e.g. from exchange balance query)."""
         self._state.set_capital(amount)
+
+    def refresh_capital_from_exchange(self) -> float | None:
+        """Refetch live USDT balance and update tracked capital.
+
+        Called after every realized trade close so position sizing, portfolio
+        heat, and DD reconcile use current balance instead of a stale snapshot
+        from startup. Returns new balance or None if fetch failed.
+        """
+        balance = self._query_account_balance()
+        if balance is not None:
+            self._balance_ever_fetched = True
+            self._state.set_capital(balance)
+            logger.info(f"Capital refreshed from exchange: ${balance:.2f}")
+        return balance
 
     def _query_account_balance(self) -> float | None:
         """Query live USDT balance from OKX. Returns None on failure."""
         if self._data_service is None:
             return None
         try:
-            exchange = getattr(self._data_service, 'exchange', None)
-            if exchange is None:
-                return None
-            balance = exchange.fetch_usdt_balance()
+            balance = self._data_service.fetch_usdt_balance()
             if balance is not None and balance > 0:
                 return balance
             return None

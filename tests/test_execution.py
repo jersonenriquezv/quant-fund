@@ -242,7 +242,10 @@ class TestExecutionServiceExecute:
 
         assert result is True
         monitor.cancel_and_remove_pending.assert_called_once_with("ETH/USDT")
-        risk.on_trade_cancelled.assert_called_once_with("ETH/USDT", "short")
+        risk.on_trade_cancelled.assert_called_once()
+        args, kwargs = risk.on_trade_cancelled.call_args
+        assert (args[0], args[1]) == ("ETH/USDT", "short")
+        assert "opened_timestamp" in kwargs
         executor.place_limit_order.assert_called_once()
 
     def test_returns_false_on_configure_failure(self):
@@ -330,7 +333,10 @@ class TestEntryTimeout:
         assert pos.phase == "closed"
         assert pos.close_reason == "cancelled"
         risk.on_trade_closed.assert_not_called()
-        risk.on_trade_cancelled.assert_called_once_with("ETH/USDT", "long")
+        risk.on_trade_cancelled.assert_called_once()
+        args, kwargs = risk.on_trade_cancelled.call_args
+        assert (args[0], args[1]) == ("ETH/USDT", "long")
+        assert "opened_timestamp" in kwargs
 
     def test_quick_setup_uses_shorter_timeout(self):
         """Quick setups (C/D/E) use ENTRY_TIMEOUT_QUICK_SECONDS."""
@@ -1062,6 +1068,132 @@ class TestHealthCheck:
         assert health["active_positions"] == 1
 
 
+class TestBotAlongsideManual:
+    """When bot opens trade on a pair with an adopted (manual) position,
+    the adopted must be cancelled from risk tracker before the new on_trade_opened
+    adds its own entry. Otherwise phantom entries accumulate.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _sandbox_mode(self, monkeypatch):
+        monkeypatch.setattr(settings, "OKX_SANDBOX", True)
+
+    def test_adopted_cancelled_before_new_bot_entry(self):
+        """Risk tracker must see on_trade_cancelled for the adopted position
+        before on_trade_opened for the new bot trade — else risk tracker keeps
+        the phantom forever and MAX_OPEN_POSITIONS drifts."""
+        risk = MagicMock()
+        executor = _mock_executor()
+        executor.configure_pair = AsyncMock(return_value=True)
+        executor.fetch_ticker = AsyncMock(return_value={"ask": 2000.0, "bid": 1999.0})
+        executor.place_limit_order = AsyncMock(return_value=make_order("ord-new"))
+
+        adopted = make_position(phase="active")
+        adopted.setup_type = "manual"
+
+        monitor = MagicMock(spec=PositionMonitor)
+        monitor.positions = {"ETH/USDT": adopted}
+
+        service = _make_service(executor, monitor, risk)
+        result = asyncio.run(service.execute(make_setup(), make_approval(), 0.85))
+
+        assert result is True
+        # Cancel fires BEFORE open (same pair, same direction)
+        risk.on_trade_cancelled.assert_called_once()
+        cancel_args, cancel_kwargs = risk.on_trade_cancelled.call_args
+        assert (cancel_args[0], cancel_args[1]) == ("ETH/USDT", "long")
+        assert "opened_timestamp" in cancel_kwargs
+        risk.on_trade_opened.assert_called_once()
+        cancel_idx = [c[0] for c in risk.mock_calls].index("on_trade_cancelled")
+        open_idx = [c[0] for c in risk.mock_calls].index("on_trade_opened")
+        assert cancel_idx < open_idx
+
+
+class TestSyncExchangeAdoptedSL:
+    """Adopted positions must recover real SL so portfolio heat is not blind.
+
+    Before fix: sl_price=0.0 hardcoded -> get_portfolio_heat_usd skipped the
+    position (sl<=0 branch) -> heat guardrail ignored manual/survived exposure.
+    """
+
+    def _wire(self, algos):
+        executor = _mock_executor()
+        executor.fetch_position = AsyncMock(return_value={
+            "contracts": 0.1,
+            "side": "long",
+            "entryPrice": 2000.0,
+            "leverage": 3,
+        })
+        executor.find_pending_algo_orders = AsyncMock(return_value=algos)
+
+        monitor = MagicMock(spec=PositionMonitor)
+        monitor.positions = {}
+
+        risk = MagicMock()
+
+        service = _make_service(executor, monitor, risk)
+        # Limit sweep to one pair for deterministic assertions
+        import config.settings as cs
+        self._orig_pairs = cs.settings.TRADING_PAIRS
+        cs.settings.TRADING_PAIRS = ["ETH/USDT"]
+        return service, executor, monitor, risk
+
+    def _restore(self):
+        import config.settings as cs
+        cs.settings.TRADING_PAIRS = self._orig_pairs
+
+    def test_adopted_recovers_attached_sl(self):
+        """Attached SL (slTriggerPx) below entry for long -> used as sl_price."""
+        service, executor, monitor, risk = self._wire(algos=[
+            {"slTriggerPx": "1950", "algoId": "a1"},
+        ])
+        try:
+            asyncio.run(service.sync_exchange_positions())
+
+            risk.on_trade_opened.assert_called_once()
+            kwargs = risk.on_trade_opened.call_args.kwargs
+            assert kwargs["sl_price"] == 1950.0
+            assert kwargs["position_size"] == 0.1
+        finally:
+            self._restore()
+
+    def test_adopted_recovers_standalone_trigger(self):
+        """Standalone stop-market (triggerPx) also picked up."""
+        service, executor, monitor, risk = self._wire(algos=[
+            {"triggerPx": "1960", "algoId": "a2"},
+        ])
+        try:
+            asyncio.run(service.sync_exchange_positions())
+            kwargs = risk.on_trade_opened.call_args.kwargs
+            assert kwargs["sl_price"] == 1960.0
+        finally:
+            self._restore()
+
+    def test_adopted_falls_back_to_max_sl_pct(self):
+        """No SL on exchange -> conservative sl = entry * (1 - MAX_SL_PCT) for long."""
+        service, executor, monitor, risk = self._wire(algos=[])
+        try:
+            asyncio.run(service.sync_exchange_positions())
+            kwargs = risk.on_trade_opened.call_args.kwargs
+            # entry=2000, MAX_SL_PCT=0.04 -> sl=1920
+            assert kwargs["sl_price"] == pytest.approx(1920.0)
+        finally:
+            self._restore()
+
+    def test_adopted_ignores_wrong_side_triggers(self):
+        """Trigger on wrong side of entry (e.g. TP above for long) rejected."""
+        service, executor, monitor, risk = self._wire(algos=[
+            {"slTriggerPx": "2100", "algoId": "a3"},  # Above entry = not SL for long
+        ])
+        try:
+            asyncio.run(service.sync_exchange_positions())
+            kwargs = risk.on_trade_opened.call_args.kwargs
+            # Fallback because no valid SL candidate
+            assert kwargs["sl_price"] == pytest.approx(1920.0)
+        finally:
+            self._restore()
+
+
 class TestOrphanedTradeReconciliation:
     """Startup reconciliation closes trades stuck as 'open' with no exchange position."""
 
@@ -1084,13 +1216,12 @@ class TestOrphanedTradeReconciliation:
 
         asyncio.run(service._reconcile_orphaned_trades())
 
+        # Must NOT invent PnL — orphan reconcile leaves pnl_usd/pnl_pct/actual_exit NULL.
+        # SL-based estimate contaminated DD reconcile and dashboard stats.
         mock_postgres.update_trade.assert_called_once_with(
             trade_id=42,
             status="closed",
             exit_reason="orphaned_restart",
-            pnl_usd=(1980.0 - 2000.0) * 0.05,  # -1.0 (SL-based estimate)
-            pnl_pct=(1980.0 - 2000.0) / 2000.0,  # -0.01
-            actual_exit=1980.0,
         )
         # No setup_id → ML outcome not resolved
         mock_postgres.update_ml_setup_outcome.assert_not_called()
