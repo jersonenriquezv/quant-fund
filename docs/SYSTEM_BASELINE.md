@@ -281,6 +281,22 @@ Whitelist autoritativa de `outcome_type` en `data_service.data_store.VALID_OUTCO
 
 **Minimum for Phase 1 (feature importance):** 50+ labeled outcomes with `feature_version >= 4` (filled_tp + filled_sl + filled_trailing).
 
+### 7.0 Dataset Ground Truth (where to train from)
+
+Three storages hold trade-like rows. Only ONE is authoritative for ML training / edge analysis.
+
+| Table | Origin | Role | Use for ML? |
+|-------|--------|------|-------------|
+| `ml_setups` | Bot detector (strategy_service) | **Authoritative** — features at detection + triple-barrier outcome. One row per setup, shadow or live. | **YES** — always filter by `feature_version >= 4` + `NOT IN NON_MARKET_OUTCOMES`. |
+| `trades` | Bot executor (execution_service) | Operational — real live fills, capital_at_trade, exit_reason. | NO for ML training. YES for P&L / dashboard. Filter `orphaned_restart` for DD / stats. |
+| `bybit_executions` + `bybit_closed_pnl` + `bybit_trade_annotations` | Bybit manual trades (sync + watcher) | Journal of manual decisions. Separate venue, separate capital, different execution characteristics. | **NO** — never cross with `ml_setups`. The annotation thesis is user-written prose, not ML-graded. |
+
+**Rules:**
+- `ml_setups` is the *only* ground truth for training queries, feature-importance runs, meta-label experiments, edge-audits.
+- `trades` is appropriate for realized P&L, DD reconcile, dashboard recent-trades — but NOT for feature → outcome modeling (lacks features).
+- Manual Bybit trades live in their own schema and must not leak into bot-edge analysis. Cross-venue comparison is fine for journaling, never for training.
+- If an analysis script needs both features and realized cash, join `ml_setups` → `trades` on `setup_id`, but still filter training labels from `ml_setups.outcome_type`.
+
 ### 7.1 ML Activation Gate
 
 **Current state (2026-04-23):** Pipeline is rule-based SMC + ML **logger** (not ML-driven). AI filter is bypassed for all active setups (`AI_BYPASS_SETUP_TYPES`). `BET_SIZING_ENABLED` effectively inert because synthetic `AIDecision(confidence=1.0)` never triggers it. Do not market this as an AFML/ML system in its current form — it is a feature collector.
@@ -331,6 +347,15 @@ Whitelist autoritativa de `outcome_type` en `data_service.data_store.VALID_OUTCO
 ---
 
 ## 8. Changelog
+
+### 2026-04-23 — Audit fase 4.2: Bybit link robustness + dataset ground truth §7.0
+**Files:** `data_service/bybit_watcher.py`, `docs/SYSTEM_BASELINE.md`
+
+**What changed:**
+- **Bybit pending → annotation link** ahora matchea por qty + entry_price (score combinado rel-diff, ventana 10 min) en lugar de solo tiempo. Guard: rechaza si `qty_rel>20%` o `price_rel>2%`. Fallback legacy (5 min, sin qty/price) si la PositionState no trae tamaño. Evita cross-link con 2 pendings similares.
+- **§7.0 Dataset Ground Truth** formaliza que `ml_setups` es la **única** fuente autoritativa para training / edge / meta-label. `trades` es operacional (PnL realizado + dashboard). Bybit tables son journal de decisiones manuales — **nunca** cruzar con ml_setups para entrenamiento.
+
+**Why:** audit §MEDIA. El link 5-min heurístico podía cross-linkear tesis en bursts; y la mezcla manual/bot/bybit sin contrato explícito arriesgaba contaminar training queries.
 
 ### 2026-04-23 — Audit fase 4.1: cleanup §MEDIA (observabilidad + shadow batching)
 **Files:** `config/settings.py`, `main.py`, `execution_service/monitor.py`, `execution_service/shadow_monitor.py`

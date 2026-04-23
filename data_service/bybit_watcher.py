@@ -253,23 +253,70 @@ class BybitWatcher:
             conn.commit()
             return dict(row) if row else None
 
-    def _link_annotation_from_pending(self, symbol: str, side: str, annotation_id: int) -> dict | None:
-        """When a position opens, try to carry forward the most recent pending order's thesis.
-        Matches by (symbol, side) filled within last 5 min.
+    def _link_annotation_from_pending(
+        self, symbol: str, side: str, annotation_id: int,
+        size: float | None = None, entry_price: float | None = None,
+    ) -> dict | None:
+        """When a position opens, try to carry forward the most recent pending
+        order's thesis. Prefers qty+price proximity over pure time heuristic
+        so two similar pendings in the same window don't cross-link.
+
+        Strategy (best match wins):
+          1. Filled within 10 min, annotation unattached.
+          2. Rank by qty_diff / entry_price_diff (smaller = better). Ties
+             broken by most-recent filled_at.
+          3. If neither size nor entry_price available, fall back to the
+             legacy most-recent-in-5-min heuristic.
         """
         with self._conn() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT * FROM bybit_pending_orders
-                WHERE symbol = %s AND side = %s
-                  AND status = 'filled'
-                  AND filled_at >= NOW() - INTERVAL '5 minutes'
-                  AND annotation_id IS NULL
-                ORDER BY filled_at DESC LIMIT 1
-                """,
-                (symbol, side),
-            )
-            pending = cur.fetchone()
+            if size is None or entry_price is None or entry_price <= 0:
+                cur.execute(
+                    """
+                    SELECT * FROM bybit_pending_orders
+                    WHERE symbol = %s AND side = %s
+                      AND status = 'filled'
+                      AND filled_at >= NOW() - INTERVAL '5 minutes'
+                      AND annotation_id IS NULL
+                    ORDER BY filled_at DESC LIMIT 1
+                    """,
+                    (symbol, side),
+                )
+                pending = cur.fetchone()
+            else:
+                cur.execute(
+                    """
+                    SELECT *,
+                           ABS(COALESCE(qty, 0) - %s) / NULLIF(GREATEST(%s, 1e-9), 0) AS qty_rel,
+                           ABS(COALESCE(price, 0) - %s) / NULLIF(%s, 0) AS price_rel
+                    FROM bybit_pending_orders
+                    WHERE symbol = %s AND side = %s
+                      AND status = 'filled'
+                      AND filled_at >= NOW() - INTERVAL '10 minutes'
+                      AND annotation_id IS NULL
+                    ORDER BY (
+                        COALESCE(ABS(COALESCE(qty, 0) - %s) / NULLIF(GREATEST(%s, 1e-9), 0), 1.0)
+                      + COALESCE(ABS(COALESCE(price, 0) - %s) / NULLIF(%s, 0), 1.0)
+                    ) ASC,
+                    filled_at DESC LIMIT 1
+                    """,
+                    (size, size, entry_price, entry_price,
+                     symbol, side,
+                     size, size, entry_price, entry_price),
+                )
+                pending = cur.fetchone()
+                # Guard: reject match if either dimension is way off (>20%).
+                # Prevents wrong-link when only one pending exists but it is
+                # clearly a different trade (e.g. resized after edit).
+                if pending is not None:
+                    qty_rel = pending.get("qty_rel")
+                    price_rel = pending.get("price_rel")
+                    if ((qty_rel is not None and qty_rel > 0.20)
+                            or (price_rel is not None and price_rel > 0.02)):
+                        logger.info(
+                            f"bybit link: rejected pending {pending.get('order_id')} "
+                            f"for {symbol} {side} — qty_rel={qty_rel} price_rel={price_rel}"
+                        )
+                        pending = None
             if not pending:
                 return None
             # migrate thesis
@@ -560,7 +607,10 @@ class BybitWatcher:
             auto = self._classify(ctx)
             annot_id = self._insert_annotation(st, ctx, auto)
             # Try to carry forward thesis from matching recently-filled pending order
-            carried = self._link_annotation_from_pending(k.symbol, k.side, annot_id)
+            carried = self._link_annotation_from_pending(
+                k.symbol, k.side, annot_id,
+                size=st.size, entry_price=st.entry_price,
+            )
             if carried:
                 logger.info(f"OPEN {k.symbol} {k.side} carried thesis from pending order {carried.get('order_id')}")
             await self._send_telegram(self._fmt_open_alert(st, annot_id, ctx, auto))
