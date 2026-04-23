@@ -310,6 +310,47 @@ class TestCapitalRefresh:
         # Tracked capital unchanged
         assert risk._state.get_capital() == 200.0
 
+    def test_balance_cache_reuses_within_ttl(self):
+        """Consecutive sizing calls within TTL must hit the cache — a burst
+        of signals should not translate into a burst of balance fetches."""
+        class _DS:
+            redis = None
+            def __init__(self):
+                self.calls = 0
+            def fetch_usdt_balance(self):
+                self.calls += 1
+                return 123.45
+
+        ds = _DS()
+        risk = RiskService(capital=100.0, data_service=ds)
+        assert risk._query_account_balance() == 123.45
+        assert risk._query_account_balance() == 123.45
+        assert risk._query_account_balance() == 123.45
+        assert ds.calls == 1, "second+ calls within TTL must reuse cache"
+
+    def test_balance_cache_bypassed_on_force(self):
+        """refresh_capital_from_exchange must bypass the cache — a realized
+        close is the exact moment the cached value is known to be stale."""
+        class _DS:
+            redis = None
+            def __init__(self):
+                self.calls = 0
+                self.value = 100.0
+            def fetch_usdt_balance(self):
+                self.calls += 1
+                return self.value
+
+        ds = _DS()
+        risk = RiskService(capital=50.0, data_service=ds)
+        risk._query_account_balance()  # primes cache at 100.0
+        assert ds.calls == 1
+
+        ds.value = 107.5
+        new = risk.refresh_capital_from_exchange()
+        assert new == pytest.approx(107.5)
+        assert ds.calls == 2, "refresh must bypass cache"
+        assert risk._state.get_capital() == pytest.approx(107.5)
+
 
 class TestConcurrentSamePairDirection:
     """Two positions on same (pair, direction) must not collide on close.

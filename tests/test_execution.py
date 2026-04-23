@@ -91,6 +91,7 @@ def _make_service(executor=None, monitor=None, risk=None):
     service._monitor = monitor or MagicMock(spec=PositionMonitor)
     service._risk = risk or MagicMock()
     service._alert_manager = None
+    service._data_service = None  # _emit_metric no-ops cleanly
     return service
 
 
@@ -1120,19 +1121,44 @@ class TestCapitalAtTrade:
 
 
 class TestBotAlongsideManual:
-    """When bot opens trade on a pair with an adopted (manual) position,
-    the adopted must be cancelled from risk tracker before the new on_trade_opened
-    adds its own entry. Otherwise phantom entries accumulate.
+    """Bot + manual coexistence contract (audit fase 4).
+
+    Default: block bot signal when manual is open — portfolio heat can't
+    see the manual SL so stacking would leave real exposure unmeasured.
+    Legacy coexistence is opt-in via ALLOW_BOT_WITH_MANUAL=true.
     """
 
     @pytest.fixture(autouse=True)
     def _sandbox_mode(self, monkeypatch):
         monkeypatch.setattr(settings, "OKX_SANDBOX", True)
 
-    def test_adopted_cancelled_before_new_bot_entry(self):
-        """Risk tracker must see on_trade_cancelled for the adopted position
-        before on_trade_opened for the new bot trade — else risk tracker keeps
-        the phantom forever and MAX_OPEN_POSITIONS drifts."""
+    def test_manual_blocks_bot_by_default(self, monkeypatch):
+        """Default (ALLOW_BOT_WITH_MANUAL=false): bot signal on a pair with
+        an adopted manual position returns False and never places an order."""
+        monkeypatch.setattr(settings, "ALLOW_BOT_WITH_MANUAL", False)
+        risk = MagicMock()
+        executor = _mock_executor()
+        executor.place_limit_order = AsyncMock(return_value=make_order("ord-new"))
+
+        adopted = make_position(phase="active")
+        adopted.setup_type = "manual"
+
+        monitor = MagicMock(spec=PositionMonitor)
+        monitor.positions = {"ETH/USDT": adopted}
+
+        service = _make_service(executor, monitor, risk)
+        result = asyncio.run(service.execute(make_setup(), make_approval(), 0.85))
+
+        assert result is False
+        executor.place_limit_order.assert_not_called()
+        risk.on_trade_opened.assert_not_called()
+        risk.on_trade_cancelled.assert_not_called()
+
+    def test_adopted_cancelled_before_new_bot_entry(self, monkeypatch):
+        """When ALLOW_BOT_WITH_MANUAL=true, risk tracker must see
+        on_trade_cancelled for the adopted position before on_trade_opened
+        for the new bot trade — else phantom entries accumulate."""
+        monkeypatch.setattr(settings, "ALLOW_BOT_WITH_MANUAL", True)
         risk = MagicMock()
         executor = _mock_executor()
         executor.configure_pair = AsyncMock(return_value=True)
@@ -1149,7 +1175,6 @@ class TestBotAlongsideManual:
         result = asyncio.run(service.execute(make_setup(), make_approval(), 0.85))
 
         assert result is True
-        # Cancel fires BEFORE open (same pair, same direction)
         risk.on_trade_cancelled.assert_called_once()
         cancel_args, cancel_kwargs = risk.on_trade_cancelled.call_args
         assert (cancel_args[0], cancel_args[1]) == ("ETH/USDT", "long")

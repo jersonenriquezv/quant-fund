@@ -745,6 +745,19 @@ class Settings:
     TRADING_HALTED: bool = os.getenv("TRADING_HALTED", "false").lower() == "true"
 
     # ========================
+    # BOT + MANUAL COEXISTENCE
+    # ========================
+    # When False (default): if an adopted manual position exists on a pair,
+    # bot signals for that pair are rejected. Prevents stacking positions on
+    # OKX net-mode accounts where the bot cannot see or manage the user's
+    # manual SL/TP — which makes portfolio-heat guardrails blind to the
+    # real exposure.
+    # When True: legacy behavior — drop the manual from risk tracker and
+    # open the bot entry alongside it. Only enable if you understand that
+    # portfolio heat will undercount the manual leg.
+    ALLOW_BOT_WITH_MANUAL: bool = os.getenv("ALLOW_BOT_WITH_MANUAL", "false").lower() == "true"
+
+    # ========================
     # EXECUTION SERVICE
     # ========================
     # Seconds to wait for entry order to fill before cancelling (swing setups)

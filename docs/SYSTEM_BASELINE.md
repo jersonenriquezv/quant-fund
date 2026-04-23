@@ -281,6 +281,33 @@ Whitelist autoritativa de `outcome_type` en `data_service.data_store.VALID_OUTCO
 
 **Minimum for Phase 1 (feature importance):** 50+ labeled outcomes with `feature_version >= 4` (filled_tp + filled_sl + filled_trailing).
 
+### 7.1 ML Activation Gate
+
+**Current state (2026-04-23):** Pipeline is rule-based SMC + ML **logger** (not ML-driven). AI filter is bypassed for all active setups (`AI_BYPASS_SETUP_TYPES`). `BET_SIZING_ENABLED` effectively inert because synthetic `AIDecision(confidence=1.0)` never triggers it. Do not market this as an AFML/ML system in its current form — it is a feature collector.
+
+**Reactivation is gated on ALL of:**
+
+| # | Threshold | Verification |
+|---|-----------|--------------|
+| G1 | ≥ 500 resolved labeled outcomes | `SELECT COUNT(*) FROM ml_setups WHERE feature_version >= 4 AND outcome_type IN ('filled_tp','filled_sl','filled_trailing','filled_timeout','filled_guardian') AND experiment_id = <current>` |
+| G2 | Class balance within 60/40 | WR between 40–60% on the slice above. Extreme skew → meta-label target is degenerate. |
+| G3 | Meta-label classifier trained with **purged k-fold CV** (AFML Ch.7) | Purge window ≥ max holding period; embargo ≥ 1× bar length. No leakage of overlapping labels. |
+| G4 | Out-of-sample **ROC AUC ≥ 0.60** and **Brier ≤ 0.22** | Calibrated with Platt/Isotonic. Uncalibrated probabilities cannot drive bet sizing. |
+| G5 | Kelly-safe: expected `f*` from model probabilities > 0 on validation set | If mean Kelly < 0 on held-out fold, model has no edge — do not enable sizing. |
+| G6 | Shadow comparison: model-gated setups beat rule-only baseline on ≥ 200 paper trades after calibration | `strategy_service` + shadow monitor can replay resolved setups through the classifier without touching live path. |
+
+**Order of re-wiring after gate passes:**
+1. Remove setup types from `AI_BYPASS_SETUP_TYPES`.
+2. Route through `ai_service.evaluate()` using the calibrated classifier (not Claude).
+3. Enable `BET_SIZING_ENABLED=true` **only** after G4 + G5 pass.
+4. Keep Claude as an audit-only path in parallel (log both decisions, act on the classifier).
+
+**Anti-patterns to avoid:**
+- Training on pre-v4 data (corrupted semantics — CVD units, OI existence-only, asymmetric funding).
+- Mixing `experiment_id` regimes without regime-aware CV folds.
+- Using non-purged CV with overlapping triple-barrier labels (leakage inflates AUC by ≥ 0.10).
+- Enabling bet sizing without calibration — Kelly on miscalibrated probabilities is strictly worse than flat size.
+
 ---
 
 ## 9. Active Roadmap (2026-04-20)
@@ -304,6 +331,19 @@ Whitelist autoritativa de `outcome_type` en `data_service.data_store.VALID_OUTCO
 ---
 
 ## 8. Changelog
+
+### 2026-04-23 — Audit fase 4: estructural (ML gate + cache + contrato manual)
+**Files:** `main.py`, `config/settings.py`, `risk_service/service.py`, `execution_service/service.py`, `docs/SYSTEM_BASELINE.md`, tests
+
+**What changed:**
+- **EXPERIMENT_ID boot log** — `main.py` loggea feature_version + experiment_id + source ('env override' vs 'settings default') al arrancar. Antes el tag ML de la sesión solo aparecía implícito en writes.
+- **ML Activation Gate** formalizado en §7.1: 6 gates duros (G1–G6) antes de re-habilitar AI filter o bet sizing. Incluye ROC AUC ≥ 0.60, Brier ≤ 0.22, purged k-fold CV, shadow comparison ≥ 200 paper trades. Anti-patterns documentados.
+- **Balance cache TTL 5 min** en `RiskService._query_account_balance`. Bursts de señales ya no martillean `fetch_usdt_balance`. `refresh_capital_from_exchange` bypassea cache (close → always fresh).
+- **Contrato bot+manual explícito** — nuevo `settings.ALLOW_BOT_WITH_MANUAL` (default **false**). Con manual abierto en un pair, bot signal es rechazada (portfolio heat no puede ver manual SL → stacking dejaba exposición real invisible). Legacy coexistence opt-in via env var. Emite metric `bot_signal_blocked_by_manual`.
+
+**Tests:** `test_balance_cache_reuses_within_ttl`, `test_balance_cache_bypassed_on_force`, `test_manual_blocks_bot_by_default`. Test existente `test_adopted_cancelled_before_new_bot_entry` actualizado para flag opt-in.
+
+**Out of scope (aún pendientes):** Bybit pending→annotation link por tiempo, `_log_trade_rejection` division guard, `TRADING_SESSIONS` dedup, `reconcile_drawdown_from_db` asimétrico. Bajo impacto — diferir hasta que justifiquen prioridad.
 
 ### 2026-04-23 — Audit fase 3: observabilidad + contratos ML
 **Files:** `data_service/data_store.py`, `execution_service/service.py`, `execution_service/monitor.py`, `execution_service/shadow_monitor.py`, `.claude/commands/pipeline-diagnosis.md`, tests

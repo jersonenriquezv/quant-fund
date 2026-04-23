@@ -20,6 +20,12 @@ logger = setup_logger("risk_service")
 class RiskService:
     """Layer 4 — enforces non-negotiable guardrails before trade execution."""
 
+    # Balance cache TTL — sizing calls within this window reuse the
+    # previous fetch instead of hammering the exchange. Live capital
+    # is only refetched explicitly after realized closes via
+    # refresh_capital_from_exchange(), so 5 min is safe for sizing.
+    _BALANCE_CACHE_TTL_SEC: float = 300.0
+
     def __init__(self, capital: float, data_service=None) -> None:
         self._sizer = PositionSizer()
         self._guardrails = Guardrails()
@@ -28,6 +34,8 @@ class RiskService:
         self._data_service = data_service
         self._persist_failures: int = 0
         self._balance_ever_fetched: bool = False
+        self._balance_cache_value: float | None = None
+        self._balance_cache_ts: float = 0.0
         logger.info(f"Risk Service initialized with capital=${capital:.2f}")
 
     # ================================================================
@@ -338,21 +346,39 @@ class RiskService:
         Called after every realized trade close so position sizing, portfolio
         heat, and DD reconcile use current balance instead of a stale snapshot
         from startup. Returns new balance or None if fetch failed.
+
+        Bypasses the balance cache — a realized close is exactly when the
+        cached value is known to be stale.
         """
-        balance = self._query_account_balance()
+        balance = self._query_account_balance(force=True)
         if balance is not None:
             self._balance_ever_fetched = True
             self._state.set_capital(balance)
             logger.info(f"Capital refreshed from exchange: ${balance:.2f}")
         return balance
 
-    def _query_account_balance(self) -> float | None:
-        """Query live USDT balance from OKX. Returns None on failure."""
+    def _query_account_balance(self, force: bool = False) -> float | None:
+        """Query live USDT balance from OKX. Returns None on failure.
+
+        Cached for `_BALANCE_CACHE_TTL_SEC`. When `force=True` (explicit
+        refresh after a close) the cache is bypassed. Sizing calls in
+        the same 5-minute window reuse the last good value, keeping the
+        exchange below rate limits when many signals fire in a burst.
+        """
         if self._data_service is None:
             return None
+
+        now = time.time()
+        if (not force
+                and self._balance_cache_value is not None
+                and (now - self._balance_cache_ts) < self._BALANCE_CACHE_TTL_SEC):
+            return self._balance_cache_value
+
         try:
             balance = self._data_service.fetch_usdt_balance()
             if balance is not None and balance > 0:
+                self._balance_cache_value = balance
+                self._balance_cache_ts = now
                 return balance
             return None
         except Exception as e:

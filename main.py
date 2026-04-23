@@ -12,6 +12,7 @@ Usage:
 
 import asyncio
 import json
+import os
 import signal
 import sys
 import time
@@ -1054,6 +1055,16 @@ def validate_config() -> bool:
     logger.info(f"Risk per trade: {settings.RISK_PER_TRADE*100:.1f}%")
     logger.info(f"Max leverage: {settings.MAX_LEVERAGE}x")
     logger.info(f"Max daily DD: {settings.MAX_DAILY_DRAWDOWN*100:.1f}%")
+
+    # ML data-collection identity — every ml_setups row written this session
+    # is tagged with these two values. Log them prominently so dashboards,
+    # training queries, and post-hoc analysis can reconstruct the regime.
+    env_exp = os.getenv("EXPERIMENT_ID")
+    exp_source = "env override" if env_exp else "settings default"
+    logger.info(
+        f"ML tagging: feature_version={settings.ML_FEATURE_VERSION} "
+        f"experiment_id='{settings.EXPERIMENT_ID}' ({exp_source})"
+    )
 
     if settings.HTF_CAMPAIGN_ENABLED:
         logger.info(

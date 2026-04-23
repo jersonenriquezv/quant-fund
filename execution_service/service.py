@@ -355,16 +355,25 @@ class ExecutionService:
                         opened_timestamp=old.created_at,
                     )
             elif existing.setup_type == "manual":
-                # Adopted position — allow bot to open its own entry alongside it.
-                # On OKX net mode, same-direction entries stack.
-                # Stop tracking the manual position (user manages their own SL/TP)
-                # AND drop it from risk state tracker — otherwise the adopted
-                # entry stays forever while the bot's new on_trade_opened below
-                # adds a second entry, leaving a permanent phantom that counts
-                # toward MAX_OPEN_POSITIONS indefinitely.
+                # Adopted (user-managed) position on this pair.
+                # Default contract: block the bot entry — portfolio heat
+                # guardrails cannot see the manual SL so stacking a bot
+                # leg on top would leave real exposure unmeasured.
+                # Opt-in coexistence via ALLOW_BOT_WITH_MANUAL drops the
+                # manual from tracker and opens alongside it (legacy).
+                if not settings.ALLOW_BOT_WITH_MANUAL:
+                    logger.info(
+                        f"Bot signal blocked: manual position on {setup.pair} "
+                        f"(ALLOW_BOT_WITH_MANUAL=false). Close the manual or "
+                        f"enable coexistence to proceed."
+                    )
+                    self._emit_metric(
+                        "bot_signal_blocked_by_manual", 1, pair=setup.pair,
+                    )
+                    return False
                 logger.info(
                     f"Adopted position exists for {setup.pair} — "
-                    f"dropping from tracker and allowing new bot entry alongside it"
+                    f"coexistence enabled, dropping manual from tracker"
                 )
                 if self._risk is not None:
                     self._risk.on_trade_cancelled(
