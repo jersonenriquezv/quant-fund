@@ -29,6 +29,26 @@ from shared.models import Candle, CVDSnapshot, FundingRate, OpenInterest
 logger = setup_logger("data_service")
 
 
+# ============================================================
+# ML outcome_type whitelist — single source of truth for valid
+# labels written to ml_setups.outcome_type. Every emitter in the
+# codebase must use one of these. update_ml_setup_outcome logs a
+# warning for any unknown label to catch drift early.
+# ============================================================
+VALID_OUTCOMES: frozenset[str] = frozenset({
+    # Live pipeline pre-execution rejections
+    "data_blocked", "shadow_direction_filtered", "shadow_dedup",
+    "trading_halted", "risk_rejected", "ai_rejected",
+    # Live trade resolutions (monitor._ml_resolve_close)
+    "filled_tp", "filled_sl", "filled_trailing", "filled_timeout",
+    "filled_guardian", "filled_slippage",
+    "unfilled_timeout", "replaced", "filled_orphaned",
+    # Shadow tracking (shadow_monitor + orphan cleanup)
+    "shadow_tp", "shadow_sl", "shadow_breakeven", "shadow_timeout",
+    "shadow_no_fill", "shadow_orphaned",
+})
+
+
 # ================================================================
 # Redis key patterns
 # ================================================================
@@ -1446,6 +1466,12 @@ class PostgresStore:
         resolve_candle_close: float | None = None,
     ) -> bool:
         """Update outcome columns for an ml_setup row. Fire-and-forget."""
+        if outcome_type not in VALID_OUTCOMES:
+            logger.warning(
+                f"ML outcome drift: '{outcome_type}' not in VALID_OUTCOMES. "
+                f"setup_id={setup_id} — writing anyway, but fix the emitter "
+                f"or add it to VALID_OUTCOMES."
+            )
         for attempt in range(2):
             if not self._ensure_connected():
                 return False

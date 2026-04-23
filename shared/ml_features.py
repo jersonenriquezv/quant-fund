@@ -102,6 +102,11 @@ def extract_setup_features(
     # PD zone
     pd_match = re.search(r"pd_zone_(\w+)", conf_str)
     features["pd_zone"] = pd_match.group(1) if pd_match else "undefined"
+    # pd_aligned now strictly means discount-long or premium-short.
+    # Previously equilibrium was treated as "aligned for both sides" —
+    # that made the feature positive in the most ambiguous zone and
+    # diluted predictive power. `pd_zone` categorical still carries the
+    # equilibrium signal on its own.
     features["pd_aligned"] = _is_pd_aligned(features["pd_zone"], setup.direction)
 
     # OB features from confluences
@@ -836,11 +841,14 @@ def _extract_float(text: str, pattern: str) -> float:
 
 
 def _is_pd_aligned(pd_zone: str, direction: str) -> bool:
-    """Check if PD zone aligns with trade direction."""
+    """Check if PD zone aligns with trade direction.
+
+    Strict alignment: only discount-long and premium-short count.
+    Equilibrium is NOT treated as aligned — it is exposed separately as
+    feature `pd_zone_equilibrium` so models can learn its effect directly.
+    """
     if pd_zone == "discount" and direction == "long":
         return True
     if pd_zone == "premium" and direction == "short":
         return True
-    if pd_zone == "equilibrium":
-        return True  # Equilibrium is allowed for both
     return False

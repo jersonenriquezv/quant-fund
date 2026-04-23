@@ -496,6 +496,13 @@ class PositionMonitor:
                 close_price = self._extract_close_price(result, pos)
                 if close_price is not None:
                     self._calculate_pnl(pos, close_price)
+                # Mark OB failed if the slippage close realized a loss.
+                # Slippage on a fresh OB is a signal the zone doesn't hold.
+                if self._on_sl_hit and (pos.pnl_pct or 0) < 0:
+                    try:
+                        self._on_sl_hit(pos.pair, pos.sl_price, pos.entry_price)
+                    except Exception as e:
+                        logger.error(f"on_sl_hit callback error (slippage): {pos.pair} {e}")
                 self._close_position(pos, "excessive_slippage")
                 return
 
@@ -528,6 +535,11 @@ class PositionMonitor:
                 close_price = self._extract_close_price(result, pos)
                 if close_price is not None:
                     self._calculate_pnl(pos, close_price)
+                if self._on_sl_hit and (pos.pnl_pct or 0) < 0:
+                    try:
+                        self._on_sl_hit(pos.pair, pos.sl_price, pos.entry_price)
+                    except Exception as e:
+                        logger.error(f"on_sl_hit callback error (sl_too_close): {pos.pair} {e}")
                 self._close_position(pos, "sl_too_close")
                 return
 
@@ -1458,8 +1470,10 @@ class PositionMonitor:
                 "trailing_sl": "filled_trailing",
                 "timeout": "filled_timeout",
                 "emergency": "filled_timeout",
-                "excessive_slippage": "filled_timeout",
-                "sl_too_close": "filled_timeout",
+                # Slippage-driven closes — distinct label so ML can learn
+                # that the OB zone did not hold the entry. Not a TP/SL/timeout.
+                "excessive_slippage": "filled_slippage",
+                "sl_too_close": "filled_slippage",
                 "cancelled": "unfilled_timeout",
                 "replaced": "replaced",
                 "manual_close": "filled_timeout",

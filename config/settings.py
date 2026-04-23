@@ -888,7 +888,7 @@ class Settings:
     # ========================
     # Feature version — increment when strategy params change in ways that
     # alter feature semantics (e.g. changing OB scoring weights, PD rules).
-    ML_FEATURE_VERSION: int = 16  # v16: ADX/DI trend strength, Bollinger width/%B/squeeze, Stochastic RSI
+    ML_FEATURE_VERSION: int = 17  # v17: pd_aligned strict (equilibrium no longer counts as aligned)
 
     # Experiment ID — tracks which parameter regime generated a sample.
     # feature_version = what columns mean. experiment_id = what rules generated sample.
@@ -963,7 +963,7 @@ class Settings:
 
 
 # Quick setup type identifiers (bypass AI + use short entry timeout)
-QUICK_SETUP_TYPES = ("setup_c", "setup_d", "setup_d_bos", "setup_d_choch", "setup_e")
+QUICK_SETUP_TYPES = ("setup_c", "setup_d_bos", "setup_d_choch", "setup_e")
 
 # Setup types that bypass AI filter but keep normal (swing) entry timeout.
 # setup_a: AI v2 approval rate 89.6% = no value added. Bypass until recalibrated.

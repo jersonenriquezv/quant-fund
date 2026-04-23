@@ -252,9 +252,11 @@ Reference for VPS sizing when migrating from Nitro 5.
 
 ## 7. ML Feature Versioning
 
-**Current version:** 16 (set in `config/settings.py:ML_FEATURE_VERSION`)
+**Current version:** 17 (set in `config/settings.py:ML_FEATURE_VERSION`)
 **Storage:** `ml_setups.feature_version` column in PostgreSQL
-**Query training data:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL AND outcome_type NOT IN ('shadow_dedup', 'data_blocked', 'shadow_risk_rejected', 'risk_rejected', 'regime_extreme_fear', 'shadow_orphaned', 'filled_orphaned')`
+**Query training data:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL AND outcome_type NOT IN ('shadow_dedup', 'data_blocked', 'risk_rejected', 'ai_rejected', 'trading_halted', 'shadow_direction_filtered', 'shadow_orphaned', 'filled_orphaned', 'replaced', 'unfilled_timeout')`
+
+Whitelist autoritativa de `outcome_type` en `data_service.data_store.VALID_OUTCOMES`. Labels fuera del set generan WARNING.
 **Experiment tracking:** `experiment_id` column (migration 15). Current: `freeze_v15_2026_04_16`. Filter: `WHERE experiment_id = 'freeze_v15_2026_04_16'` for clean freeze data.
 
 | Version | Date | Changes | Training Status |
@@ -302,6 +304,21 @@ Reference for VPS sizing when migrating from Nitro 5.
 ---
 
 ## 8. Changelog
+
+### 2026-04-23 — Audit fase 2: ML label cleanup (v17)
+**Files:** `data_service/data_store.py`, `execution_service/monitor.py`, `config/settings.py`, `shared/ml_features.py`, `docs/context/00-architecture.md`, tests
+
+**What changed:**
+- **#10 Whitelist `VALID_OUTCOMES`** en `data_service.data_store`. `update_ml_setup_outcome` loggea WARNING si outcome_type no matchea. Previene drift silencioso entre docs y runtime.
+- **#10 Docs outcome_type synced** (`docs/context/00-architecture.md:315` + SYSTEM_BASELINE §7). Removidos labels que nunca se emitían (`deduped`, `regime_extreme_fear`, `shadow_risk_rejected`). Añadidos los emitidos reales (`trading_halted`, `filled_slippage`, `ai_rejected`). Referencia a la constante VALID_OUTCOMES.
+- **#11 `filled_slippage` dedicated outcome** para `excessive_slippage` + `sl_too_close`. Antes se mapeaban a `filled_timeout` — perdía señal "OB no aguantó la entrada". También llama `on_sl_hit` si pnl_pct<0 → marca OB como failed para no re-trigger.
+- **#12 `setup_d` removido** de `QUICK_SETUP_TYPES`. Strategy emite `setup_d_bos`/`setup_d_choch`; `setup_d` a pelo nunca matcheaba.
+- **#13 `_is_pd_aligned` strict**. Equilibrium ya no cuenta como aligned para ningún lado. Antes `pd_aligned=True` en la zona más ambigua diluía predictive power. `pd_zone` categorical sigue capturando equilibrium.
+- **ML_FEATURE_VERSION 16 → 17** por cambio de semántica en `pd_aligned`.
+
+**Training query actualizado** para excluir labels non-market (`trading_halted`, `ai_rejected`, `shadow_direction_filtered`, `unfilled_timeout`, `replaced`, además de los previos).
+
+**Tests:** `test_pd_equilibrium_not_aligned` (regression).
 
 ### 2026-04-23 — Audit fix #9: capital_at_trade snapshot (migration 18)
 **Files:** `data_service/data_store.py`, `execution_service/models.py`, `execution_service/service.py`, `execution_service/monitor.py`, `tests/test_execution.py`

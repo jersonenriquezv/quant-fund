@@ -308,11 +308,16 @@ Desde 2026-03-13, el bot registra cada setup detectado con features estructurado
 - Guardian shadow triggers (counter, momentum, stall, cvd) — set during trade lifetime for feature importance
 - Momentum oscillators (v15+): WaveTrend (Cipher B core) — `wt_wt1`, `wt_wt2`, `wt_cross`, `wt_zone`, `wt_aligned`
 - Technical indicators (v16+): ADX(14) + DI — `adx_14`, `plus_di_14`, `minus_di_14`, `adx_trend_strength`, `adx_direction`; Bollinger(20,2) — `bb_width_pct`, `bb_percent_b`, `bb_squeeze_percentile`, `bb_squeeze`; Stochastic RSI — `stoch_rsi_k`, `stoch_rsi_d`, `stoch_rsi_zone`, `stoch_rsi_cross`
-- `feature_version` (currently 16; incrementar en `ML_FEATURE_VERSION` cuando cambien params de estrategia)
-- `experiment_id` (currently `shadow_tuning_v16_2026_04_16`; tracks parameter regime)
+- `feature_version` (currently 17; incrementar en `ML_FEATURE_VERSION` cuando cambien params de estrategia)
+- `experiment_id` (env override; tracks parameter regime)
 
-**Al resolver:**
-- `outcome_type`: filled_tp, filled_sl, filled_trailing, filled_timeout, filled_guardian, unfilled_timeout, risk_rejected, deduped, replaced, data_blocked, shadow_tp, shadow_sl, shadow_no_fill, shadow_breakeven, shadow_timeout, shadow_risk_rejected, shadow_dedup, shadow_direction_filtered, shadow_orphaned, regime_extreme_fear
+**Al resolver — `outcome_type`** (whitelist autoritativa: `data_service.data_store.VALID_OUTCOMES`):
+- Pre-ejecución: `data_blocked`, `ai_rejected`, `risk_rejected`, `trading_halted`, `shadow_direction_filtered`, `shadow_dedup`
+- Trade resuelto (live): `filled_tp`, `filled_sl`, `filled_trailing`, `filled_timeout`, `filled_guardian`, `filled_slippage`, `unfilled_timeout`, `replaced`, `filled_orphaned`
+- Shadow: `shadow_tp`, `shadow_sl`, `shadow_breakeven`, `shadow_timeout`, `shadow_no_fill`, `shadow_orphaned`
+
+Cualquier emisión fuera de `VALID_OUTCOMES` genera WARNING en logs. Actualizar la constante al añadir labels nuevos.
+
 - PnL, actual entry/exit, exit_reason, fill_duration_ms, trade_duration_ms
 
 ### Non-stationary features (AFML Ch.5) — excluir del training
