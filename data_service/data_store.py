@@ -49,6 +49,40 @@ VALID_OUTCOMES: frozenset[str] = frozenset({
 })
 
 
+# ============================================================
+# Non-market outcomes — labels that reflect bookkeeping or
+# pipeline state (gate, orphan, duplicate, timeout before fill)
+# rather than an executed trade resolving against the market.
+#
+# EVERY training / edge-analysis query MUST exclude these.
+# Including them inflates sample count without providing signal
+# and corrupts win-rate / PnL estimates.
+#
+# Callers should use `ml_market_outcome_filter_sql()` to emit the
+# SQL fragment so the set stays in one place.
+# ============================================================
+NON_MARKET_OUTCOMES: frozenset[str] = frozenset({
+    # Pre-execution gates — setup never hit the market
+    "data_blocked", "shadow_direction_filtered", "shadow_dedup",
+    "trading_halted", "risk_rejected", "ai_rejected",
+    # Bookkeeping / no-trade resolutions
+    "unfilled_timeout", "replaced",
+    "filled_orphaned", "shadow_orphaned",
+})
+
+
+def ml_market_outcome_filter_sql(column: str = "outcome_type") -> str:
+    """SQL WHERE fragment that keeps only market-resolved outcomes.
+
+    Usage:
+        WHERE feature_version >= 4
+          AND {ml_market_outcome_filter_sql()}
+          AND outcome_type IS NOT NULL
+    """
+    quoted = ", ".join(f"'{o}'" for o in sorted(NON_MARKET_OUTCOMES))
+    return f"{column} NOT IN ({quoted})"
+
+
 # ================================================================
 # Redis key patterns
 # ================================================================
@@ -1536,6 +1570,18 @@ class PostgresStore:
                         f"UPDATE ml_setups SET {', '.join(fields)} WHERE setup_id = %s",
                         values,
                     )
+                    affected = cur.rowcount
+                if affected == 0:
+                    # Insert/outcome race or missing setup_id — the outcome
+                    # has no feature row to attach to. Silent UPDATE of 0 rows
+                    # would hide the orphan indefinitely; surface it instead.
+                    logger.warning(
+                        f"ML outcome orphan: no ml_setups row matched "
+                        f"setup_id={setup_id} (outcome={outcome_type}). "
+                        f"Either insert_ml_setup failed earlier or emitter "
+                        f"resolved a shadow that was never recorded."
+                    )
+                    return False
                 logger.debug(f"ML: updated setup {setup_id} outcome={outcome_type}")
                 return True
             except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:

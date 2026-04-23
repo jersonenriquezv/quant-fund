@@ -90,6 +90,20 @@ class ShadowMonitor:
     def active_count(self) -> int:
         return len(self._positions)
 
+    def _emit_metric(
+        self, name: str, value: float = 1.0,
+        pair: str | None = None, labels: dict | None = None,
+    ) -> None:
+        """Operational metric (fire-and-forget)."""
+        if self._data_service is None or self._data_service.postgres is None:
+            return
+        try:
+            self._data_service.postgres.insert_metric(
+                name, value, pair=pair, labels=labels,
+            )
+        except Exception:
+            pass  # Never block the shadow loop
+
     def add_shadow(
         self, setup: TradeSetup,
         orderbook: dict | None = None,
@@ -436,18 +450,29 @@ class ShadowMonitor:
                     "resolve_candle_low": float(resolve_candle.low),
                     "resolve_candle_close": float(resolve_candle.close),
                 }
-            self._data_service.postgres.update_ml_setup_outcome(
-                setup_id=pos.setup_id,
-                outcome_type=outcome,
-                pnl_pct=pnl_pct,
-                pnl_usd=pnl_usd,
-                actual_entry=pos.entry_price if pos.filled else None,
-                actual_exit=exit_price if pos.filled else None,
-                exit_reason=exit_reason_map.get(outcome, outcome),
-                fill_duration_ms=fill_duration_ms,
-                trade_duration_ms=trade_duration_ms,
-                **trace,
-            )
+            try:
+                ok = self._data_service.postgres.update_ml_setup_outcome(
+                    setup_id=pos.setup_id,
+                    outcome_type=outcome,
+                    pnl_pct=pnl_pct,
+                    pnl_usd=pnl_usd,
+                    actual_entry=pos.entry_price if pos.filled else None,
+                    actual_exit=exit_price if pos.filled else None,
+                    exit_reason=exit_reason_map.get(outcome, outcome),
+                    fill_duration_ms=fill_duration_ms,
+                    trade_duration_ms=trade_duration_ms,
+                    **trace,
+                )
+                self._emit_metric(
+                    "shadow_outcome_resolved_ok" if ok else "shadow_outcome_resolved_error",
+                    1, pair=pos.pair, labels={"outcome": outcome},
+                )
+            except Exception as e:
+                logger.error(f"Shadow outcome write failed: {pos.setup_id} {e}")
+                self._emit_metric(
+                    "shadow_outcome_resolved_error", 1,
+                    pair=pos.pair, labels={"outcome": outcome},
+                )
 
         status = "WIN" if pnl_usd > 0 else "LOSS" if pnl_usd < 0 else "FLAT"
         logger.info(
@@ -484,6 +509,7 @@ class ShadowMonitor:
             )
         except Exception as e:
             logger.warning(f"Failed to save shadow positions to Redis: {e}")
+            self._emit_metric("shadow_redis_save_error", 1)
 
     def _load_from_redis(self) -> None:
         """Restore active shadow positions from Redis on startup."""
@@ -514,6 +540,7 @@ class ShadowMonitor:
                 )
         except Exception as e:
             logger.warning(f"Failed to load shadow positions from Redis: {e}")
+            self._emit_metric("shadow_redis_load_error", 1)
 
     def _get_redis(self):
         """Get Redis store, or None if unavailable."""

@@ -261,10 +261,12 @@ class TestQuickSetupTypes:
 
     def test_quick_setup_types(self):
         assert "setup_c" in QUICK_SETUP_TYPES
-        assert "setup_d" in QUICK_SETUP_TYPES
         assert "setup_d_bos" in QUICK_SETUP_TYPES
         assert "setup_d_choch" in QUICK_SETUP_TYPES
         assert "setup_e" in QUICK_SETUP_TYPES
+        # setup_d bare string is never emitted by strategy — only the
+        # _bos / _choch variants reach the pipeline. Removed in audit fase 2 #12.
+        assert "setup_d" not in QUICK_SETUP_TYPES
         assert "setup_h" not in QUICK_SETUP_TYPES  # Removed 2026-04-13
         assert "setup_a" not in QUICK_SETUP_TYPES  # Swing setup
         assert "setup_b" not in QUICK_SETUP_TYPES  # Swing setup

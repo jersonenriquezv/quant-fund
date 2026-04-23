@@ -503,6 +503,8 @@ class PositionMonitor:
                         self._on_sl_hit(pos.pair, pos.sl_price, pos.entry_price)
                     except Exception as e:
                         logger.error(f"on_sl_hit callback error (slippage): {pos.pair} {e}")
+                        self._emit_metric("on_sl_hit_callback_error", 1, pos.pair,
+                                          {"source": "excessive_slippage"})
                 self._close_position(pos, "excessive_slippage")
                 return
 
@@ -540,6 +542,8 @@ class PositionMonitor:
                         self._on_sl_hit(pos.pair, pos.sl_price, pos.entry_price)
                     except Exception as e:
                         logger.error(f"on_sl_hit callback error (sl_too_close): {pos.pair} {e}")
+                        self._emit_metric("on_sl_hit_callback_error", 1, pos.pair,
+                                          {"source": "sl_too_close"})
                 self._close_position(pos, "sl_too_close")
                 return
 
@@ -692,6 +696,8 @@ class PositionMonitor:
                         self._on_sl_hit(pos.pair, pos.sl_price, pos.entry_price)
                     except Exception as e:
                         logger.error(f"on_sl_hit callback error: {pos.pair} {e}")
+                        self._emit_metric("on_sl_hit_callback_error", 1, pos.pair,
+                                          {"source": "sl_status_closed"})
                 if pos.trailing_sl_moved:
                     sl_reason = "trailing_sl"
                 elif pos.breakeven_hit:
@@ -816,6 +822,8 @@ class PositionMonitor:
                     self._on_sl_hit(pos.pair, pos.sl_price, pos.entry_price)
                 except Exception as e:
                     logger.error(f"on_sl_hit callback error: {pos.pair} {e}")
+                    self._emit_metric("on_sl_hit_callback_error", 1, pos.pair,
+                                      {"source": "sl_verify"})
             if pos.trailing_sl_moved:
                 sl_reason = "trailing_sl"
             elif pos.breakeven_hit:
@@ -1051,6 +1059,8 @@ class PositionMonitor:
                     self._on_sl_hit(pos.pair, pos.sl_price, pos.entry_price)
                 except Exception as e:
                     logger.error(f"on_sl_hit callback error: {pos.pair} {e}")
+                    self._emit_metric("on_sl_hit_callback_error", 1, pos.pair,
+                                      {"source": "sl_vanished"})
             if pos.trailing_sl_moved:
                 sl_reason = "trailing_sl"
             elif pos.breakeven_hit:

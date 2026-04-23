@@ -249,9 +249,11 @@ class ExecutionService:
                 )
             except Exception as e:
                 logger.error(f"Failed to reconcile trade id={trade_id}: {e}")
+                self._emit_metric("orphan_reconcile_error", 1, pair=pair)
 
         if reconciled > 0:
             logger.info(f"Reconciliation complete: {reconciled} orphaned trade(s) closed")
+            self._emit_metric("orphan_reconcile_count", reconciled)
 
     async def stop(self) -> None:
         """Stop the monitor. Cancel unfilled entries, leave filled positions

@@ -61,7 +61,7 @@ SELECT setup_type,
 FROM ml_setups
 WHERE created_at > NOW() - INTERVAL '14 days'
   AND setup_type IN ('setup_a', 'setup_b', 'setup_d_choch', 'setup_d_bos')
-  AND outcome_type NOT IN ('shadow_dedup', 'shadow_hour_filtered', 'shadow_fear_long_filtered', 'shadow_risk_rejected', 'data_blocked')
+  AND outcome_type NOT IN ('ai_rejected', 'data_blocked', 'filled_orphaned', 'replaced', 'risk_rejected', 'shadow_dedup', 'shadow_direction_filtered', 'shadow_orphaned', 'trading_halted', 'unfilled_timeout')
 GROUP BY setup_type ORDER BY setup_type"
 ```
 

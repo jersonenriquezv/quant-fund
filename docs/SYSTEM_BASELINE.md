@@ -254,9 +254,9 @@ Reference for VPS sizing when migrating from Nitro 5.
 
 **Current version:** 17 (set in `config/settings.py:ML_FEATURE_VERSION`)
 **Storage:** `ml_setups.feature_version` column in PostgreSQL
-**Query training data:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL AND outcome_type NOT IN ('shadow_dedup', 'data_blocked', 'risk_rejected', 'ai_rejected', 'trading_halted', 'shadow_direction_filtered', 'shadow_orphaned', 'filled_orphaned', 'replaced', 'unfilled_timeout')`
+**Query training data:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL AND outcome_type NOT IN ('ai_rejected','data_blocked','filled_orphaned','replaced','risk_rejected','shadow_dedup','shadow_direction_filtered','shadow_orphaned','trading_halted','unfilled_timeout')`
 
-Whitelist autoritativa de `outcome_type` en `data_service.data_store.VALID_OUTCOMES`. Labels fuera del set generan WARNING.
+Whitelist autoritativa de `outcome_type` en `data_service.data_store.VALID_OUTCOMES`. Labels fuera del set generan WARNING. El filtro non-market se centraliza en `NON_MARKET_OUTCOMES` + helper `ml_market_outcome_filter_sql()` (mismo módulo) — usarlo en scripts/queries nuevas para evitar drift.
 **Experiment tracking:** `experiment_id` column (migration 15). Current: `freeze_v15_2026_04_16`. Filter: `WHERE experiment_id = 'freeze_v15_2026_04_16'` for clean freeze data.
 
 | Version | Date | Changes | Training Status |
@@ -304,6 +304,17 @@ Whitelist autoritativa de `outcome_type` en `data_service.data_store.VALID_OUTCO
 ---
 
 ## 8. Changelog
+
+### 2026-04-23 — Audit fase 3: observabilidad + contratos ML
+**Files:** `data_service/data_store.py`, `execution_service/service.py`, `execution_service/monitor.py`, `execution_service/shadow_monitor.py`, `.claude/commands/pipeline-diagnosis.md`, tests
+
+**What changed:**
+- **#14 Tests restart safety** — `tests/test_data_store_filters.py`. Regresión SQL: `fetch_closed_trades_pnl`, `fetch_recent_closed_trades`, `get_journal_summary` obligados a contener `orphaned_restart` en el filtro. Si un refactor futuro lo pierde, DD reconcile y dashboard saltan al instante.
+- **#15 Metric counters** en sitios silenciosos: `orphan_reconcile_error/count`, `shadow_outcome_resolved_ok/error` (con label `outcome`), `shadow_redis_save_error`, `shadow_redis_load_error`, `on_sl_hit_callback_error` (con label `source` = excessive_slippage | sl_too_close | sl_verify | sl_vanished | sl_status_closed). `ShadowMonitor` gana método `_emit_metric` propio.
+- **#16 `update_ml_setup_outcome` detecta orphan-row**: `cur.rowcount == 0` → WARNING `ML outcome orphan` + `return False`. Antes actualizaba "silenciosamente" cero filas cuando el insert_ml_setup había fallado o el shadow no se había registrado jamás.
+- **#17 Filtro non-market unificado**: constante `NON_MARKET_OUTCOMES` + helper `ml_market_outcome_filter_sql(column)` en `data_store.py`. Training query en SYSTEM_BASELINE §7 y `.claude/commands/pipeline-diagnosis.md` alineadas con la constante (removidos labels obsoletos `shadow_hour_filtered`, `shadow_fear_long_filtered`, `shadow_risk_rejected`).
+
+**Tests:** `test_data_store_filters.py` — 11 tests, incluye subset-check `NON_MARKET_OUTCOMES ⊆ VALID_OUTCOMES`, SQL determinismo, contrato de labels emitidos (live / shadow / pre-exec).
 
 ### 2026-04-23 — Audit fase 2: ML label cleanup (v17)
 **Files:** `data_service/data_store.py`, `execution_service/monitor.py`, `config/settings.py`, `shared/ml_features.py`, `docs/context/00-architecture.md`, tests
