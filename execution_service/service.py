@@ -503,6 +503,16 @@ class ExecutionService:
                 sl_price=setup.sl_price, position_size=approval.position_size,
             )
 
+        # Snapshot tracked capital at open. Used as pnl_pct denominator on
+        # close so the historical row stays accurate even if live capital
+        # drifts between open and close (compounding wins/losses).
+        capital_snapshot = 0.0
+        if self._risk is not None and hasattr(self._risk, "_state"):
+            try:
+                capital_snapshot = float(self._risk._state.get_capital())
+            except Exception:
+                capital_snapshot = 0.0
+
         # Create managed position and register with monitor
         pos = ManagedPosition(
             pair=setup.pair,
@@ -519,6 +529,7 @@ class ExecutionService:
             entry_order_id=order.get("id"),
             ai_confidence=ai_confidence,
             created_at=int(time.time()),
+            capital_at_trade=capital_snapshot,
         )
 
         if is_split:

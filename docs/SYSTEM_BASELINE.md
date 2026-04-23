@@ -303,6 +303,22 @@ Reference for VPS sizing when migrating from Nitro 5.
 
 ## 8. Changelog
 
+### 2026-04-23 — Audit fix #9: capital_at_trade snapshot (migration 18)
+**Files:** `data_service/data_store.py`, `execution_service/models.py`, `execution_service/service.py`, `execution_service/monitor.py`, `tests/test_execution.py`
+
+**What changed:**
+- **Migration 18**: `trades.capital_at_trade DOUBLE PRECISION` (nullable).
+- `ManagedPosition.capital_at_trade: float = 0.0`.
+- `execute()` en ExecutionService hace snapshot de `risk._state.get_capital()` al crear la ManagedPosition.
+- `_calculate_pnl` denomina `pnl_pct` por `pos.capital_at_trade` cuando > 0 (fallback: live capital → entry_notional).
+- `insert_trade` persiste `capital_at_trade` en la fila.
+
+**Why:** antes el denominador de `pnl_pct` era el capital tracked al momento del close, que ya había driftado por PnL de trades intermedios. Un trade que ganó $5 con capital abierto $100 y cerrado $120 reportaba 4.17% en vez de 5.00%. Ahora cada fila es self-consistent.
+
+**Interaction con fix #8:** `refresh_capital_from_exchange` mueve tracked capital tras cada close; el snapshot por trade protege la historia de ese movimiento.
+
+**Tests:** `TestCapitalAtTrade` (2): snapshot usado, fallback a live cuando snapshot=0 (adopted).
+
 ### 2026-04-23 — Audit fix #8: capital refresh tras realized close
 **Files:** `risk_service/service.py`, `execution_service/monitor.py`, `execution_service/campaign_monitor.py`, `tests/test_risk_service.py`
 

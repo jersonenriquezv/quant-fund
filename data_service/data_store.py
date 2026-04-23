@@ -785,6 +785,17 @@ class PostgresStore:
                     cur.execute(f"ALTER TABLE ml_setups ADD COLUMN IF NOT EXISTS {col_def}")
                 self._apply_migration(cur, 17, "ml_setups: shadow resolution candle trace")
 
+            if current_version < 18:
+                # capital_at_trade — snapshot of tracked capital at open time.
+                # Used as denominator for pnl_pct on close so historical rows
+                # stay correct even when current capital has drifted
+                # (compounding wins/losses between open and close).
+                cur.execute(
+                    "ALTER TABLE trades ADD COLUMN IF NOT EXISTS "
+                    "capital_at_trade DOUBLE PRECISION"
+                )
+                self._apply_migration(cur, 18, "trades: capital_at_trade snapshot")
+
         logger.info("PostgreSQL tables verified/created")
 
     # --- Candle Storage ---
@@ -882,6 +893,7 @@ class PostgresStore:
         actual_entry: float | None = None,
         tp3_price: float = 0.0,
         setup_id: str | None = None,
+        capital_at_trade: float | None = None,
     ) -> int | None:
         """Insert a new trade record. Returns trade id or None on failure."""
         for attempt in range(2):
@@ -893,12 +905,14 @@ class PostgresStore:
                         """INSERT INTO trades
                            (pair, direction, setup_type, entry_price, sl_price,
                             tp1_price, tp2_price, tp3_price, position_size,
-                            ai_confidence, actual_entry, setup_id, opened_at, status)
-                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), 'open')
+                            ai_confidence, actual_entry, setup_id,
+                            capital_at_trade, opened_at, status)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), 'open')
                            RETURNING id""",
                         (pair, direction, setup_type, entry_price, sl_price,
                          tp1_price, tp2_price, tp3_price, position_size,
-                         ai_confidence, actual_entry, setup_id),
+                         ai_confidence, actual_entry, setup_id,
+                         capital_at_trade),
                     )
                     row = cur.fetchone()
                     trade_id = row[0] if row else None

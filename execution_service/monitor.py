@@ -1298,10 +1298,12 @@ class PositionMonitor:
         # Store absolute USD PnL on position for DB persistence
         pos.pnl_usd = pnl_usd
 
-        # Denominator = tracked capital for accurate DD measurement.
-        # Falls back to entry_notional if risk service unavailable.
-        capital = 0.0
-        if self._risk is not None and hasattr(self._risk, '_state'):
+        # Denominator = capital snapshot at open time. Using current tracked
+        # capital would drift when realized PnL compounds between open and
+        # close. Fallback to live capital then entry_notional if snapshot
+        # missing (e.g. adopted position where capital_at_trade=0).
+        capital = float(getattr(pos, "capital_at_trade", 0.0) or 0.0)
+        if capital <= 0 and self._risk is not None and hasattr(self._risk, '_state'):
             try:
                 raw = self._risk._state.get_capital()
                 if isinstance(raw, (int, float)):
@@ -1385,6 +1387,7 @@ class PositionMonitor:
                 tp3_price=0.0,
                 position_size=pos.filled_size,
                 ai_confidence=pos.ai_confidence,
+                capital_at_trade=pos.capital_at_trade or None,
                 actual_entry=pos.actual_entry_price,
                 setup_id=pos.setup_id,
             )

@@ -1068,6 +1068,57 @@ class TestHealthCheck:
         assert health["active_positions"] == 1
 
 
+class TestCapitalAtTrade:
+    """pnl_pct must be denominated by capital snapshot at OPEN time, not
+    current capital. Otherwise a trade that won $5 while capital grew from
+    $100 to $120 reports pnl_pct = 5/120 instead of 5/100.
+    """
+
+    def test_calculate_pnl_uses_capital_snapshot(self):
+        """Position with capital_at_trade=100, current capital=200 →
+        pnl_pct = pnl_usd / 100, not / 200."""
+        executor = _mock_executor()
+        risk = MagicMock()
+        # Current tracked capital is 200 — must NOT be used as denominator
+        risk._state.get_capital.return_value = 200.0
+
+        monitor = PositionMonitor(executor, risk)
+        pos = ManagedPosition(
+            pair="ETH/USDT", direction="long", setup_type="setup_a",
+            entry_price=2000.0, sl_price=1960.0,
+            tp1_price=2040.0, tp2_price=2080.0,
+            filled_size=0.05,
+            actual_entry_price=2000.0,
+            capital_at_trade=100.0,  # Snapshot at open
+        )
+
+        # Exit at 2040 (TP1 target, +$2 gross on 0.05 size, minus ~$0.20 fees)
+        monitor._calculate_pnl(pos, exit_price=2040.0)
+
+        # pnl_pct denominated by 100, not 200. Check approx given fees.
+        assert pos.pnl_usd is not None
+        assert pos.pnl_pct == pytest.approx(pos.pnl_usd / 100.0, rel=1e-6)
+
+    def test_fallback_to_live_capital_when_snapshot_zero(self):
+        """If capital_at_trade=0 (e.g. adopted position), fall back to live."""
+        executor = _mock_executor()
+        risk = MagicMock()
+        risk._state.get_capital.return_value = 300.0
+
+        monitor = PositionMonitor(executor, risk)
+        pos = ManagedPosition(
+            pair="ETH/USDT", direction="long", setup_type="manual",
+            entry_price=2000.0, sl_price=1960.0,
+            tp1_price=2040.0, tp2_price=2080.0,
+            filled_size=0.05,
+            actual_entry_price=2000.0,
+            capital_at_trade=0.0,  # No snapshot
+        )
+
+        monitor._calculate_pnl(pos, exit_price=2040.0)
+        assert pos.pnl_pct == pytest.approx(pos.pnl_usd / 300.0, rel=1e-6)
+
+
 class TestBotAlongsideManual:
     """When bot opens trade on a pair with an adopted (manual) position,
     the adopted must be cancelled from risk tracker before the new on_trade_opened
