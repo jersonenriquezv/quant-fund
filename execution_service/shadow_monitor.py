@@ -83,6 +83,9 @@ class ShadowMonitor:
         self._notifier = notifier
         self._positions: dict[str, ShadowPosition] = {}  # setup_id -> ShadowPosition
         self._last_orphan_cleanup = 0.0
+        # Batching flag: inner helpers (_check_tp_sl) set this on TP1
+        # transitions so check_candle can persist once at end of tick.
+        self._dirty_from_inner_checks: bool = False
         self._load_from_redis()
         self._cleanup_orphaned_db_rows()
 
@@ -247,6 +250,10 @@ class ShadowMonitor:
         """Evaluate all shadow positions for this pair against a new candle.
 
         Called from the pipeline on every confirmed candle.
+        Redis persistence is batched: state changes set `dirty`, and a
+        single _save_to_redis fires at the end of the tick instead of
+        one per event. Avoids up to N (positions × transitions) Redis
+        writes per candle when many shadows transition simultaneously.
         """
         now = time.time()
 
@@ -255,6 +262,7 @@ class ShadowMonitor:
             self._cleanup_orphaned_db_rows()
 
         resolved = []
+        dirty = False
 
         for setup_id, pos in self._positions.items():
             if pos.pair != pair:
@@ -309,7 +317,7 @@ class ShadowMonitor:
                     )
 
                     self._notify_fill(pos)
-                    self._save_to_redis()
+                    dirty = True  # fill transition — persist at end of tick
 
                     # Check if this same candle also hit TP or SL
                     outcome = self._check_tp_sl(candle, pos)
@@ -333,8 +341,9 @@ class ShadowMonitor:
 
         for sid in resolved:
             del self._positions[sid]
-        if resolved:
+        if resolved or dirty or self._dirty_from_inner_checks:
             self._save_to_redis()
+            self._dirty_from_inner_checks = False
 
     def _check_tp_sl(self, candle, pos: ShadowPosition) -> str | None:
         """Delegate to shared pnl_engine. See `shared/pnl_engine.py`.
@@ -360,7 +369,9 @@ class ShadowMonitor:
         if engine_pos.tp1_touched and not pos.tp1_touched:
             pos.tp1_touched = True
             pos.sl_price = engine_pos.sl_price
-            self._save_to_redis()
+            # Flag the outer check_candle loop to persist at tick end
+            # instead of issuing a Redis write per inner TP1 transition.
+            self._dirty_from_inner_checks = True
             logger.info(
                 f"Shadow TP1 touched: {pos.setup_type} {pos.pair} {pos.direction} "
                 f"— SL moved to breakeven (entry={pos.entry_price:.2f})"

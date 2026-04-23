@@ -413,16 +413,16 @@ def _ml_log_setup(setup, candle: Candle) -> None:
         ob_snapshot = None
         try:
             ob_snapshot = _data_service.get_orderbook_snapshot(candle.pair)
-        except Exception:
-            pass  # Non-critical — features will be None
+        except Exception as e:
+            logger.debug(f"orderbook snapshot miss ({candle.pair}): {e}")
 
         # BTC candles for correlation features (altcoins only)
         btc_candles = None
         if candle.pair != "BTC/USDT":
             try:
                 btc_candles = _data_service.get_candles("BTC/USDT", candle.timeframe, count=50)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"BTC candle fetch miss ({candle.pair}): {e}")
 
         features = extract_setup_features(
             setup, snapshot, current_price, recent_candles,
@@ -539,14 +539,31 @@ async def _evaluate_htf_pipeline(candle: Candle) -> None:
 # Metrics helper (fire-and-forget to PostgreSQL for Grafana)
 # ================================================================
 
+# In-memory counter of emit_metric failures — surfaced periodically so a
+# silent Postgres outage does not remain invisible indefinitely.
+_EMIT_METRIC_FAILURES: list[int] = [0]
+_EMIT_METRIC_LAST_WARN: list[float] = [0.0]
+
+
 def _emit_metric(name: str, value: float, pair: str | None = None, labels: dict | None = None) -> None:
-    """Write an operational metric to PostgreSQL. Non-blocking, swallows errors."""
+    """Write an operational metric to PostgreSQL. Non-blocking.
+
+    Errors are counted in-memory and surfaced via a WARNING every 5 minutes
+    (max) so a broken metrics path does not silently hide all observability.
+    """
     if _data_service is None:
         return
     try:
         _data_service.postgres.insert_metric(name, value, pair=pair, labels=labels)
-    except Exception:
-        pass  # Fire-and-forget — never block the pipeline
+    except Exception as e:
+        _EMIT_METRIC_FAILURES[0] += 1
+        now = time.time()
+        if now - _EMIT_METRIC_LAST_WARN[0] > 300:
+            logger.warning(
+                f"_emit_metric failures: {_EMIT_METRIC_FAILURES[0]} since last warn "
+                f"(last error: {e}). Metrics path may be degraded."
+            )
+            _EMIT_METRIC_LAST_WARN[0] = now
 
 
 # ================================================================

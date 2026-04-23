@@ -332,6 +332,17 @@ Whitelist autoritativa de `outcome_type` en `data_service.data_store.VALID_OUTCO
 
 ## 8. Changelog
 
+### 2026-04-23 — Audit fase 4.1: cleanup §MEDIA (observabilidad + shadow batching)
+**Files:** `config/settings.py`, `main.py`, `execution_service/monitor.py`, `execution_service/shadow_monitor.py`
+
+**What changed:**
+- **`_emit_metric` no es silent anymore** — contador in-memory de fallos + WARNING cada 5 min (max). Main.py y monitor.py. Antes `except Exception: pass` ocultaba Postgres degradado.
+- **Silent catch → `logger.debug`** en orderbook snapshot, BTC candle fetch, timeout spread probe, funding cost estimate. Errores siguen fire-and-forget pero trazables en debug.
+- **Shadow `_save_to_redis` batched** — un save por tick en `check_candle` (en lugar de 1 por fill + 1 por TP1 touch + 1 por batch resolve). Dirty-flag pattern con `_dirty_from_inner_checks` para TP1 transitions dentro de `_check_tp_sl`.
+- **Comment drift fix** en `HTF_MIN_RISK_DISTANCE_PCT` (settings.py:833) — decía "vs 0.2% intraday", actual intraday es 0.5%.
+
+**Why:** audit §MEDIA. Observabilidad opaca hacía que Postgres degradado fuera invisible; redis hot-path Hypotéticamente hasta 20 writes/tick con 7 pares × varios shadows activos.
+
 ### 2026-04-23 — Audit fase 4: estructural (ML gate + cache + contrato manual)
 **Files:** `main.py`, `config/settings.py`, `risk_service/service.py`, `execution_service/service.py`, `docs/SYSTEM_BASELINE.md`, tests
 

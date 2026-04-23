@@ -830,7 +830,7 @@ class Settings:
     HTF_OB_MAX_DISTANCE_PCT: float = 0.10  # 10% (vs 5% intraday)
     HTF_OB_PROXIMITY_PCT: float = 0.015    # 1.5% (vs 0.3% intraday)
     HTF_FVG_MAX_AGE_HOURS: int = 168       # 7 days
-    HTF_MIN_RISK_DISTANCE_PCT: float = 0.005  # 0.5% (vs 0.2% intraday)
+    HTF_MIN_RISK_DISTANCE_PCT: float = 0.005  # 0.5% — matches MIN_RISK_DISTANCE_PCT intraday
     # Exchange minimum order sizes per pair (base currency).
     # Pre-check to avoid wasting Claude API tokens on impossible trades.
     # OKX BTC-USDT-SWAP: min 0.01 contracts × 0.01 BTC/contract = 0.0001 BTC.

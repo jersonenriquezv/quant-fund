@@ -61,6 +61,9 @@ class PositionMonitor:
         self._pending_filled: int = 0
         # Per-setup fill tracking: setup_type -> list of fill times (seconds)
         self._fill_times: dict[str, list[int]] = {}
+        # _emit_metric failure surfacing (see _emit_metric body)
+        self._emit_metric_failures: int = 0
+        self._emit_metric_last_warn: float = 0.0
 
     @property
     def positions(self) -> dict[str, ManagedPosition]:
@@ -1183,8 +1186,8 @@ class PositionMonitor:
                             f"bid={bid:.2f} ask={ask:.2f} spread={spread_pct:.3f}%"
                         )
                     self._emit_metric("timeout_exit_spread_pct", spread_pct, pos.pair)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Timeout spread probe failed: {pos.pair} {e}")
 
         # Market close remaining
         close_side = "sell" if pos.direction == "long" else "buy"
@@ -1200,13 +1203,24 @@ class PositionMonitor:
     def _emit_metric(self, name: str, value: float,
                      pair: str | None = None,
                      labels: dict | None = None) -> None:
-        """Write execution metric to PostgreSQL (fire-and-forget)."""
+        """Write execution metric to PostgreSQL (fire-and-forget).
+
+        Errors are counted and surfaced via WARNING at most every 5 min
+        so a broken metrics path does not stay invisible indefinitely.
+        """
         if self._data_store is None:
             return
         try:
             self._data_store.postgres.insert_metric(name, value, pair=pair, labels=labels)
-        except Exception:
-            pass
+        except Exception as e:
+            self._emit_metric_failures += 1
+            now = time.time()
+            if now - self._emit_metric_last_warn > 300:
+                logger.warning(
+                    f"_emit_metric failures: {self._emit_metric_failures} "
+                    f"since last warn (last error: {e}). Metrics path degraded."
+                )
+                self._emit_metric_last_warn = now
 
     def _record_pending_replaced(self, pos: ManagedPosition) -> None:
         """Record a pending entry being replaced by a new setup."""
@@ -1314,8 +1328,8 @@ class PositionMonitor:
                         else:
                             funding_cost = -entry_notional * funding_rate * settlements
                         pnl_usd -= funding_cost
-            except Exception:
-                pass  # Best-effort; don't break PnL on funding lookup failure
+            except Exception as e:
+                logger.debug(f"Funding cost estimate skipped ({pos.pair}): {e}")
 
         # Store absolute USD PnL on position for DB persistence
         pos.pnl_usd = pnl_usd
