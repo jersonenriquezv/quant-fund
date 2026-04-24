@@ -235,6 +235,23 @@ class ExplainBot:
             except Exception as exc:
                 await self._send(client, f"review error: {exc}", reply_to=msg_id)
 
+        elif cmd == "/check":
+            await self._send(client, "Checando setup…", reply_to=msg_id)
+            try:
+                from scripts.pretrade_check import parse_command, run_full, format_telegram
+                parsed = parse_command(text)
+                if parsed.error:
+                    await self._send(client, parsed.error, reply_to=msg_id)
+                    return
+                model = settings.CLAUDE_MODEL_AUDIT
+                report, payload, check_id = await run_full(parsed, model=model, bybit=self._bybit)
+                reply = format_telegram(parsed, payload, report, check_id)
+                for chunk in self._chunk(reply, 3800):
+                    await self._send(client, chunk, reply_to=msg_id)
+            except Exception as exc:
+                logger.exception("check failed")
+                await self._send(client, f"check error: {exc}", reply_to=msg_id)
+
         elif cmd == "/help":
             await self._send(
                 client,
@@ -242,6 +259,7 @@ class ExplainBot:
                 "`/balance` — Bybit UTA balance + positions\n"
                 "`/stats [days]` — quick stats (default 7d)\n"
                 "`/review [days]` — full Claude review (default 7d)\n"
+                "`/check SYMBOL side entry SL TP [lev=N] [thesis…]` — pre-trade sanity check\n"
                 "`/explain <concept>` — explanation",
                 reply_to=msg_id,
             )

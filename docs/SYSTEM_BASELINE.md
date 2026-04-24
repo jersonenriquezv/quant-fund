@@ -348,6 +348,20 @@ Three storages hold trade-like rows. Only ONE is authoritative for ML training /
 
 ## 8. Changelog
 
+### 2026-04-24 — Pre-trade Bybit checklist (`/check` Telegram)
+**Files:** `scripts/pretrade_check.py` (new), `scripts/explain_bot.py`, `bybit_pretrade_checks` table (new)
+
+**What changed:**
+- **New Telegram command `/check SYMBOL side entry SL TP [lev=N] [thesis…]`** — manual Bybit trade sanity check before entry.
+- Gathers: live Bybit ticker (price, funding, OI, 24h range), account balance, last 15 bybit_trade_annotations same symbol+side, aggregated ml_setups stats for same pair+direction (last 90d).
+- Feeds structured payload to Claude Opus 4.7 (`CLAUDE_MODEL_AUDIT`). Returns strict JSON: score 0-10, verdict (strong/ok/weak/skip), size suggestion, max safe leverage, green/red flags, missing confluences, coaching notes.
+- Formats verdict with emoji to Telegram; logs full payload + report to `bybit_pretrade_checks` table for regression (compare pre-trade check vs actual outcome).
+- CLI standalone: `python scripts/pretrade_check.py "/check BTC long 77500 76800 79000"`.
+
+**Why:** manual Bybit trading is the biggest dollar lever ($4.6k vs $86 bot). Pre-entry second-opinion forces thesis articulation + surfaces historical self-leaks ("your last 5 BTC longs are 0/5 — this setup has the same structure"). Low-risk, high-value application of Opus 4.7.
+
+**Safety:** read-only (no order placement). Direction sanity enforced in parser (long requires SL<entry<TP; short the inverse). Symbol whitelist = bot's 7 pairs. Fails soft if Bybit API down.
+
 ### 2026-04-24 — Weekly edge audit (Claude Opus 4.7)
 **Files:** `scripts/weekly_edge_audit.py` (new), `config/settings.py`, `systemd/quant-edge-audit.{service,timer}` (new), `ml_edge_audits` table (new)
 
