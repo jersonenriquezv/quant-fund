@@ -415,6 +415,9 @@ class Settings:
     # ========================
     # Modelo de Claude a usar
     CLAUDE_MODEL: str = "claude-sonnet-4-20250514"
+    # Modelo para batch offline audits (edge audit, weekly review). Opus 4.7.
+    # For >200K input enable 1M context via ANTHROPIC_BETA env (context-1m-*).
+    CLAUDE_MODEL_AUDIT: str = os.getenv("CLAUDE_MODEL_AUDIT", "claude-opus-4-7")
     # Confianza mínima para aprobar un trade
     AI_MIN_CONFIDENCE: float = 0.50
     # Maximum seconds to wait for Claude API response

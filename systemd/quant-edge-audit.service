@@ -1,0 +1,12 @@
+[Unit]
+Description=Quant Fund weekly edge audit (Claude Opus 4.7)
+After=network-online.target postgresql.service docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=jer
+WorkingDirectory=/home/jer/quant-fund
+ExecStart=/bin/bash -c 'source /home/jer/quant-fund/venv/bin/activate && python scripts/weekly_edge_audit.py --days 7'
+StandardOutput=journal
+StandardError=journal

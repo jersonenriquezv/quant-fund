@@ -348,6 +348,34 @@ Three storages hold trade-like rows. Only ONE is authoritative for ML training /
 
 ## 8. Changelog
 
+### 2026-04-24 — Weekly edge audit (Claude Opus 4.7)
+**Files:** `scripts/weekly_edge_audit.py` (new), `config/settings.py`, `systemd/quant-edge-audit.{service,timer}` (new), `ml_edge_audits` table (new)
+
+**What changed:**
+- **New offline audit pipeline.** Pulls resolved `ml_setups` + closed `trades` + shadow outcomes for last N days, aggregates by setup/pair/hour/htf_bias/feature tier, feeds to Claude Opus 4.7, emits narrative markdown audit.
+- **Model:** `CLAUDE_MODEL_AUDIT=claude-opus-4-7` (env-overridable). Separate from live AI filter `CLAUDE_MODEL`. Prompt caching enabled via `cache_control` on system prompt (not yet crossing 1024-token threshold — activates as prompt grows).
+- **Storage:** `ml_edge_audits` table (period_start/end, experiment_id, payload JSONB, report_md, tokens, cache metrics). Markdown written to `docs/audits/edge-audit-YYYY-WW.md`.
+- **Schedule:** `quant-edge-audit.timer` — Sunday 10:00 UTC weekly. Install: `sudo cp systemd/quant-edge-audit.{service,timer} /etc/systemd/system/ && sudo systemctl enable --now quant-edge-audit.timer`.
+- **Safety:** `--min-setups 10` default bails if sample too small; `--dry-run` skips API call. Offline-only — never touches live pipeline.
+
+**Why:** meta-labeling roadmap (AFML) needs narrative edge analysis, not just numbers. Shadow mode data accumulating; weekly audit surfaces leaks (feature tier instrumentation gaps, session-time effects, long/short asymmetry) before live re-enable.
+
+**How to use:**
+- On-demand: `venv/bin/python scripts/weekly_edge_audit.py --days 7`
+- Force with low sample: `--min-setups 0`
+- Query history: `SELECT period_start, n_setups, win_rate_pct, tokens_in FROM ml_edge_audits ORDER BY id DESC`
+
+### 2026-04-24 — Fix: `_evaluate_quick_setups` NameError (state_4h/state_1h/volume_profile)
+**Files:** `strategy_service/service.py`
+
+**What changed:**
+- Added `state_4h`, `state_1h`, `volume_profile` as explicit parameters to `_evaluate_quick_setups`. Previously referenced as free variables (introduced by commit `28f66841` Batch 4 on 2026-04-21), causing `NameError` on every LTF candle across all pairs.
+- `evaluate()` now passes these down to the quick-setup path.
+
+**Why:** Production bug. Bot logged `Pipeline callback error: ... name 'state_4h' is not defined` on every 5m+15m candle for ~3 days. Setup D (quick) was completely dead — every evaluation raised before any setup logic ran. Swing setups (A/B/F) survived only because `return setup` on match exited `evaluate()` before reaching the broken quick-setup call.
+
+**Impact:** Setup D reactivated. Zero pipeline callback errors post-fix (verified in logs). Tests: 915 pass.
+
 ### 2026-04-23 — Audit fase 4.3: §BAJA hardening
 **Files:** `main.py`, `risk_service/state_tracker.py`
 
