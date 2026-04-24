@@ -351,6 +351,7 @@ class StrategyService:
         # ============================================================
         quick_setup = self._evaluate_quick_setups(
             pair, htf_bias, candles_5m, candles_15m, market_snapshot, pd_zone,
+            state_4h, state_1h, volume_profile,
         )
         if quick_setup is not None:
             if quick_setup.setup_type not in settings.ENABLED_SETUPS and quick_setup.setup_type not in settings.SHADOW_MODE_SETUPS:
@@ -368,6 +369,9 @@ class StrategyService:
         candles_15m: list[Candle],
         market_snapshot,
         pd_zone,
+        state_4h,
+        state_1h,
+        volume_profile,
     ) -> Optional[TradeSetup]:
         """Try quick setups D only. C/E/H removed 2026-04-13. Respects per-type cooldown."""
         if not candles_5m:
