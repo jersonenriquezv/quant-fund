@@ -6,7 +6,7 @@
 **Last updated:** 2026-04-27
 **ML Feature Version:** 18
 **Bot status:** SHADOW-ONLY (OKX_SANDBOX=false, ENABLED_SETUPS=[], ~$86 capital untouched)
-**Active experiment:** `redesign_pre_2026_04_27` (regime_label + tier extraction fix; engines not yet shipped)
+**Active experiment:** `redesign_pre_2026_04_27` (regime_label + tier extraction fix; **Engine 1 shadow shipped 2026-04-27** on BTC+ETH only, benchmarks pending)
 **Monitoring:** Grafana dashboard `shadow-health` + systemd user timer `shadow-health-alert.timer` (hourly)
 
 ---
@@ -33,6 +33,7 @@
 | F (Pure OB Retest) | **SHADOW** | swing, was live until 04-15 | 50% (1TP/1SL live) |
 | G (Breaker Block) | **DISABLED** | 0/4 WR. Removed 04-16. | 0% |
 | H (Momentum/Impulse) | **DISABLED** | — | 10.7% WR (28 trades). Removed 04-13. |
+| Engine 1 (Trend-Pullback / Impulse Retest) | **SHADOW (BTC+ETH only)** | redesign engine, shipped 2026-04-27 (commit `6dd6901`); benchmarks pending | no historical — fresh emission |
 
 ### Risk Guardrails
 | Parameter | Value | Notes |
