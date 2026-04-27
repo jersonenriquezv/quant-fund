@@ -665,7 +665,7 @@ class PostgresStore:
                     guardian_shadow_cvd BOOLEAN DEFAULT FALSE,
 
                     -- Outcome (filled after trade resolves)
-                    outcome_type VARCHAR(20),
+                    outcome_type VARCHAR(50),
                     pnl_pct DOUBLE PRECISION,
                     pnl_usd DOUBLE PRECISION,
                     actual_entry DOUBLE PRECISION,
@@ -862,6 +862,17 @@ class PostgresStore:
                     "regime_label VARCHAR(20)"
                 )
                 self._apply_migration(cur, 19, "ml_setups: regime_label categorical")
+
+            if current_version < 20:
+                # outcome_type — widen to fit longer labels like
+                # 'shadow_direction_filtered' (25) and 'shadow_fear_long_filtered' (25).
+                # Prod was already widened by an earlier ad-hoc ALTER; this
+                # migration is idempotent and only acts on fresh / older DBs.
+                cur.execute(
+                    "ALTER TABLE ml_setups "
+                    "ALTER COLUMN outcome_type TYPE VARCHAR(50)"
+                )
+                self._apply_migration(cur, 20, "ml_setups: widen outcome_type to VARCHAR(50)")
 
         logger.info("PostgreSQL tables verified/created")
 
