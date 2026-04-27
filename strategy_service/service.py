@@ -24,6 +24,7 @@ from strategy_service.liquidity import LiquidityAnalyzer
 from strategy_service.setups import SetupEvaluator
 from strategy_service.quick_setups import QuickSetupEvaluator
 from strategy_service.volume_profile import VolumeProfileAnalyzer
+from strategy_service.engines.trend_pullback import TrendPullbackEngine
 
 logger = setup_logger("strategy_service")
 
@@ -52,6 +53,8 @@ class StrategyService:
         self._liquidity = LiquidityAnalyzer()
         self._setups = SetupEvaluator()
         self._quick_setups = QuickSetupEvaluator()
+        # Redesign engines (docs/strategy_redesign_2026_04.md §4)
+        self._engine1 = TrendPullbackEngine()
         self._volume_profile = VolumeProfileAnalyzer(
             bin_count=settings.VP_BIN_COUNT,
             value_area_pct=settings.VP_VALUE_AREA_PCT,
@@ -393,6 +396,43 @@ class StrategyService:
                         )
                         if on_match(setup):
                             return
+
+            # ============================================================
+            # Redesign Engine 1 — Trend-Pullback / Impulse Retest (15m only).
+            # Owns its own gates (entry distance, target space, net R:R) —
+            # does NOT inherit `_apply_expectancy_filters`. Pair filter
+            # (BTC+ETH only) lives in main.py via SHADOW_PAIR_FILTER, not here.
+            # ============================================================
+            from strategy_service.engines.trend_pullback import (
+                SETUP_TYPE as ENGINE1_SETUP_TYPE,
+            )
+            if (ENGINE1_SETUP_TYPE in settings.ENABLED_SETUPS
+                    or ENGINE1_SETUP_TYPE in settings.SHADOW_MODE_SETUPS):
+                swings_htf_prices = [
+                    s.price for s in state_4h.swing_highs + state_1h.swing_highs
+                ] + [
+                    s.price for s in state_4h.swing_lows + state_1h.swing_lows
+                ]
+                engine_setup = self._engine1.evaluate(
+                    pair=pair,
+                    candles=candles,
+                    current_price=trigger_candle.close,
+                    htf_bias=htf_bias,
+                    swings_htf=swings_htf_prices,
+                    ob_timeframe=ltf,
+                )
+                if engine_setup is not None:
+                    logger.info(
+                        f"Engine1 Trend-Pullback found: pair={pair} "
+                        f"direction={engine_setup.direction} "
+                        f"entry={engine_setup.entry_price:.2f} "
+                        f"sl={engine_setup.sl_price:.2f} "
+                        f"tp1={engine_setup.tp1_price:.2f} "
+                        f"tp2={engine_setup.tp2_price:.2f} "
+                        f"confluences={engine_setup.confluences}"
+                    )
+                    if on_match(engine_setup):
+                        return
 
         # ============================================================
         # Step 5: Quick setups (D) — evaluated after the swing-setup loop.

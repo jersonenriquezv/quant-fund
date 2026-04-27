@@ -1046,6 +1046,21 @@ class TestEvaluateAll:
         result = svc.evaluate_all("BTC/USDT", trigger)
         assert [s.setup_type for s in result] == order
 
+    def test_engine1_co_emits_alongside_legacy(self):
+        """Multi-emit contract: Engine 1 sits in the same callback chain
+        as setup_a/b/f. When both fire on the same candle, evaluate_all
+        returns both; evaluate returns the legacy one (registered first)."""
+        legacy = self._stub_setup("setup_a", ts=1)
+        engine1 = self._stub_setup("engine1_trend_pullback", ts=2)
+        svc = self._patched_service([legacy, engine1])
+        trigger = make_candle(timeframe="15m", close=100.0)
+        all_setups = svc.evaluate_all("BTC/USDT", trigger)
+        first = svc.evaluate("BTC/USDT", trigger)
+        assert [s.setup_type for s in all_setups] == [
+            "setup_a", "engine1_trend_pullback",
+        ]
+        assert first.setup_type == "setup_a"
+
 
 # ============================================================
 # Helper: mock DataService with bullish trend

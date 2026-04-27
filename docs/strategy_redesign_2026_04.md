@@ -371,10 +371,15 @@ This phase ships the contract change. Specifically:
 
 Without this phase, the §6 benchmark comparisons cannot share a population — each track would see a different subset of candles depending on detection ordering. This is the single biggest risk to the validity of the whole research program; do not skip.
 
-**Weeks 1–2: Engine 1 (Trend-Pullback) shadow ship.**
-- Implement as `strategy_service/engines/trend_pullback.py` (new module; do not edit `setups.py`).
-- Run alongside legacy setup_f, setup_b on BTC+ETH only. Both produce shadow rows; both go through ml_setups under different `setup_type`.
-- Implement the random-direction and momentum benchmarks for Engine 1 in the same module, also writing to ml_setups.
+**Weeks 1–2: Engine 1 (Trend-Pullback) shadow ship. ✅ shipped 2026-04-27.**
+- Module: `strategy_service/engines/trend_pullback.py`. Does not edit `setups.py`.
+- Setup type: `engine1_trend_pullback`. Registered in `SHADOW_MODE_SETUPS`.
+- Pair scope: `SHADOW_PAIR_FILTER` restricts to `["BTC/USDT", "ETH/USDT"]`.
+- Wired into `StrategyService._iterate_setups` after Setup G — co-emits via `evaluate_all()` alongside legacy setup_a/b/f. Live path unchanged.
+- Owns its own gates (entry distance ≤ 1.5×ATR, target space ≥ 1.4R after fee buffer, net R:R ≥ 1.6) — does NOT inherit `_apply_expectancy_filters`.
+- v1 thresholds documented as module-level constants (NOT optimized): impulse 3–8 candles ≥ 2× ATR, body ratio ≥ 0.55, directional ≥ 60%; pullback 2–6 candles, retrace 30–85%, max single opposing body ≤ 70% of pullback range.
+- Tests: 36 unit + 1 multi-emit integration (TestEvaluateAll::test_engine1_co_emits_alongside_legacy).
+- Benchmarks (random-direction, momentum baseline) deferred to a follow-up PR — Engine 1 API is shared-context-friendly via the `evaluate(pair, candles, current_price, htf_bias, swings_htf)` signature, so benchmarks can be added without touching the engine.
 - Daily: monitor shadow_health Grafana dashboard. Weekly: run `weekly_edge_audit.py`.
 
 **Weeks 3–4: Engine 2 (Failed Breakout) shadow ship.**
