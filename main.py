@@ -231,6 +231,15 @@ async def on_candle_confirmed(candle: Candle) -> None:
             )
             _ml_resolve_outcome(setup.setup_id, "shadow_direction_filtered")
             return
+        # Pair filter: quarantine setups to research pairs (BTC+ETH for d_*)
+        allowed_pairs = settings.SHADOW_PAIR_FILTER.get(setup.setup_type)
+        if allowed_pairs is not None and setup.pair not in allowed_pairs:
+            logger.debug(
+                f"Shadow pair filter: {setup.setup_type} {setup.pair} "
+                f"not in {allowed_pairs} — skipping"
+            )
+            _ml_resolve_outcome(setup.setup_id, "shadow_pair_filtered")
+            return
         # Risk check: run but do NOT gate on result. Log as ML feature only.
         risk_approval = None
         if _risk_service is not None:

@@ -895,6 +895,17 @@ class Settings:
     SHADOW_DIRECTION_FILTER: dict = field(default_factory=lambda: {
         "setup_a": ["short"],
     })
+    # Pair filter for shadow mode — restrict setups to specific pairs.
+    # Omitted setups track all TRADING_PAIRS. Empty list = blocked entirely.
+    # Quarantine d_choch / d_bos to BTC+ETH per redesign §3.4–3.5
+    # (2026-04-27). DOGE/XRP/LINK/AVAX/SOL had 0 resolved outcomes for these
+    # setup types in experiment batch1_tp1_rr_1_3_2026_04_20; the dedup cache
+    # absorbs every detection. ETH+BTC carry signal; other pairs add telemetry
+    # noise without contributing to edge measurement.
+    SHADOW_PAIR_FILTER: dict = field(default_factory=lambda: {
+        "setup_d_choch": ["BTC/USDT", "ETH/USDT"],
+        "setup_d_bos": ["BTC/USDT", "ETH/USDT"],
+    })
     # Fictional capital for shadow mode position sizing ($500 USDT).
     # Shadow R:R and position sizes reflect realistic trades you'd take later.
     SHADOW_CAPITAL: float = float(os.getenv("SHADOW_CAPITAL", "500"))

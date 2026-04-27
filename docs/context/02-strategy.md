@@ -134,7 +134,8 @@ Status actual:
 - `evaluate_htf(pair, candle)` — evalúa 4H candles para HTF campaigns. Bias desde Daily. Detectores corren con params HTF (OB age 168h, distance 10%, FVG age 168h). Overrides temporales de settings durante evaluación. Gate: `HTF_ENABLED_SETUPS` (default: A, B, F).
 - `get_htf_swing_levels(pair)` — `(swing_highs, swing_lows)` de 4H. Usado por CampaignMonitor para trailing SL.
 - **`ENABLED_SETUPS` gate** — post-detection, verifica `setup.setup_type in settings.ENABLED_SETUPS`. Si no está habilitado → debug + continúa. **Actual: `[]`** (SHADOW-only). `SHADOW_MODE_SETUPS` enruta a shadow monitor.
-- **`SHADOW_DIRECTION_FILTER`**: `{"setup_a": ["short"]}` — setup_a long bloqueado en shadow (5% WR proven broken).
+- **`SHADOW_DIRECTION_FILTER`**: `{"setup_a": ["short"]}` — setup_a long bloqueado en shadow (5% WR proven broken). Outcome: `shadow_direction_filtered`.
+- **`SHADOW_PAIR_FILTER`** (added 2026-04-27 per redesign §3.4–3.5): `{"setup_d_choch": ["BTC/USDT","ETH/USDT"], "setup_d_bos": ["BTC/USDT","ETH/USDT"]}`. Quarantena de quick setups a pares con histórico — DOGE/XRP/LINK/AVAX/SOL absorbidos por dedup sin producir outcomes en experiment batch1. Outcome: `shadow_pair_filtered`.
 - Cooldown tracking per (pair, setup_type) para quick setups.
 - **Failed OB tracking** — `mark_ob_failed(pair, sl_price, entry_price)` registra OBs perdedores en memoria. `is_ob_failed(...)` consulta antes de ejecutar. Breakeven (PnL=0) NO marca como fallido. Resetea en restart.
 

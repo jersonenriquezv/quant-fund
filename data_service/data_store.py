@@ -37,7 +37,8 @@ logger = setup_logger("data_service")
 # ============================================================
 VALID_OUTCOMES: frozenset[str] = frozenset({
     # Live pipeline pre-execution rejections
-    "data_blocked", "shadow_direction_filtered", "shadow_dedup",
+    "data_blocked", "shadow_direction_filtered", "shadow_pair_filtered",
+    "shadow_dedup",
     "trading_halted", "risk_rejected", "ai_rejected",
     # Live trade resolutions (monitor._ml_resolve_close)
     "filled_tp", "filled_sl", "filled_trailing", "filled_timeout",
@@ -63,7 +64,8 @@ VALID_OUTCOMES: frozenset[str] = frozenset({
 # ============================================================
 NON_MARKET_OUTCOMES: frozenset[str] = frozenset({
     # Pre-execution gates — setup never hit the market
-    "data_blocked", "shadow_direction_filtered", "shadow_dedup",
+    "data_blocked", "shadow_direction_filtered", "shadow_pair_filtered",
+    "shadow_dedup",
     "trading_halted", "risk_rejected", "ai_rejected",
     # Bookkeeping / no-trade resolutions
     "unfilled_timeout", "replaced",
