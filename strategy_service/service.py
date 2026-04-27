@@ -433,6 +433,17 @@ class StrategyService:
                     )
                     if on_match(engine_setup):
                         return
+                    # Co-emit Engine 1 benchmarks (shadow-only, no-op when
+                    # `on_match` short-circuited above for live `evaluate()`).
+                    from strategy_service.engines.benchmarks import (
+                        emit_engine1_benchmarks,
+                    )
+                    if emit_engine1_benchmarks(
+                        engine_setup,
+                        current_price=trigger_candle.close,
+                        on_match=on_match,
+                    ):
+                        return
 
         # ============================================================
         # Step 5: Quick setups (D) — evaluated after the swing-setup loop.

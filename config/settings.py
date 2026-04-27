@@ -886,6 +886,11 @@ class Settings:
         "setup_a", "setup_b", "setup_d_choch", "setup_d_bos", "setup_f",
         # Redesign engines — see docs/strategy_redesign_2026_04.md §4
         "engine1_trend_pullback",  # added 2026-04-27, BTC+ETH only via SHADOW_PAIR_FILTER
+        # Engine 1 benchmarks — co-emit on every Engine 1 detection so edge
+        # analysis can compare Engine 1's WR / PF against deterministic
+        # baselines on identical trigger candles. See benchmarks.py docstring.
+        "bench_engine1_random_direction",
+        "bench_engine1_market_now",
         # "setup_g" — removed 2026-04-16: 0/4 WR. Breaker blocks too weak.
         # "setup_c" — removed 2026-04-13: no OB anchor. Signal is now a confluence booster.
         # "setup_e" — removed 2026-04-13: no OB anchor. Signal is now a confluence booster.
@@ -911,6 +916,11 @@ class Settings:
         # validation (redesign §4.1, user-confirmed). SOL added later only
         # if sample-starvation forces expansion.
         "engine1_trend_pullback": ["BTC/USDT", "ETH/USDT"],
+        # Engine 1 benchmarks share the trigger candle with Engine 1, so
+        # they mirror its pair scope. Emitting them on pairs Engine 1 itself
+        # cannot reach would produce orphan rows with no comparator.
+        "bench_engine1_random_direction": ["BTC/USDT", "ETH/USDT"],
+        "bench_engine1_market_now": ["BTC/USDT", "ETH/USDT"],
     })
     # Fictional capital for shadow mode position sizing ($500 USDT).
     # Shadow R:R and position sizes reflect realistic trades you'd take later.

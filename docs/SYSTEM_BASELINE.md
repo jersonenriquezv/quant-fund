@@ -33,7 +33,7 @@
 | F (Pure OB Retest) | **SHADOW** | swing, was live until 04-15 | 50% (1TP/1SL live) |
 | G (Breaker Block) | **DISABLED** | 0/4 WR. Removed 04-16. | 0% |
 | H (Momentum/Impulse) | **DISABLED** | — | 10.7% WR (28 trades). Removed 04-13. |
-| Engine 1 (Trend-Pullback / Impulse Retest) | **SHADOW (BTC+ETH only)** | redesign engine, shipped 2026-04-27 (commit `6dd6901`); ML lossless cols 2026-04-27 (Migration 21); benchmarks pending | no historical — fresh emission |
+| Engine 1 (Trend-Pullback / Impulse Retest) | **SHADOW (BTC+ETH only)** | redesign engine, shipped 2026-04-27 (commit `6dd6901`); ML lossless cols 2026-04-27 (Migration 21); benchmarks shipped 2026-04-27 (`bench_engine1_random_direction` + `bench_engine1_market_now`, BTC+ETH only) | no historical — fresh emission |
 
 ### Risk Guardrails
 | Parameter | Value | Notes |

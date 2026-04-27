@@ -379,7 +379,10 @@ Without this phase, the §6 benchmark comparisons cannot share a population — 
 - Owns its own gates (entry distance ≤ 1.5×ATR, target space ≥ 1.4R after fee buffer, net R:R ≥ 1.6) — does NOT inherit `_apply_expectancy_filters`.
 - v1 thresholds documented as module-level constants (NOT optimized): impulse 3–8 candles ≥ 2× ATR, body ratio ≥ 0.55, directional ≥ 60%; pullback 2–6 candles, retrace 30–85%, max single opposing body ≤ 70% of pullback range.
 - Tests: 36 unit + 1 multi-emit integration (TestEvaluateAll::test_engine1_co_emits_alongside_legacy).
-- Benchmarks (random-direction, momentum baseline) deferred to a follow-up PR — Engine 1 API is shared-context-friendly via the `evaluate(pair, candles, current_price, htf_bias, swings_htf)` signature, so benchmarks can be added without touching the engine.
+- Benchmarks **shipped 2026-04-27** in `strategy_service/engines/benchmarks.py`:
+  - `bench_engine1_random_direction` — sha256(pair|ts|engine_id|experiment_id) coin flip on direction; SL/TP mirrored across entry when flipped so R:R is preserved. Tests directional skill above noise.
+  - `bench_engine1_market_now` — same direction as Engine 1 but entry at `current_price` (no pullback wait), SL/TP at the same R-multiples Engine 1 used. Tests whether the pullback-retest entry adds edge over an immediate market entry on HTF bias.
+  Both benchmarks co-emit on every Engine 1 detection via `evaluate_all()`, are registered in `SHADOW_MODE_SETUPS` + `SHADOW_PAIR_FILTER` (BTC + ETH only), and produce parallel rows in `ml_setups` so bootstrap CI from `scripts/backtest_bootstrap.py` can compare WR / PF directly. Engine 1's API was unchanged — the benchmarks consume the emitted `TradeSetup` and reuse its geometry.
 - Daily: monitor shadow_health Grafana dashboard. Weekly: run `weekly_edge_audit.py`.
 
 **Weeks 3–4: Engine 2 (Failed Breakout) shadow ship.**
