@@ -359,7 +359,7 @@ This is the realistic version. The user explicitly requested honesty about wheth
 - (b) ✅ Fix tier extraction — funding_tier + oi_rising_tier from raw signal magnitude (commit `64026ed` 2026-04-27). Diagnosis showed sweep_tier was already correctly populated; only funding/oi were broken by gate-shaped parsing.
 - (c) ✅ `regime_label` categorical added to `shared/ml_features.py`. v1 heuristic from ADX + BBW + ATR ratio + spread + btc-return + F&G. Migration 19. `ML_FEATURE_VERSION 17 → 18`. `EXPERIMENT_ID` → `redesign_pre_2026_04_27` (commit pending below).
 
-**Week 0.5 — Pipeline plumbing (multi-signal emission), ~3–5 days. PREREQUISITE for any engine work.**
+**Week 0.5 — Pipeline plumbing (multi-signal emission), ~3–5 days. PREREQUISITE for any engine work. ✅ shipped 2026-04-27 (commit pending below).**
 The current `strategy_service/service.py` returns a single `TradeSetup` per evaluate-call (`return setup` on first match — see e.g. `strategy_service/service.py:251`). That contract makes parallel-track shadow research impossible: legacy setup_f, Engine 1, the random-direction benchmark, and the momentum baseline cannot all observe the same candle and emit independently if the first match short-circuits the rest.
 
 This phase ships the contract change. Specifically:

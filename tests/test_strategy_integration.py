@@ -931,6 +931,123 @@ class TestQuickSetupSignals:
 
 
 # ============================================================
+# 11. evaluate_all() multi-signal emission
+# ============================================================
+
+class TestEvaluateAll:
+    """evaluate_all() — multi-signal emission for shadow data collection.
+
+    Contract:
+    - evaluate() returns first valid setup or None (preserved API).
+    - evaluate_all() returns list of all valid setups in detection order.
+    - evaluate()'s result equals evaluate_all()[0] when both find any setup.
+    - One state-update pass per call. evaluate() short-circuits at first match
+      (so quick-setup cooldown side effects do not fire if a swing matched
+      first); evaluate_all() does NOT short-circuit (so all matches surface
+      and corresponding cooldowns apply).
+    """
+
+    @staticmethod
+    def _stub_setup(setup_type: str, ts: int = 0):
+        from shared.models import TradeSetup
+        return TradeSetup(
+            timestamp=ts, pair="BTC/USDT", direction="long",
+            setup_type=setup_type,
+            entry_price=100.0, sl_price=99.0,
+            tp1_price=101.0, tp2_price=102.0,
+            confluences=["bos_15m"], htf_bias="bullish",
+            ob_timeframe="15m",
+        )
+
+    def _patched_service(self, setups_to_emit):
+        """StrategyService whose _iterate_setups dispatches the given
+        setups via the on_match callback in order."""
+        ds = MagicMock()
+        svc = StrategyService(ds)
+
+        def fake_iterate(pair, candle, on_match):
+            for s in setups_to_emit:
+                if on_match(s):
+                    return  # short-circuit on True
+
+        svc._iterate_setups = fake_iterate
+        return svc
+
+    def test_evaluate_all_returns_list(self):
+        """evaluate_all() returns a list, never None — even when empty."""
+        svc = self._patched_service([])
+        trigger = make_candle(timeframe="15m", close=100.0)
+        result = svc.evaluate_all("BTC/USDT", trigger)
+        assert isinstance(result, list)
+        assert result == []
+
+    def test_evaluate_returns_none_when_no_setups(self):
+        svc = self._patched_service([])
+        trigger = make_candle(timeframe="15m", close=100.0)
+        assert svc.evaluate("BTC/USDT", trigger) is None
+
+    def test_evaluate_returns_first_of_evaluate_all(self):
+        """When multiple setups emit, evaluate() returns the first one."""
+        s1 = self._stub_setup("setup_a", ts=1)
+        s2 = self._stub_setup("setup_b", ts=2)
+        s3 = self._stub_setup("setup_f", ts=3)
+        svc = self._patched_service([s1, s2, s3])
+        trigger = make_candle(timeframe="15m", close=100.0)
+
+        first = svc.evaluate("BTC/USDT", trigger)
+        all_setups = svc.evaluate_all("BTC/USDT", trigger)
+
+        assert first is s1, "evaluate() must return first emission"
+        assert all_setups == [s1, s2, s3], "evaluate_all must accumulate"
+        assert all_setups[0] is first, (
+            "evaluate() == evaluate_all()[0] contract"
+        )
+
+    def test_evaluate_short_circuits_iterator(self):
+        """evaluate() must signal stop after first match. Quick-setup
+        cooldown side effects depend on this — see service.py docstring."""
+        s1 = self._stub_setup("setup_a", ts=1)
+        s2 = self._stub_setup("setup_b", ts=2)
+        s3 = self._stub_setup("setup_f", ts=3)
+
+        emitted = []
+
+        ds = MagicMock()
+        svc = StrategyService(ds)
+
+        def counting_iterate(pair, candle, on_match):
+            for s in [s1, s2, s3]:
+                emitted.append(s.setup_type)
+                if on_match(s):
+                    return
+
+        svc._iterate_setups = counting_iterate
+        trigger = make_candle(timeframe="15m", close=100.0)
+
+        emitted.clear()
+        svc.evaluate("BTC/USDT", trigger)
+        assert emitted == ["setup_a"], (
+            f"evaluate() must short-circuit; iterator saw {emitted}"
+        )
+
+        emitted.clear()
+        svc.evaluate_all("BTC/USDT", trigger)
+        assert emitted == ["setup_a", "setup_b", "setup_f"], (
+            f"evaluate_all() must not short-circuit; iterator saw {emitted}"
+        )
+
+    def test_evaluate_all_preserves_setup_type_order(self):
+        """Multi-emit must preserve the legacy A→B→F→G→D ordering so
+        downstream dedup keys remain stable across releases."""
+        order = ["setup_a", "setup_b", "setup_f", "setup_d_choch"]
+        setups = [self._stub_setup(t, ts=i) for i, t in enumerate(order)]
+        svc = self._patched_service(setups)
+        trigger = make_candle(timeframe="15m", close=100.0)
+        result = svc.evaluate_all("BTC/USDT", trigger)
+        assert [s.setup_type for s in result] == order
+
+
+# ============================================================
 # Helper: mock DataService with bullish trend
 # ============================================================
 
