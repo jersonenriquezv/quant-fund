@@ -6,7 +6,7 @@
 **Last updated:** 2026-04-27
 **ML Feature Version:** 18
 **Bot status:** SHADOW-ONLY (OKX_SANDBOX=false, ENABLED_SETUPS=[], ~$86 capital untouched)
-**Active experiment:** `redesign_pre_2026_04_27` (regime_label + tier extraction fix; **Engine 1 shadow shipped 2026-04-27** on BTC+ETH only, benchmarks pending)
+**Active experiment:** `redesign_pre_2026_04_27` (regime_label + tier extraction fix; **Engine 1 shadow + benchmarks shipped 2026-04-27** on BTC+ETH only — co-emits `bench_engine1_random_direction` + `bench_engine1_market_now` per detection)
 **Monitoring:** Grafana dashboard `shadow-health` + systemd user timer `shadow-health-alert.timer` (hourly)
 
 ---
