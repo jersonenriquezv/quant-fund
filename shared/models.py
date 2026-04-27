@@ -182,6 +182,10 @@ class TradeSetup:
     ob_timeframe: str       # Timeframe of the order block used
     entry2_price: float = 0.0  # OB 75% level for split entries (0 = single entry)
     setup_id: str = field(default_factory=lambda: uuid.uuid4().hex[:16])  # ML tracking ID
+    # Engine-/benchmark-specific lossless metrics. Keys must be prefixed
+    # (engineN_*, bench_*); merged into ml_features with canonical fields
+    # taking precedence. Confluence strings remain the human-readable view.
+    extra_features: dict[str, int | float | str | bool | None] = field(default_factory=dict)
 
 
 # ============================================================

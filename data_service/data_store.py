@@ -664,6 +664,14 @@ class PostgresStore:
                     guardian_shadow_stall BOOLEAN DEFAULT FALSE,
                     guardian_shadow_cvd BOOLEAN DEFAULT FALSE,
 
+                    -- Engine 1 (trend-pullback) lossless metrics — populated
+                    -- only when setup_type = 'engine1_trend_pullback'. Other
+                    -- engines/benchmarks add their own column blocks.
+                    engine1_impulse_atr_multiple DOUBLE PRECISION,
+                    engine1_pullback_depth_pct DOUBLE PRECISION,
+                    engine1_pullback_candle_count INT,
+                    engine1_entry_atr_distance DOUBLE PRECISION,
+
                     -- Outcome (filled after trade resolves)
                     outcome_type VARCHAR(50),
                     pnl_pct DOUBLE PRECISION,
@@ -873,6 +881,20 @@ class PostgresStore:
                     "ALTER COLUMN outcome_type TYPE VARCHAR(50)"
                 )
                 self._apply_migration(cur, 20, "ml_setups: widen outcome_type to VARCHAR(50)")
+
+            if current_version < 21:
+                # Engine 1 lossless metrics — confluence strings are
+                # human-readable but truncated. Persist the raw floats /
+                # ints used to derive the trade decision so future audits
+                # and ML can recover the exact inputs.
+                for col_def in [
+                    "engine1_impulse_atr_multiple DOUBLE PRECISION",
+                    "engine1_pullback_depth_pct DOUBLE PRECISION",
+                    "engine1_pullback_candle_count INT",
+                    "engine1_entry_atr_distance DOUBLE PRECISION",
+                ]:
+                    cur.execute(f"ALTER TABLE ml_setups ADD COLUMN IF NOT EXISTS {col_def}")
+                self._apply_migration(cur, 21, "ml_setups: Engine 1 lossless metric columns")
 
         logger.info("PostgreSQL tables verified/created")
 
@@ -1389,7 +1411,11 @@ class PostgresStore:
                             bb_squeeze_percentile, bb_squeeze,
                             stoch_rsi_k, stoch_rsi_d,
                             stoch_rsi_zone, stoch_rsi_cross,
-                            regime_label
+                            regime_label,
+                            engine1_impulse_atr_multiple,
+                            engine1_pullback_depth_pct,
+                            engine1_pullback_candle_count,
+                            engine1_entry_atr_distance
                         ) VALUES (
                             %s, %s, %s,
                             %s, %s, %s,
@@ -1429,7 +1455,8 @@ class PostgresStore:
                             %s, %s,
                             %s, %s,
                             %s, %s,
-                            %s
+                            %s,
+                            %s, %s, %s, %s
                         ) ON CONFLICT (setup_id) DO NOTHING""",
                         (
                             setup_id, feature_version, features.get("timestamp", 0),
@@ -1493,6 +1520,10 @@ class PostgresStore:
                             features.get("stoch_rsi_zone"),
                             features.get("stoch_rsi_cross"),
                             features.get("regime_label"),
+                            features.get("engine1_impulse_atr_multiple"),
+                            features.get("engine1_pullback_depth_pct"),
+                            features.get("engine1_pullback_candle_count"),
+                            features.get("engine1_entry_atr_distance"),
                         ),
                     )
                 logger.debug(f"ML: inserted setup {setup_id} ({features.get('pair')} {features.get('setup_type')})")

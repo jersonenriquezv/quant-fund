@@ -458,7 +458,29 @@ def extract_setup_features(
         fear_greed=features.get("fear_greed_score"),
     )
 
+    # Engine/benchmark lossless metrics. Prefix-guarded so only known
+    # engine namespaces can land in ml_setups, and canonical fields
+    # (already populated above) always win to prevent accidental
+    # overwrite of pair/setup_type/entry_price/etc.
+    extras = getattr(setup, "extra_features", None) or {}
+    for key, val in extras.items():
+        if not isinstance(key, str):
+            continue
+        if not any(key.startswith(p) for p in _EXTRA_FEATURE_PREFIXES):
+            continue
+        if key in features:
+            continue
+        features[key] = val
+
     return features
+
+
+# Whitelist of namespaces allowed to flow from setup.extra_features into
+# the ml_setups feature dict. Add new engines/benchmarks here as they
+# ship lossless metrics.
+_EXTRA_FEATURE_PREFIXES: tuple[str, ...] = (
+    "engine1_", "engine2_", "engine3_", "engine4_", "bench_",
+)
 
 
 def extract_risk_context(risk_service, capital_override: float | None = None) -> dict:

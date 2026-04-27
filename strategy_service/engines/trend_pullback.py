@@ -445,6 +445,24 @@ class TrendPullbackEngine:
             f"engine1_pullback_max_opp_{pullback.max_opposing_body_ratio:.2f}",
         ]
 
+        # Lossless raw metrics for ML — confluence strings above are
+        # formatted/truncated and lose precision. Full set kept here so
+        # future audits can recover the exact decision inputs.
+        entry_atr_distance = abs(entry - current_price) / atr if atr > 0 else 0.0
+        extra_features: dict[str, int | float | str | bool | None] = {
+            "engine1_impulse_atr_multiple": float(impulse.atr_multiple),
+            "engine1_impulse_body_ratio": float(impulse.avg_body_ratio),
+            "engine1_impulse_candle_count": int(impulse.candle_count),
+            "engine1_impulse_displacement_pct": float(impulse.displacement_pct),
+            "engine1_pullback_depth_pct": float(pullback.depth_pct),
+            "engine1_pullback_atr_multiple": float(pullback.atr_multiple),
+            "engine1_pullback_candle_count": int(pullback.candle_count),
+            "engine1_pullback_max_opposing_body_ratio": float(
+                pullback.max_opposing_body_ratio
+            ),
+            "engine1_entry_atr_distance": float(entry_atr_distance),
+        }
+
         last_candle = candles[-1]
         return TradeSetup(
             timestamp=last_candle.timestamp,
@@ -458,4 +476,5 @@ class TrendPullbackEngine:
             confluences=confluences,
             htf_bias=htf_bias,
             ob_timeframe=ob_timeframe,
+            extra_features=extra_features,
         )

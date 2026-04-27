@@ -515,3 +515,81 @@ class TestExtractRiskContext:
         assert ctx["risk_daily_dd_pct"] == 0.02
         assert ctx["risk_weekly_dd_pct"] == 0.03
         assert ctx["risk_trades_today"] == 3
+
+
+class TestExtraFeaturesMerge:
+    """extra_features field on TradeSetup — engine/benchmark lossless metrics."""
+
+    def test_default_constructor_has_empty_dict(self):
+        setup = _make_setup()
+        assert setup.extra_features == {}
+
+    def test_engine1_metrics_flow_into_features(self):
+        setup = _make_setup(
+            setup_type="engine1_trend_pullback",
+            extra_features={
+                "engine1_impulse_atr_multiple": 3.21,
+                "engine1_pullback_depth_pct": 0.45,
+                "engine1_pullback_candle_count": 3,
+                "engine1_entry_atr_distance": 0.85,
+            },
+        )
+        features = extract_setup_features(setup, None, 2005.0)
+
+        assert features["engine1_impulse_atr_multiple"] == 3.21
+        assert features["engine1_pullback_depth_pct"] == 0.45
+        assert features["engine1_pullback_candle_count"] == 3
+        assert features["engine1_entry_atr_distance"] == 0.85
+
+    def test_canonical_fields_win_over_extra_features(self):
+        # extra_features attempting to overwrite a canonical field must
+        # not corrupt the row — pair/setup_type/entry_price are populated
+        # by the extractor first, and the merge step skips any key that
+        # already exists.
+        setup = _make_setup(
+            extra_features={
+                "setup_type": "ENGINE_FAKE",      # would be a security/data hole
+                "entry_price": 999_999.0,         # ditto
+                "pair": "FAKE/PAIR",
+                "engine1_impulse_atr_multiple": 2.0,
+            },
+        )
+        features = extract_setup_features(setup, None, 2005.0)
+
+        assert features["setup_type"] == "setup_a"
+        assert features["entry_price"] == 2000.0
+        assert features["pair"] == "ETH/USDT"
+        # The legitimate engine1_ key still flows through.
+        assert features["engine1_impulse_atr_multiple"] == 2.0
+
+    def test_non_whitelisted_prefixes_ignored(self):
+        setup = _make_setup(
+            extra_features={
+                "foo_random": 1.0,
+                "debug_payload": "not allowed",
+                "engine1_legit": 7.0,
+            },
+        )
+        features = extract_setup_features(setup, None, 2005.0)
+
+        assert "foo_random" not in features
+        assert "debug_payload" not in features
+        assert features["engine1_legit"] == 7.0
+
+    def test_supports_mixed_value_types(self):
+        setup = _make_setup(
+            extra_features={
+                "engine1_int_metric": 5,
+                "engine1_float_metric": 3.14,
+                "engine1_str_metric": "tag",
+                "engine1_bool_metric": True,
+                "engine1_none_metric": None,
+            },
+        )
+        features = extract_setup_features(setup, None, 2005.0)
+
+        assert features["engine1_int_metric"] == 5
+        assert features["engine1_float_metric"] == 3.14
+        assert features["engine1_str_metric"] == "tag"
+        assert features["engine1_bool_metric"] is True
+        assert features["engine1_none_metric"] is None
