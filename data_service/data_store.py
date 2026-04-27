@@ -852,6 +852,17 @@ class PostgresStore:
                 )
                 self._apply_migration(cur, 18, "trades: capital_at_trade snapshot")
 
+            if current_version < 19:
+                # regime_label — categorical market regime tag derived from
+                # ADX / BBW / ATR / spread / btc-return / F&G. Used by the
+                # redesign engines (docs/strategy_redesign_2026_04.md §4.4)
+                # as a pre-filter and logged for every setup. v1 heuristic.
+                cur.execute(
+                    "ALTER TABLE ml_setups ADD COLUMN IF NOT EXISTS "
+                    "regime_label VARCHAR(20)"
+                )
+                self._apply_migration(cur, 19, "ml_setups: regime_label categorical")
+
         logger.info("PostgreSQL tables verified/created")
 
     # --- Candle Storage ---
@@ -1366,7 +1377,8 @@ class PostgresStore:
                             bb_width_pct, bb_percent_b,
                             bb_squeeze_percentile, bb_squeeze,
                             stoch_rsi_k, stoch_rsi_d,
-                            stoch_rsi_zone, stoch_rsi_cross
+                            stoch_rsi_zone, stoch_rsi_cross,
+                            regime_label
                         ) VALUES (
                             %s, %s, %s,
                             %s, %s, %s,
@@ -1405,7 +1417,8 @@ class PostgresStore:
                             %s, %s,
                             %s, %s,
                             %s, %s,
-                            %s, %s
+                            %s, %s,
+                            %s
                         ) ON CONFLICT (setup_id) DO NOTHING""",
                         (
                             setup_id, feature_version, features.get("timestamp", 0),
@@ -1468,6 +1481,7 @@ class PostgresStore:
                             features.get("stoch_rsi_k"), features.get("stoch_rsi_d"),
                             features.get("stoch_rsi_zone"),
                             features.get("stoch_rsi_cross"),
+                            features.get("regime_label"),
                         ),
                     )
                 logger.debug(f"ML: inserted setup {setup_id} ({features.get('pair')} {features.get('setup_type')})")

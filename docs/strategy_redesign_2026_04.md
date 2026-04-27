@@ -354,10 +354,10 @@ A signal engine that fails to beat its random-direction benchmark by a statistic
 This is the realistic version. The user explicitly requested honesty about whether 6 months is required; in §0 I said 3–6 months. The 4–8 week plan below is the "make Engine 1+2 ship-ready" phase. It does not promote anything to live. The full live-promotion path is in §9 and is longer.
 
 **Week -1 to 0 (pre-work, ~3–5 days):**
-- (a) Sync `docs/context/02-strategy.md` to current settings.py. Mark stale entries dead. Doc-truth fix is prerequisite to credible work; don't skip.
-- (b) Fix instrumentation gap (sweep_tier / funding_tier / oi_rising_tier nulls). One PR, scoped.
-- (c) Add `regime_label` derivation to `shared/ml_features.py` (new categorical). Bump `ML_FEATURE_VERSION` to 18. New `experiment_id`: `redesign_engines_2026_05_NN`.
-- (d) Quarantine setup_d_choch / d_bos to BTC+ETH. One-line config change.
+- (a) ✅ Sync `docs/context/02-strategy.md` to current settings.py + Setup A gap 60→45 (commit `219b237` 2026-04-27).
+- (d) ✅ `SHADOW_PAIR_FILTER` quarantine setup_d_* to BTC+ETH (commit `4e29052` 2026-04-27).
+- (b) ✅ Fix tier extraction — funding_tier + oi_rising_tier from raw signal magnitude (commit `64026ed` 2026-04-27). Diagnosis showed sweep_tier was already correctly populated; only funding/oi were broken by gate-shaped parsing.
+- (c) ✅ `regime_label` categorical added to `shared/ml_features.py`. v1 heuristic from ADX + BBW + ATR ratio + spread + btc-return + F&G. Migration 19. `ML_FEATURE_VERSION 17 → 18`. `EXPERIMENT_ID` → `redesign_pre_2026_04_27` (commit pending below).
 
 **Week 0.5 — Pipeline plumbing (multi-signal emission), ~3–5 days. PREREQUISITE for any engine work.**
 The current `strategy_service/service.py` returns a single `TradeSetup` per evaluate-call (`return setup` on first match — see e.g. `strategy_service/service.py:251`). That contract makes parallel-track shadow research impossible: legacy setup_f, Engine 1, the random-direction benchmark, and the momentum baseline cannot all observe the same candle and emit independently if the first match short-circuits the rest.

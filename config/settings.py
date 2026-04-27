@@ -918,12 +918,12 @@ class Settings:
     # ========================
     # Feature version — increment when strategy params change in ways that
     # alter feature semantics (e.g. changing OB scoring weights, PD rules).
-    ML_FEATURE_VERSION: int = 17  # v17: pd_aligned strict (equilibrium no longer counts as aligned)
+    ML_FEATURE_VERSION: int = 18  # v18: regime_label categorical + funding_tier/oi_rising_tier from raw signal
 
     # Experiment ID — tracks which parameter regime generated a sample.
     # feature_version = what columns mean. experiment_id = what rules generated sample.
     # Same features + different gates = contaminated dataset without this.
-    EXPERIMENT_ID: str = os.getenv("EXPERIMENT_ID", "batch1_tp1_rr_1_3_2026_04_20")
+    EXPERIMENT_ID: str = os.getenv("EXPERIMENT_ID", "redesign_pre_2026_04_27")
 
     # ========================
     # LIQUIDATION HEATMAP

@@ -443,6 +443,21 @@ def extract_setup_features(
     else:
         features["trading_session"] = "overlap"
 
+    # --- Regime label (v18) ---
+    # Categorical regime tag derived from existing volatility/trend/squeeze
+    # features. Used by the redesign engines (§4.4) as a pre-filter and
+    # logged as ML feature for every setup. v1 heuristic — see
+    # _compute_regime_label docstring for thresholds and missing-input policy.
+    features["regime_label"] = _compute_regime_label(
+        atr_ratio=features.get("volatility_regime_ratio"),
+        adx_14=features.get("adx_14"),
+        bb_squeeze=features.get("bb_squeeze"),
+        bb_squeeze_percentile=features.get("bb_squeeze_percentile"),
+        btc_return_short=features.get("btc_return_20"),
+        spread_bps=features.get("spread_bps"),
+        fear_greed=features.get("fear_greed_score"),
+    )
+
     return features
 
 
@@ -872,6 +887,92 @@ def _funding_tier_from_rate(rate: float | None) -> str | None:
     if abs_rate >= settings.FUNDING_MILD_THRESHOLD:
         return "mild"
     return None
+
+
+def _compute_regime_label(
+    *,
+    atr_ratio: float | None,
+    adx_14: float | None,
+    bb_squeeze: bool | None,
+    bb_squeeze_percentile: float | None,
+    btc_return_short: float | None,
+    spread_bps: float | None,
+    fear_greed: float | None,
+) -> str:
+    """Categorical market regime tag from existing v17 features.
+
+    v1 heuristic table — NOT optimized. Documented thresholds, not tuned
+    parameters. Future calibration runs may revise once an engine has
+    enough resolved samples per regime to justify it (see redesign §4.4).
+
+    Inputs are all already extracted in extract_setup_features:
+    - atr_ratio: `volatility_regime_ratio` (ATR(5) / ATR(50))
+    - adx_14: ADX(14) trend strength
+    - bb_squeeze / bb_squeeze_percentile: Bollinger band width regime
+    - btc_return_short: 20-bar BTC return on the LTF (proxy for ~60m)
+    - spread_bps: orderbook spread in bps
+    - fear_greed: Fear & Greed score (0–100)
+
+    Returns one of: trend_strong, trend_weak, range, compression,
+    breakout, hostile.
+
+    Missing-input policy (deliberate):
+    - Do NOT default to `hostile` on missing inputs — that would
+      under-count tradeable regimes when a single feed is stale.
+    - `hostile` is reserved for explicit hostile evidence. When the
+      signal is partial, fall back to `range` (low ADX) or
+      `trend_weak` (mid ADX) as the most conservative tradeable label.
+    """
+    # --- Hard hostile (explicit evidence only) ---
+    if spread_bps is not None and spread_bps > 5.0:
+        return "hostile"
+    if btc_return_short is not None and abs(btc_return_short) > 0.025:
+        return "hostile"
+    if fear_greed is not None and fear_greed < 5:
+        return "hostile"
+    if atr_ratio is not None and (atr_ratio < 0.5 or atr_ratio > 3.0):
+        return "hostile"
+
+    # --- Compression: low BB width + low ADX + bounded volatility ---
+    is_squeeze = (
+        bb_squeeze is True
+        or (bb_squeeze_percentile is not None and bb_squeeze_percentile <= 0.20)
+    )
+    if (
+        is_squeeze
+        and adx_14 is not None and adx_14 < 20
+        and atr_ratio is not None and 0.5 <= atr_ratio <= 1.3
+    ):
+        return "compression"
+
+    # --- Breakout: ADX rising + volatility expanding ---
+    if (
+        adx_14 is not None and adx_14 >= 20
+        and atr_ratio is not None and atr_ratio >= 1.3
+    ):
+        return "breakout"
+
+    # --- Trend strong: high ADX + sane volatility band ---
+    if (
+        adx_14 is not None and adx_14 >= 25
+        and atr_ratio is not None and 0.8 <= atr_ratio <= 3.0
+    ):
+        return "trend_strong"
+
+    # --- Trend weak: moderate ADX, no compression ---
+    if adx_14 is not None and 18 <= adx_14 < 25:
+        return "trend_weak"
+
+    # --- Range: low ADX, no compression conditions met ---
+    if adx_14 is not None and adx_14 < 18:
+        return "range"
+
+    # --- Fallback when ADX unavailable ---
+    # Conservative: trend_weak when partial data exists (some signal),
+    # range when nothing useful is available.
+    if atr_ratio is not None or bb_squeeze is not None:
+        return "trend_weak"
+    return "range"
 
 
 def _oi_rising_tier_from_delta(oi_delta_pct: float | None) -> str | None:

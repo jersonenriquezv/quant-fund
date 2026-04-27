@@ -289,6 +289,111 @@ class TestOIRisingTierFromDelta:
         assert features["oi_rising_tier"] is None
 
 
+class TestRegimeLabel:
+    """v18 regime_label heuristic — categorical regime tag from existing
+    volatility / trend / squeeze features. v1 thresholds, NOT optimized."""
+
+    @staticmethod
+    def _call(**kwargs):
+        from shared.ml_features import _compute_regime_label
+        defaults = dict(
+            atr_ratio=1.0, adx_14=22.0, bb_squeeze=False,
+            bb_squeeze_percentile=0.5, btc_return_short=0.0,
+            spread_bps=2.0, fear_greed=50.0,
+        )
+        defaults.update(kwargs)
+        return _compute_regime_label(**defaults)
+
+    # --- Hostile: explicit evidence only ---
+    def test_hostile_wide_spread(self):
+        assert self._call(spread_bps=6.0) == "hostile"
+
+    def test_hostile_btc_cascade(self):
+        assert self._call(btc_return_short=-0.03) == "hostile"
+        assert self._call(btc_return_short=0.03) == "hostile"
+
+    def test_hostile_extreme_fear(self):
+        assert self._call(fear_greed=4) == "hostile"
+
+    def test_hostile_dead_volatility(self):
+        assert self._call(atr_ratio=0.4) == "hostile"
+
+    def test_hostile_crashing_volatility(self):
+        assert self._call(atr_ratio=3.5) == "hostile"
+
+    def test_normal_fear_not_hostile(self):
+        # F&G < 5 only — 6 is fine even though "extreme fear" colloquially.
+        assert self._call(fear_greed=6) != "hostile"
+
+    # --- Compression ---
+    def test_compression_via_bb_squeeze(self):
+        result = self._call(
+            bb_squeeze=True, adx_14=15.0, atr_ratio=1.0,
+        )
+        assert result == "compression"
+
+    def test_compression_via_squeeze_percentile(self):
+        result = self._call(
+            bb_squeeze=False, bb_squeeze_percentile=0.10,
+            adx_14=15.0, atr_ratio=1.0,
+        )
+        assert result == "compression"
+
+    def test_no_compression_when_adx_high(self):
+        result = self._call(bb_squeeze=True, adx_14=25.0, atr_ratio=1.0)
+        assert result != "compression"
+
+    # --- Breakout ---
+    def test_breakout(self):
+        assert self._call(adx_14=22.0, atr_ratio=1.5) == "breakout"
+
+    # --- Trend strong ---
+    def test_trend_strong(self):
+        assert self._call(adx_14=30.0, atr_ratio=1.0) == "trend_strong"
+
+    # --- Trend weak ---
+    def test_trend_weak(self):
+        assert self._call(adx_14=20.0, atr_ratio=1.0) == "trend_weak"
+
+    # --- Range ---
+    def test_range(self):
+        assert self._call(adx_14=10.0, atr_ratio=1.0, bb_squeeze=False,
+                          bb_squeeze_percentile=0.5) == "range"
+
+    # --- Missing-input policy: never default to hostile ---
+    def test_all_inputs_missing_returns_range(self):
+        result = self._call(
+            atr_ratio=None, adx_14=None, bb_squeeze=None,
+            bb_squeeze_percentile=None, btc_return_short=None,
+            spread_bps=None, fear_greed=None,
+        )
+        assert result == "range"
+
+    def test_partial_data_falls_back_to_trend_weak(self):
+        # ATR ratio available but no ADX — fall back to trend_weak (most
+        # conservative tradeable label that signals "some signal exists").
+        result = self._call(
+            atr_ratio=1.0, adx_14=None, bb_squeeze=None,
+            bb_squeeze_percentile=None, btc_return_short=None,
+            spread_bps=None, fear_greed=None,
+        )
+        assert result == "trend_weak"
+
+    def test_missing_btc_return_does_not_force_hostile(self):
+        result = self._call(btc_return_short=None, adx_14=22.0)
+        assert result != "hostile"
+
+    def test_missing_spread_does_not_force_hostile(self):
+        result = self._call(spread_bps=None, adx_14=22.0)
+        assert result != "hostile"
+
+    # --- Hostile precedence over other categories ---
+    def test_hostile_overrides_trend_strong(self):
+        # Strong ADX + crashing BTC = hostile, not trend_strong.
+        result = self._call(adx_14=30.0, btc_return_short=-0.03)
+        assert result == "hostile"
+
+
 class TestWaveTrend:
     def test_insufficient_candles_returns_none(self):
         candles = make_candle_series(count=20)
