@@ -521,7 +521,12 @@ These are real possibilities and the redesign plan must be designed to surface t
 - **Backtester / live drift** — backtester does not model funding cost in PnL, models slippage only via fill-buffer. For 12h swing trades on perps, funding can be 0.04–0.12% of notional per cycle; on a 2R trade with risk 1% that's 4–12% of the take-home R. Not catastrophic, but enough to bias backtest comparisons. Adding a simple "subtract `funding_8h_avg × hours_held / 8` from each closed trade" would close most of the gap.
 
 ### 10.3 Data debt
-- W17 audit's instrumentation gap (sweep_tier / funding_tier / oi_rising_tier 100% null) — **must be fixed before more features are added**. It is the simplest, highest-value cleanup left.
+- ~~W17 audit's instrumentation gap (sweep_tier / funding_tier / oi_rising_tier 100% null)~~ — **resolved 2026-04-27 (pre-work item b)**. Diagnosis:
+  - `sweep_tier` populates correctly for sweep-based setups (setup_a: 59/59 in current experiment). Null for setup_b/d/f is expected — those setups have no sweep gate. Not a bug.
+  - `funding_tier` was null because the prior implementation parsed direction-filtered confluence strings; the strategy gate only emits `funding_X_long`/`funding_X_short` when funding aligns with the trade side. Fixed: feature now derives directly from raw `snapshot.funding.rate` magnitude, direction-agnostic.
+  - `oi_rising_tier` was null for the same reason. Fixed: feature now derives from extracted signed `oi_delta_pct` against `OI_DELTA_MILD/MODERATE/STRONG_PCT`, decoupled from gate emission.
+  - `has_oi_flush` is correctly populated when `recent_oi_flushes` is non-empty (1/114 in current experiment — genuine signal sparsity, not a bug).
+  - Future ml_setups rows will carry correct tier values; historical pre-fix rows remain as captured (do not backfill — that would mix instrumentation regimes inside a single experiment_id).
 - `ml_setups` rows from before `experiment_id` was added (pre 2026-04-16) are unjoinable to current experiment cleanly. Leave; do not try to reconcile.
 - `live_resolved` per the W17 audit: 0 in audit window. The 3 closed live trades exist in `trades` but were not joined. This is fine — `trades` and `ml_setups` should not be cross-joined for ML training (per SYSTEM_BASELINE §7.0). But for post-promotion live-vs-shadow drift measurement (the first-pilot criterion noted under §9 P12), we need a small SQL join script that lives outside training paths.
 

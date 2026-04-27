@@ -202,6 +202,93 @@ class TestExtractSetupFeatures:
         assert features["oi_flush_usd"] == 50000.0
 
 
+class TestFundingTierFromRate:
+    """funding_tier is derived from raw snapshot.funding.rate, NOT from
+    confluence strings. The detector emits direction-filtered confluences
+    (e.g. `funding_extreme_long` only when funding<0 and direction=bullish),
+    so prior confluence-string parsing produced 100% null in shadow data
+    (W17 audit 2026-04-24). This must populate regardless of trade direction."""
+
+    def test_extreme_rate_tags_extreme_for_long(self):
+        setup = _make_setup(direction="long")
+        snap = make_market_snapshot(funding_rate=0.0007)  # 0.07% > extreme 0.06%
+        features = extract_setup_features(setup, snap, 2005.0)
+        assert features["funding_tier"] == "extreme"
+
+    def test_extreme_rate_tags_extreme_for_short(self):
+        setup = _make_setup(direction="short", sl_price=2020, tp1_price=1980, tp2_price=1960)
+        snap = make_market_snapshot(funding_rate=0.0007)
+        features = extract_setup_features(setup, snap, 2005.0)
+        assert features["funding_tier"] == "extreme"
+
+    def test_moderate_rate(self):
+        setup = _make_setup()
+        snap = make_market_snapshot(funding_rate=0.0004)  # 0.04% > moderate 0.03%
+        features = extract_setup_features(setup, snap, 2005.0)
+        assert features["funding_tier"] == "moderate"
+
+    def test_mild_rate(self):
+        setup = _make_setup()
+        snap = make_market_snapshot(funding_rate=0.00015)  # 0.015% > mild 0.01%
+        features = extract_setup_features(setup, snap, 2005.0)
+        assert features["funding_tier"] == "mild"
+
+    def test_negative_rate_uses_magnitude(self):
+        """Direction-agnostic — magnitude alone tiers up. Crowded shorts
+        (negative funding) at 0.07% should still tag as extreme."""
+        setup = _make_setup()
+        snap = make_market_snapshot(funding_rate=-0.0007)
+        features = extract_setup_features(setup, snap, 2005.0)
+        assert features["funding_tier"] == "extreme"
+
+    def test_below_mild_returns_none(self):
+        setup = _make_setup()
+        snap = make_market_snapshot(funding_rate=0.00005)  # 0.005% < mild 0.01%
+        features = extract_setup_features(setup, snap, 2005.0)
+        assert features["funding_tier"] is None
+
+    def test_no_snapshot_returns_none(self):
+        setup = _make_setup()
+        features = extract_setup_features(setup, None, 2005.0)
+        assert features["funding_tier"] is None
+
+
+class TestOIRisingTierFromDelta:
+    """oi_rising_tier is derived from extracted oi_delta_pct (always emitted
+    by the detector when prev_oi exists), not from gate-shaped
+    `oi_rising_X` confluences which only fire on positive deltas above
+    threshold. Negative deltas are captured via signed oi_delta_pct."""
+
+    def test_strong_positive_delta(self):
+        setup = _make_setup(confluences=["bos_5m", "order_block_5m", "oi_delta_6.00pct"])
+        features = extract_setup_features(setup, None, 2005.0)
+        assert features["oi_delta_pct"] == 0.06
+        assert features["oi_rising_tier"] == "strong"
+
+    def test_moderate_positive_delta(self):
+        setup = _make_setup(confluences=["bos_5m", "order_block_5m", "oi_delta_3.00pct"])
+        features = extract_setup_features(setup, None, 2005.0)
+        assert features["oi_rising_tier"] == "moderate"
+
+    def test_mild_positive_delta(self):
+        setup = _make_setup(confluences=["bos_5m", "order_block_5m", "oi_delta_0.80pct"])
+        features = extract_setup_features(setup, None, 2005.0)
+        assert features["oi_rising_tier"] == "mild"
+
+    def test_negative_delta_returns_none(self):
+        """Dropping OI is not 'rising'. Magnitude is preserved in the
+        signed `oi_delta_pct` feature; tier only fires on positive flow."""
+        setup = _make_setup(confluences=["bos_5m", "order_block_5m", "oi_delta_-3.00pct"])
+        features = extract_setup_features(setup, None, 2005.0)
+        assert features["oi_delta_pct"] == -0.03
+        assert features["oi_rising_tier"] is None
+
+    def test_no_delta_confluence_returns_none(self):
+        setup = _make_setup(confluences=["bos_5m", "order_block_5m"])
+        features = extract_setup_features(setup, None, 2005.0)
+        assert features["oi_rising_tier"] is None
+
+
 class TestWaveTrend:
     def test_insufficient_candles_returns_none(self):
         candles = make_candle_series(count=20)
