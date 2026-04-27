@@ -319,8 +319,11 @@ class Settings:
 
     # --- Setup A temporal ---
     # Max candles between sweep and CHoCH for Setup A validity.
-    # Optuna 03-15: 40→45 (slightly more temporal tolerance)
-    SETUP_A_MAX_SWEEP_CHOCH_GAP: int = 60
+    # Optuna 03-15: 40→45 (validated). Code drifted to 60 in aggressive mode.
+    # Synced back to 45 on 2026-04-27 (doc-truth + redesign pre-work). Setup A
+    # is bound for redesign anyway (see docs/strategy_redesign_2026_04.md §3.1);
+    # do not run with un-validated thresholds in the meantime.
+    SETUP_A_MAX_SWEEP_CHOCH_GAP: int = 45
 
     # ========================
     # QUICK SETUPS (C, D, E) — Data-driven, shorter duration
