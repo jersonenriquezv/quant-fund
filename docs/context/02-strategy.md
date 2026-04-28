@@ -143,9 +143,9 @@ Status actual:
 
 ### Setup gating
 - `ENABLED_SETUPS: list = []` — live execution gate (vacío = SHADOW-only).
-- `SHADOW_MODE_SETUPS = ["setup_a", "setup_b", "setup_d_choch", "setup_d_bos", "setup_f"]`.
+- `SHADOW_MODE_SETUPS` includes legacy shadow setups plus redesign Engine 1 tracks. See `docs/SYSTEM_BASELINE.md` for the current authoritative list.
 - `SHADOW_DIRECTION_FILTER = {"setup_a": ["short"]}`.
-- `QUICK_SETUP_TYPES = ("setup_c", "setup_d_bos", "setup_d_choch", "setup_e")` — note: c/e en tuple legacy aunque removidos.
+- `QUICK_SETUP_TYPES = ("setup_c", "setup_d_bos", "setup_d_choch", "setup_e")` — `setup_c`/`setup_e` remain in the legacy tuple for compatibility but are removed from active/shadow setup lists.
 - `AI_BYPASS_SETUP_TYPES = ("setup_a", "setup_b", "setup_f")`.
 
 ### Estructura SMC

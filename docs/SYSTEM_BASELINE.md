@@ -2,6 +2,7 @@
 
 > Source of truth for system state. Updated on every material change.
 > Reflects code reality — if code and doc disagree, fix the doc.
+> Documentation rule: this file is the operational source of truth. `README.md` is a portfolio overview; `docs/context/*` explains concepts and history and may intentionally lag unless this baseline links to it.
 
 **Last updated:** 2026-04-27
 **ML Feature Version:** 18

@@ -1,6 +1,6 @@
 # Arquitectura del Sistema
-> Última actualización: 2026-04-16
-> Estado: **5/5 capas implementadas** — pipeline completo Data → Strategy → Risk → Execution. AI filter currently bypassed for all active setups (setup_a in AI_BYPASS_SETUP_TYPES, setup_d variants in QUICK_SETUP_TYPES). ENABLED_SETUPS: setup_a, setup_d_choch. Setup B (0-7.7% WR), D_bos (20-33% WR) and F (34.8% WR) disabled. OB selector upgraded with composite scoring. PnL tracking con fee deduction (0.05% per side). Signal mode disponible (`SIGNAL_ONLY=true`). **ML instrumentation** active: `ml_setups` table captures structured features at detection + outcomes at close.
+> Última actualización: 2026-04-28
+> Estado: documentación conceptual de arquitectura. Para estado operativo exacto (setups activos, shadow filters, experiment_id, risk params), usar `docs/SYSTEM_BASELINE.md` como fuente de verdad.
 
 ## Qué hace (para entenderlo rápido)
 El sistema es un bot de trading que funciona como una línea de ensamblaje. Los datos entran por un lado, pasan por 5 filtros en orden, y si todos dicen "sí", se ejecuta el trade. Si cualquier filtro dice "no", el trade se descarta.
@@ -84,7 +84,7 @@ Sin esta arquitectura, tendríamos un solo programa gigante donde todo está mez
 - Intraday bloqueado en el par mientras haya campaña activa (y viceversa)
 - Sin TP orders — la campaña sale solo via trailing SL o timeout (7 días)
 
-**Data integrity gate (antes de dedup):** DataService tiene un estado global (`RECOVERING`/`RUNNING`/`DEGRADED`). Ningún setup pasa mientras no sea `RUNNING`. Además, cada setup tiene dependencias de datos específicas (setup_c necesita CVD válido, setup_e necesita OI). Si un dep falta, el setup se bloquea y se registra como `data_blocked` en ML. Position Guardian y HTF campaigns también se bloquean durante RECOVERING.
+**Data integrity gate (antes de dedup):** DataService tiene un estado global (`RECOVERING`/`RUNNING`/`DEGRADED`). Ningún setup pasa mientras no sea `RUNNING`. Además, cada setup/engine puede declarar dependencias de datos específicas (por ejemplo, los engines del redesign dependen de candles/ATR y pueden registrar features de régimen; setups legacy removidos tenían dependencias como CVD/OI). Si un dep falta, el setup se bloquea y se registra como `data_blocked` en ML. Position Guardian y HTF campaigns también se bloquean durante RECOVERING.
 
 **Regime gate (después de shadow path, antes de live execution):** Si Fear & Greed Index < `REGIME_EXTREME_FEAR_GATE` (10), se rechazan setups LIVE (cualquier dirección). Setups en shadow mode pasan y colectan datos ML durante extreme fear. Outcome ML: `regime_extreme_fear`.
 

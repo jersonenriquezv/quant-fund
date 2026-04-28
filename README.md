@@ -2,7 +2,7 @@
 
 A production-grade automated trading system that detects **Smart Money Concepts (SMC)** patterns in crypto perpetual futures and executes trades 24/7. Built as a solo project — architecture, strategy, infrastructure, monitoring, and execution all designed and implemented from scratch.
 
-**Live since March 2026** on OKX (BTC-USDT, ETH-USDT perpetual swaps).
+**Current status:** SHADOW-ONLY on OKX since 2026-04-15. Live execution is disabled while the strategy redesign collects shadow data. For current operational truth, read [`docs/SYSTEM_BASELINE.md`](docs/SYSTEM_BASELINE.md); this README is a portfolio-level overview and may summarize historical behavior.
 
 ![Dashboard Overview](docs/screenshots/dashboard-full.png)
 
@@ -63,7 +63,7 @@ The primary setup. Detects when institutions hunt retail stop losses, then rever
 1. **Liquidity sweep** — price wicks beyond swing high/low, triggering retail stops
 2. **CHoCH** (Change of Character) — structure breaks in the opposite direction, confirming reversal
 3. **Order Block** — the candle where institutions accumulated. Scored by volume (35%), freshness (30%), proximity (20%), body size (15%)
-4. **Entry** at 65% depth into the OB body (Optuna-optimized)
+4. **Entry** at 50% depth into the OB body for the current shadow configuration
 5. **Confluence check** — minimum 2 confirmations required (OB alone = no trade)
 
 ### Setup D — LTF CHoCH Scalp
