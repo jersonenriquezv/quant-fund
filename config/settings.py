@@ -50,6 +50,7 @@ class Settings:
     # TELEGRAM NOTIFICATIONS
     # ========================
     TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    TELEGRAM_EXPLAIN_BOT_TOKEN: str = os.getenv("TELEGRAM_EXPLAIN_BOT_TOKEN", "")
     TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
 
     # ========================

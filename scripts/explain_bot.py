@@ -51,11 +51,11 @@ def _conn():
 
 class ExplainBot:
     def __init__(self) -> None:
-        if not settings.TELEGRAM_BOT_TOKEN:
-            raise RuntimeError("TELEGRAM_BOT_TOKEN missing")
+        if not settings.TELEGRAM_EXPLAIN_BOT_TOKEN:
+            raise RuntimeError("TELEGRAM_EXPLAIN_BOT_TOKEN missing — create separate bot via @BotFather")
         if not settings.ANTHROPIC_API_KEY:
             raise RuntimeError("ANTHROPIC_API_KEY missing")
-        self._token = settings.TELEGRAM_BOT_TOKEN
+        self._token = settings.TELEGRAM_EXPLAIN_BOT_TOKEN
         self._chat_id = str(settings.TELEGRAM_CHAT_ID)
         self._claude = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
         self._offset: int | None = None
