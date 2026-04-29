@@ -5,12 +5,24 @@ No state. Each method takes the values it needs and returns a verdict.
 All thresholds come from config.settings.
 """
 
+import requests
+
 from config.settings import settings, QUICK_SETUP_TYPES
 from shared.models import TradeSetup
 
 
 class Guardrails:
     """Non-negotiable risk checks. If any fails, the trade does NOT execute."""
+
+    def check_okx_leverage_limit(self, pair: str, requested_lev: float) -> tuple[bool, str]:
+        """Reject if requested leverage exceeds OKX's live max for this pair."""
+        instrument = pair.replace("/", "-") + "-SWAP"
+        url = f"https://www.okx.com/api/v5/account/max-leverage?instId={instrument}"
+        response = requests.get(url, timeout=5)
+        max_lev = float(response.json()["data"][0]["maxLev"])
+        if requested_lev > max_lev:
+            return False, f"Requested {requested_lev}x exceeds OKX limit {max_lev}x for {pair}"
+        return True, f"Leverage {requested_lev}x within OKX limit {max_lev}x"
 
     def check_min_risk_distance(self, setup: TradeSetup) -> tuple[bool, str]:
         """Check that SL distance is at least MIN_RISK_DISTANCE_PCT of entry.
