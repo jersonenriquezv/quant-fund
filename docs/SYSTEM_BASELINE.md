@@ -40,7 +40,7 @@
 | Parameter | Value | Notes |
 |-----------|-------|-------|
 | RISK_PER_TRADE | 1% | Dynamic sizing via PositionSizer (was: flat $20 margin) |
-| MAX_LEVERAGE | 7x | Cap on PositionSizer output |
+| MAX_LEVERAGE | 10x | Cap on PositionSizer output (raised 2026-04-29 — see changelog) |
 | MAX_OPEN_POSITIONS | 8 | |
 | MAX_TRADES_PER_DAY | 20 | |
 | MAX_DAILY_DRAWDOWN | 10% | was 5%, raised for $20/$108 capital ratio |
@@ -351,6 +351,15 @@ Three storages hold trade-like rows. Only ONE is authoritative for ML training /
 ---
 
 ## 8. Changelog
+
+### 2026-04-29 — MAX_LEVERAGE 7x → 10x (policy change)
+**What changed:**
+- `MAX_LEVERAGE` raised from 7 to 10 in `config/settings.py`
+- SYSTEM_BASELINE §1 risk guardrails table updated
+
+**Why:** Position sizing was capital-bound on small SL distances at 7x — kept rejecting valid setups with risk_pct < 1%. Raising to 10x lets the PositionSizer hit the intended risk per trade for tight SL geometries.
+
+**Expected impact:** Slightly larger positions on tight-SL setups. RISK_PER_TRADE (1%) and MAX_PORTFOLIO_HEAT_PCT (6%) remain unchanged — total risk envelope is preserved.
 
 ### 2026-04-24 — Pre-trade Bybit checklist (`/check` Telegram)
 **Files:** `scripts/pretrade_check.py` (new), `scripts/explain_bot.py`, `bybit_pretrade_checks` table (new)

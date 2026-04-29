@@ -104,7 +104,7 @@ class Settings:
     RISK_PER_TRADE: float = float(os.getenv("RISK_PER_TRADE", "0.01"))  # 1%
 
     # Máximo apalancamiento permitido
-    MAX_LEVERAGE: int = int(os.getenv("MAX_LEVERAGE", "7"))
+    MAX_LEVERAGE: int = int(os.getenv("MAX_LEVERAGE", "10"))
 
     # Drawdown diario máximo antes de apagar el bot
     MAX_DAILY_DRAWDOWN: float = float(os.getenv("MAX_DAILY_DRAWDOWN", "0.10"))  # 10% — was 5%, raised because $20 trades at 7x on $108 capital hit 5% after ~3 SLs, blocking entire day
