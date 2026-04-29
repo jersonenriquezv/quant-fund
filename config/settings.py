@@ -188,7 +188,7 @@ class Settings:
     # Volumen mínimo relativo (vs promedio) para validar un OB
     # Optuna 03-15: 1.2→1.3 (PF 1.05→2.65, walk-forward validated)
     # Restored from 1.0 (audit 03-18): 1.0 = disabled, every candle qualifies as OB
-    OB_MIN_VOLUME_RATIO: float = 1.3
+    OB_MIN_VOLUME_RATIO: float = 1.5
     # Horas máximas de vida de un OB antes de considerarlo viejo
     # Optuna 03-15: 72→84 (longer OB lifespan, more setups without quality loss)
     OB_MAX_AGE_HOURS: int = 84
