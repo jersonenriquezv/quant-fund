@@ -70,7 +70,7 @@ Operational rules for Claude when modifying `data_service/`. The eyes and ears â
 
 ## Verify after changes
 ```bash
-python -m pytest tests/test_data_service.py tests/test_data_store.py tests/test_data_integrity.py tests/test_data_store_filters.py tests/test_websocket_feeds.py tests/test_cvd_calculator.py -v --tb=short
+python -m pytest tests/test_data_service.py tests/test_data_integrity.py tests/test_data_store_filters.py -v --tb=short
 ```
 
 ## Telemetry

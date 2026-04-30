@@ -12,7 +12,7 @@ LLM-based trade filter. Receives `TradeSetup` + `MarketSnapshot`, queries Claude
 - **Models:** `shared/models.py` — `TradeSetup`, `MarketSnapshot`, `AIDecision`
 
 ## Status
-**ZERO Claude API calls in live pipeline.** All active setups (setup_a, setup_d_bos, setup_d_choch) hit `AI_BYPASS_SETUP_TYPES` or `QUICK_SETUP_TYPES` and get a synthetic `AIDecision(confidence=1.0, approved=True)` in `main.py`. Pre-filter, prompt builder, and Claude client code stay intact for future re-enable.
+**ZERO Claude API calls in live pipeline.** `ENABLED_SETUPS = []` — bot is shadow-only since 2026-04-15. All shadow setups (`setup_a`, `setup_b`, `setup_d_bos`, `setup_d_choch`, `setup_f`, `engine1_trend_pullback`, `bench_engine1_random_direction`, `bench_engine1_market_now`) skip AI by virtue of shadow routing — `main.py` short-circuits to `shadow_monitor.add_shadow(setup)` before AI/Risk/Execution. Engine 1 and its benchmarks bypass AI specifically because they are shadow-only; once promoted to live, AI gating must be reconsidered. `AI_BYPASS_SETUP_TYPES = ("setup_a", "setup_b", "setup_f")` and `QUICK_SETUP_TYPES` still synthesize `AIDecision(confidence=1.0, approved=True)` for any future live path. Pre-filter, prompt builder, and Claude client code stay intact for future re-enable.
 
 Two ways the AI service IS used today:
 - **`scripts/weekly_edge_audit.py`** — offline weekly audit over resolved `ml_setups` + `trades` + shadow outcomes. Uses `CLAUDE_MODEL_AUDIT` (env, default `claude-opus-4-7`). Runs Sunday 10:00 UTC via systemd timer. Persists to `ml_edge_audits` + `docs/audits/edge-audit-YYYY-WW.md`. **Does not touch live path.**
@@ -46,9 +46,10 @@ Two ways the AI service IS used today:
 4. **HTF bias conflict check was REMOVED.** HTF bias is now context for Claude, not a hard gate. Counter-trend setups with clear LTF structure are allowed.
 
 ## Rules — dedup cache
-1. **Key:** `(pair, direction, setup_type, entry_price_rounded)`. **TTL:** 1h (`_SETUP_DEDUP_TTL_SECONDS = 3600`). Prevents re-sending while limit order is pending.
-2. **Cache updates AFTER successful Claude eval.** Pre-filter rejects do not pollute the cache (they re-evaluate next candle).
-3. **Cache covers ALL setup types**, including bypassed ones — prevents Telegram spam.
+1. **Key:** `(pair, direction, setup_type)` (see `main.py:232`). Entry price is NOT part of the key — geometry shifts on the same setup do not produce a second signal within the TTL.
+2. **TTL is dual:** live path uses `_SETUP_DEDUP_TTL_SECONDS = 3600` (1h, prevents re-sending while limit order is pending); shadow path uses `_SHADOW_DEDUP_TTL_SECONDS = 300` (5m, shadow is data collection so only same-candle repeats are suppressed). Selection is by `is_shadow` flag in `main.py`.
+3. **Live cache updates after successful Claude / live-path processing. Shadow cache updates after `shadow_monitor.add_shadow()` attempt.** Pre-filter rejects do not pollute the live cache (they re-evaluate next candle).
+4. **Cache covers ALL setup types**, including bypassed ones — prevents Telegram spam.
 
 ## Rules — adding new functionality
 1. **Persist every decision** (approved or rejected) to `ai_decisions` via `main.py:_persist_ai_decision()`. Dashboard depends on it.
