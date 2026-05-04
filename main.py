@@ -176,6 +176,15 @@ async def on_candle_confirmed(candle: Candle) -> None:
         except Exception as e:
             logger.error(f"Position Guardian error: {e}")
 
+    # Scalp shadow signals (docs/plans/scalp_shadow_v1.md). Independent of
+    # the SMC cascade — appended to the multi-setup list so each gets routed
+    # through _process_pipeline_setup (shadow path). evaluate_scalp returns
+    # at most one TradeSetup per call and is gated by SCALP_SHADOW_ENABLED.
+    if settings.SCALP_SHADOW_ENABLED:
+        scalp_setup = _strategy_service.evaluate_scalp(candle.pair, candle)
+        if scalp_setup is not None:
+            all_setups = list(all_setups) + [scalp_setup]
+
     if not all_setups:
         return
 
