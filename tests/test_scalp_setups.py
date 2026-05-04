@@ -8,9 +8,14 @@ from unittest.mock import patch
 
 import pytest
 
-from shared.models import Candle, CVDSnapshot, MarketSnapshot, OIFlushEvent
+from shared.models import (
+    Candle, CVDSnapshot, FundingRate, MarketSnapshot, OIFlushEvent,
+)
 from strategy_service.scalp_setups import (
     ScalpSetupEvaluator,
+    _FUNDING_FLAT_LOOKBACK_BARS,
+    _FUNDING_FLAT_RANGE_THRESHOLD,
+    _FUNDING_RATE_THRESHOLD,
     _LIQ_RECLAIM_FLUSH_MAX_AGE_MS,
     _LIQ_RECLAIM_LOOKBACK_BARS,
     _LIQ_RECLAIM_WICK_THRESHOLD,
@@ -800,5 +805,163 @@ class TestVolCvdNoLookahead:
         with _enable_scalp_shadow():
             shifted = evaluator.evaluate_vol_cvd_divergence(
                 "BTC/USDT", candles_plus, snap, orderbook=_ob(),
+            )
+        assert shifted is None
+
+
+# ============================================================
+# Signal 4 — funding extreme + flat price
+# ============================================================
+
+def _flat_window(
+    *, base_price: float, count: int, range_pct: float,
+) -> list[Candle]:
+    """Return `count` confirmed candles whose combined high-low spans
+    approximately `range_pct` of base_price.
+    """
+    half = base_price * range_pct / 2
+    candles: list[Candle] = []
+    for i in range(count):
+        candles.append(_make_candle(
+            ts_ms=i * 60_000,
+            o=base_price - 0.05,
+            h=base_price + half,
+            l=base_price - half,
+            c=base_price,
+        ))
+    return candles
+
+
+def _funding_snapshot(*, pair: str = "BTC/USDT", rate: float) -> MarketSnapshot:
+    funding = FundingRate(
+        timestamp=0,
+        pair=pair,
+        rate=rate,
+        next_rate=rate,
+        next_funding_time=0,
+    )
+    return MarketSnapshot(pair=pair, timestamp=0, funding=funding)
+
+
+class TestFundingExtremeGate:
+
+    def test_returns_none_when_disabled(self):
+        evaluator = ScalpSetupEvaluator()
+        candles = _flat_window(
+            base_price=100.0, count=_FUNDING_FLAT_LOOKBACK_BARS, range_pct=0.001,
+        )
+        snap = _funding_snapshot(rate=0.001)
+        result = evaluator.evaluate_funding_extreme("BTC/USDT", candles, snap)
+        assert result is None
+
+    def test_returns_none_with_too_few_candles(self):
+        evaluator = ScalpSetupEvaluator()
+        candles = _flat_window(
+            base_price=100.0, count=_FUNDING_FLAT_LOOKBACK_BARS - 1, range_pct=0.001,
+        )
+        snap = _funding_snapshot(rate=0.001)
+        with _enable_scalp_shadow():
+            result = evaluator.evaluate_funding_extreme("BTC/USDT", candles, snap)
+        assert result is None
+
+    def test_returns_none_without_funding(self):
+        evaluator = ScalpSetupEvaluator()
+        candles = _flat_window(
+            base_price=100.0, count=_FUNDING_FLAT_LOOKBACK_BARS, range_pct=0.001,
+        )
+        with _enable_scalp_shadow():
+            assert evaluator.evaluate_funding_extreme(
+                "BTC/USDT", candles, None,
+            ) is None
+            empty_snap = MarketSnapshot(pair="BTC/USDT", timestamp=0)
+            assert evaluator.evaluate_funding_extreme(
+                "BTC/USDT", candles, empty_snap,
+            ) is None
+
+
+class TestFundingExtremeFilters:
+
+    def test_no_signal_when_funding_below_threshold(self):
+        evaluator = ScalpSetupEvaluator()
+        candles = _flat_window(
+            base_price=100.0, count=_FUNDING_FLAT_LOOKBACK_BARS, range_pct=0.001,
+        )
+        # 0.0003 < 0.0005 threshold.
+        snap = _funding_snapshot(rate=0.0003)
+        with _enable_scalp_shadow():
+            result = evaluator.evaluate_funding_extreme("BTC/USDT", candles, snap)
+        assert result is None
+        assert _FUNDING_RATE_THRESHOLD == 0.0005
+
+    def test_no_signal_when_range_too_wide(self):
+        evaluator = ScalpSetupEvaluator()
+        # 0.5% range > 0.3% threshold.
+        candles = _flat_window(
+            base_price=100.0, count=_FUNDING_FLAT_LOOKBACK_BARS, range_pct=0.005,
+        )
+        snap = _funding_snapshot(rate=0.001)
+        with _enable_scalp_shadow():
+            result = evaluator.evaluate_funding_extreme("BTC/USDT", candles, snap)
+        assert result is None
+        assert _FUNDING_FLAT_RANGE_THRESHOLD == 0.003
+
+
+class TestFundingExtremeSignals:
+
+    def test_short_on_positive_funding_extreme(self):
+        evaluator = ScalpSetupEvaluator()
+        candles = _flat_window(
+            base_price=100.0, count=_FUNDING_FLAT_LOOKBACK_BARS, range_pct=0.001,
+        )
+        # +0.10% funding — longs paying = crowded long => short.
+        snap = _funding_snapshot(rate=0.001)
+        with _enable_scalp_shadow():
+            setup = evaluator.evaluate_funding_extreme("BTC/USDT", candles, snap)
+        assert setup is not None
+        assert setup.setup_type == "scalp_funding_extreme_v1"
+        assert setup.direction == "short"
+        assert setup.entry_price == pytest.approx(100.0)
+        # TP 0.80% / SL 0.30% per defaults.
+        assert setup.sl_price == pytest.approx(100.0 * (1 + 0.003))
+        assert setup.tp2_price == pytest.approx(100.0 * (1 - 0.008))
+
+    def test_long_on_negative_funding_extreme(self):
+        evaluator = ScalpSetupEvaluator()
+        candles = _flat_window(
+            base_price=100.0, count=_FUNDING_FLAT_LOOKBACK_BARS, range_pct=0.001,
+        )
+        snap = _funding_snapshot(rate=-0.001)
+        with _enable_scalp_shadow():
+            setup = evaluator.evaluate_funding_extreme("BTC/USDT", candles, snap)
+        assert setup is not None
+        assert setup.direction == "long"
+        assert setup.entry_price == pytest.approx(100.0)
+        assert setup.sl_price == pytest.approx(100.0 * (1 - 0.003))
+        assert setup.tp2_price == pytest.approx(100.0 * (1 + 0.008))
+
+
+class TestFundingExtremeNoLookahead:
+
+    def test_appending_future_candle_changes_window(self):
+        evaluator = ScalpSetupEvaluator()
+        candles = _flat_window(
+            base_price=100.0, count=_FUNDING_FLAT_LOOKBACK_BARS, range_pct=0.001,
+        )
+        snap = _funding_snapshot(rate=0.001)
+        with _enable_scalp_shadow():
+            baseline = evaluator.evaluate_funding_extreme("BTC/USDT", candles, snap)
+        assert baseline is not None  # sanity
+
+        # Append a wide-range bar — the rolling window is now (-N..-1) which
+        # includes the new bar. Range should bust the threshold and the
+        # signal must vanish even though the prior tight bars remain in the
+        # full candles list.
+        wide = _make_candle(
+            ts_ms=_FUNDING_FLAT_LOOKBACK_BARS * 60_000,
+            o=100.0, h=102.0, l=98.0, c=100.0,
+        )
+        with _enable_scalp_shadow():
+            shifted = evaluator.evaluate_funding_extreme(
+                "BTC/USDT", candles + [wide], snap,
             )
         assert shifted is None

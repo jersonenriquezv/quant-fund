@@ -52,6 +52,16 @@ _VOL_CVD_MIN_IMBALANCE = 0.20
 # Max acceptable orderbook spread as fraction of mid. 2 bps = 0.0002.
 _VOL_CVD_MAX_SPREAD = 0.0002
 
+# Funding extreme + flat price:
+# Min |funding_rate| (8h convention, fraction not pct) to qualify as extreme.
+# 0.0005 = 0.05% per 8h period (~0.15%/day annualized ~55%).
+_FUNDING_RATE_THRESHOLD = 0.0005
+# Number of bars to scan for the flat-price condition. Tuned for SCALP_TIMEFRAME=5m
+# (6 * 5min = 30min). Bump when 1m fetcher lands.
+_FUNDING_FLAT_LOOKBACK_BARS = 6
+# Max price range over the lookback window as fraction of close. 0.003 = 0.3%.
+_FUNDING_FLAT_RANGE_THRESHOLD = 0.003
+
 
 class ScalpSetupEvaluator:
     """Evaluates scalp microstructural setups for shadow tracking only.
@@ -438,15 +448,93 @@ class ScalpSetupEvaluator:
     def evaluate_funding_extreme(
         self,
         pair: str,
-        candles_1m: list[Candle],
+        candles: list[Candle],
         snapshot: Optional[MarketSnapshot],
     ) -> Optional[TradeSetup]:
         """Signal 4 — Funding extreme + flat price.
 
-        Trigger: funding rate >= 0.05% (8h) AND price range last 30min <= 0.3%.
-        Direction: counter to funding.
+        Trigger: |funding_rate| >= `_FUNDING_RATE_THRESHOLD` (8h convention)
+        AND the price range over the last `_FUNDING_FLAT_LOOKBACK_BARS`
+        candles is <= `_FUNDING_FLAT_RANGE_THRESHOLD` of the trigger close.
+
+        Edge thesis: a crowded trade (extreme funding) sitting on a tight
+        range is primed to flush against the crowd. Counter-funding entry:
+        positive funding (longs pay) => short, negative funding => long.
+
+        TP/SL/time_stop come from settings.SCALP_SIGNAL_PARAMS.
         """
-        return None
+        if not settings.SCALP_SHADOW_ENABLED:
+            return None
+
+        params = settings.SCALP_SIGNAL_PARAMS.get("scalp_funding_extreme_v1")
+        if not params:
+            return None
+
+        if not candles or len(candles) < _FUNDING_FLAT_LOOKBACK_BARS:
+            return None
+
+        trigger = candles[-1]
+        if not trigger.confirmed or trigger.close <= 0:
+            return None
+
+        if snapshot is None or snapshot.funding is None:
+            return None
+        funding_rate = snapshot.funding.rate
+        if abs(funding_rate) < _FUNDING_RATE_THRESHOLD:
+            return None
+
+        window = candles[-_FUNDING_FLAT_LOOKBACK_BARS:]
+        if len(window) != _FUNDING_FLAT_LOOKBACK_BARS:
+            return None
+        window_high = max(c.high for c in window)
+        window_low = min(c.low for c in window)
+        range_pct = (window_high - window_low) / trigger.close
+        if range_pct > _FUNDING_FLAT_RANGE_THRESHOLD:
+            return None
+
+        # Counter-funding direction. Positive funding = longs paying = crowded
+        # long => short setup. Negative funding = shorts paying = crowded short
+        # => long setup.
+        direction = "short" if funding_rate > 0 else "long"
+
+        tp_pct = params["tp_pct"] / 100.0
+        sl_pct = params["sl_pct"] / 100.0
+        entry = trigger.close
+
+        if direction == "long":
+            sl = entry * (1.0 - sl_pct)
+            tp2 = entry * (1.0 + tp_pct)
+            tp1 = entry + (tp2 - entry) * 0.5
+        else:
+            sl = entry * (1.0 + sl_pct)
+            tp2 = entry * (1.0 - tp_pct)
+            tp1 = entry - (entry - tp2) * 0.5
+
+        confluences = [
+            f"funding_rate={funding_rate * 100:.4f}",
+            f"range_pct={range_pct * 100:.3f}",
+            f"flat_bars={_FUNDING_FLAT_LOOKBACK_BARS}",
+        ]
+
+        logger.info(
+            f"Scalp funding_extreme: {pair} {direction} entry={entry:.4f} "
+            f"sl={sl:.4f} tp2={tp2:.4f} funding={funding_rate * 100:.4f}% "
+            f"range={range_pct * 100:.3f}%"
+        )
+
+        return TradeSetup(
+            timestamp=trigger.timestamp,
+            pair=pair,
+            direction=direction,
+            setup_type="scalp_funding_extreme_v1",
+            entry_price=entry,
+            sl_price=sl,
+            tp1_price=tp1,
+            tp2_price=tp2,
+            confluences=confluences,
+            htf_bias="scalp",
+            ob_timeframe=trigger.timeframe,
+        )
 
     def evaluate_random_baseline(
         self,
