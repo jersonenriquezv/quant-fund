@@ -47,6 +47,7 @@ class ShadowPosition:
     tp1_price: float
     tp2_price: float
     detection_time: float         # time.time() when detected
+    initial_sl_price: float = 0.0  # Original structural SL before any BE move
     filled: bool = False          # True once price touched entry
     fill_time: float = 0.0        # time.time() when theoretically filled
     position_size: float = 0.0    # Theoretical position size (base currency)
@@ -60,6 +61,26 @@ class ShadowPosition:
     slippage_estimate_pct: float = 0.0     # worst price in fill candle vs entry
     # TP1 tracking — simulates live breakeven SL move
     tp1_touched: bool = False              # True once price touched TP1 (1:1 R:R)
+
+    @property
+    def notional_usd(self) -> float:
+        return self.position_size * self.entry_price
+
+    @property
+    def target_risk_usd(self) -> float:
+        return settings.SHADOW_CAPITAL * settings.RISK_PER_TRADE
+
+    @property
+    def initial_risk_usd(self) -> float:
+        sl = self.initial_sl_price or self.sl_price
+        return self.position_size * abs(self.entry_price - sl)
+
+    @property
+    def initial_rr(self) -> float:
+        risk = abs(self.entry_price - (self.initial_sl_price or self.sl_price))
+        if risk <= 0:
+            return 0.0
+        return abs(self.tp2_price - self.entry_price) / risk
 
 
 class ShadowMonitor:
@@ -204,6 +225,7 @@ class ShadowMonitor:
             sl_price=setup.sl_price,
             tp1_price=setup.tp1_price,
             tp2_price=setup.tp2_price,
+            initial_sl_price=setup.sl_price,
             detection_time=time.time(),
             position_size=position_size,
             leverage=leverage,
@@ -240,7 +262,9 @@ class ShadowMonitor:
             f"Shadow: tracking {setup.setup_type} {setup.pair} {setup.direction} "
             f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
             f"tp2={setup.tp2_price:.2f} size={position_size:.6f} "
-            f"margin=${margin:.2f} spread={pos.spread_at_detection*100:.4f}%"
+            f"notional=${pos.notional_usd:.2f} margin=${margin:.2f} "
+            f"risk=${pos.initial_risk_usd:.2f}/${pos.target_risk_usd:.2f} "
+            f"spread={pos.spread_at_detection*100:.4f}%"
         )
 
         self._notify_detection(pos)
@@ -564,13 +588,18 @@ class ShadowMonitor:
         """Send Telegram alert when a shadow setup starts tracking."""
         if self._notifier is None:
             return
+        # Benchmarks: only resolution alerts ship to Telegram (TRACKING/FILL
+        # silenced) — they co-emit with every Engine 1 detection and would
+        # triple the alert volume without adding lifecycle signal.
+        if pos.setup_type.startswith("bench_engine1_"):
+            return
         short_pair = pos.pair.replace("/USDT", "")
-        rr = abs(pos.tp2_price - pos.entry_price) / abs(pos.entry_price - pos.sl_price) if abs(pos.entry_price - pos.sl_price) > 0 else 0
         msg = (
             f"\U0001f47b <b>SHADOW TRACKING</b>\n"
             f"{short_pair} {pos.direction.upper()} ({pos.setup_type})\n"
             f"Entry: ${pos.entry_price:,.2f} | SL: ${pos.sl_price:,.2f} | TP: ${pos.tp2_price:,.2f}\n"
-            f"R:R {rr:.1f} | Margin: ${pos.margin:.0f}"
+            f"R:R {pos.initial_rr:.1f} | Risk: ${pos.initial_risk_usd:.2f}/${pos.target_risk_usd:.2f}\n"
+            f"Margin: ${pos.margin:.0f} | Notional: ${pos.notional_usd:.0f} | Lev: {pos.leverage:.1f}x"
         )
         asyncio.ensure_future(self._notifier.send(msg))
 
@@ -578,12 +607,15 @@ class ShadowMonitor:
         """Send Telegram alert when a shadow position is theoretically filled."""
         if self._notifier is None:
             return
+        if pos.setup_type.startswith("bench_engine1_"):
+            return
         short_pair = pos.pair.replace("/USDT", "")
         msg = (
             f"\U0001f47b <b>SHADOW FILL</b>\n"
             f"{short_pair} {pos.direction.upper()} ({pos.setup_type})\n"
             f"Entry: ${pos.entry_price:,.2f} | SL: ${pos.sl_price:,.2f}\n"
-            f"TP: ${pos.tp2_price:,.2f} | Size: ${pos.margin:.0f}"
+            f"TP: ${pos.tp2_price:,.2f} | Risk: ${pos.initial_risk_usd:.2f}/${pos.target_risk_usd:.2f}\n"
+            f"Margin: ${pos.margin:.0f} | Notional: ${pos.notional_usd:.0f} | Lev: {pos.leverage:.1f}x"
         )
         asyncio.ensure_future(self._notifier.send(msg))
 
@@ -597,10 +629,12 @@ class ShadowMonitor:
         short_pair = pos.pair.replace("/USDT", "")
         outcome_label = outcome.replace("shadow_", "").upper()
         emoji = "\U0001f4b0" if status == "WIN" else "\U0001f534" if status == "LOSS" else "\u26aa"
+        r_multiple = pnl_usd / pos.initial_risk_usd if pos.initial_risk_usd > 0 else 0.0
         msg = (
             f"{emoji} <b>SHADOW {outcome_label}</b>\n"
             f"{short_pair} {pos.direction.upper()} ({pos.setup_type})\n"
-            f"P&amp;L: ${pnl_usd:+.2f} ({pnl_pct*100:+.2f}%)"
+            f"P&amp;L: ${pnl_usd:+.2f} ({pnl_pct*100:+.2f}%) | R: {r_multiple:+.2f}\n"
+            f"Risk: ${pos.initial_risk_usd:.2f}/${pos.target_risk_usd:.2f}"
         )
         asyncio.ensure_future(self._notifier.send(msg))
 

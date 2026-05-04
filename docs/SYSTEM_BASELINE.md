@@ -352,6 +352,16 @@ Three storages hold trade-like rows. Only ONE is authoritative for ML training /
 
 ## 8. Changelog
 
+### 2026-05-04 — Shadow Sizing Clarity + Runtime Leverage Sync + Benchmark Telegram Silencing
+**What changed:**
+- Runtime `config/.env` `MAX_LEVERAGE` synced from 5x to the documented 10x policy.
+- Shadow Telegram/log messages now distinguish risk target/effective risk, margin, notional, and leverage.
+- `bench_engine1_*` setups now silence TRACKING + FILL Telegram alerts; only RESOLVE ships (`execution_service/shadow_monitor.py:_notify_detection`, `_notify_fill`).
+
+**Why:** Shadow mode should size from `SHADOW_CAPITAL=$500` at `RISK_PER_TRADE=1%` (target risk `$5`) when leverage allows it. The previous Telegram wording showed only margin (for example `$25`), which made capped BTC shadows look like fixed-margin trades even when risk-based sizing was active. Each Engine 1 detection co-emits two benchmark setups, which previously triggered 9 alerts per detection (3 lifecycle × 3 setups) — too noisy without adding signal.
+
+**Expected impact:** Tight-SL shadow setups can reach the intended `$5` risk more often at 10x. Telegram alert volume drops ~44% (9 → 5 per detection) without losing edge-comparison data — benchmark RESOLVE outcomes still ship and DB rows are unaffected. No entry, SL, TP, BE, trailing, detector, or live-promotion logic changed.
+
 ### 2026-04-29 — MAX_LEVERAGE 7x → 10x (policy change)
 **What changed:**
 - `MAX_LEVERAGE` raised from 7 to 10 in `config/settings.py`

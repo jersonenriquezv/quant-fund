@@ -373,6 +373,11 @@ All exit paths now compute PnL before closing:
 - Marca rows con `outcome_type=NULL AND shadow_mode=TRUE` más viejas que max_age como `shadow_orphaned` con `exit_reason='orphaned_restart'`.
 - Problema original: bot restart pierde estado Redis → shadow positions nunca se resuelven → rows NULL perpetuas en ml_setups.
 
+### Shadow Monitor — Telegram alert lifecycle
+- 3 alerts por shadow position: `_notify_detection` (TRACKING al `add_shadow`), `_notify_fill` (FILL cuando price toca entry), `_notify_resolve` (TP/SL/BE/TIMEOUT al cerrar).
+- Benchmarks (`bench_engine1_*`) silencian TRACKING + FILL — solo emiten RESOLVE. Razón: co-emiten con cada Engine 1 detection y triplicarían el volumen sin agregar señal de lifecycle. Outcome final sigue llegando para comparación de edge.
+- Setups normales (Engine 1, swing/quick) emiten los 3 alerts.
+
 ## Limitaciones conocidas
 
 - Estado de posiciones se pierde en restart (SL/TP siguen en exchange, positions re-adopted via sync_exchange_positions)
