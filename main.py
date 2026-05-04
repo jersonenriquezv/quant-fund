@@ -171,6 +171,13 @@ async def on_candle_confirmed(candle: Candle) -> None:
         except Exception as e:
             logger.error(f"Position Guardian error: {e}")
 
+    # Scalp shadow signals (docs/plans/scalp_shadow_v1.md). Independent of the
+    # SMC cascade; only consulted if the swing/quick path produced no setup on
+    # this candle so we never emit two setups per candle. Gated by
+    # SCALP_SHADOW_ENABLED — no effect until the experiment is turned on.
+    if setup is None and settings.SCALP_SHADOW_ENABLED:
+        setup = _strategy_service.evaluate_scalp(candle.pair, candle)
+
     if setup is None:
         return
 

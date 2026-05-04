@@ -45,7 +45,7 @@ VALID_OUTCOMES: frozenset[str] = frozenset({
     "unfilled_timeout", "replaced", "filled_orphaned",
     # Shadow tracking (shadow_monitor + orphan cleanup)
     "shadow_tp", "shadow_sl", "shadow_breakeven", "shadow_timeout",
-    "shadow_no_fill", "shadow_orphaned",
+    "shadow_time_stop", "shadow_no_fill", "shadow_orphaned",
 })
 
 

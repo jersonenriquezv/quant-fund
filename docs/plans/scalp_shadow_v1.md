@@ -29,6 +29,8 @@ Crypto retail accounts cannot compete on latency with colocated HFT, but **speci
 
 All signals share infra: detection in `strategy_service`, routed to `shadow_monitor` with TP/SL/time-stop. Direction strictly defined per signal. `experiment_id = "scalp_v1_2026_05"`.
 
+**Timeframe:** detectors run on `settings.SCALP_TIMEFRAME`, default `"5m"`. The bot does not currently fetch 1m candles (`LTF_TIMEFRAMES = ["15m", "5m"]`). Adding 1m fetching is a future commit; the original 1m design is preserved in detector docstrings. With 5m candles, expected effects: (a) lower trigger frequency than the 1m design, (b) effective time-stop resolution = next 5m close after `time_stop_seconds` elapses (not sub-minute). The validation rules (N >= 100, WR > 50% post-fees, beats baseline by 15pp) absorb both timeframes.
+
 ### Signal 1 — Liquidation reclaim (`scalp_liq_reclaim_v1`)
 - **Trigger:** OI drop ≥2% in 5min (existing `oi_liquidation_proxy`)
 - **Confirmation:** 1m candle with wick ≥0.5% but close back inside prior 20-candle range

@@ -23,6 +23,7 @@ from strategy_service.fvg import FVGDetector
 from strategy_service.liquidity import LiquidityAnalyzer
 from strategy_service.setups import SetupEvaluator
 from strategy_service.quick_setups import QuickSetupEvaluator
+from strategy_service.scalp_setups import ScalpSetupEvaluator
 from strategy_service.volume_profile import VolumeProfileAnalyzer
 
 logger = setup_logger("strategy_service")
@@ -52,6 +53,7 @@ class StrategyService:
         self._liquidity = LiquidityAnalyzer()
         self._setups = SetupEvaluator()
         self._quick_setups = QuickSetupEvaluator()
+        self._scalp_setups = ScalpSetupEvaluator()
         self._volume_profile = VolumeProfileAnalyzer(
             bin_count=settings.VP_BIN_COUNT,
             value_area_pct=settings.VP_VALUE_AREA_PCT,
@@ -406,6 +408,39 @@ class StrategyService:
         if last is None:
             return False
         return (now - last) < settings.QUICK_SETUP_COOLDOWN
+
+    # ================================================================
+    # Scalp shadow signals — independent of the main SMC cascade.
+    # Plan: docs/plans/scalp_shadow_v1.md.
+    # ================================================================
+
+    def evaluate_scalp(self, pair: str,
+                       trigger_candle: Candle) -> Optional[TradeSetup]:
+        """Evaluate scalp shadow signals for a pair.
+
+        Returns at most one TradeSetup. The caller is responsible for routing
+        through the shadow pipeline (every scalp setup_type sits in
+        SHADOW_MODE_SETUPS so the standard handler does the work).
+
+        The detector is gated behind SCALP_SHADOW_ENABLED so this is a no-op
+        until the experiment is turned on.
+        """
+        if not settings.SCALP_SHADOW_ENABLED:
+            return None
+
+        scalp_tf = settings.SCALP_TIMEFRAME
+        candles = self._data.get_candles(pair, scalp_tf, count=30)
+        if not candles:
+            return None
+        market_snapshot = self._data.get_market_snapshot(pair)
+
+        setup = self._scalp_setups.evaluate_liq_reclaim(
+            pair, candles, market_snapshot,
+        )
+        if setup is not None:
+            return setup
+
+        return None
 
     # ================================================================
     # HTF Campaign — evaluate 4H setups with Daily bias

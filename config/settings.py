@@ -878,6 +878,9 @@ class Settings:
     # Setups NOT in this list execute normally through the live pipeline.
     SHADOW_MODE_SETUPS: list = field(default_factory=lambda: [
         "setup_a", "setup_b", "setup_d_choch", "setup_d_bos", "setup_f",
+        # Scalp shadow v1 — gated by SCALP_SHADOW_ENABLED at detection time.
+        # Listing here makes the pipeline route them through the shadow path.
+        "scalp_liq_reclaim_v1",
         # "setup_g" — removed 2026-04-16: 0/4 WR. Breaker blocks too weak.
         # "setup_c" — removed 2026-04-13: no OB anchor. Signal is now a confluence booster.
         # "setup_e" — removed 2026-04-13: no OB anchor. Signal is now a confluence booster.
@@ -905,6 +908,12 @@ class Settings:
     # SHADOW_MODE_SETUPS once wired. The master flag is a kill switch.
     SCALP_SHADOW_ENABLED: bool = os.getenv("SCALP_SHADOW_ENABLED", "false").lower() == "true"
     SCALP_EXPERIMENT_ID: str = os.getenv("SCALP_EXPERIMENT_ID", "scalp_v1_2026_05")
+
+    # Candle timeframe used by scalp detectors. Defaults to 5m because the
+    # bot does not currently fetch 1m candles (LTF_TIMEFRAMES = 5m, 15m).
+    # A later commit can introduce 1m fetching and switch this to "1m"
+    # without touching detector logic.
+    SCALP_TIMEFRAME: str = os.getenv("SCALP_TIMEFRAME", "5m")
 
     # Registry of scalp setup_types. Used by the report script to filter samples
     # and by cross-signal dedup. Order matches plan doc.
