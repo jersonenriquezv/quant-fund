@@ -23,6 +23,7 @@ from strategy_service.fvg import FVGDetector
 from strategy_service.liquidity import LiquidityAnalyzer
 from strategy_service.setups import SetupEvaluator
 from strategy_service.quick_setups import QuickSetupEvaluator
+from strategy_service.scalp_setups import ScalpSetupEvaluator
 from strategy_service.volume_profile import VolumeProfileAnalyzer
 from strategy_service.engines.trend_pullback import TrendPullbackEngine
 
@@ -53,6 +54,7 @@ class StrategyService:
         self._liquidity = LiquidityAnalyzer()
         self._setups = SetupEvaluator()
         self._quick_setups = QuickSetupEvaluator()
+        self._scalp_setups = ScalpSetupEvaluator()
         # Redesign engines (docs/strategy_redesign_2026_04.md §4)
         self._engine1 = TrendPullbackEngine()
         self._volume_profile = VolumeProfileAnalyzer(
@@ -74,6 +76,11 @@ class StrategyService:
 
         # Track last 4H candle timestamp per pair to avoid redundant OB updates
         self._last_4h_ob_ts: dict[str, int] = {}
+
+        # Cross-signal dedup for scalp shadow signals: pair => last fire ts
+        # (monotonic time.time()). Prevents two scalp_* setup_types firing
+        # within SCALP_DEDUP_WINDOW_SECONDS on the same pair.
+        self._scalp_last_fire: dict[str, float] = {}
 
     @staticmethod
     def _shadow_scope_allows(setup: TradeSetup) -> bool:
@@ -538,6 +545,89 @@ class StrategyService:
         if last is None:
             return False
         return (now - last) < settings.QUICK_SETUP_COOLDOWN
+
+    # ================================================================
+    # Scalp shadow signals — independent of the main SMC cascade.
+    # Plan: docs/plans/scalp_shadow_v1.md.
+    # ================================================================
+
+    def evaluate_scalp(self, pair: str,
+                       trigger_candle: Candle) -> Optional[TradeSetup]:
+        """Evaluate scalp shadow signals for a pair.
+
+        Returns at most one TradeSetup. The caller is responsible for routing
+        through the shadow pipeline (every scalp setup_type sits in
+        SHADOW_MODE_SETUPS so the standard handler does the work).
+
+        The detector is gated behind SCALP_SHADOW_ENABLED so this is a no-op
+        until the experiment is turned on.
+
+        Cross-signal dedup: if any scalp_* signal fired on this pair within
+        SCALP_DEDUP_WINDOW_SECONDS, return None. Prevents two distinct scalp
+        signals from firing on the same wick / event when their triggers
+        line up. Same setup_type collisions are already covered by the
+        pipeline-level dedup_cache in main.py.
+        """
+        if not settings.SCALP_SHADOW_ENABLED:
+            return None
+
+        now = time.time()
+        last_fire = self._scalp_last_fire.get(pair, 0.0)
+        if now - last_fire < settings.SCALP_DEDUP_WINDOW_SECONDS:
+            logger.debug(
+                f"Scalp dedup: {pair} — fired {now - last_fire:.1f}s ago "
+                f"(window {settings.SCALP_DEDUP_WINDOW_SECONDS}s), skipping"
+            )
+            return None
+
+        scalp_tf = settings.SCALP_TIMEFRAME
+        candles = self._data.get_candles(pair, scalp_tf, count=30)
+        if not candles:
+            return None
+        market_snapshot = self._data.get_market_snapshot(pair)
+
+        setup = self._scalp_setups.evaluate_liq_reclaim(
+            pair, candles, market_snapshot,
+        )
+        if setup is not None:
+            self._scalp_last_fire[pair] = now
+            return setup
+
+        setup = self._scalp_setups.evaluate_sweep_choch(
+            pair, candles, market_snapshot,
+        )
+        if setup is not None:
+            self._scalp_last_fire[pair] = now
+            return setup
+
+        # Signal 3 needs orderbook spread for the chaos filter. Fetch lazily
+        # so signals 1-2 don't pay the REST roundtrip when they would have
+        # fired first.
+        orderbook = self._data.get_orderbook_snapshot(pair)
+        setup = self._scalp_setups.evaluate_vol_cvd_divergence(
+            pair, candles, market_snapshot, orderbook=orderbook,
+        )
+        if setup is not None:
+            self._scalp_last_fire[pair] = now
+            return setup
+
+        setup = self._scalp_setups.evaluate_funding_extreme(
+            pair, candles, market_snapshot,
+        )
+        if setup is not None:
+            self._scalp_last_fire[pair] = now
+            return setup
+
+        # Random control — frequency-matched baseline. Sits last so a real
+        # signal always wins the slot when both would fire on the same candle.
+        setup = self._scalp_setups.evaluate_random_baseline(
+            pair, candles, market_snapshot,
+        )
+        if setup is not None:
+            self._scalp_last_fire[pair] = now
+            return setup
+
+        return None
 
     # ================================================================
     # HTF Campaign — evaluate 4H setups with Daily bias

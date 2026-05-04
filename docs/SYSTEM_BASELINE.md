@@ -348,6 +348,21 @@ Three storages hold trade-like rows. Only ONE is authoritative for ML training /
 
 **Principle:** each batch ships + passes bar before next starts. No parallel strategy work during infra phase.
 
+### Side experiment — Scalp Shadow v1 (2026-05-04)
+
+Independent shadow-only experiment for microstructural scalping signals, separate from the SMC roadmap above. Plan: `docs/plans/scalp_shadow_v1.md`.
+
+- **experiment_id:** `scalp_v1_2026_05` (env-overridable via `SCALP_EXPERIMENT_ID`)
+- **Master switch:** `SCALP_SHADOW_ENABLED` (default `false`)
+- **Timeframe:** `SCALP_TIMEFRAME` (default `5m`; bumps to `1m` once a fetcher commit lands)
+- **Setup types:** `scalp_liq_reclaim_v1`, `scalp_sweep_choch_v1`, `scalp_vol_cvd_div_v1`, `scalp_funding_extreme_v1`, `scalp_random_baseline_v1` — all routed through `SHADOW_MODE_SETUPS`, zero live execution.
+- **Per-signal params:** `settings.SCALP_SIGNAL_PARAMS` (TP%, SL%, time_stop_seconds). `ShadowMonitor` reads `time_stop_seconds` at `add_shadow` and resolves as `shadow_time_stop`.
+- **Cross-signal dedup:** 30s window per pair (`SCALP_DEDUP_WINDOW_SECONDS`) inside `StrategyService.evaluate_scalp`.
+- **Pipeline wiring:** `main.py` calls `evaluate_scalp` only when the SMC cascade returned `None`, gated by the master switch.
+- **Validation rules (must all hold to graduate to live):** N >= 100, WR_post_fees > 50%, PF_post_fees > 1.5, beats `scalp_random_baseline_v1` WR by >= 15pp, freq >= 5/day. Fees adjustment uses `SCALP_ROUND_TRIP_FEE_PCT` (default 0.11%).
+- **Report:** `python scripts/report_scalp_shadow.py [--since YYYY-MM-DD] [--pair BTC/USDT]`. Markdown table per signal with raw + post-fees metrics, baseline delta, decision rule output.
+- **Exit:** >= 100 outcomes per signal OR 4 weeks elapsed. Final summary lands in `docs/audits/`.
+
 ---
 
 ## 8. Changelog

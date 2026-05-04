@@ -61,6 +61,9 @@ class ShadowPosition:
     slippage_estimate_pct: float = 0.0     # worst price in fill candle vs entry
     # TP1 tracking — simulates live breakeven SL move
     tp1_touched: bool = False              # True once price touched TP1 (1:1 R:R)
+    # Per-signal time stop (seconds since fill). 0 = use SHADOW_TRADE_TIMEOUT_HOURS.
+    # Set by add_shadow when setup_type appears in settings.SCALP_SIGNAL_PARAMS.
+    time_stop_seconds: int = 0
 
     @property
     def notional_usd(self) -> float:
@@ -216,6 +219,10 @@ class ShadowMonitor:
         notional = position_size * setup.entry_price
         margin = notional / leverage if leverage > 1.0 else notional
 
+        # Per-signal time stop override (scalp shadow signals).
+        scalp_params = settings.SCALP_SIGNAL_PARAMS.get(setup.setup_type)
+        time_stop_seconds = int(scalp_params["time_stop_seconds"]) if scalp_params else 0
+
         pos = ShadowPosition(
             setup_id=setup.setup_id,
             pair=setup.pair,
@@ -230,6 +237,7 @@ class ShadowMonitor:
             position_size=position_size,
             leverage=leverage,
             margin=margin,
+            time_stop_seconds=time_stop_seconds,
         )
 
         # Orderbook quality data
@@ -350,11 +358,18 @@ class ShadowMonitor:
                         resolved.append(setup_id)
 
             else:
-                # Phase 2: Filled — waiting for TP or SL
-                trade_timeout_s = settings.SHADOW_TRADE_TIMEOUT_HOURS * 3600
+                # Phase 2: Filled — waiting for TP, SL, or time stop.
+                # Per-signal time_stop_seconds takes precedence; otherwise fall
+                # back to the global SHADOW_TRADE_TIMEOUT_HOURS.
+                if pos.time_stop_seconds > 0:
+                    trade_timeout_s = pos.time_stop_seconds
+                    timeout_outcome = "shadow_time_stop"
+                else:
+                    trade_timeout_s = settings.SHADOW_TRADE_TIMEOUT_HOURS * 3600
+                    timeout_outcome = "shadow_timeout"
                 if (now - pos.fill_time) > trade_timeout_s:
                     # Timeout — compute PnL at current price
-                    self._resolve(pos, "shadow_timeout", exit_price=candle.close, resolve_candle=candle)
+                    self._resolve(pos, timeout_outcome, exit_price=candle.close, resolve_candle=candle)
                     resolved.append(setup_id)
                     continue
 
@@ -472,6 +487,7 @@ class ShadowMonitor:
             "shadow_sl": "sl",
             "shadow_breakeven": "breakeven",
             "shadow_timeout": "timeout",
+            "shadow_time_stop": "time_stop",
             "shadow_no_fill": "no_fill",
         }
 
