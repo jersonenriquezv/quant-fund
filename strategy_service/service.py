@@ -74,6 +74,11 @@ class StrategyService:
         # Track last 4H candle timestamp per pair to avoid redundant OB updates
         self._last_4h_ob_ts: dict[str, int] = {}
 
+        # Cross-signal dedup for scalp shadow signals: pair => last fire ts
+        # (monotonic time.time()). Prevents two scalp_* setup_types firing
+        # within SCALP_DEDUP_WINDOW_SECONDS on the same pair.
+        self._scalp_last_fire: dict[str, float] = {}
+
     def evaluate(self, pair: str,
                  trigger_candle: Candle) -> Optional[TradeSetup]:
         """Main entry point — evaluate a pair for trade setups.
@@ -424,8 +429,23 @@ class StrategyService:
 
         The detector is gated behind SCALP_SHADOW_ENABLED so this is a no-op
         until the experiment is turned on.
+
+        Cross-signal dedup: if any scalp_* signal fired on this pair within
+        SCALP_DEDUP_WINDOW_SECONDS, return None. Prevents two distinct scalp
+        signals from firing on the same wick / event when their triggers
+        line up. Same setup_type collisions are already covered by the
+        pipeline-level dedup_cache in main.py.
         """
         if not settings.SCALP_SHADOW_ENABLED:
+            return None
+
+        now = time.time()
+        last_fire = self._scalp_last_fire.get(pair, 0.0)
+        if now - last_fire < settings.SCALP_DEDUP_WINDOW_SECONDS:
+            logger.debug(
+                f"Scalp dedup: {pair} — fired {now - last_fire:.1f}s ago "
+                f"(window {settings.SCALP_DEDUP_WINDOW_SECONDS}s), skipping"
+            )
             return None
 
         scalp_tf = settings.SCALP_TIMEFRAME
@@ -438,12 +458,14 @@ class StrategyService:
             pair, candles, market_snapshot,
         )
         if setup is not None:
+            self._scalp_last_fire[pair] = now
             return setup
 
         setup = self._scalp_setups.evaluate_sweep_choch(
             pair, candles, market_snapshot,
         )
         if setup is not None:
+            self._scalp_last_fire[pair] = now
             return setup
 
         # Signal 3 needs orderbook spread for the chaos filter. Fetch lazily
@@ -454,12 +476,14 @@ class StrategyService:
             pair, candles, market_snapshot, orderbook=orderbook,
         )
         if setup is not None:
+            self._scalp_last_fire[pair] = now
             return setup
 
         setup = self._scalp_setups.evaluate_funding_extreme(
             pair, candles, market_snapshot,
         )
         if setup is not None:
+            self._scalp_last_fire[pair] = now
             return setup
 
         # Random control — frequency-matched baseline. Sits last so a real
@@ -468,6 +492,7 @@ class StrategyService:
             pair, candles, market_snapshot,
         )
         if setup is not None:
+            self._scalp_last_fire[pair] = now
             return setup
 
         return None

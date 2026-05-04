@@ -5,13 +5,14 @@ Plan: docs/plans/scalp_shadow_v1.md.
 
 import random
 import time
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from shared.models import (
     Candle, CVDSnapshot, FundingRate, MarketSnapshot, OIFlushEvent,
 )
+from strategy_service.service import StrategyService
 from strategy_service.scalp_setups import (
     ScalpSetupEvaluator,
     _FUNDING_FLAT_LOOKBACK_BARS,
@@ -1056,3 +1057,160 @@ class TestRandomBaseline:
         # 200 trials, expect ~100/100. Allow a wide band.
         assert 70 <= longs <= 130
         assert 70 <= shorts <= 130
+
+
+# ============================================================
+# Cross-signal dedup — StrategyService.evaluate_scalp
+# ============================================================
+
+def _mock_data_service_with_candles(
+    candles: list[Candle], pair: str = "BTC/USDT",
+) -> MagicMock:
+    """Mock DataService that returns the same candle list for any timeframe.
+
+    Snapshot is tuned for Signal 1 (liq_reclaim) using a flush stamped at
+    real wall-clock time so the freshness check inside scalp_setups (which
+    reads time.time() unconditionally) accepts it.
+    """
+    ds = MagicMock()
+    ds.get_candles = lambda p, tf, count=500: candles
+    flush_ts = int(time.time() * 1000)
+    snap = MarketSnapshot(
+        pair=pair,
+        timestamp=flush_ts,
+        recent_oi_flushes=[
+            OIFlushEvent(
+                timestamp=flush_ts,
+                pair=pair,
+                side="long",
+                size_usd=1_000_000.0,
+                price=100.0,
+                source="oi_proxy",
+            ),
+        ],
+    )
+    ds.get_market_snapshot.return_value = snap
+    ds.get_orderbook_snapshot.return_value = None
+    return ds
+
+
+def _liq_reclaim_candles() -> list[Candle]:
+    """21 confirmed candles where the trigger has a clean lower-wick reclaim
+    inside the prior 20-bar envelope."""
+    candles: list[Candle] = []
+    # Prior bars span ~100.5 to 99.5 — wide enough that the trigger close
+    # (100.2) sits inside.
+    for i in range(20):
+        candles.append(_make_candle(
+            ts_ms=i * 60_000,
+            o=100.0, h=100.5, l=99.5, c=100.1,
+        ))
+    candles.append(_make_candle(
+        ts_ms=20 * 60_000,
+        o=100.0, h=100.3, l=98.0, c=100.2,
+    ))
+    return candles
+
+
+class TestCrossSignalDedup:
+
+    def test_second_call_within_window_is_blocked(self):
+        ds = _mock_data_service_with_candles(_liq_reclaim_candles())
+        svc = StrategyService(ds)
+        trigger = _liq_reclaim_candles()[-1]
+
+        with _enable_scalp_shadow():
+            with patch("strategy_service.service.time.time", return_value=1_000_000.0):
+                first = svc.evaluate_scalp("BTC/USDT", trigger)
+            assert first is not None
+            assert first.setup_type == "scalp_liq_reclaim_v1"
+
+            # 10s later — well inside the 30s default window.
+            with patch("strategy_service.service.time.time", return_value=1_000_010.0):
+                second = svc.evaluate_scalp("BTC/USDT", trigger)
+            assert second is None
+
+    def test_call_after_window_fires_again(self):
+        ds = _mock_data_service_with_candles(_liq_reclaim_candles())
+        svc = StrategyService(ds)
+        trigger = _liq_reclaim_candles()[-1]
+
+        with _enable_scalp_shadow():
+            with patch("strategy_service.service.time.time", return_value=2_000_000.0):
+                first = svc.evaluate_scalp("BTC/USDT", trigger)
+            assert first is not None
+            # 31s later — past the 30s default window.
+            with patch("strategy_service.service.time.time", return_value=2_000_031.0):
+                second = svc.evaluate_scalp("BTC/USDT", trigger)
+            assert second is not None
+
+    def test_other_pair_not_blocked_by_first_pair(self):
+        """Dedup is keyed by pair — a fire on BTC must not gate ETH."""
+        ds = _mock_data_service_with_candles(_liq_reclaim_candles())
+        # Build a per-call snapshot that mirrors the requested pair so both
+        # fires get a fresh OI flush on their own pair.
+        def _per_pair_snapshot(pair: str):
+            flush_ts = int(time.time() * 1000)
+            return MarketSnapshot(
+                pair=pair,
+                timestamp=flush_ts,
+                recent_oi_flushes=[
+                    OIFlushEvent(
+                        timestamp=flush_ts, pair=pair, side="long",
+                        size_usd=1_000_000.0, price=100.0, source="oi_proxy",
+                    ),
+                ],
+            )
+        ds.get_market_snapshot.side_effect = _per_pair_snapshot
+
+        svc = StrategyService(ds)
+        trigger = _liq_reclaim_candles()[-1]
+
+        with _enable_scalp_shadow():
+            with patch("strategy_service.service.time.time", return_value=3_000_000.0):
+                btc = svc.evaluate_scalp("BTC/USDT", trigger)
+                eth = svc.evaluate_scalp("ETH/USDT", trigger)
+        assert btc is not None
+        assert eth is not None
+
+    def test_no_setup_does_not_arm_dedup(self):
+        """Calls that return None must not start the dedup window — otherwise
+        a quiet candle would block the next genuine signal.
+        """
+        ds = _mock_data_service_with_candles(_liq_reclaim_candles())
+        # Strip the OI flush so Signal 1 cannot fire; with no other signals
+        # plausible on this synthetic data, evaluate_scalp returns None.
+        snap = MarketSnapshot(pair="BTC/USDT", timestamp=0, recent_oi_flushes=[])
+        ds.get_market_snapshot.return_value = snap
+        # Force baseline prob to 0 so it can't accidentally fire.
+        svc = StrategyService(ds)
+        trigger = _liq_reclaim_candles()[-1]
+
+        with _enable_scalp_shadow(), patch(
+            "strategy_service.scalp_setups.settings.SCALP_BASELINE_FIRE_PROB", 0.0,
+        ):
+            with patch("strategy_service.service.time.time", return_value=4_000_000.0):
+                first = svc.evaluate_scalp("BTC/USDT", trigger)
+            assert first is None
+
+            # Restore the flush (stamped at wall-clock now so the freshness
+            # window inside scalp_setups, which uses real time.time(), accepts it).
+            flush_ts = int(time.time() * 1000)
+            snap2 = MarketSnapshot(
+                pair="BTC/USDT",
+                timestamp=flush_ts,
+                recent_oi_flushes=[
+                    OIFlushEvent(
+                        timestamp=flush_ts, pair="BTC/USDT", side="long",
+                        size_usd=1_000_000.0, price=100.0, source="oi_proxy",
+                    ),
+                ],
+            )
+            ds.get_market_snapshot.return_value = snap2
+
+            # Same simulated wall-clock time as the first call. If the dedup
+            # window had been armed by the no-op call above, this would be
+            # blocked. It must not be.
+            with patch("strategy_service.service.time.time", return_value=4_000_000.0):
+                second = svc.evaluate_scalp("BTC/USDT", trigger)
+            assert second is not None
