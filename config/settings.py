@@ -897,6 +897,45 @@ class Settings:
     SHADOW_TRADE_TIMEOUT_HOURS: int = int(os.getenv("SHADOW_TRADE_TIMEOUT_HOURS", "12"))
 
     # ========================
+    # SCALP SHADOW SIGNALS — v1 experiment (docs/plans/scalp_shadow_v1.md)
+    # ========================
+    # Independent experiment to test microstructural scalping signals in shadow
+    # mode only. Zero capital, zero changes to live or existing shadow setups.
+    # Disabled by default — each detector commit flips its own setup_type into
+    # SHADOW_MODE_SETUPS once wired. The master flag is a kill switch.
+    SCALP_SHADOW_ENABLED: bool = os.getenv("SCALP_SHADOW_ENABLED", "false").lower() == "true"
+    SCALP_EXPERIMENT_ID: str = os.getenv("SCALP_EXPERIMENT_ID", "scalp_v1_2026_05")
+
+    # Registry of scalp setup_types. Used by the report script to filter samples
+    # and by cross-signal dedup. Order matches plan doc.
+    SCALP_SETUP_TYPES: list = field(default_factory=lambda: [
+        "scalp_liq_reclaim_v1",
+        "scalp_sweep_choch_v1",
+        "scalp_vol_cvd_div_v1",
+        "scalp_funding_extreme_v1",
+        "scalp_random_baseline_v1",
+    ])
+
+    # Per-signal parameters — TP%, SL%, time_stop_seconds. Parsed by detectors
+    # and by ShadowMonitor when resolving outcomes.
+    # NOTE: percentages are absolute price moves, not R-multiples.
+    SCALP_SIGNAL_PARAMS: dict = field(default_factory=lambda: {
+        "scalp_liq_reclaim_v1":      {"tp_pct": 0.40, "sl_pct": 0.20, "time_stop_seconds": 180},
+        "scalp_sweep_choch_v1":      {"tp_pct": 0.30, "sl_pct": 0.15, "time_stop_seconds": 300},
+        "scalp_vol_cvd_div_v1":      {"tp_pct": 0.50, "sl_pct": 0.20, "time_stop_seconds": 240},
+        "scalp_funding_extreme_v1":  {"tp_pct": 0.80, "sl_pct": 0.30, "time_stop_seconds": 900},
+        "scalp_random_baseline_v1":  {"tp_pct": 0.40, "sl_pct": 0.20, "time_stop_seconds": 180},
+    })
+
+    # Cross-signal dedup window — if multiple scalp signals fire on same
+    # pair within this window, keep first only.
+    SCALP_DEDUP_WINDOW_SECONDS: int = int(os.getenv("SCALP_DEDUP_WINDOW_SECONDS", "30"))
+
+    # Round-trip taker fee assumption for fees-adjusted reporting (entry+exit).
+    # OKX/Bybit taker ~0.055% per leg → ~0.11% round-trip. Tunable per exchange.
+    SCALP_ROUND_TRIP_FEE_PCT: float = float(os.getenv("SCALP_ROUND_TRIP_FEE_PCT", "0.11"))
+
+    # ========================
     # ML INSTRUMENTATION
     # ========================
     # Feature version — increment when strategy params change in ways that
