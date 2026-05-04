@@ -462,6 +462,14 @@ class StrategyService:
         if setup is not None:
             return setup
 
+        # Random control — frequency-matched baseline. Sits last so a real
+        # signal always wins the slot when both would fire on the same candle.
+        setup = self._scalp_setups.evaluate_random_baseline(
+            pair, candles, market_snapshot,
+        )
+        if setup is not None:
+            return setup
+
         return None
 
     # ================================================================

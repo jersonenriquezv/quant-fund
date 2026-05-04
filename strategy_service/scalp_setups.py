@@ -18,6 +18,7 @@ Detectors run on settings.SCALP_TIMEFRAME (default 5m) until 1m candle
 fetching is added in a follow-up commit.
 """
 
+import random
 import time
 from typing import Optional
 
@@ -539,13 +540,69 @@ class ScalpSetupEvaluator:
     def evaluate_random_baseline(
         self,
         pair: str,
-        candles_1m: list[Candle],
+        candles: list[Candle],
         snapshot: Optional[MarketSnapshot],
+        rng: Optional[random.Random] = None,
     ) -> Optional[TradeSetup]:
         """Control — Random baseline.
 
-        Uniform random emission, frequency-matched to combined S1-S4 firing rate.
-        Direction 50/50. TP/SL/time_stop rotated to match the signal under comparison.
-        Purpose: any "winning" signal must beat this baseline by >= 15pp WR.
+        Fires with probability `settings.SCALP_BASELINE_FIRE_PROB` per call
+        (per pair, per evaluated candle). Direction is 50/50 uniform.
+        TP/SL/time_stop come from settings.SCALP_SIGNAL_PARAMS for
+        scalp_random_baseline_v1 (defaults match Signal 1 so the comparison
+        is apples to apples).
+
+        rng: optional injected random.Random for deterministic tests.
         """
-        return None
+        if not settings.SCALP_SHADOW_ENABLED:
+            return None
+
+        params = settings.SCALP_SIGNAL_PARAMS.get("scalp_random_baseline_v1")
+        if not params:
+            return None
+
+        if not candles:
+            return None
+        trigger = candles[-1]
+        if not trigger.confirmed or trigger.close <= 0:
+            return None
+
+        r = rng if rng is not None else random
+        if r.random() >= settings.SCALP_BASELINE_FIRE_PROB:
+            return None
+
+        direction = "long" if r.random() < 0.5 else "short"
+
+        tp_pct = params["tp_pct"] / 100.0
+        sl_pct = params["sl_pct"] / 100.0
+        entry = trigger.close
+
+        if direction == "long":
+            sl = entry * (1.0 - sl_pct)
+            tp2 = entry * (1.0 + tp_pct)
+            tp1 = entry + (tp2 - entry) * 0.5
+        else:
+            sl = entry * (1.0 + sl_pct)
+            tp2 = entry * (1.0 - tp_pct)
+            tp1 = entry - (entry - tp2) * 0.5
+
+        confluences = ["random_baseline"]
+
+        logger.info(
+            f"Scalp random_baseline: {pair} {direction} entry={entry:.4f} "
+            f"sl={sl:.4f} tp2={tp2:.4f}"
+        )
+
+        return TradeSetup(
+            timestamp=trigger.timestamp,
+            pair=pair,
+            direction=direction,
+            setup_type="scalp_random_baseline_v1",
+            entry_price=entry,
+            sl_price=sl,
+            tp1_price=tp1,
+            tp2_price=tp2,
+            confluences=confluences,
+            htf_bias="scalp",
+            ob_timeframe=trigger.timeframe,
+        )

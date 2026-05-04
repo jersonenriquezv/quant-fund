@@ -3,6 +3,7 @@
 Plan: docs/plans/scalp_shadow_v1.md.
 """
 
+import random
 import time
 from unittest.mock import patch
 
@@ -965,3 +966,93 @@ class TestFundingExtremeNoLookahead:
                 "BTC/USDT", candles + [wide], snap,
             )
         assert shifted is None
+
+
+# ============================================================
+# Control — random baseline
+# ============================================================
+
+class TestRandomBaseline:
+
+    def _baseline_candles(self) -> list[Candle]:
+        return [_make_candle(
+            ts_ms=0, o=100.0, h=100.1, l=99.9, c=100.0,
+        )]
+
+    def test_returns_none_when_disabled(self):
+        evaluator = ScalpSetupEvaluator()
+        # Force fire prob to 1.0 so any non-zero output proves the gate works.
+        with patch("strategy_service.scalp_setups.settings.SCALP_BASELINE_FIRE_PROB", 1.0):
+            result = evaluator.evaluate_random_baseline(
+                "BTC/USDT", self._baseline_candles(), None,
+                rng=random.Random(0),
+            )
+        assert result is None
+
+    def test_returns_none_when_rng_above_prob(self):
+        evaluator = ScalpSetupEvaluator()
+        # rng.random() returns 0.84 first for seed=0 — above the 0.02 default.
+        rng = random.Random(0)
+        with _enable_scalp_shadow():
+            result = evaluator.evaluate_random_baseline(
+                "BTC/USDT", self._baseline_candles(), None, rng=rng,
+            )
+        assert result is None
+
+    def test_emits_setup_when_rng_below_prob(self):
+        evaluator = ScalpSetupEvaluator()
+        # Force prob = 1.0 so any non-zero rng.random() lands below the gate.
+        with _enable_scalp_shadow(), patch(
+            "strategy_service.scalp_setups.settings.SCALP_BASELINE_FIRE_PROB", 1.0,
+        ):
+            setup = evaluator.evaluate_random_baseline(
+                "BTC/USDT", self._baseline_candles(), None,
+                rng=random.Random(0),
+            )
+        assert setup is not None
+        assert setup.setup_type == "scalp_random_baseline_v1"
+        assert setup.direction in ("long", "short")
+        assert setup.entry_price == pytest.approx(100.0)
+        # TP/SL match the registered scalp_random_baseline_v1 params (0.40 / 0.20).
+        if setup.direction == "long":
+            assert setup.sl_price == pytest.approx(100.0 * (1 - 0.002))
+            assert setup.tp2_price == pytest.approx(100.0 * (1 + 0.004))
+        else:
+            assert setup.sl_price == pytest.approx(100.0 * (1 + 0.002))
+            assert setup.tp2_price == pytest.approx(100.0 * (1 - 0.004))
+
+    def test_returns_none_for_unconfirmed_candle(self):
+        evaluator = ScalpSetupEvaluator()
+        candles = [_make_candle(
+            ts_ms=0, o=100.0, h=100.1, l=99.9, c=100.0, confirmed=False,
+        )]
+        with _enable_scalp_shadow(), patch(
+            "strategy_service.scalp_setups.settings.SCALP_BASELINE_FIRE_PROB", 1.0,
+        ):
+            result = evaluator.evaluate_random_baseline(
+                "BTC/USDT", candles, None, rng=random.Random(0),
+            )
+        assert result is None
+
+    def test_direction_distribution_is_balanced(self):
+        """Across many fires the long/short split should be near 50/50.
+        Sanity check that the direction draw isn't biased.
+        """
+        evaluator = ScalpSetupEvaluator()
+        rng = random.Random(42)
+        directions = []
+        candles = self._baseline_candles()
+        with _enable_scalp_shadow(), patch(
+            "strategy_service.scalp_setups.settings.SCALP_BASELINE_FIRE_PROB", 1.0,
+        ):
+            for _ in range(200):
+                setup = evaluator.evaluate_random_baseline(
+                    "BTC/USDT", candles, None, rng=rng,
+                )
+                assert setup is not None
+                directions.append(setup.direction)
+        longs = sum(1 for d in directions if d == "long")
+        shorts = 200 - longs
+        # 200 trials, expect ~100/100. Allow a wide band.
+        assert 70 <= longs <= 130
+        assert 70 <= shorts <= 130

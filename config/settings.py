@@ -884,6 +884,7 @@ class Settings:
         "scalp_sweep_choch_v1",
         "scalp_vol_cvd_div_v1",
         "scalp_funding_extreme_v1",
+        "scalp_random_baseline_v1",
         # "setup_g" — removed 2026-04-16: 0/4 WR. Breaker blocks too weak.
         # "setup_c" — removed 2026-04-13: no OB anchor. Signal is now a confluence booster.
         # "setup_e" — removed 2026-04-13: no OB anchor. Signal is now a confluence booster.
@@ -946,6 +947,12 @@ class Settings:
     # Round-trip taker fee assumption for fees-adjusted reporting (entry+exit).
     # OKX/Bybit taker ~0.055% per leg → ~0.11% round-trip. Tunable per exchange.
     SCALP_ROUND_TRIP_FEE_PCT: float = float(os.getenv("SCALP_ROUND_TRIP_FEE_PCT", "0.11"))
+
+    # Random baseline fire probability per evaluation (per pair, per candle).
+    # Tuned to roughly match the combined firing rate of S1-S4 once the
+    # experiment has produced data; starting low to avoid drowning real
+    # signals during bring-up.
+    SCALP_BASELINE_FIRE_PROB: float = float(os.getenv("SCALP_BASELINE_FIRE_PROB", "0.02"))
 
     # ========================
     # ML INSTRUMENTATION
