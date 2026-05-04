@@ -446,6 +446,16 @@ class StrategyService:
         if setup is not None:
             return setup
 
+        # Signal 3 needs orderbook spread for the chaos filter. Fetch lazily
+        # so signals 1-2 don't pay the REST roundtrip when they would have
+        # fired first.
+        orderbook = self._data.get_orderbook_snapshot(pair)
+        setup = self._scalp_setups.evaluate_vol_cvd_divergence(
+            pair, candles, market_snapshot, orderbook=orderbook,
+        )
+        if setup is not None:
+            return setup
+
         return None
 
     # ================================================================

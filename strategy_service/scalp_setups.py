@@ -41,6 +41,17 @@ _SWEEP_CHOCH_LOOKBACK_BARS = 20
 # whose body is dwarfed by their wicks.
 _SWEEP_CHOCH_MIN_BODY_RATIO = 0.60
 
+# Volume Z-score + CVD divergence:
+# Lookback bars for the volume mean/std baseline (excludes trigger candle).
+_VOL_CVD_LOOKBACK_BARS = 20
+# Minimum trigger-volume Z-score over the baseline.
+_VOL_CVD_Z_THRESHOLD = 3.0
+# Minimum |cvd_5m| / (buy_volume + sell_volume) — filters out borderline
+# imbalances where the sign of CVD is just noise. 0.20 ~ a 60/40 split.
+_VOL_CVD_MIN_IMBALANCE = 0.20
+# Max acceptable orderbook spread as fraction of mid. 2 bps = 0.0002.
+_VOL_CVD_MAX_SPREAD = 0.0002
+
 
 class ScalpSetupEvaluator:
     """Evaluates scalp microstructural setups for shadow tracking only.
@@ -304,17 +315,125 @@ class ScalpSetupEvaluator:
     def evaluate_vol_cvd_divergence(
         self,
         pair: str,
-        candles_1m: list[Candle],
+        candles: list[Candle],
         snapshot: Optional[MarketSnapshot],
+        orderbook: Optional[dict] = None,
     ) -> Optional[TradeSetup]:
         """Signal 3 — Volume Z-score + CVD divergence.
 
-        Trigger: 1m volume >= 3 sigma over 20-period mean AND CVD direction
-        opposite to candle direction.
-        Confirmation: orderbook spread <= 2bps.
-        Direction: dirección de CVD (no del precio).
+        Trigger: trigger candle volume >= `_VOL_CVD_Z_THRESHOLD` standard
+        deviations above the mean of the prior `_VOL_CVD_LOOKBACK_BARS` bars
+        AND the candle's price direction is opposite to the CVD direction
+        (price up while flow is selling, or price down while flow is buying).
+
+        Confirmation: orderbook spread <= `_VOL_CVD_MAX_SPREAD` (no chaos).
+
+        Direction: side of the CVD imbalance. CVD positive (buyers dominant)
+        => long; CVD negative => short. The price-vs-flow divergence is what
+        gives this its mean-reversion thesis.
         """
-        return None
+        if not settings.SCALP_SHADOW_ENABLED:
+            return None
+
+        params = settings.SCALP_SIGNAL_PARAMS.get("scalp_vol_cvd_div_v1")
+        if not params:
+            return None
+
+        if not candles or len(candles) < _VOL_CVD_LOOKBACK_BARS + 1:
+            return None
+
+        trigger = candles[-1]
+        if not trigger.confirmed or trigger.close <= 0:
+            return None
+
+        # Need CVD flow data and a clean book.
+        if snapshot is None or snapshot.cvd is None:
+            return None
+        if orderbook is None:
+            return None
+        spread = orderbook.get("spread", 0.0) or 0.0
+        if spread <= 0 or spread > _VOL_CVD_MAX_SPREAD:
+            return None
+
+        prior = candles[-(_VOL_CVD_LOOKBACK_BARS + 1):-1]
+        if len(prior) != _VOL_CVD_LOOKBACK_BARS:
+            return None
+        volumes = [c.volume for c in prior]
+        mean_vol = sum(volumes) / len(volumes)
+        var_vol = sum((v - mean_vol) ** 2 for v in volumes) / len(volumes)
+        std_vol = var_vol ** 0.5
+        if std_vol <= 0:
+            return None
+        z_score = (trigger.volume - mean_vol) / std_vol
+        if z_score < _VOL_CVD_Z_THRESHOLD:
+            return None
+
+        cvd_5m = snapshot.cvd.cvd_5m
+        total_flow = snapshot.cvd.buy_volume + snapshot.cvd.sell_volume
+        if total_flow <= 0:
+            return None
+        cvd_imbalance = abs(cvd_5m) / total_flow
+        if cvd_imbalance < _VOL_CVD_MIN_IMBALANCE:
+            return None
+
+        # Candle direction must be opposite to CVD direction (divergence).
+        if trigger.close > trigger.open:
+            candle_dir = "bull"
+        elif trigger.close < trigger.open:
+            candle_dir = "bear"
+        else:
+            return None  # doji — no clear price direction
+        if cvd_5m > 0:
+            cvd_dir = "bull"
+        elif cvd_5m < 0:
+            cvd_dir = "bear"
+        else:
+            return None
+        if candle_dir == cvd_dir:
+            return None  # aligned — no divergence
+
+        direction = "long" if cvd_dir == "bull" else "short"
+
+        tp_pct = params["tp_pct"] / 100.0
+        sl_pct = params["sl_pct"] / 100.0
+        entry = trigger.close
+
+        if direction == "long":
+            sl = entry * (1.0 - sl_pct)
+            tp2 = entry * (1.0 + tp_pct)
+            tp1 = entry + (tp2 - entry) * 0.5
+        else:
+            sl = entry * (1.0 + sl_pct)
+            tp2 = entry * (1.0 - tp_pct)
+            tp1 = entry - (entry - tp2) * 0.5
+
+        confluences = [
+            f"vol_z={z_score:.2f}",
+            f"cvd_imbalance={cvd_imbalance:.2f}",
+            f"candle_dir={candle_dir}",
+            f"cvd_dir={cvd_dir}",
+            f"spread_bps={spread * 1e4:.2f}",
+        ]
+
+        logger.info(
+            f"Scalp vol_cvd_div: {pair} {direction} entry={entry:.4f} "
+            f"sl={sl:.4f} tp2={tp2:.4f} z={z_score:.2f} "
+            f"cvd_imb={cvd_imbalance:.2f} spread_bps={spread * 1e4:.2f}"
+        )
+
+        return TradeSetup(
+            timestamp=trigger.timestamp,
+            pair=pair,
+            direction=direction,
+            setup_type="scalp_vol_cvd_div_v1",
+            entry_price=entry,
+            sl_price=sl,
+            tp1_price=tp1,
+            tp2_price=tp2,
+            confluences=confluences,
+            htf_bias="scalp",
+            ob_timeframe=trigger.timeframe,
+        )
 
     def evaluate_funding_extreme(
         self,

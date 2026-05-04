@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from shared.models import Candle, MarketSnapshot, OIFlushEvent
+from shared.models import Candle, CVDSnapshot, MarketSnapshot, OIFlushEvent
 from strategy_service.scalp_setups import (
     ScalpSetupEvaluator,
     _LIQ_RECLAIM_FLUSH_MAX_AGE_MS,
@@ -16,6 +16,10 @@ from strategy_service.scalp_setups import (
     _LIQ_RECLAIM_WICK_THRESHOLD,
     _SWEEP_CHOCH_LOOKBACK_BARS,
     _SWEEP_CHOCH_MIN_BODY_RATIO,
+    _VOL_CVD_LOOKBACK_BARS,
+    _VOL_CVD_MAX_SPREAD,
+    _VOL_CVD_MIN_IMBALANCE,
+    _VOL_CVD_Z_THRESHOLD,
 )
 
 
@@ -543,4 +547,258 @@ class TestSweepChochNoLookahead:
         )]
         with _enable_scalp_shadow():
             shifted = evaluator.evaluate_sweep_choch("BTC/USDT", candles_plus, None)
+        assert shifted is None
+
+
+# ============================================================
+# Signal 3 — vol Z-score + CVD divergence
+# ============================================================
+
+def _vol_cvd_history(
+    *,
+    base_volume: float = 100.0,
+    base_price: float = 100.0,
+) -> list[Candle]:
+    """Return 21 confirmed bars: 20 prior + 1 trigger slot.
+
+    Prior bars hold a flat low-variance volume baseline; tests overwrite the
+    trigger candle (`[-1]`) to set its volume + price direction.
+    """
+    candles: list[Candle] = []
+    for i in range(_VOL_CVD_LOOKBACK_BARS):
+        # Tiny per-bar volume jitter so std > 0.
+        v = base_volume + (0.5 if i % 2 == 0 else -0.5)
+        candles.append(_make_candle(
+            ts_ms=i * 60_000,
+            o=base_price - 0.05, h=base_price + 0.05,
+            l=base_price - 0.05, c=base_price,
+            volume=v,
+        ))
+    # Trigger placeholder.
+    candles.append(_make_candle(
+        ts_ms=_VOL_CVD_LOOKBACK_BARS * 60_000,
+        o=base_price, h=base_price, l=base_price, c=base_price,
+        volume=base_volume,
+    ))
+    return candles
+
+
+def _cvd_snapshot(
+    *,
+    pair: str = "BTC/USDT",
+    cvd_5m: float,
+    buy_volume: float = 1000.0,
+    sell_volume: float = 1000.0,
+) -> MarketSnapshot:
+    cvd = CVDSnapshot(
+        timestamp=0,
+        pair=pair,
+        cvd_5m=cvd_5m,
+        cvd_15m=cvd_5m,
+        cvd_1h=cvd_5m,
+        buy_volume=buy_volume,
+        sell_volume=sell_volume,
+    )
+    return MarketSnapshot(pair=pair, timestamp=0, cvd=cvd)
+
+
+def _ob(*, spread: float = 0.0001) -> dict:
+    """Synthetic orderbook snapshot — only `spread` is consumed by Signal 3."""
+    return {"spread": spread, "depth_bid_usd": 0.0, "depth_ask_usd": 0.0}
+
+
+class TestVolCvdGate:
+
+    def test_returns_none_when_disabled(self):
+        evaluator = ScalpSetupEvaluator()
+        result = evaluator.evaluate_vol_cvd_divergence(
+            "BTC/USDT", _vol_cvd_history(), _cvd_snapshot(cvd_5m=500),
+            orderbook=_ob(),
+        )
+        assert result is None
+
+    def test_returns_none_with_too_few_candles(self):
+        evaluator = ScalpSetupEvaluator()
+        short_history = _vol_cvd_history()[:_VOL_CVD_LOOKBACK_BARS]  # 20, need 21
+        with _enable_scalp_shadow():
+            result = evaluator.evaluate_vol_cvd_divergence(
+                "BTC/USDT", short_history, _cvd_snapshot(cvd_5m=500),
+                orderbook=_ob(),
+            )
+        assert result is None
+
+    def test_returns_none_without_snapshot_or_cvd(self):
+        evaluator = ScalpSetupEvaluator()
+        with _enable_scalp_shadow():
+            assert evaluator.evaluate_vol_cvd_divergence(
+                "BTC/USDT", _vol_cvd_history(), None, orderbook=_ob(),
+            ) is None
+            empty_snap = MarketSnapshot(pair="BTC/USDT", timestamp=0)
+            assert evaluator.evaluate_vol_cvd_divergence(
+                "BTC/USDT", _vol_cvd_history(), empty_snap, orderbook=_ob(),
+            ) is None
+
+    def test_returns_none_without_orderbook(self):
+        evaluator = ScalpSetupEvaluator()
+        with _enable_scalp_shadow():
+            result = evaluator.evaluate_vol_cvd_divergence(
+                "BTC/USDT", _vol_cvd_history(), _cvd_snapshot(cvd_5m=500),
+                orderbook=None,
+            )
+        assert result is None
+
+
+class TestVolCvdFilters:
+
+    def _trigger_history(
+        self, *, trigger_open: float, trigger_close: float, trigger_volume: float,
+    ) -> list[Candle]:
+        candles = _vol_cvd_history()
+        candles[-1] = _make_candle(
+            ts_ms=_VOL_CVD_LOOKBACK_BARS * 60_000,
+            o=trigger_open,
+            h=max(trigger_open, trigger_close) + 0.05,
+            l=min(trigger_open, trigger_close) - 0.05,
+            c=trigger_close,
+            volume=trigger_volume,
+        )
+        return candles
+
+    def test_no_signal_when_spread_too_wide(self):
+        evaluator = ScalpSetupEvaluator()
+        candles = self._trigger_history(
+            trigger_open=100.0, trigger_close=100.5, trigger_volume=500.0,
+        )
+        # 5 bps > 2 bps cap.
+        wide = _ob(spread=0.0005)
+        with _enable_scalp_shadow():
+            result = evaluator.evaluate_vol_cvd_divergence(
+                "BTC/USDT", candles, _cvd_snapshot(cvd_5m=-500),
+                orderbook=wide,
+            )
+        assert result is None
+        assert _VOL_CVD_MAX_SPREAD == 0.0002
+
+    def test_no_signal_when_z_below_threshold(self):
+        evaluator = ScalpSetupEvaluator()
+        # Trigger volume only marginally above baseline.
+        candles = self._trigger_history(
+            trigger_open=100.0, trigger_close=100.5, trigger_volume=101.0,
+        )
+        with _enable_scalp_shadow():
+            result = evaluator.evaluate_vol_cvd_divergence(
+                "BTC/USDT", candles, _cvd_snapshot(cvd_5m=-500),
+                orderbook=_ob(),
+            )
+        assert result is None
+        assert _VOL_CVD_Z_THRESHOLD == 3.0
+
+    def test_no_signal_when_cvd_imbalance_too_small(self):
+        evaluator = ScalpSetupEvaluator()
+        candles = self._trigger_history(
+            trigger_open=100.0, trigger_close=100.5, trigger_volume=500.0,
+        )
+        # |cvd_5m| / total_flow = 100 / 2000 = 0.05 < 0.20.
+        snap = _cvd_snapshot(cvd_5m=-100, buy_volume=1000, sell_volume=1000)
+        with _enable_scalp_shadow():
+            result = evaluator.evaluate_vol_cvd_divergence(
+                "BTC/USDT", candles, snap, orderbook=_ob(),
+            )
+        assert result is None
+        assert _VOL_CVD_MIN_IMBALANCE == 0.20
+
+    def test_no_signal_when_cvd_aligned_with_candle(self):
+        evaluator = ScalpSetupEvaluator()
+        # Bullish candle + bullish CVD = aligned, no divergence.
+        candles = self._trigger_history(
+            trigger_open=100.0, trigger_close=100.5, trigger_volume=500.0,
+        )
+        with _enable_scalp_shadow():
+            result = evaluator.evaluate_vol_cvd_divergence(
+                "BTC/USDT", candles, _cvd_snapshot(cvd_5m=500),
+                orderbook=_ob(),
+            )
+        assert result is None
+
+    def test_no_signal_on_doji_trigger(self):
+        evaluator = ScalpSetupEvaluator()
+        # close == open — no clear price direction.
+        candles = self._trigger_history(
+            trigger_open=100.0, trigger_close=100.0, trigger_volume=500.0,
+        )
+        with _enable_scalp_shadow():
+            result = evaluator.evaluate_vol_cvd_divergence(
+                "BTC/USDT", candles, _cvd_snapshot(cvd_5m=500),
+                orderbook=_ob(),
+            )
+        assert result is None
+
+
+class TestVolCvdSignals:
+
+    def test_long_on_bearish_candle_with_bullish_cvd(self):
+        evaluator = ScalpSetupEvaluator()
+        candles = _vol_cvd_history()
+        # Bearish trigger candle (close < open), big volume.
+        candles[-1] = _make_candle(
+            ts_ms=_VOL_CVD_LOOKBACK_BARS * 60_000,
+            o=100.5, h=100.6, l=99.7, c=99.8, volume=500.0,
+        )
+        snap = _cvd_snapshot(cvd_5m=600, buy_volume=1300, sell_volume=700)
+        with _enable_scalp_shadow():
+            setup = evaluator.evaluate_vol_cvd_divergence(
+                "BTC/USDT", candles, snap, orderbook=_ob(),
+            )
+        assert setup is not None
+        assert setup.setup_type == "scalp_vol_cvd_div_v1"
+        assert setup.direction == "long"
+        assert setup.entry_price == pytest.approx(99.8)
+        # TP 0.50% / SL 0.20% per defaults.
+        assert setup.sl_price == pytest.approx(99.8 * (1 - 0.002))
+        assert setup.tp2_price == pytest.approx(99.8 * (1 + 0.005))
+
+    def test_short_on_bullish_candle_with_bearish_cvd(self):
+        evaluator = ScalpSetupEvaluator()
+        candles = _vol_cvd_history()
+        candles[-1] = _make_candle(
+            ts_ms=_VOL_CVD_LOOKBACK_BARS * 60_000,
+            o=99.5, h=100.3, l=99.4, c=100.2, volume=500.0,
+        )
+        snap = _cvd_snapshot(cvd_5m=-600, buy_volume=700, sell_volume=1300)
+        with _enable_scalp_shadow():
+            setup = evaluator.evaluate_vol_cvd_divergence(
+                "BTC/USDT", candles, snap, orderbook=_ob(),
+            )
+        assert setup is not None
+        assert setup.direction == "short"
+        assert setup.entry_price == pytest.approx(100.2)
+
+
+class TestVolCvdNoLookahead:
+
+    def test_appending_future_candle_changes_trigger(self):
+        evaluator = ScalpSetupEvaluator()
+        candles = _vol_cvd_history()
+        candles[-1] = _make_candle(
+            ts_ms=_VOL_CVD_LOOKBACK_BARS * 60_000,
+            o=100.5, h=100.6, l=99.7, c=99.8, volume=500.0,
+        )
+        snap = _cvd_snapshot(cvd_5m=600, buy_volume=1300, sell_volume=700)
+        with _enable_scalp_shadow():
+            baseline = evaluator.evaluate_vol_cvd_divergence(
+                "BTC/USDT", candles, snap, orderbook=_ob(),
+            )
+        assert baseline is not None  # sanity
+
+        # Append a flat low-volume bar — the new trigger has no spike, so the
+        # detector must produce no signal even though the spike still sits in
+        # the prior window.
+        candles_plus = candles + [_make_candle(
+            ts_ms=(_VOL_CVD_LOOKBACK_BARS + 1) * 60_000,
+            o=99.8, h=99.85, l=99.75, c=99.82, volume=100.0,
+        )]
+        with _enable_scalp_shadow():
+            shifted = evaluator.evaluate_vol_cvd_divergence(
+                "BTC/USDT", candles_plus, snap, orderbook=_ob(),
+            )
         assert shifted is None
