@@ -881,6 +881,7 @@ class Settings:
         # Scalp shadow v1 — gated by SCALP_SHADOW_ENABLED at detection time.
         # Listing here makes the pipeline route them through the shadow path.
         "scalp_liq_reclaim_v1",
+        "scalp_sweep_choch_v1",
         # "setup_g" — removed 2026-04-16: 0/4 WR. Breaker blocks too weak.
         # "setup_c" — removed 2026-04-13: no OB anchor. Signal is now a confluence booster.
         # "setup_e" — removed 2026-04-13: no OB anchor. Signal is now a confluence booster.

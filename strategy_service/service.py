@@ -440,6 +440,12 @@ class StrategyService:
         if setup is not None:
             return setup
 
+        setup = self._scalp_setups.evaluate_sweep_choch(
+            pair, candles, market_snapshot,
+        )
+        if setup is not None:
+            return setup
+
         return None
 
     # ================================================================

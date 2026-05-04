@@ -14,6 +14,8 @@ from strategy_service.scalp_setups import (
     _LIQ_RECLAIM_FLUSH_MAX_AGE_MS,
     _LIQ_RECLAIM_LOOKBACK_BARS,
     _LIQ_RECLAIM_WICK_THRESHOLD,
+    _SWEEP_CHOCH_LOOKBACK_BARS,
+    _SWEEP_CHOCH_MIN_BODY_RATIO,
 )
 
 
@@ -336,3 +338,209 @@ class TestNoLookahead:
         # If detector had reached into trigger.high (200) for prior_high it
         # would have returned a setup.
         assert setup is None
+
+
+# ============================================================
+# Signal 2 — sweep + CHoCH (close-back-inside)
+# ============================================================
+
+def _sweep_choch_history(
+    *,
+    base_price: float = 100.0,
+    prior_high: float = 100.5,
+    prior_low: float = 99.5,
+) -> list[Candle]:
+    """Return 22 confirmed 5m candles: 20 prior + 1 sweep + 1 confirm slot.
+
+    The slots at indices [-2] and [-1] are placeholders that callers replace
+    with the specific sweep/confirm shape they want to test.
+    """
+    candles: list[Candle] = []
+    for i in range(_SWEEP_CHOCH_LOOKBACK_BARS):
+        candles.append(_make_candle(
+            ts_ms=i * 60_000,
+            o=base_price - 0.1,
+            h=prior_high,
+            l=prior_low,
+            c=base_price,
+        ))
+    # Sweep + confirm slots — populated per test.
+    candles.append(_make_candle(
+        ts_ms=_SWEEP_CHOCH_LOOKBACK_BARS * 60_000,
+        o=base_price, h=base_price + 0.1, l=base_price - 0.1, c=base_price,
+    ))
+    candles.append(_make_candle(
+        ts_ms=(_SWEEP_CHOCH_LOOKBACK_BARS + 1) * 60_000,
+        o=base_price, h=base_price + 0.1, l=base_price - 0.1, c=base_price,
+    ))
+    return candles
+
+
+class TestSweepChochGate:
+
+    def test_returns_none_when_disabled(self):
+        evaluator = ScalpSetupEvaluator()
+        candles = _sweep_choch_history()
+        result = evaluator.evaluate_sweep_choch("BTC/USDT", candles, None)
+        assert result is None
+
+    def test_returns_none_with_too_few_candles(self):
+        evaluator = ScalpSetupEvaluator()
+        candles = _sweep_choch_history()[:-1]  # 21 bars (need 22)
+        with _enable_scalp_shadow():
+            result = evaluator.evaluate_sweep_choch("BTC/USDT", candles, None)
+        assert result is None
+
+
+class TestSweepChochSignals:
+
+    def test_short_on_high_sweep_reclaim(self):
+        evaluator = ScalpSetupEvaluator()
+        candles = _sweep_choch_history()
+        # Sweep takes high (100.5), confirm closes back inside with bearish body.
+        candles[-2] = _make_candle(
+            ts_ms=20 * 60_000,
+            o=100.4, h=101.0, l=100.0, c=100.6,
+        )
+        candles[-1] = _make_candle(
+            ts_ms=21 * 60_000,
+            o=100.4, h=100.5, l=99.7, c=99.8,  # body 0.6 / range 0.8 = 0.75
+        )
+        with _enable_scalp_shadow():
+            setup = evaluator.evaluate_sweep_choch("BTC/USDT", candles, None)
+        assert setup is not None
+        assert setup.setup_type == "scalp_sweep_choch_v1"
+        assert setup.direction == "short"
+        assert setup.entry_price == pytest.approx(99.8)
+        # SL 0.15% above, TP2 0.30% below.
+        assert setup.sl_price == pytest.approx(99.8 * (1 + 0.0015))
+        assert setup.tp2_price == pytest.approx(99.8 * (1 - 0.003))
+
+    def test_long_on_low_sweep_reclaim(self):
+        evaluator = ScalpSetupEvaluator()
+        candles = _sweep_choch_history()
+        candles[-2] = _make_candle(
+            ts_ms=20 * 60_000,
+            o=99.6, h=100.0, l=99.0, c=99.4,
+        )
+        candles[-1] = _make_candle(
+            ts_ms=21 * 60_000,
+            o=99.6, h=100.3, l=99.5, c=100.2,  # body 0.6 / range 0.8 = 0.75
+        )
+        with _enable_scalp_shadow():
+            setup = evaluator.evaluate_sweep_choch("BTC/USDT", candles, None)
+        assert setup is not None
+        assert setup.direction == "long"
+        assert setup.entry_price == pytest.approx(100.2)
+
+    def test_no_signal_when_sweep_did_not_take_extreme(self):
+        evaluator = ScalpSetupEvaluator()
+        candles = _sweep_choch_history()
+        # Sweep candle stays inside the prior range.
+        candles[-2] = _make_candle(
+            ts_ms=20 * 60_000,
+            o=100.2, h=100.4, l=100.0, c=100.1,
+        )
+        candles[-1] = _make_candle(
+            ts_ms=21 * 60_000,
+            o=100.4, h=100.5, l=99.7, c=99.8,
+        )
+        with _enable_scalp_shadow():
+            setup = evaluator.evaluate_sweep_choch("BTC/USDT", candles, None)
+        assert setup is None
+
+    def test_no_signal_when_confirm_closes_outside(self):
+        evaluator = ScalpSetupEvaluator()
+        candles = _sweep_choch_history()
+        candles[-2] = _make_candle(
+            ts_ms=20 * 60_000,
+            o=100.4, h=101.0, l=100.0, c=100.8,
+        )
+        # Close above prior_high (100.5) — momentum continuation, not reclaim.
+        candles[-1] = _make_candle(
+            ts_ms=21 * 60_000,
+            o=100.6, h=101.2, l=100.55, c=101.1,
+        )
+        with _enable_scalp_shadow():
+            setup = evaluator.evaluate_sweep_choch("BTC/USDT", candles, None)
+        assert setup is None
+
+    def test_no_signal_when_body_ratio_below_threshold(self):
+        evaluator = ScalpSetupEvaluator()
+        candles = _sweep_choch_history()
+        candles[-2] = _make_candle(
+            ts_ms=20 * 60_000,
+            o=100.4, h=101.0, l=100.0, c=100.6,
+        )
+        # Body 0.1 / range 1.0 = 0.10 — well below 0.60 threshold.
+        candles[-1] = _make_candle(
+            ts_ms=21 * 60_000,
+            o=100.3, h=100.5, l=99.5, c=100.2,
+        )
+        with _enable_scalp_shadow():
+            setup = evaluator.evaluate_sweep_choch("BTC/USDT", candles, None)
+        assert setup is None
+        assert _SWEEP_CHOCH_MIN_BODY_RATIO == 0.60
+
+    def test_no_signal_when_confirm_body_direction_is_wrong(self):
+        """High sweep with bullish-bodied confirm must not fire (no real rejection)."""
+        evaluator = ScalpSetupEvaluator()
+        candles = _sweep_choch_history()
+        candles[-2] = _make_candle(
+            ts_ms=20 * 60_000,
+            o=100.4, h=101.0, l=100.0, c=100.6,
+        )
+        # Closes back inside but with a bullish body — not a rejection.
+        candles[-1] = _make_candle(
+            ts_ms=21 * 60_000,
+            o=99.8, h=100.5, l=99.7, c=100.4,
+        )
+        with _enable_scalp_shadow():
+            setup = evaluator.evaluate_sweep_choch("BTC/USDT", candles, None)
+        assert setup is None
+
+    def test_no_signal_for_unconfirmed_candle(self):
+        evaluator = ScalpSetupEvaluator()
+        candles = _sweep_choch_history()
+        candles[-2] = _make_candle(
+            ts_ms=20 * 60_000,
+            o=100.4, h=101.0, l=100.0, c=100.6,
+        )
+        candles[-1] = _make_candle(
+            ts_ms=21 * 60_000,
+            o=100.4, h=100.5, l=99.7, c=99.8, confirmed=False,
+        )
+        with _enable_scalp_shadow():
+            setup = evaluator.evaluate_sweep_choch("BTC/USDT", candles, None)
+        assert setup is None
+
+
+class TestSweepChochNoLookahead:
+
+    def test_appending_future_candle_breaks_pattern(self):
+        """If we append an unrelated bar after the confirm, the pattern is no
+        longer at indices [-2]/[-1]. Detector must not reach further back to
+        rediscover the original pattern.
+        """
+        evaluator = ScalpSetupEvaluator()
+        candles = _sweep_choch_history()
+        candles[-2] = _make_candle(
+            ts_ms=20 * 60_000,
+            o=100.4, h=101.0, l=100.0, c=100.6,
+        )
+        candles[-1] = _make_candle(
+            ts_ms=21 * 60_000,
+            o=100.4, h=100.5, l=99.7, c=99.8,
+        )
+        with _enable_scalp_shadow():
+            baseline = evaluator.evaluate_sweep_choch("BTC/USDT", candles, None)
+        assert baseline is not None  # sanity
+
+        # Append an unrelated flat candle.
+        candles_plus = candles + [_make_candle(
+            ts_ms=22 * 60_000,
+            o=99.8, h=99.9, l=99.7, c=99.85,
+        )]
+        with _enable_scalp_shadow():
+            shifted = evaluator.evaluate_sweep_choch("BTC/USDT", candles_plus, None)
+        assert shifted is None

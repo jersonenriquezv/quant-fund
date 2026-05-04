@@ -34,6 +34,13 @@ _LIQ_RECLAIM_LOOKBACK_BARS = 20
 # Max age of OI flush events (ms) considered fresh enough to anchor a reclaim.
 _LIQ_RECLAIM_FLUSH_MAX_AGE_MS = 5 * 60 * 1000
 
+# Sweep + CHoCH:
+# Lookback bars for prior high/low envelope (excluding sweep + confirm candles).
+_SWEEP_CHOCH_LOOKBACK_BARS = 20
+# Minimum body size as fraction of confirm candle range — filters noise candles
+# whose body is dwarfed by their wicks.
+_SWEEP_CHOCH_MIN_BODY_RATIO = 0.60
+
 
 class ScalpSetupEvaluator:
     """Evaluates scalp microstructural setups for shadow tracking only.
@@ -182,16 +189,117 @@ class ScalpSetupEvaluator:
     def evaluate_sweep_choch(
         self,
         pair: str,
-        candles_1m: list[Candle],
+        candles: list[Candle],
         snapshot: Optional[MarketSnapshot],
     ) -> Optional[TradeSetup]:
-        """Signal 2 — Sweep + 1m CHoCH.
+        """Signal 2 — Sweep + CHoCH (close-back-inside).
 
-        Trigger: price takes high/low of last 20x1m candles.
-        Confirmation: next 1m candle closes back inside range, body >= 60% of range.
-        Direction: counter to sweep.
+        Two-bar pattern:
+        - Sweep candle (`candles[-2]`): pierces the high or low of the prior
+          `_SWEEP_CHOCH_LOOKBACK_BARS` bars (those bars exclude both the sweep
+          and confirm candles).
+        - Confirm candle (`candles[-1]`): closes back inside the prior
+          envelope and has a body >= `_SWEEP_CHOCH_MIN_BODY_RATIO` of its
+          full range. The body direction must reject the sweep.
+
+        Direction: counter to the sweep (high swept => short, low swept => long).
+        TP/SL/time_stop come from settings.SCALP_SIGNAL_PARAMS.
+
+        snapshot is currently unused by this signal but kept in the signature
+        so all scalp evaluators present a uniform shape to the caller.
         """
-        return None
+        if not settings.SCALP_SHADOW_ENABLED:
+            return None
+
+        params = settings.SCALP_SIGNAL_PARAMS.get("scalp_sweep_choch_v1")
+        if not params:
+            return None
+
+        # Need: 20 prior bars + 1 sweep + 1 confirm = 22 candles minimum.
+        required = _SWEEP_CHOCH_LOOKBACK_BARS + 2
+        if not candles or len(candles) < required:
+            return None
+
+        confirm = candles[-1]
+        sweep = candles[-2]
+        if not confirm.confirmed or not sweep.confirmed:
+            return None
+        if confirm.close <= 0 or sweep.close <= 0:
+            return None
+
+        prior = candles[-(required):-2]
+        if len(prior) != _SWEEP_CHOCH_LOOKBACK_BARS:
+            return None
+        prior_high = max(c.high for c in prior)
+        prior_low = min(c.low for c in prior)
+
+        direction: Optional[str] = None
+        sweep_side: Optional[str] = None
+        if sweep.high > prior_high and confirm.close < prior_high:
+            # High swept then reclaimed back inside — short setup.
+            direction = "short"
+            sweep_side = "high"
+        elif sweep.low < prior_low and confirm.close > prior_low:
+            # Low swept then reclaimed back inside — long setup.
+            direction = "long"
+            sweep_side = "low"
+        else:
+            return None
+
+        # Confirm candle must close in the direction of the rejection.
+        # For a short, rejection = close below open. For a long, close above open.
+        if direction == "short" and confirm.close >= confirm.open:
+            return None
+        if direction == "long" and confirm.close <= confirm.open:
+            return None
+
+        confirm_range = confirm.high - confirm.low
+        if confirm_range <= 0:
+            return None
+        body_ratio = abs(confirm.close - confirm.open) / confirm_range
+        if body_ratio < _SWEEP_CHOCH_MIN_BODY_RATIO:
+            return None
+
+        tp_pct = params["tp_pct"] / 100.0
+        sl_pct = params["sl_pct"] / 100.0
+        entry = confirm.close
+
+        if direction == "long":
+            sl = entry * (1.0 - sl_pct)
+            tp2 = entry * (1.0 + tp_pct)
+            tp1 = entry + (tp2 - entry) * 0.5
+        else:
+            sl = entry * (1.0 + sl_pct)
+            tp2 = entry * (1.0 - tp_pct)
+            tp1 = entry - (entry - tp2) * 0.5
+
+        confluences = [
+            f"sweep_{sweep_side}",
+            "choch_close_inside",
+            f"body_ratio={body_ratio:.2f}",
+            f"prior_high={prior_high:.4f}",
+            f"prior_low={prior_low:.4f}",
+        ]
+
+        logger.info(
+            f"Scalp sweep_choch: {pair} {direction} entry={entry:.4f} "
+            f"sl={sl:.4f} tp2={tp2:.4f} sweep_side={sweep_side} "
+            f"body_ratio={body_ratio:.2f}"
+        )
+
+        return TradeSetup(
+            timestamp=confirm.timestamp,
+            pair=pair,
+            direction=direction,
+            setup_type="scalp_sweep_choch_v1",
+            entry_price=entry,
+            sl_price=sl,
+            tp1_price=tp1,
+            tp2_price=tp2,
+            confluences=confluences,
+            htf_bias="scalp",
+            ob_timeframe=confirm.timeframe,
+        )
 
     def evaluate_vol_cvd_divergence(
         self,
