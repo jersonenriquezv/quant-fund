@@ -462,7 +462,7 @@ class BybitWatcher:
         return lines
 
     def _fmt_open_alert(self, st: PositionState, annotation_id: int, ctx: dict, auto: dict) -> str:
-        side_emoji = "🟢 LONG" if st.side == "Buy" else "🔴 SHORT"
+        side_emoji = "🟢 LONG" if st.key.side == "Buy" else "🔴 SHORT"
         url = f"{self._dashboard_base}/annotate/{annotation_id}"
         lines = [
             f"<b>📥 TRADE OPEN — {st.key.symbol}</b>",

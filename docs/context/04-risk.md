@@ -114,7 +114,7 @@ Auto-reset: contadores diarios se resetean a medianoche UTC, semanales el lunes 
 | Setting | Default | Descripción |
 |---|---|---|
 | `RISK_PER_TRADE` | `0.01` (1%) | % of capital risked per trade. PositionSizer: size = (capital × 1%) / SL_distance |
-| `MAX_LEVERAGE` | `7` | Cap on PositionSizer leverage output |
+| `MAX_LEVERAGE` | `10` | Cap on PositionSizer leverage output |
 | `MAX_DAILY_DRAWDOWN` | `0.10` (10%) | DD diario máximo |
 | `MAX_WEEKLY_DRAWDOWN` | `0.10` (10%) | DD semanal máximo |
 | `MAX_OPEN_POSITIONS` | `8` | Posiciones simultáneas máximas |

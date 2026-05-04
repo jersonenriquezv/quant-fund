@@ -87,6 +87,27 @@ class StrategyService:
         # are tuples of (fetched_at_ts, orderbook_dict_or_None).
         self._scalp_ob_cache: dict[str, tuple[float, dict | None]] = {}
 
+    @staticmethod
+    def _shadow_scope_allows(setup: TradeSetup) -> bool:
+        """Return whether a shadow setup is inside its research scope.
+
+        Main.py still owns the generic shadow quarantine path and outcome
+        labels. Engine 1 uses this earlier check so filtered primary signals
+        do not co-emit orphan benchmark rows.
+        """
+        if setup.setup_type not in settings.SHADOW_MODE_SETUPS:
+            return True
+
+        allowed_pairs = settings.SHADOW_PAIR_FILTER.get(setup.setup_type)
+        if allowed_pairs is not None and setup.pair not in allowed_pairs:
+            return False
+
+        allowed_dirs = settings.SHADOW_DIRECTION_FILTER.get(setup.setup_type)
+        if allowed_dirs is not None and setup.direction not in allowed_dirs:
+            return False
+
+        return True
+
     def evaluate(self, pair: str,
                  trigger_candle: Candle) -> Optional[TradeSetup]:
         """Live-compatible single-setup entry point.
@@ -434,6 +455,12 @@ class StrategyService:
                     ob_timeframe=ltf,
                 )
                 if engine_setup is not None:
+                    if not self._shadow_scope_allows(engine_setup):
+                        logger.debug(
+                            f"Engine1 scope filtered: pair={pair} "
+                            f"direction={engine_setup.direction}"
+                        )
+                        continue
                     logger.info(
                         f"Engine1 Trend-Pullback found: pair={pair} "
                         f"direction={engine_setup.direction} "

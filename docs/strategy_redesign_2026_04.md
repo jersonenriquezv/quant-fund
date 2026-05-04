@@ -374,7 +374,7 @@ Without this phase, the §6 benchmark comparisons cannot share a population — 
 **Weeks 1–2: Engine 1 (Trend-Pullback) shadow ship. ✅ shipped 2026-04-27.**
 - Module: `strategy_service/engines/trend_pullback.py`. Does not edit `setups.py`.
 - Setup type: `engine1_trend_pullback`. Registered in `SHADOW_MODE_SETUPS`.
-- Pair scope: `SHADOW_PAIR_FILTER` restricts to `["BTC/USDT", "ETH/USDT"]`.
+- Pair/direction scope: v1 shipped on BTC+ETH; v1b (2026-05-04) isolates `ETH/USDT` short only after v1 diagnostics showed BTC and ETH long negative while ETH short was the only positive slice.
 - Wired into `StrategyService._iterate_setups` after Setup G — co-emits via `evaluate_all()` alongside legacy setup_a/b/f. Live path unchanged.
 - Owns its own gates (entry distance ≤ 1.5×ATR, target space ≥ 1.4R after fee buffer, net R:R ≥ 1.6) — does NOT inherit `_apply_expectancy_filters`.
 - v1 thresholds documented as module-level constants (NOT optimized): impulse 3–8 candles ≥ 2× ATR, body ratio ≥ 0.55, directional ≥ 60%; pullback 2–6 candles, retrace 30–85%, max single opposing body ≤ 70% of pullback range.
@@ -382,7 +382,7 @@ Without this phase, the §6 benchmark comparisons cannot share a population — 
 - Benchmarks **shipped 2026-04-27** in `strategy_service/engines/benchmarks.py`:
   - `bench_engine1_random_direction` — sha256(pair|ts|engine_id|experiment_id) coin flip on direction; SL/TP mirrored across entry when flipped so R:R is preserved. Tests directional skill above noise.
   - `bench_engine1_market_now` — same direction as Engine 1 but entry at `current_price` (no pullback wait), SL/TP at the same R-multiples Engine 1 used. Tests whether the pullback-retest entry adds edge over an immediate market entry on HTF bias.
-  Both benchmarks co-emit on every Engine 1 detection via `evaluate_all()`, are registered in `SHADOW_MODE_SETUPS` + `SHADOW_PAIR_FILTER` (BTC + ETH only), and produce parallel rows in `ml_setups` so bootstrap CI from `scripts/backtest_bootstrap.py` can compare WR / PF directly. Engine 1's API was unchanged — the benchmarks consume the emitted `TradeSetup` and reuse its geometry.
+  Both benchmarks co-emit on every in-scope Engine 1 detection via `evaluate_all()`, are registered in `SHADOW_MODE_SETUPS` + `SHADOW_PAIR_FILTER`, and produce parallel rows in `ml_setups` so bootstrap CI from `scripts/backtest_bootstrap.py` can compare WR / PF directly. Engine 1's API was unchanged — the benchmarks consume the emitted `TradeSetup` and reuse its geometry. v1b pre-filters Engine 1 scope before benchmark emission to avoid orphan benchmark rows from quarantined BTC/long signals.
 - Daily: monitor shadow_health Grafana dashboard. Weekly: run `weekly_edge_audit.py`.
 
 **Weeks 3–4: Engine 2 (Failed Breakout) shadow ship.**

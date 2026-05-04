@@ -104,7 +104,7 @@ class Settings:
     RISK_PER_TRADE: float = float(os.getenv("RISK_PER_TRADE", "0.01"))  # 1%
 
     # Máximo apalancamiento permitido
-    MAX_LEVERAGE: int = int(os.getenv("MAX_LEVERAGE", "7"))
+    MAX_LEVERAGE: int = int(os.getenv("MAX_LEVERAGE", "10"))
 
     # Drawdown diario máximo antes de apagar el bot
     MAX_DAILY_DRAWDOWN: float = float(os.getenv("MAX_DAILY_DRAWDOWN", "0.10"))  # 10% — was 5%, raised because $20 trades at 7x on $108 capital hit 5% after ~3 SLs, blocking entire day
@@ -188,7 +188,7 @@ class Settings:
     # Volumen mínimo relativo (vs promedio) para validar un OB
     # Optuna 03-15: 1.2→1.3 (PF 1.05→2.65, walk-forward validated)
     # Restored from 1.0 (audit 03-18): 1.0 = disabled, every candle qualifies as OB
-    OB_MIN_VOLUME_RATIO: float = 1.3
+    OB_MIN_VOLUME_RATIO: float = 1.5
     # Horas máximas de vida de un OB antes de considerarlo viejo
     # Optuna 03-15: 72→84 (longer OB lifespan, more setups without quality loss)
     OB_MAX_AGE_HOURS: int = 84
@@ -910,6 +910,8 @@ class Settings:
     # setup_a long: 5% WR (1/20) — proven broken. Short only (33% WR, 1/3).
     SHADOW_DIRECTION_FILTER: dict = field(default_factory=lambda: {
         "setup_a": ["short"],
+        # Engine 1 v1b isolates the only positive v1 slice (ETH short).
+        "engine1_trend_pullback": ["short"],
     })
     # Pair filter for shadow mode — restrict setups to specific pairs.
     # Omitted setups track all TRADING_PAIRS. Empty list = blocked entirely.
@@ -921,15 +923,14 @@ class Settings:
     SHADOW_PAIR_FILTER: dict = field(default_factory=lambda: {
         "setup_d_choch": ["BTC/USDT", "ETH/USDT"],
         "setup_d_bos": ["BTC/USDT", "ETH/USDT"],
-        # Engine 1 Trend-Pullback: BTC+ETH only for the first 2 months of
-        # validation (redesign §4.1, user-confirmed). SOL added later only
-        # if sample-starvation forces expansion.
-        "engine1_trend_pullback": ["BTC/USDT", "ETH/USDT"],
+        # Engine 1 v1b: isolate ETH short after v1 showed BTC and ETH long
+        # negative while ETH short remained the only positive slice.
+        "engine1_trend_pullback": ["ETH/USDT"],
         # Engine 1 benchmarks share the trigger candle with Engine 1, so
         # they mirror its pair scope. Emitting them on pairs Engine 1 itself
         # cannot reach would produce orphan rows with no comparator.
-        "bench_engine1_random_direction": ["BTC/USDT", "ETH/USDT"],
-        "bench_engine1_market_now": ["BTC/USDT", "ETH/USDT"],
+        "bench_engine1_random_direction": ["ETH/USDT"],
+        "bench_engine1_market_now": ["ETH/USDT"],
     })
     # Fictional capital for shadow mode position sizing ($500 USDT).
     # Shadow R:R and position sizes reflect realistic trades you'd take later.
@@ -1007,7 +1008,7 @@ class Settings:
     # Experiment ID — tracks which parameter regime generated a sample.
     # feature_version = what columns mean. experiment_id = what rules generated sample.
     # Same features + different gates = contaminated dataset without this.
-    EXPERIMENT_ID: str = os.getenv("EXPERIMENT_ID", "redesign_pre_2026_04_27")
+    EXPERIMENT_ID: str = os.getenv("EXPERIMENT_ID", "engine1_eth_short_v1b_2026_05_04")
 
     # ========================
     # LIQUIDATION HEATMAP

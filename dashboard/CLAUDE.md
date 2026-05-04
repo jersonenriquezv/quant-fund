@@ -87,7 +87,7 @@ Dashboard reads from these keys. **Never write to `qf:bot:*` from the dashboard*
 ## Verify after changes
 ```bash
 # Backend
-python -m pytest tests/test_dashboard_api.py tests/test_manual_calculator.py tests/test_manual_trade_manager.py -v --tb=short
+python -m pytest tests/test_manual_trading.py -v --tb=short
 
 # Frontend (build check + manual mobile test)
 cd dashboard/web && npm run build

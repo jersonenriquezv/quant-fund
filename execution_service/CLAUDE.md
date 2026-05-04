@@ -67,7 +67,7 @@ Receive `RiskApproval` → place entry + attached SL/TP on OKX → manage positi
 
 ## Verify after changes
 ```bash
-python -m pytest tests/test_execution_service.py tests/test_position_monitor.py tests/test_executor.py -v --tb=short
+python -m pytest tests/test_execution.py -v --tb=short
 ```
 
 For real-order verification (live OKX, manual): `tests/test_execution_live.py`

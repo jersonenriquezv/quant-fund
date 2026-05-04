@@ -12,6 +12,7 @@ Tests what the strategy audit (2026-03-18) identified as gaps:
 """
 
 import time
+from dataclasses import replace
 import pytest
 
 from config.settings import settings, QUICK_SETUP_TYPES
@@ -1060,6 +1061,34 @@ class TestEvaluateAll:
             "setup_a", "engine1_trend_pullback",
         ]
         assert first.setup_type == "setup_a"
+
+    def test_shadow_scope_filter_blocks_out_of_scope_engine1(self, monkeypatch):
+        """Engine 1 filters before benchmark co-emission to avoid orphan rows."""
+        setup = self._stub_setup("engine1_trend_pullback", ts=2)
+        setup = replace(setup, pair="BTC/USDT", direction="long")
+        monkeypatch.setattr(settings, "SHADOW_MODE_SETUPS", ["engine1_trend_pullback"])
+        monkeypatch.setattr(settings, "SHADOW_PAIR_FILTER", {
+            "engine1_trend_pullback": ["ETH/USDT"],
+        })
+        monkeypatch.setattr(settings, "SHADOW_DIRECTION_FILTER", {
+            "engine1_trend_pullback": ["short"],
+        })
+
+        assert StrategyService._shadow_scope_allows(setup) is False
+
+    def test_shadow_scope_filter_allows_eth_short_engine1(self, monkeypatch):
+        """Engine 1 v1b scope allows only the isolated ETH-short slice."""
+        setup = self._stub_setup("engine1_trend_pullback", ts=2)
+        setup = replace(setup, pair="ETH/USDT", direction="short")
+        monkeypatch.setattr(settings, "SHADOW_MODE_SETUPS", ["engine1_trend_pullback"])
+        monkeypatch.setattr(settings, "SHADOW_PAIR_FILTER", {
+            "engine1_trend_pullback": ["ETH/USDT"],
+        })
+        monkeypatch.setattr(settings, "SHADOW_DIRECTION_FILTER", {
+            "engine1_trend_pullback": ["short"],
+        })
+
+        assert StrategyService._shadow_scope_allows(setup) is True
 
 
 # ============================================================
