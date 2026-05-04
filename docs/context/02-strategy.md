@@ -134,8 +134,8 @@ Status actual:
 - `evaluate_htf(pair, candle)` — evalúa 4H candles para HTF campaigns. Bias desde Daily. Detectores corren con params HTF (OB age 168h, distance 10%, FVG age 168h). Overrides temporales de settings durante evaluación. Gate: `HTF_ENABLED_SETUPS` (default: A, B, F).
 - `get_htf_swing_levels(pair)` — `(swing_highs, swing_lows)` de 4H. Usado por CampaignMonitor para trailing SL.
 - **`ENABLED_SETUPS` gate** — post-detection, verifica `setup.setup_type in settings.ENABLED_SETUPS`. Si no está habilitado → debug + continúa. **Actual: `[]`** (SHADOW-only). `SHADOW_MODE_SETUPS` enruta a shadow monitor.
-- **`SHADOW_DIRECTION_FILTER`**: `{"setup_a": ["short"]}` — setup_a long bloqueado en shadow (5% WR proven broken). Outcome: `shadow_direction_filtered`.
-- **`SHADOW_PAIR_FILTER`** (added 2026-04-27 per redesign §3.4–3.5): `{"setup_d_choch": ["BTC/USDT","ETH/USDT"], "setup_d_bos": ["BTC/USDT","ETH/USDT"]}`. Quarantena de quick setups a pares con histórico — DOGE/XRP/LINK/AVAX/SOL absorbidos por dedup sin producir outcomes en experiment batch1. Outcome: `shadow_pair_filtered`.
+- **`SHADOW_DIRECTION_FILTER`**: `{"setup_a": ["short"], "engine1_trend_pullback": ["short"]}` — setup_a long bloqueado en shadow (5% WR proven broken); Engine 1 v1b aislado a shorts. Outcome genérico: `shadow_direction_filtered`.
+- **`SHADOW_PAIR_FILTER`**: quick setups `setup_d_*` siguen en BTC+ETH; Engine 1 v1b y benchmarks están aislados a `ETH/USDT`. Quarantenas fuera de scope usan `shadow_pair_filtered` cuando pasan por main.py; Engine 1 se pre-filtra antes de co-emitir benchmarks para evitar orphans.
 - Cooldown tracking per (pair, setup_type) para quick setups.
 - **Failed OB tracking** — `mark_ob_failed(pair, sl_price, entry_price)` registra OBs perdedores en memoria. `is_ob_failed(...)` consulta antes de ejecutar. Breakeven (PnL=0) NO marca como fallido. Resetea en restart.
 
@@ -144,7 +144,7 @@ Status actual:
 ### Setup gating
 - `ENABLED_SETUPS: list = []` — live execution gate (vacío = SHADOW-only).
 - `SHADOW_MODE_SETUPS` includes legacy shadow setups plus redesign Engine 1 tracks. See `docs/SYSTEM_BASELINE.md` for the current authoritative list.
-- `SHADOW_DIRECTION_FILTER = {"setup_a": ["short"]}`.
+- `SHADOW_DIRECTION_FILTER = {"setup_a": ["short"], "engine1_trend_pullback": ["short"]}`.
 - `QUICK_SETUP_TYPES = ("setup_c", "setup_d_bos", "setup_d_choch", "setup_e")` — `setup_c`/`setup_e` remain in the legacy tuple for compatibility but are removed from active/shadow setup lists.
 - `AI_BYPASS_SETUP_TYPES = ("setup_a", "setup_b", "setup_f")`.
 

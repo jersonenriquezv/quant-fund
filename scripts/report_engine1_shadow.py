@@ -61,7 +61,9 @@ ENGINE1_SETUPS: tuple[str, ...] = (
     "bench_engine1_market_now",
 )
 ENGINE1_PRIMARY = "engine1_trend_pullback"
-EXPECTED_PAIRS: tuple[str, ...] = ("BTC/USDT", "ETH/USDT")
+EXPECTED_PAIRS: tuple[str, ...] = tuple(
+    settings.SHADOW_PAIR_FILTER.get(ENGINE1_PRIMARY, ("BTC/USDT", "ETH/USDT"))
+)
 N_TARGET = 50
 PENDING_STALE_HOURS = 24
 DRIFT_TOLERANCE_ROWS = 2
@@ -562,7 +564,7 @@ def main() -> int:
         print("    Engine 1's pipeline dedup when bench direction flips, leaving")
         print("    a detection pass with bench rows but no engine1 row.")
 
-    section("Pair leakage (rows outside BTC/ETH not pair_filtered)")
+    section(f"Pair leakage (rows outside {', '.join(EXPECTED_PAIRS)} not pair_filtered)")
     if not leaks:
         print("  none - quarantine intact")
     else:

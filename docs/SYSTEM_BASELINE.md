@@ -4,10 +4,10 @@
 > Reflects code reality — if code and doc disagree, fix the doc.
 > Documentation rule: this file is the operational source of truth. `README.md` is a portfolio overview; `docs/context/*` explains concepts and history and may intentionally lag unless this baseline links to it.
 
-**Last updated:** 2026-04-27
+**Last updated:** 2026-05-04
 **ML Feature Version:** 18
 **Bot status:** SHADOW-ONLY (OKX_SANDBOX=false, ENABLED_SETUPS=[], ~$86 capital untouched)
-**Active experiment:** `redesign_pre_2026_04_27` (regime_label + tier extraction fix; **Engine 1 shadow + benchmarks shipped 2026-04-27** on BTC+ETH only — co-emits `bench_engine1_random_direction` + `bench_engine1_market_now` per detection)
+**Active experiment:** `engine1_eth_short_v1b_2026_05_04` (Engine 1 v1b isolates ETH short only after v1 diagnostics: BTC and ETH long negative, ETH short only positive slice; benchmarks mirror ETH scope)
 **Monitoring:** Grafana dashboard `shadow-health` + systemd user timer `shadow-health-alert.timer` (hourly)
 
 ---
@@ -34,7 +34,7 @@
 | F (Pure OB Retest) | **SHADOW** | swing, was live until 04-15 | 50% (1TP/1SL live) |
 | G (Breaker Block) | **DISABLED** | 0/4 WR. Removed 04-16. | 0% |
 | H (Momentum/Impulse) | **DISABLED** | — | 10.7% WR (28 trades). Removed 04-13. |
-| Engine 1 (Trend-Pullback / Impulse Retest) | **SHADOW (BTC+ETH only)** | redesign engine, shipped 2026-04-27 (commit `6dd6901`); ML lossless cols 2026-04-27 (Migration 21); benchmarks shipped 2026-04-27 (`bench_engine1_random_direction` + `bench_engine1_market_now`, BTC+ETH only) | no historical — fresh emission |
+| Engine 1 (Trend-Pullback / Impulse Retest) | **SHADOW (ETH short only)** | v1b isolated 2026-05-04; pre-emission scope filter prevents out-of-scope benchmark orphans; benchmarks mirror ETH scope | v1: ETH short only positive slice; BTC + ETH long quarantined |
 
 ### Risk Guardrails
 | Parameter | Value | Notes |
@@ -351,6 +351,16 @@ Three storages hold trade-like rows. Only ONE is authoritative for ML training /
 ---
 
 ## 8. Changelog
+
+### 2026-05-04 — Engine 1 v1b ETH-Short Isolation
+**What changed:**
+- `EXPERIMENT_ID` changed to `engine1_eth_short_v1b_2026_05_04`.
+- `engine1_trend_pullback` shadow scope narrowed to `ETH/USDT` shorts only.
+- Engine 1 benchmarks narrowed to `ETH/USDT` and are only co-emitted after the primary Engine 1 setup passes the same research scope.
+
+**Why:** Engine 1 v1 reached enough outcomes to make a coarse decision before 100: BTC long/short and ETH long were negative, while ETH short was the only positive slice. The old sample also had repeated geometries and benchmark orphan/drift artifacts. v1b asks one clean question: does ETH-short Engine 1 survive with cleaner scope and 10x runtime sizing?
+
+**Expected impact:** Lower Telegram volume, fewer repeated/out-of-scope benchmark rows, and a cleaner ETH-short sample. No TP, BE, trailing, entry geometry, SL geometry, or detector thresholds changed.
 
 ### 2026-05-04 — Shadow Sizing Clarity + Runtime Leverage Sync + Benchmark Telegram Silencing
 **What changed:**

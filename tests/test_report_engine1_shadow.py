@@ -18,12 +18,15 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 # `scripts/` is not an installed package — make it importable as a
 # namespace package by putting the repo root on sys.path.
 _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+import scripts.report_engine1_shadow as report
 from scripts.report_engine1_shadow import (
     DRIFT_TOLERANCE_ROWS,
     ENGINE1_PRIMARY,
@@ -48,6 +51,12 @@ from scripts.report_engine1_shadow import (
 BENCH_RANDOM = "bench_engine1_random_direction"
 BENCH_MARKET = "bench_engine1_market_now"
 T0 = datetime(2026, 4, 30, 0, 0, 0)
+
+
+@pytest.fixture(autouse=True)
+def _legacy_expected_pairs(monkeypatch):
+    """Unit fixtures use BTC synthetic rows unless a test overrides scope."""
+    monkeypatch.setattr(report, "EXPECTED_PAIRS", ("BTC/USDT", "ETH/USDT"))
 
 
 def _row(setup: str, pair: str, ts: int, outcome: str, ca: datetime) -> Row:

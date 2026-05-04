@@ -902,6 +902,8 @@ class Settings:
     # setup_a long: 5% WR (1/20) — proven broken. Short only (33% WR, 1/3).
     SHADOW_DIRECTION_FILTER: dict = field(default_factory=lambda: {
         "setup_a": ["short"],
+        # Engine 1 v1b isolates the only positive v1 slice (ETH short).
+        "engine1_trend_pullback": ["short"],
     })
     # Pair filter for shadow mode — restrict setups to specific pairs.
     # Omitted setups track all TRADING_PAIRS. Empty list = blocked entirely.
@@ -913,15 +915,14 @@ class Settings:
     SHADOW_PAIR_FILTER: dict = field(default_factory=lambda: {
         "setup_d_choch": ["BTC/USDT", "ETH/USDT"],
         "setup_d_bos": ["BTC/USDT", "ETH/USDT"],
-        # Engine 1 Trend-Pullback: BTC+ETH only for the first 2 months of
-        # validation (redesign §4.1, user-confirmed). SOL added later only
-        # if sample-starvation forces expansion.
-        "engine1_trend_pullback": ["BTC/USDT", "ETH/USDT"],
+        # Engine 1 v1b: isolate ETH short after v1 showed BTC and ETH long
+        # negative while ETH short remained the only positive slice.
+        "engine1_trend_pullback": ["ETH/USDT"],
         # Engine 1 benchmarks share the trigger candle with Engine 1, so
         # they mirror its pair scope. Emitting them on pairs Engine 1 itself
         # cannot reach would produce orphan rows with no comparator.
-        "bench_engine1_random_direction": ["BTC/USDT", "ETH/USDT"],
-        "bench_engine1_market_now": ["BTC/USDT", "ETH/USDT"],
+        "bench_engine1_random_direction": ["ETH/USDT"],
+        "bench_engine1_market_now": ["ETH/USDT"],
     })
     # Fictional capital for shadow mode position sizing ($500 USDT).
     # Shadow R:R and position sizes reflect realistic trades you'd take later.
@@ -940,7 +941,7 @@ class Settings:
     # Experiment ID — tracks which parameter regime generated a sample.
     # feature_version = what columns mean. experiment_id = what rules generated sample.
     # Same features + different gates = contaminated dataset without this.
-    EXPERIMENT_ID: str = os.getenv("EXPERIMENT_ID", "redesign_pre_2026_04_27")
+    EXPERIMENT_ID: str = os.getenv("EXPERIMENT_ID", "engine1_eth_short_v1b_2026_05_04")
 
     # ========================
     # LIQUIDATION HEATMAP
