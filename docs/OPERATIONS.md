@@ -73,6 +73,33 @@ docker compose up -d --build web
 - Verify health after deploy: `curl http://localhost:8000/api/health`
 - Check Grafana for anomalies after deploy: http://100.120.181.11:3001
 
+### Parallel Branch Work — git worktrees
+
+Each repo can only have ONE branch checked out per working directory. Multiple Claude/terminal sessions opened on the same path share that branch. To work on two branches in parallel without `git checkout` thrashing, use git worktrees: each worktree is a sibling directory with its own checked-out branch, sharing the same `.git` history.
+
+| Worktree | Branch | Use |
+|---|---|---|
+| `/home/jer/quant-fund` | active feature (e.g. `feat/scalp-shadow-signals`) | primary editor / bot deploy source |
+| `/home/jer/quant-fund-engine1` | `feat/engine1-v1b-eth-short` | parallel feature in flight |
+| `/home/jer/quant-fund/.claude/worktrees/agent-*` | scratch | spawned by Claude agents (auto-pruned when no changes) |
+
+```bash
+# Create
+git worktree add /home/jer/quant-fund-NAME feat/branch-name
+
+# List
+git worktree list
+
+# Remove (only if branch is merged or you're sure)
+git worktree remove /home/jer/quant-fund-NAME
+```
+
+**Rules:**
+- Bot deploy reads from `/home/jer/quant-fund` only — `docker compose up -d --build bot` builds whatever is checked out there. Worktrees do NOT auto-deploy.
+- One worktree per branch (git refuses duplicate checkouts).
+- PRs are remote-only — worktrees do not affect PR state on GitHub.
+- Each Claude session's statusline shows the branch of ITS worktree, so sessions don't override each other.
+
 ---
 
 ## 3. Recovery Procedures
