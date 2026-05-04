@@ -2,11 +2,12 @@
 
 > Source of truth for system state. Updated on every material change.
 > Reflects code reality — if code and doc disagree, fix the doc.
+> Documentation rule: this file is the operational source of truth. `README.md` is a portfolio overview; `docs/context/*` explains concepts and history and may intentionally lag unless this baseline links to it.
 
-**Last updated:** 2026-04-23
-**ML Feature Version:** 16
+**Last updated:** 2026-04-27
+**ML Feature Version:** 18
 **Bot status:** SHADOW-ONLY (OKX_SANDBOX=false, ENABLED_SETUPS=[], ~$86 capital untouched)
-**Active experiment:** `batch1_tp1_rr_1_3_2026_04_20` (TP1_RR=1.3 BE fix)
+**Active experiment:** `redesign_pre_2026_04_27` (regime_label + tier extraction fix; **Engine 1 shadow + benchmarks shipped 2026-04-27** on BTC+ETH only — co-emits `bench_engine1_random_direction` + `bench_engine1_market_now` per detection)
 **Monitoring:** Grafana dashboard `shadow-health` + systemd user timer `shadow-health-alert.timer` (hourly)
 
 ---
@@ -27,12 +28,13 @@
 | A (Sweep+CHoCH+OB) | **SHADOW (short only)** | swing, long disabled (5% WR 1/20) | short 33%, long 5% |
 | B (BOS+FVG+OB) | **SHADOW** | swing, max entry dist 2% (was 3%) | 0-7.7% |
 | C (Funding Squeeze) | **DISABLED** | signal folded into confluence | 0 resolved |
-| D_choch (LTF CHoCH) | **SHADOW** | quick, data collection | 75% backtest |
-| D_bos (LTF BOS) | **SHADOW** | quick, best shadow performer | 50% (2/4 shadow) |
+| D_choch (LTF CHoCH) | **SHADOW (BTC+ETH only)** | quick, quarantined 2026-04-27 (redesign §3.4) | 75% backtest |
+| D_bos (LTF BOS) | **SHADOW (BTC+ETH only)** | quick, quarantined 2026-04-27 (redesign §3.5) | 50% (2/4 shadow) |
 | E (Cascade Reversal) | **DISABLED** | signal folded into confluence | 0W/1L |
 | F (Pure OB Retest) | **SHADOW** | swing, was live until 04-15 | 50% (1TP/1SL live) |
 | G (Breaker Block) | **DISABLED** | 0/4 WR. Removed 04-16. | 0% |
 | H (Momentum/Impulse) | **DISABLED** | — | 10.7% WR (28 trades). Removed 04-13. |
+| Engine 1 (Trend-Pullback / Impulse Retest) | **SHADOW (BTC+ETH only)** | redesign engine, shipped 2026-04-27 (commit `6dd6901`); ML lossless cols 2026-04-27 (Migration 21); benchmarks shipped 2026-04-27 (`bench_engine1_random_direction` + `bench_engine1_market_now`, BTC+ETH only) | no historical — fresh emission |
 
 ### Risk Guardrails
 | Parameter | Value | Notes |
@@ -72,7 +74,7 @@
 | SWEEP_MIN_VOLUME_RATIO | 1.5x | default |
 | SETUP_A_ENTRY_PCT | 50% | deepened from 65% (04-02): shadow 9% WR, SL within noise |
 | SETUP_A_MODE | continuation | changed from "both" (04-02): 17/17 SL on counter-trend |
-| SETUP_A_MAX_SWEEP_CHOCH_GAP | 60 | aggressive mode (Optuna: 45) |
+| SETUP_A_MAX_SWEEP_CHOCH_GAP | 45 | Optuna-validated; synced from 60 on 2026-04-27 (doc-truth pre-work, redesign §3.1) |
 | SETUP_A_MAX_ENTRY_DISTANCE_PCT | 5% | added 04-15: consistency with B/F |
 | FUNDING_MILD_THRESHOLD | 0.0001 | 0.01% — mild directional crowding |
 | FUNDING_MODERATE_THRESHOLD | 0.0003 | 0.03% — was EXTREME, now moderate |
@@ -229,7 +231,7 @@ Reference for VPS sizing when migrating from Nitro 5.
 | H2 | OI delta adds predictive value | Audit: was existence-check only | Track oi_rising/oi_dropping confluence presence vs trade outcome |
 | H3 | Setup F ≥ Setup B (F = B minus FVG gate) | Backtest: F 58.8% WR vs B 49% when both structural | B disabled, F enabled — compare live |
 | H4 | Restored thresholds (ATR 0.35%, OB vol 1.3) reduce false positives | Audit: relaxed values let noise through | Compare setup frequency and WR vs aggressive period |
-| H5 | HTF undefined blocks too many setups in range markets | ~60% of time no 4H/1H trend defined | If no trades after 1-2 weeks, try HTF_BIAS_REQUIRE_4H=false |
+| ~~H5~~ | ~~HTF undefined blocks too many setups in range markets~~ | Already implemented: `HTF_BIAS_REQUIRE_4H=False` (settings.py:402). Hypothesis closed 2026-04-27. | — |
 | H6 | Meta-labeling model (AFML Ch.3) > LLM filter | AI v1 destroyed B, AI v2 89.6% approval = no value | Train classifier on ml_setups v4+ data, replace Claude |
 | H7 | Half-Kelly bet sizing improves risk-adjusted returns | AFML Ch.10: size proportional to calibrated P(profit) | Wire BET_SIZING after calibrated model exists |
 
@@ -252,12 +254,12 @@ Reference for VPS sizing when migrating from Nitro 5.
 
 ## 7. ML Feature Versioning
 
-**Current version:** 17 (set in `config/settings.py:ML_FEATURE_VERSION`)
+**Current version:** 18 (set in `config/settings.py:ML_FEATURE_VERSION`)
 **Storage:** `ml_setups.feature_version` column in PostgreSQL
-**Query training data:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL AND outcome_type NOT IN ('ai_rejected','data_blocked','filled_orphaned','replaced','risk_rejected','shadow_dedup','shadow_direction_filtered','shadow_orphaned','trading_halted','unfilled_timeout')`
+**Query training data:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL AND outcome_type NOT IN ('ai_rejected','data_blocked','filled_orphaned','replaced','risk_rejected','shadow_dedup','shadow_direction_filtered','shadow_pair_filtered','shadow_orphaned','trading_halted','unfilled_timeout')`
 
 Whitelist autoritativa de `outcome_type` en `data_service.data_store.VALID_OUTCOMES`. Labels fuera del set generan WARNING. El filtro non-market se centraliza en `NON_MARKET_OUTCOMES` + helper `ml_market_outcome_filter_sql()` (mismo módulo) — usarlo en scripts/queries nuevas para evitar drift.
-**Experiment tracking:** `experiment_id` column (migration 15). Current: `freeze_v15_2026_04_16`. Filter: `WHERE experiment_id = 'freeze_v15_2026_04_16'` for clean freeze data.
+**Experiment tracking:** `experiment_id` column (migration 15). Current: `redesign_pre_2026_04_27`. Filter: `WHERE experiment_id = 'redesign_pre_2026_04_27'` for clean post-redesign-prework data.
 
 | Version | Date | Changes | Training Status |
 |---------|------|---------|-----------------|
@@ -276,6 +278,8 @@ Whitelist autoritativa de `outcome_type` en `data_service.data_store.VALID_OUTCO
 | v14 | 04-14+ | Orderbook spread/imbalance, BTC correlation (return + vol ratio), volatility regime, trading session | **TRAINING READY** |
 | v15 | 04-16+ | WaveTrend (Cipher B core): wt_wt1/wt_wt2 oscillator, wt_cross (bull/bear), wt_zone (oversold/overbought/neutral), wt_aligned (cross matches setup direction in extreme zone) | **TRAINING READY** |
 | v16 | 04-16+ | ADX(14) + DI+/DI- (trend strength + direction), Bollinger(20,2) width/%B/squeeze percentile, Stochastic RSI(14,14,3,3) %K/%D/zone/cross | **TRAINING READY** |
+| v17 | 04-23+ | `pd_aligned` strict (equilibrium no longer counts as aligned for either side); VALID_OUTCOMES whitelist + `filled_slippage` outcome; setup_d normalization | **TRAINING READY** |
+| v18 | 04-27+ | `regime_label` categorical (trend_strong/weak/range/compression/breakout/hostile) from ADX+BBW+ATR+spread+btc-return+F&G; `funding_tier`/`oi_rising_tier` derived from raw signal magnitude (decoupled from direction-gated confluence strings — fixes W17 100% null) | **TRAINING READY** |
 
 **When to bump:** Increment `ML_FEATURE_VERSION` whenever strategy params change in ways that alter feature semantics (OB scoring weights, PD rules, confluence logic, threshold changes).
 
@@ -362,6 +366,48 @@ Independent shadow-only experiment for microstructural scalping signals, separat
 ---
 
 ## 8. Changelog
+
+### 2026-04-24 — Pre-trade Bybit checklist (`/check` Telegram)
+**Files:** `scripts/pretrade_check.py` (new), `scripts/explain_bot.py`, `bybit_pretrade_checks` table (new)
+
+**What changed:**
+- **New Telegram command `/check SYMBOL side entry SL TP [lev=N] [thesis…]`** — manual Bybit trade sanity check before entry.
+- Gathers: live Bybit ticker (price, funding, OI, 24h range), account balance, last 15 bybit_trade_annotations same symbol+side, aggregated ml_setups stats for same pair+direction (last 90d).
+- Feeds structured payload to Claude Opus 4.7 (`CLAUDE_MODEL_AUDIT`). Returns strict JSON: score 0-10, verdict (strong/ok/weak/skip), size suggestion, max safe leverage, green/red flags, missing confluences, coaching notes.
+- Formats verdict with emoji to Telegram; logs full payload + report to `bybit_pretrade_checks` table for regression (compare pre-trade check vs actual outcome).
+- CLI standalone: `python scripts/pretrade_check.py "/check BTC long 77500 76800 79000"`.
+
+**Why:** manual Bybit trading is the biggest dollar lever ($4.6k vs $86 bot). Pre-entry second-opinion forces thesis articulation + surfaces historical self-leaks ("your last 5 BTC longs are 0/5 — this setup has the same structure"). Low-risk, high-value application of Opus 4.7.
+
+**Safety:** read-only (no order placement). Direction sanity enforced in parser (long requires SL<entry<TP; short the inverse). Symbol whitelist = bot's 7 pairs. Fails soft if Bybit API down.
+
+### 2026-04-24 — Weekly edge audit (Claude Opus 4.7)
+**Files:** `scripts/weekly_edge_audit.py` (new), `config/settings.py`, `systemd/quant-edge-audit.{service,timer}` (new), `ml_edge_audits` table (new)
+
+**What changed:**
+- **New offline audit pipeline.** Pulls resolved `ml_setups` + closed `trades` + shadow outcomes for last N days, aggregates by setup/pair/hour/htf_bias/feature tier, feeds to Claude Opus 4.7, emits narrative markdown audit.
+- **Model:** `CLAUDE_MODEL_AUDIT=claude-opus-4-7` (env-overridable). Separate from live AI filter `CLAUDE_MODEL`. Prompt caching enabled via `cache_control` on system prompt (not yet crossing 1024-token threshold — activates as prompt grows).
+- **Storage:** `ml_edge_audits` table (period_start/end, experiment_id, payload JSONB, report_md, tokens, cache metrics). Markdown written to `docs/audits/edge-audit-YYYY-WW.md`.
+- **Schedule:** `quant-edge-audit.timer` — Sunday 10:00 UTC weekly. Install: `sudo cp systemd/quant-edge-audit.{service,timer} /etc/systemd/system/ && sudo systemctl enable --now quant-edge-audit.timer`.
+- **Safety:** `--min-setups 10` default bails if sample too small; `--dry-run` skips API call. Offline-only — never touches live pipeline.
+
+**Why:** meta-labeling roadmap (AFML) needs narrative edge analysis, not just numbers. Shadow mode data accumulating; weekly audit surfaces leaks (feature tier instrumentation gaps, session-time effects, long/short asymmetry) before live re-enable.
+
+**How to use:**
+- On-demand: `venv/bin/python scripts/weekly_edge_audit.py --days 7`
+- Force with low sample: `--min-setups 0`
+- Query history: `SELECT period_start, n_setups, win_rate_pct, tokens_in FROM ml_edge_audits ORDER BY id DESC`
+
+### 2026-04-24 — Fix: `_evaluate_quick_setups` NameError (state_4h/state_1h/volume_profile)
+**Files:** `strategy_service/service.py`
+
+**What changed:**
+- Added `state_4h`, `state_1h`, `volume_profile` as explicit parameters to `_evaluate_quick_setups`. Previously referenced as free variables (introduced by commit `28f66841` Batch 4 on 2026-04-21), causing `NameError` on every LTF candle across all pairs.
+- `evaluate()` now passes these down to the quick-setup path.
+
+**Why:** Production bug. Bot logged `Pipeline callback error: ... name 'state_4h' is not defined` on every 5m+15m candle for ~3 days. Setup D (quick) was completely dead — every evaluation raised before any setup logic ran. Swing setups (A/B/F) survived only because `return setup` on match exited `evaluate()` before reaching the broken quick-setup call.
+
+**Impact:** Setup D reactivated. Zero pipeline callback errors post-fix (verified in logs). Tests: 915 pass.
 
 ### 2026-04-23 — Audit fase 4.3: §BAJA hardening
 **Files:** `main.py`, `risk_service/state_tracker.py`

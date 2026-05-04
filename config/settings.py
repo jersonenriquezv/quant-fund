@@ -50,6 +50,7 @@ class Settings:
     # TELEGRAM NOTIFICATIONS
     # ========================
     TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    TELEGRAM_EXPLAIN_BOT_TOKEN: str = os.getenv("TELEGRAM_EXPLAIN_BOT_TOKEN", "")
     TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
 
     # ========================
@@ -319,8 +320,11 @@ class Settings:
 
     # --- Setup A temporal ---
     # Max candles between sweep and CHoCH for Setup A validity.
-    # Optuna 03-15: 40→45 (slightly more temporal tolerance)
-    SETUP_A_MAX_SWEEP_CHOCH_GAP: int = 60
+    # Optuna 03-15: 40→45 (validated). Code drifted to 60 in aggressive mode.
+    # Synced back to 45 on 2026-04-27 (doc-truth + redesign pre-work). Setup A
+    # is bound for redesign anyway (see docs/strategy_redesign_2026_04.md §3.1);
+    # do not run with un-validated thresholds in the meantime.
+    SETUP_A_MAX_SWEEP_CHOCH_GAP: int = 45
 
     # ========================
     # QUICK SETUPS (C, D, E) — Data-driven, shorter duration
@@ -415,6 +419,9 @@ class Settings:
     # ========================
     # Modelo de Claude a usar
     CLAUDE_MODEL: str = "claude-sonnet-4-20250514"
+    # Modelo para batch offline audits (edge audit, weekly review). Opus 4.7.
+    # For >200K input enable 1M context via ANTHROPIC_BETA env (context-1m-*).
+    CLAUDE_MODEL_AUDIT: str = os.getenv("CLAUDE_MODEL_AUDIT", "claude-opus-4-7")
     # Confianza mínima para aprobar un trade
     AI_MIN_CONFIDENCE: float = 0.50
     # Maximum seconds to wait for Claude API response
@@ -878,8 +885,16 @@ class Settings:
     # Setups NOT in this list execute normally through the live pipeline.
     SHADOW_MODE_SETUPS: list = field(default_factory=lambda: [
         "setup_a", "setup_b", "setup_d_choch", "setup_d_bos", "setup_f",
+        # Redesign engines — see docs/strategy_redesign_2026_04.md §4
+        "engine1_trend_pullback",  # added 2026-04-27, BTC+ETH only via SHADOW_PAIR_FILTER
+        # Engine 1 benchmarks — co-emit on every Engine 1 detection so edge
+        # analysis can compare Engine 1's WR / PF against deterministic
+        # baselines on identical trigger candles. See benchmarks.py docstring.
+        "bench_engine1_random_direction",
+        "bench_engine1_market_now",
         # Scalp shadow v1 — gated by SCALP_SHADOW_ENABLED at detection time.
         # Listing here makes the pipeline route them through the shadow path.
+        # Plan: docs/plans/scalp_shadow_v1.md.
         "scalp_liq_reclaim_v1",
         "scalp_sweep_choch_v1",
         "scalp_vol_cvd_div_v1",
@@ -895,6 +910,26 @@ class Settings:
     # setup_a long: 5% WR (1/20) — proven broken. Short only (33% WR, 1/3).
     SHADOW_DIRECTION_FILTER: dict = field(default_factory=lambda: {
         "setup_a": ["short"],
+    })
+    # Pair filter for shadow mode — restrict setups to specific pairs.
+    # Omitted setups track all TRADING_PAIRS. Empty list = blocked entirely.
+    # Quarantine d_choch / d_bos to BTC+ETH per redesign §3.4–3.5
+    # (2026-04-27). DOGE/XRP/LINK/AVAX/SOL had 0 resolved outcomes for these
+    # setup types in experiment batch1_tp1_rr_1_3_2026_04_20; the dedup cache
+    # absorbs every detection. ETH+BTC carry signal; other pairs add telemetry
+    # noise without contributing to edge measurement.
+    SHADOW_PAIR_FILTER: dict = field(default_factory=lambda: {
+        "setup_d_choch": ["BTC/USDT", "ETH/USDT"],
+        "setup_d_bos": ["BTC/USDT", "ETH/USDT"],
+        # Engine 1 Trend-Pullback: BTC+ETH only for the first 2 months of
+        # validation (redesign §4.1, user-confirmed). SOL added later only
+        # if sample-starvation forces expansion.
+        "engine1_trend_pullback": ["BTC/USDT", "ETH/USDT"],
+        # Engine 1 benchmarks share the trigger candle with Engine 1, so
+        # they mirror its pair scope. Emitting them on pairs Engine 1 itself
+        # cannot reach would produce orphan rows with no comparator.
+        "bench_engine1_random_direction": ["BTC/USDT", "ETH/USDT"],
+        "bench_engine1_market_now": ["BTC/USDT", "ETH/USDT"],
     })
     # Fictional capital for shadow mode position sizing ($500 USDT).
     # Shadow R:R and position sizes reflect realistic trades you'd take later.
@@ -959,12 +994,12 @@ class Settings:
     # ========================
     # Feature version — increment when strategy params change in ways that
     # alter feature semantics (e.g. changing OB scoring weights, PD rules).
-    ML_FEATURE_VERSION: int = 17  # v17: pd_aligned strict (equilibrium no longer counts as aligned)
+    ML_FEATURE_VERSION: int = 18  # v18: regime_label categorical + funding_tier/oi_rising_tier from raw signal
 
     # Experiment ID — tracks which parameter regime generated a sample.
     # feature_version = what columns mean. experiment_id = what rules generated sample.
     # Same features + different gates = contaminated dataset without this.
-    EXPERIMENT_ID: str = os.getenv("EXPERIMENT_ID", "batch1_tp1_rr_1_3_2026_04_20")
+    EXPERIMENT_ID: str = os.getenv("EXPERIMENT_ID", "redesign_pre_2026_04_27")
 
     # ========================
     # LIQUIDATION HEATMAP

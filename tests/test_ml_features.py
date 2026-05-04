@@ -202,6 +202,198 @@ class TestExtractSetupFeatures:
         assert features["oi_flush_usd"] == 50000.0
 
 
+class TestFundingTierFromRate:
+    """funding_tier is derived from raw snapshot.funding.rate, NOT from
+    confluence strings. The detector emits direction-filtered confluences
+    (e.g. `funding_extreme_long` only when funding<0 and direction=bullish),
+    so prior confluence-string parsing produced 100% null in shadow data
+    (W17 audit 2026-04-24). This must populate regardless of trade direction."""
+
+    def test_extreme_rate_tags_extreme_for_long(self):
+        setup = _make_setup(direction="long")
+        snap = make_market_snapshot(funding_rate=0.0007)  # 0.07% > extreme 0.06%
+        features = extract_setup_features(setup, snap, 2005.0)
+        assert features["funding_tier"] == "extreme"
+
+    def test_extreme_rate_tags_extreme_for_short(self):
+        setup = _make_setup(direction="short", sl_price=2020, tp1_price=1980, tp2_price=1960)
+        snap = make_market_snapshot(funding_rate=0.0007)
+        features = extract_setup_features(setup, snap, 2005.0)
+        assert features["funding_tier"] == "extreme"
+
+    def test_moderate_rate(self):
+        setup = _make_setup()
+        snap = make_market_snapshot(funding_rate=0.0004)  # 0.04% > moderate 0.03%
+        features = extract_setup_features(setup, snap, 2005.0)
+        assert features["funding_tier"] == "moderate"
+
+    def test_mild_rate(self):
+        setup = _make_setup()
+        snap = make_market_snapshot(funding_rate=0.00015)  # 0.015% > mild 0.01%
+        features = extract_setup_features(setup, snap, 2005.0)
+        assert features["funding_tier"] == "mild"
+
+    def test_negative_rate_uses_magnitude(self):
+        """Direction-agnostic — magnitude alone tiers up. Crowded shorts
+        (negative funding) at 0.07% should still tag as extreme."""
+        setup = _make_setup()
+        snap = make_market_snapshot(funding_rate=-0.0007)
+        features = extract_setup_features(setup, snap, 2005.0)
+        assert features["funding_tier"] == "extreme"
+
+    def test_below_mild_returns_none(self):
+        setup = _make_setup()
+        snap = make_market_snapshot(funding_rate=0.00005)  # 0.005% < mild 0.01%
+        features = extract_setup_features(setup, snap, 2005.0)
+        assert features["funding_tier"] is None
+
+    def test_no_snapshot_returns_none(self):
+        setup = _make_setup()
+        features = extract_setup_features(setup, None, 2005.0)
+        assert features["funding_tier"] is None
+
+
+class TestOIRisingTierFromDelta:
+    """oi_rising_tier is derived from extracted oi_delta_pct (always emitted
+    by the detector when prev_oi exists), not from gate-shaped
+    `oi_rising_X` confluences which only fire on positive deltas above
+    threshold. Negative deltas are captured via signed oi_delta_pct."""
+
+    def test_strong_positive_delta(self):
+        setup = _make_setup(confluences=["bos_5m", "order_block_5m", "oi_delta_6.00pct"])
+        features = extract_setup_features(setup, None, 2005.0)
+        assert features["oi_delta_pct"] == 0.06
+        assert features["oi_rising_tier"] == "strong"
+
+    def test_moderate_positive_delta(self):
+        setup = _make_setup(confluences=["bos_5m", "order_block_5m", "oi_delta_3.00pct"])
+        features = extract_setup_features(setup, None, 2005.0)
+        assert features["oi_rising_tier"] == "moderate"
+
+    def test_mild_positive_delta(self):
+        setup = _make_setup(confluences=["bos_5m", "order_block_5m", "oi_delta_0.80pct"])
+        features = extract_setup_features(setup, None, 2005.0)
+        assert features["oi_rising_tier"] == "mild"
+
+    def test_negative_delta_returns_none(self):
+        """Dropping OI is not 'rising'. Magnitude is preserved in the
+        signed `oi_delta_pct` feature; tier only fires on positive flow."""
+        setup = _make_setup(confluences=["bos_5m", "order_block_5m", "oi_delta_-3.00pct"])
+        features = extract_setup_features(setup, None, 2005.0)
+        assert features["oi_delta_pct"] == -0.03
+        assert features["oi_rising_tier"] is None
+
+    def test_no_delta_confluence_returns_none(self):
+        setup = _make_setup(confluences=["bos_5m", "order_block_5m"])
+        features = extract_setup_features(setup, None, 2005.0)
+        assert features["oi_rising_tier"] is None
+
+
+class TestRegimeLabel:
+    """v18 regime_label heuristic — categorical regime tag from existing
+    volatility / trend / squeeze features. v1 thresholds, NOT optimized."""
+
+    @staticmethod
+    def _call(**kwargs):
+        from shared.ml_features import _compute_regime_label
+        defaults = dict(
+            atr_ratio=1.0, adx_14=22.0, bb_squeeze=False,
+            bb_squeeze_percentile=0.5, btc_return_short=0.0,
+            spread_bps=2.0, fear_greed=50.0,
+        )
+        defaults.update(kwargs)
+        return _compute_regime_label(**defaults)
+
+    # --- Hostile: explicit evidence only ---
+    def test_hostile_wide_spread(self):
+        assert self._call(spread_bps=6.0) == "hostile"
+
+    def test_hostile_btc_cascade(self):
+        assert self._call(btc_return_short=-0.03) == "hostile"
+        assert self._call(btc_return_short=0.03) == "hostile"
+
+    def test_hostile_extreme_fear(self):
+        assert self._call(fear_greed=4) == "hostile"
+
+    def test_hostile_dead_volatility(self):
+        assert self._call(atr_ratio=0.4) == "hostile"
+
+    def test_hostile_crashing_volatility(self):
+        assert self._call(atr_ratio=3.5) == "hostile"
+
+    def test_normal_fear_not_hostile(self):
+        # F&G < 5 only — 6 is fine even though "extreme fear" colloquially.
+        assert self._call(fear_greed=6) != "hostile"
+
+    # --- Compression ---
+    def test_compression_via_bb_squeeze(self):
+        result = self._call(
+            bb_squeeze=True, adx_14=15.0, atr_ratio=1.0,
+        )
+        assert result == "compression"
+
+    def test_compression_via_squeeze_percentile(self):
+        result = self._call(
+            bb_squeeze=False, bb_squeeze_percentile=0.10,
+            adx_14=15.0, atr_ratio=1.0,
+        )
+        assert result == "compression"
+
+    def test_no_compression_when_adx_high(self):
+        result = self._call(bb_squeeze=True, adx_14=25.0, atr_ratio=1.0)
+        assert result != "compression"
+
+    # --- Breakout ---
+    def test_breakout(self):
+        assert self._call(adx_14=22.0, atr_ratio=1.5) == "breakout"
+
+    # --- Trend strong ---
+    def test_trend_strong(self):
+        assert self._call(adx_14=30.0, atr_ratio=1.0) == "trend_strong"
+
+    # --- Trend weak ---
+    def test_trend_weak(self):
+        assert self._call(adx_14=20.0, atr_ratio=1.0) == "trend_weak"
+
+    # --- Range ---
+    def test_range(self):
+        assert self._call(adx_14=10.0, atr_ratio=1.0, bb_squeeze=False,
+                          bb_squeeze_percentile=0.5) == "range"
+
+    # --- Missing-input policy: never default to hostile ---
+    def test_all_inputs_missing_returns_range(self):
+        result = self._call(
+            atr_ratio=None, adx_14=None, bb_squeeze=None,
+            bb_squeeze_percentile=None, btc_return_short=None,
+            spread_bps=None, fear_greed=None,
+        )
+        assert result == "range"
+
+    def test_partial_data_falls_back_to_trend_weak(self):
+        # ATR ratio available but no ADX — fall back to trend_weak (most
+        # conservative tradeable label that signals "some signal exists").
+        result = self._call(
+            atr_ratio=1.0, adx_14=None, bb_squeeze=None,
+            bb_squeeze_percentile=None, btc_return_short=None,
+            spread_bps=None, fear_greed=None,
+        )
+        assert result == "trend_weak"
+
+    def test_missing_btc_return_does_not_force_hostile(self):
+        result = self._call(btc_return_short=None, adx_14=22.0)
+        assert result != "hostile"
+
+    def test_missing_spread_does_not_force_hostile(self):
+        result = self._call(spread_bps=None, adx_14=22.0)
+        assert result != "hostile"
+
+    # --- Hostile precedence over other categories ---
+    def test_hostile_overrides_trend_strong(self):
+        # Strong ADX + crashing BTC = hostile, not trend_strong.
+        result = self._call(adx_14=30.0, btc_return_short=-0.03)
+        assert result == "hostile"
+
+
 class TestWaveTrend:
     def test_insufficient_candles_returns_none(self):
         candles = make_candle_series(count=20)
@@ -323,3 +515,81 @@ class TestExtractRiskContext:
         assert ctx["risk_daily_dd_pct"] == 0.02
         assert ctx["risk_weekly_dd_pct"] == 0.03
         assert ctx["risk_trades_today"] == 3
+
+
+class TestExtraFeaturesMerge:
+    """extra_features field on TradeSetup — engine/benchmark lossless metrics."""
+
+    def test_default_constructor_has_empty_dict(self):
+        setup = _make_setup()
+        assert setup.extra_features == {}
+
+    def test_engine1_metrics_flow_into_features(self):
+        setup = _make_setup(
+            setup_type="engine1_trend_pullback",
+            extra_features={
+                "engine1_impulse_atr_multiple": 3.21,
+                "engine1_pullback_depth_pct": 0.45,
+                "engine1_pullback_candle_count": 3,
+                "engine1_entry_atr_distance": 0.85,
+            },
+        )
+        features = extract_setup_features(setup, None, 2005.0)
+
+        assert features["engine1_impulse_atr_multiple"] == 3.21
+        assert features["engine1_pullback_depth_pct"] == 0.45
+        assert features["engine1_pullback_candle_count"] == 3
+        assert features["engine1_entry_atr_distance"] == 0.85
+
+    def test_canonical_fields_win_over_extra_features(self):
+        # extra_features attempting to overwrite a canonical field must
+        # not corrupt the row — pair/setup_type/entry_price are populated
+        # by the extractor first, and the merge step skips any key that
+        # already exists.
+        setup = _make_setup(
+            extra_features={
+                "setup_type": "ENGINE_FAKE",      # would be a security/data hole
+                "entry_price": 999_999.0,         # ditto
+                "pair": "FAKE/PAIR",
+                "engine1_impulse_atr_multiple": 2.0,
+            },
+        )
+        features = extract_setup_features(setup, None, 2005.0)
+
+        assert features["setup_type"] == "setup_a"
+        assert features["entry_price"] == 2000.0
+        assert features["pair"] == "ETH/USDT"
+        # The legitimate engine1_ key still flows through.
+        assert features["engine1_impulse_atr_multiple"] == 2.0
+
+    def test_non_whitelisted_prefixes_ignored(self):
+        setup = _make_setup(
+            extra_features={
+                "foo_random": 1.0,
+                "debug_payload": "not allowed",
+                "engine1_legit": 7.0,
+            },
+        )
+        features = extract_setup_features(setup, None, 2005.0)
+
+        assert "foo_random" not in features
+        assert "debug_payload" not in features
+        assert features["engine1_legit"] == 7.0
+
+    def test_supports_mixed_value_types(self):
+        setup = _make_setup(
+            extra_features={
+                "engine1_int_metric": 5,
+                "engine1_float_metric": 3.14,
+                "engine1_str_metric": "tag",
+                "engine1_bool_metric": True,
+                "engine1_none_metric": None,
+            },
+        )
+        features = extract_setup_features(setup, None, 2005.0)
+
+        assert features["engine1_int_metric"] == 5
+        assert features["engine1_float_metric"] == 3.14
+        assert features["engine1_str_metric"] == "tag"
+        assert features["engine1_bool_metric"] is True
+        assert features["engine1_none_metric"] is None

@@ -73,6 +73,33 @@ docker compose up -d --build web
 - Verify health after deploy: `curl http://localhost:8000/api/health`
 - Check Grafana for anomalies after deploy: http://100.120.181.11:3001
 
+### Parallel Branch Work — git worktrees
+
+Each repo can only have ONE branch checked out per working directory. Multiple Claude/terminal sessions opened on the same path share that branch. To work on two branches in parallel without `git checkout` thrashing, use git worktrees: each worktree is a sibling directory with its own checked-out branch, sharing the same `.git` history.
+
+| Worktree | Branch | Use |
+|---|---|---|
+| `/home/jer/quant-fund` | active feature (e.g. `feat/scalp-shadow-signals`) | primary editor / bot deploy source |
+| `/home/jer/quant-fund-engine1` | `feat/engine1-v1b-eth-short` | parallel feature in flight |
+| `/home/jer/quant-fund/.claude/worktrees/agent-*` | scratch | spawned by Claude agents (auto-pruned when no changes) |
+
+```bash
+# Create
+git worktree add /home/jer/quant-fund-NAME feat/branch-name
+
+# List
+git worktree list
+
+# Remove (only if branch is merged or you're sure)
+git worktree remove /home/jer/quant-fund-NAME
+```
+
+**Rules:**
+- Bot deploy reads from `/home/jer/quant-fund` only — `docker compose up -d --build bot` builds whatever is checked out there. Worktrees do NOT auto-deploy.
+- One worktree per branch (git refuses duplicate checkouts).
+- PRs are remote-only — worktrees do not affect PR state on GitHub.
+- Each Claude session's statusline shows the branch of ITS worktree, so sessions don't override each other.
+
 ---
 
 ## 3. Recovery Procedures
@@ -182,7 +209,7 @@ sudo systemctl disable --now docker-prune.timer
 - Migrations use `ALTER TABLE ADD COLUMN IF NOT EXISTS` (idempotent)
 - Version tracking via `schema_version` table — each migration records its version number
 
-### Current Schema Version: 15
+### Current Schema Version: 21
 
 | Version | Description | Date |
 |---------|-------------|------|
@@ -194,6 +221,12 @@ sudo systemctl disable --now docker-prune.timer
 | 13 | ml_setups: RSI + microstructure features | 2026-04 |
 | 14 | ml_setups: orderbook, BTC correlation, volatility regime, session | 2026-04 |
 | 15 | ml_setups: experiment_id column for freeze protocol | 2026-04 |
+| 16 | ml_setups: WaveTrend + ADX/DI + Bollinger + Stochastic RSI | 2026-04 |
+| 17 | ml_setups: shadow resolution candle trace | 2026-04 |
+| 18 | trades: capital_at_trade snapshot | 2026-04 |
+| 19 | ml_setups: regime_label categorical | 2026-04 |
+| 20 | ml_setups: widen outcome_type to VARCHAR(50) (idempotent — prod already widened ad-hoc) | 2026-04 |
+| 21 | ml_setups: Engine 1 lossless metric columns (engine1_impulse_atr_multiple, engine1_pullback_depth_pct, engine1_pullback_candle_count, engine1_entry_atr_distance) | 2026-04 |
 
 ### Adding a New Migration
 

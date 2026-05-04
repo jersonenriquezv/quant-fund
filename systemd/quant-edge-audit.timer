@@ -1,0 +1,12 @@
+[Unit]
+Description=Run quant-edge-audit weekly
+Requires=quant-edge-audit.service
+
+[Timer]
+OnCalendar=Sun *-*-* 10:00:00
+Persistent=true
+RandomizedDelaySec=300
+Unit=quant-edge-audit.service
+
+[Install]
+WantedBy=timers.target

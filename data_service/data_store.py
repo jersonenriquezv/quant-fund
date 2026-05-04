@@ -37,7 +37,8 @@ logger = setup_logger("data_service")
 # ============================================================
 VALID_OUTCOMES: frozenset[str] = frozenset({
     # Live pipeline pre-execution rejections
-    "data_blocked", "shadow_direction_filtered", "shadow_dedup",
+    "data_blocked", "shadow_direction_filtered", "shadow_pair_filtered",
+    "shadow_dedup",
     "trading_halted", "risk_rejected", "ai_rejected",
     # Live trade resolutions (monitor._ml_resolve_close)
     "filled_tp", "filled_sl", "filled_trailing", "filled_timeout",
@@ -63,7 +64,8 @@ VALID_OUTCOMES: frozenset[str] = frozenset({
 # ============================================================
 NON_MARKET_OUTCOMES: frozenset[str] = frozenset({
     # Pre-execution gates — setup never hit the market
-    "data_blocked", "shadow_direction_filtered", "shadow_dedup",
+    "data_blocked", "shadow_direction_filtered", "shadow_pair_filtered",
+    "shadow_dedup",
     "trading_halted", "risk_rejected", "ai_rejected",
     # Bookkeeping / no-trade resolutions
     "unfilled_timeout", "replaced",
@@ -400,7 +402,7 @@ class PostgresStore:
                     id SERIAL PRIMARY KEY,
                     pair VARCHAR(20),
                     direction VARCHAR(5),
-                    setup_type VARCHAR(10),
+                    setup_type VARCHAR(40),
                     entry_price DOUBLE PRECISION,
                     sl_price DOUBLE PRECISION,
                     tp1_price DOUBLE PRECISION,
@@ -425,7 +427,7 @@ class PostgresStore:
                     trade_id INT REFERENCES trades(id),
                     pair VARCHAR(20),
                     direction VARCHAR(5),
-                    setup_type VARCHAR(10),
+                    setup_type VARCHAR(40),
                     approved BOOLEAN,
                     confidence DOUBLE PRECISION,
                     reasoning TEXT,
@@ -439,7 +441,7 @@ class PostgresStore:
             for col, coltype in [
                 ("pair", "VARCHAR(20)"),
                 ("direction", "VARCHAR(5)"),
-                ("setup_type", "VARCHAR(10)"),
+                ("setup_type", "VARCHAR(40)"),
                 ("approved", "BOOLEAN"),
             ]:
                 cur.execute(f"ALTER TABLE ai_decisions ADD COLUMN IF NOT EXISTS {col} {coltype}")
@@ -541,7 +543,7 @@ class PostgresStore:
                     campaign_id VARCHAR(20) NOT NULL,
                     pair VARCHAR(20) NOT NULL,
                     direction VARCHAR(5) NOT NULL,
-                    initial_setup_type VARCHAR(10),
+                    initial_setup_type VARCHAR(40),
                     initial_entry_price DOUBLE PRECISION,
                     weighted_entry DOUBLE PRECISION,
                     total_size DOUBLE PRECISION,
@@ -572,7 +574,7 @@ class PostgresStore:
                     timestamp BIGINT NOT NULL,
                     pair VARCHAR(20) NOT NULL,
                     direction VARCHAR(5) NOT NULL,
-                    setup_type VARCHAR(20) NOT NULL,
+                    setup_type VARCHAR(40) NOT NULL,
                     entry_price DOUBLE PRECISION NOT NULL,
                     sl_price DOUBLE PRECISION NOT NULL,
                     tp1_price DOUBLE PRECISION NOT NULL,
@@ -662,8 +664,16 @@ class PostgresStore:
                     guardian_shadow_stall BOOLEAN DEFAULT FALSE,
                     guardian_shadow_cvd BOOLEAN DEFAULT FALSE,
 
+                    -- Engine 1 (trend-pullback) lossless metrics — populated
+                    -- only when setup_type = 'engine1_trend_pullback'. Other
+                    -- engines/benchmarks add their own column blocks.
+                    engine1_impulse_atr_multiple DOUBLE PRECISION,
+                    engine1_pullback_depth_pct DOUBLE PRECISION,
+                    engine1_pullback_candle_count INT,
+                    engine1_entry_atr_distance DOUBLE PRECISION,
+
                     -- Outcome (filled after trade resolves)
-                    outcome_type VARCHAR(20),
+                    outcome_type VARCHAR(50),
                     pnl_pct DOUBLE PRECISION,
                     pnl_usd DOUBLE PRECISION,
                     actual_entry DOUBLE PRECISION,
@@ -740,7 +750,7 @@ class PostgresStore:
                         timestamp TIMESTAMP DEFAULT NOW(),
                         pair VARCHAR(20) NOT NULL,
                         direction VARCHAR(5),
-                        setup_type VARCHAR(20),
+                        setup_type VARCHAR(40),
                         reason TEXT NOT NULL,
                         sl_distance_pct DOUBLE PRECISION,
                         rr_ratio DOUBLE PRECISION,
@@ -849,6 +859,42 @@ class PostgresStore:
                     "capital_at_trade DOUBLE PRECISION"
                 )
                 self._apply_migration(cur, 18, "trades: capital_at_trade snapshot")
+
+            if current_version < 19:
+                # regime_label — categorical market regime tag derived from
+                # ADX / BBW / ATR / spread / btc-return / F&G. Used by the
+                # redesign engines (docs/strategy_redesign_2026_04.md §4.4)
+                # as a pre-filter and logged for every setup. v1 heuristic.
+                cur.execute(
+                    "ALTER TABLE ml_setups ADD COLUMN IF NOT EXISTS "
+                    "regime_label VARCHAR(20)"
+                )
+                self._apply_migration(cur, 19, "ml_setups: regime_label categorical")
+
+            if current_version < 20:
+                # outcome_type — widen to fit longer labels like
+                # 'shadow_direction_filtered' (25) and 'shadow_fear_long_filtered' (25).
+                # Prod was already widened by an earlier ad-hoc ALTER; this
+                # migration is idempotent and only acts on fresh / older DBs.
+                cur.execute(
+                    "ALTER TABLE ml_setups "
+                    "ALTER COLUMN outcome_type TYPE VARCHAR(50)"
+                )
+                self._apply_migration(cur, 20, "ml_setups: widen outcome_type to VARCHAR(50)")
+
+            if current_version < 21:
+                # Engine 1 lossless metrics — confluence strings are
+                # human-readable but truncated. Persist the raw floats /
+                # ints used to derive the trade decision so future audits
+                # and ML can recover the exact inputs.
+                for col_def in [
+                    "engine1_impulse_atr_multiple DOUBLE PRECISION",
+                    "engine1_pullback_depth_pct DOUBLE PRECISION",
+                    "engine1_pullback_candle_count INT",
+                    "engine1_entry_atr_distance DOUBLE PRECISION",
+                ]:
+                    cur.execute(f"ALTER TABLE ml_setups ADD COLUMN IF NOT EXISTS {col_def}")
+                self._apply_migration(cur, 21, "ml_setups: Engine 1 lossless metric columns")
 
         logger.info("PostgreSQL tables verified/created")
 
@@ -1364,7 +1410,12 @@ class PostgresStore:
                             bb_width_pct, bb_percent_b,
                             bb_squeeze_percentile, bb_squeeze,
                             stoch_rsi_k, stoch_rsi_d,
-                            stoch_rsi_zone, stoch_rsi_cross
+                            stoch_rsi_zone, stoch_rsi_cross,
+                            regime_label,
+                            engine1_impulse_atr_multiple,
+                            engine1_pullback_depth_pct,
+                            engine1_pullback_candle_count,
+                            engine1_entry_atr_distance
                         ) VALUES (
                             %s, %s, %s,
                             %s, %s, %s,
@@ -1403,7 +1454,9 @@ class PostgresStore:
                             %s, %s,
                             %s, %s,
                             %s, %s,
-                            %s, %s
+                            %s, %s,
+                            %s,
+                            %s, %s, %s, %s
                         ) ON CONFLICT (setup_id) DO NOTHING""",
                         (
                             setup_id, feature_version, features.get("timestamp", 0),
@@ -1466,6 +1519,11 @@ class PostgresStore:
                             features.get("stoch_rsi_k"), features.get("stoch_rsi_d"),
                             features.get("stoch_rsi_zone"),
                             features.get("stoch_rsi_cross"),
+                            features.get("regime_label"),
+                            features.get("engine1_impulse_atr_multiple"),
+                            features.get("engine1_pullback_depth_pct"),
+                            features.get("engine1_pullback_candle_count"),
+                            features.get("engine1_entry_atr_distance"),
                         ),
                     )
                 logger.debug(f"ML: inserted setup {setup_id} ({features.get('pair')} {features.get('setup_type')})")

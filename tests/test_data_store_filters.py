@@ -109,11 +109,17 @@ class TestValidOutcomesContract:
     def test_pre_execution_labels_present(self):
         """Labels emitted by main.py before the trade reaches the exchange."""
         required = {
-            "data_blocked", "shadow_direction_filtered", "shadow_dedup",
+            "data_blocked", "shadow_direction_filtered", "shadow_pair_filtered",
+            "shadow_dedup",
             "trading_halted", "risk_rejected", "ai_rejected",
         }
         missing = required - VALID_OUTCOMES
         assert not missing, f"pre-exec labels missing from whitelist: {missing}"
+
+    def test_shadow_pair_filter_outcome_in_non_market(self):
+        """`shadow_pair_filtered` must be excluded from training queries — the
+        setup never reached the market, so it carries no directional signal."""
+        assert "shadow_pair_filtered" in NON_MARKET_OUTCOMES
 
     def test_outcome_orphan_row_returns_false(self):
         """UPDATE that affects 0 rows — setup_id has no matching ml_setups

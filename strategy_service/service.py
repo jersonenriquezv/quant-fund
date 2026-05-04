@@ -25,6 +25,7 @@ from strategy_service.setups import SetupEvaluator
 from strategy_service.quick_setups import QuickSetupEvaluator
 from strategy_service.scalp_setups import ScalpSetupEvaluator
 from strategy_service.volume_profile import VolumeProfileAnalyzer
+from strategy_service.engines.trend_pullback import TrendPullbackEngine
 
 logger = setup_logger("strategy_service")
 
@@ -54,6 +55,8 @@ class StrategyService:
         self._setups = SetupEvaluator()
         self._quick_setups = QuickSetupEvaluator()
         self._scalp_setups = ScalpSetupEvaluator()
+        # Redesign engines (docs/strategy_redesign_2026_04.md §4)
+        self._engine1 = TrendPullbackEngine()
         self._volume_profile = VolumeProfileAnalyzer(
             bin_count=settings.VP_BIN_COUNT,
             value_area_pct=settings.VP_VALUE_AREA_PCT,
@@ -81,20 +84,64 @@ class StrategyService:
 
     def evaluate(self, pair: str,
                  trigger_candle: Candle) -> Optional[TradeSetup]:
-        """Main entry point — evaluate a pair for trade setups.
+        """Live-compatible single-setup entry point.
 
-        Called on every confirmed LTF candle. Runs full analysis pipeline.
+        Returns the first valid setup found (current contract) or None.
+        Internally short-circuits via `_iterate_setups` so detectors and
+        cooldowns mutate identically to the pre-refactor behavior:
+        when the first match is found, subsequent setup evaluators
+        (including quick-setup cooldowns) are NOT executed.
+        """
+        result: list[TradeSetup] = []
 
-        Args:
-            pair: e.g. "BTC/USDT"
-            trigger_candle: The confirmed candle that triggered evaluation.
+        def stop_on_first(setup: TradeSetup) -> bool:
+            result.append(setup)
+            return True  # short-circuit
 
-        Returns:
-            TradeSetup if a valid setup is found, None otherwise.
+        self._iterate_setups(pair, trigger_candle, stop_on_first)
+        return result[0] if result else None
+
+    def evaluate_all(self, pair: str,
+                     trigger_candle: Candle) -> list[TradeSetup]:
+        """Multi-setup entry point — used by shadow data collection.
+
+        Runs the SAME single state-update pass as `evaluate()` and returns
+        ALL valid setups found across the per-LTF + quick-setup loop, in
+        detection order (A_15m → B_15m → F_15m → G_15m → D_5m).
+
+        IMPORTANT: any side effect that fires on a matched setup
+        (e.g. quick-setup cooldown) WILL fire here too — calling
+        `evaluate_all()` may trigger D's cooldown when `evaluate()` would
+        have short-circuited before reaching D. This is intentional: a
+        detection at this candle is a real detection regardless of who
+        consumes it. Live execution remains gated by `ENABLED_SETUPS`.
+        """
+        result: list[TradeSetup] = []
+
+        def accumulate(setup: TradeSetup) -> bool:
+            result.append(setup)
+            return False  # continue iteration
+
+        self._iterate_setups(pair, trigger_candle, accumulate)
+        return result
+
+    def _iterate_setups(self, pair: str, trigger_candle: Candle,
+                        on_match) -> None:
+        """Single state-update pass + setup evaluation loop.
+
+        For each valid setup found, calls `on_match(setup)`. If the
+        callback returns True, iteration stops (live single-setup mode).
+        If it returns False, iteration continues (shadow multi-setup mode).
+
+        Detector state updates (market structure, OBs, FVGs, liquidity,
+        volume profile) run exactly ONCE regardless of mode — this is
+        the property that makes evaluate() and evaluate_all() safe to
+        call independently on the same candle without producing
+        divergent OB/FVG/liquidity state.
         """
         # Only evaluate on LTF candles
         if trigger_candle.timeframe not in settings.LTF_TIMEFRAMES:
-            return None
+            return
 
         current_time_ms = int(time.time() * 1000)
 
@@ -151,7 +198,7 @@ class StrategyService:
                          f"(4h_trend={state_4h.trend} 1h_trend={state_1h.trend} "
                          f"4h_breaks={len(state_4h.structure_breaks)} "
                          f"1h_breaks={len(state_1h.structure_breaks)})")
-            return None
+            return
 
         logger.debug(f"HTF bias={htf_bias} for {pair} "
                      f"(4h={state_4h.trend} 1h={state_1h.trend})")
@@ -255,7 +302,8 @@ class StrategyService:
                             f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
                             f"tp1={setup.tp1_price:.2f} confluences={setup.confluences}"
                         )
-                        return setup
+                        if on_match(setup):
+                            return
 
             setup = self._setups.evaluate_setup_b(
                 structure_state=ltf_state,
@@ -288,7 +336,8 @@ class StrategyService:
                             f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
                             f"tp1={setup.tp1_price:.2f} confluences={setup.confluences}"
                         )
-                        return setup
+                        if on_match(setup):
+                            return
 
             # Setup F — Pure OB Retest (BOS + OB, no FVG required)
             setup = self._setups.evaluate_setup_f(
@@ -321,7 +370,8 @@ class StrategyService:
                             f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
                             f"tp1={setup.tp1_price:.2f} confluences={setup.confluences}"
                         )
-                        return setup
+                        if on_match(setup):
+                            return
 
             # Setup G — Breaker Block Retest (skip evaluation if disabled)
             if "setup_g" in settings.ENABLED_SETUPS or "setup_g" in settings.SHADOW_MODE_SETUPS:
@@ -351,21 +401,73 @@ class StrategyService:
                             f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
                             f"tp1={setup.tp1_price:.2f} confluences={setup.confluences}"
                         )
-                        return setup
+                        if on_match(setup):
+                            return
+
+            # ============================================================
+            # Redesign Engine 1 — Trend-Pullback / Impulse Retest (15m only).
+            # Owns its own gates (entry distance, target space, net R:R) —
+            # does NOT inherit `_apply_expectancy_filters`. Pair filter
+            # (BTC+ETH only) lives in main.py via SHADOW_PAIR_FILTER, not here.
+            # ============================================================
+            from strategy_service.engines.trend_pullback import (
+                SETUP_TYPE as ENGINE1_SETUP_TYPE,
+            )
+            if (ENGINE1_SETUP_TYPE in settings.ENABLED_SETUPS
+                    or ENGINE1_SETUP_TYPE in settings.SHADOW_MODE_SETUPS):
+                swings_htf_prices = [
+                    s.price for s in state_4h.swing_highs + state_1h.swing_highs
+                ] + [
+                    s.price for s in state_4h.swing_lows + state_1h.swing_lows
+                ]
+                engine_setup = self._engine1.evaluate(
+                    pair=pair,
+                    candles=candles,
+                    current_price=trigger_candle.close,
+                    htf_bias=htf_bias,
+                    swings_htf=swings_htf_prices,
+                    ob_timeframe=ltf,
+                )
+                if engine_setup is not None:
+                    logger.info(
+                        f"Engine1 Trend-Pullback found: pair={pair} "
+                        f"direction={engine_setup.direction} "
+                        f"entry={engine_setup.entry_price:.2f} "
+                        f"sl={engine_setup.sl_price:.2f} "
+                        f"tp1={engine_setup.tp1_price:.2f} "
+                        f"tp2={engine_setup.tp2_price:.2f} "
+                        f"confluences={engine_setup.confluences}"
+                    )
+                    if on_match(engine_setup):
+                        return
+                    # Co-emit Engine 1 benchmarks (shadow-only, no-op when
+                    # `on_match` short-circuited above for live `evaluate()`).
+                    from strategy_service.engines.benchmarks import (
+                        emit_engine1_benchmarks,
+                    )
+                    if emit_engine1_benchmarks(
+                        engine_setup,
+                        current_price=trigger_candle.close,
+                        on_match=on_match,
+                    ):
+                        return
 
         # ============================================================
-        # Step 5: Quick setups (C, D, E) — only if no swing setup found
+        # Step 5: Quick setups (D) — evaluated after the swing-setup loop.
+        # In legacy `evaluate()` semantics this only fires when no swing
+        # setup matched (short-circuit). Under `evaluate_all()` it always
+        # runs, which is the desired multi-emit behavior.
         # ============================================================
         quick_setup = self._evaluate_quick_setups(
             pair, htf_bias, candles_5m, candles_15m, market_snapshot, pd_zone,
+            state_4h, state_1h, volume_profile,
         )
         if quick_setup is not None:
             if quick_setup.setup_type not in settings.ENABLED_SETUPS and quick_setup.setup_type not in settings.SHADOW_MODE_SETUPS:
                 logger.debug(f"{quick_setup.setup_type} detected but disabled")
             else:
-                return quick_setup
-
-        return None
+                if on_match(quick_setup):
+                    return
 
     def _evaluate_quick_setups(
         self,
@@ -375,6 +477,9 @@ class StrategyService:
         candles_15m: list[Candle],
         market_snapshot,
         pd_zone,
+        state_4h,
+        state_1h,
+        volume_profile,
     ) -> Optional[TradeSetup]:
         """Try quick setups D only. C/E/H removed 2026-04-13. Respects per-type cooldown."""
         if not candles_5m:

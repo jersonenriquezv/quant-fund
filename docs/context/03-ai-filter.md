@@ -1,7 +1,9 @@
 # AI Service
-> Última actualización: 2026-03-18
-> Estado: **BYPASSED** for all active setups. Zero Claude API calls in pipeline. Code remains for future meta-labeling model (AFML Ch. 3). See `docs/audits/ai-service-audit-2026-03-18.md` for full scientific audit.
+> Última actualización: 2026-04-24
+> Estado: **BYPASSED** for all active setups. Zero Claude API calls in live pipeline. Code remains for future meta-labeling model (AFML Ch. 3). See `docs/audits/ai-service-audit-2026-03-18.md` for full scientific audit.
 > **Roadmap:** LLM filter → trained classifier (meta-labeling) + Half-Kelly bet sizing. Requires 50+ labeled outcomes with `feature_version >= 4` (collecting since 03-18).
+> **Offline audit pipeline (2026-04-24):** `scripts/weekly_edge_audit.py` runs Claude Opus 4.7 weekly over resolved `ml_setups` + `trades` + shadow outcomes. Stores narrative audit in `ml_edge_audits` table + `docs/audits/edge-audit-YYYY-WW.md`. Model: `settings.CLAUDE_MODEL_AUDIT` (env-overridable, default `claude-opus-4-7`). **Does not touch live path** — offline only. Systemd timer: `quant-edge-audit.timer` Sunday 10:00 UTC.
+> **Pre-trade Bybit checklist (2026-04-24):** `/check SYMBOL side entry SL TP [lev=N] [thesis…]` Telegram command (handler in `scripts/explain_bot.py`, logic in `scripts/pretrade_check.py`). Uses same `CLAUDE_MODEL_AUDIT`. Returns score 0-10, verdict, size suggestion, red/green flags, referenced against trader's `bybit_trade_annotations` history + bot `ml_setups` stats. Logs every request to `bybit_pretrade_checks`. Read-only, no order placement.
 
 ## Qué hace (30 segundos)
 El AI Service es el filtro del sistema. Recibe cada trade setup del Strategy Service y lo pasa por Claude (Sonnet) para que evalúe si el contexto de mercado apoya ejecutarlo. Claude evalúa scoring dimensions (setup quality, market support, contradiction, data sufficiency) usando datos de funding rate, open interest, CVD, liquidaciones, whale movements y precio reciente. Si confidence >= 0.50 y approved=true, el trade pasa al Risk Service. Si no, se descarta.

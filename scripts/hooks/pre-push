@@ -1,0 +1,88 @@
+#!/bin/bash
+# Pre-push hook:
+#   1. Block direct pushes to main (merges only).
+#   2. Warn when service code changed without updating that service's sub-CLAUDE.md.
+# Bypass in emergencies: git push --no-verify
+
+remote="$1"
+ZERO="0000000000000000000000000000000000000000"
+
+# Modules with a sub-CLAUDE.md governing rules
+MODULES=(
+    "strategy_service"
+    "risk_service"
+    "execution_service"
+    "data_service"
+    "ai_service"
+    "dashboard"
+)
+
+drift_warn() {
+    local module="$1"
+    local range="$2"
+    # Did any .py change in this module within the range?
+    local code_changed
+    code_changed=$(git diff --name-only "$range" -- "${module}/" 2>/dev/null | grep -E "^${module}/.*\.py$" | grep -v "__pycache__" | grep -v "^${module}/tests/" || true)
+    [ -z "$code_changed" ] && return 0
+
+    # Did the sub-CLAUDE.md change in this range?
+    local doc_changed
+    doc_changed=$(git diff --name-only "$range" -- "${module}/CLAUDE.md" 2>/dev/null || true)
+    [ -n "$doc_changed" ] && return 0
+
+    # Drift: code changed, doc did not. Warn.
+    echo ""
+    echo "WARN: ${module}/ code changed but ${module}/CLAUDE.md was not updated in this branch."
+    echo "      Files changed:"
+    echo "$code_changed" | sed 's/^/        /'
+    echo "      If rules in ${module}/CLAUDE.md still apply, ignore this. Otherwise update the doc."
+    echo "      Run /pr-creator to auto-detect drift before opening the PR."
+    echo ""
+    return 1
+}
+
+drift_found=0
+
+while read local_ref local_sha remote_ref remote_sha; do
+    # Block direct pushes to main
+    if [[ "$remote_ref" == "refs/heads/main" ]]; then
+        parent_count=$(git cat-file -p "$local_sha" | grep -c "^parent ")
+        if [[ "$parent_count" -lt 2 ]]; then
+            echo ""
+            echo "BLOCKED: Direct push to main is not allowed."
+            echo ""
+            echo "  Use one of these flows instead:"
+            echo "    - Merge develop into main:  git checkout main && git merge develop"
+            echo "    - Hotfix:  git checkout -b hotfix/desc main -> fix -> merge to main"
+            echo ""
+            echo "  Emergency bypass: git push --no-verify"
+            echo ""
+            exit 1
+        fi
+    fi
+
+    # Determine range to inspect
+    if [[ "$remote_sha" == "$ZERO" ]]; then
+        # New branch — compare against origin/main if it exists, else main
+        if git rev-parse --verify --quiet origin/main >/dev/null; then
+            range="origin/main..${local_sha}"
+        elif git rev-parse --verify --quiet main >/dev/null; then
+            range="main..${local_sha}"
+        else
+            continue
+        fi
+    elif [[ "$local_sha" == "$ZERO" ]]; then
+        # Branch deletion — skip
+        continue
+    else
+        range="${remote_sha}..${local_sha}"
+    fi
+
+    # Check each module for drift
+    for module in "${MODULES[@]}"; do
+        drift_warn "$module" "$range" || drift_found=1
+    done
+done
+
+# Drift is a warning, not a block — exit 0
+exit 0
