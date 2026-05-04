@@ -990,6 +990,14 @@ class Settings:
     # signals during bring-up.
     SCALP_BASELINE_FIRE_PROB: float = float(os.getenv("SCALP_BASELINE_FIRE_PROB", "0.02"))
 
+    # Orderbook snapshot cache TTL (seconds) for the scalp path. Signal 3
+    # (vol+CVD) reads spread; without a cache the REST call to OKX fires
+    # every candle per pair. 30s keeps spread fresh enough for a 2bps gate
+    # while cutting REST traffic by ~10x at SCALP_TIMEFRAME=5m.
+    SCALP_ORDERBOOK_CACHE_TTL_SECONDS: int = int(
+        os.getenv("SCALP_ORDERBOOK_CACHE_TTL_SECONDS", "30")
+    )
+
     # ========================
     # ML INSTRUMENTATION
     # ========================

@@ -82,6 +82,11 @@ class StrategyService:
         # within SCALP_DEDUP_WINDOW_SECONDS on the same pair.
         self._scalp_last_fire: dict[str, float] = {}
 
+        # Per-pair orderbook cache for the scalp path. Avoids hitting OKX
+        # REST every candle when only Signal 3 needs spread data. Entries
+        # are tuples of (fetched_at_ts, orderbook_dict_or_None).
+        self._scalp_ob_cache: dict[str, tuple[float, dict | None]] = {}
+
     @staticmethod
     def _shadow_scope_allows(setup: TradeSetup) -> bool:
         """Return whether a shadow setup is inside its research scope.
@@ -601,9 +606,10 @@ class StrategyService:
             return setup
 
         # Signal 3 needs orderbook spread for the chaos filter. Fetch lazily
-        # so signals 1-2 don't pay the REST roundtrip when they would have
-        # fired first.
-        orderbook = self._data.get_orderbook_snapshot(pair)
+        # AND cached per-pair so signals 1-2 don't pay the REST roundtrip
+        # when they would have fired first, and consecutive candles share
+        # the same snapshot for SCALP_ORDERBOOK_CACHE_TTL_SECONDS.
+        orderbook = self._get_cached_orderbook(pair, now)
         setup = self._scalp_setups.evaluate_vol_cvd_divergence(
             pair, candles, market_snapshot, orderbook=orderbook,
         )
@@ -628,6 +634,23 @@ class StrategyService:
             return setup
 
         return None
+
+    def _get_cached_orderbook(self, pair: str, now: float) -> dict | None:
+        """Return a cached orderbook snapshot for `pair`, refreshing if stale.
+
+        The cache stores both successful and failed fetches (as None) so a
+        broken exchange call doesn't trigger a REST hammer on every candle.
+        TTL is `SCALP_ORDERBOOK_CACHE_TTL_SECONDS`.
+        """
+        ttl = settings.SCALP_ORDERBOOK_CACHE_TTL_SECONDS
+        cached = self._scalp_ob_cache.get(pair)
+        if cached is not None:
+            fetched_at, ob = cached
+            if (now - fetched_at) < ttl:
+                return ob
+        ob = self._data.get_orderbook_snapshot(pair)
+        self._scalp_ob_cache[pair] = (now, ob)
+        return ob
 
     # ================================================================
     # HTF Campaign — evaluate 4H setups with Daily bias
