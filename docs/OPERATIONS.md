@@ -118,6 +118,58 @@ Redis data is ephemeral cache — bot repopulates on next candle cycle. No recov
 5. Restore PostgreSQL backup
 6. `docker compose up -d --build`
 7. Verify: health endpoint, Grafana, Telegram alerts
+8. Reinstall disk maintenance timer (see "Disk Bloat" below)
+
+### Disk Bloat (Docker build cache)
+
+**Symptom:** `df -h /` near full, but `pg_database_size('quant_fund')` is small. Real culprit is usually Docker build cache + dangling images. Build cache has no native rotation.
+
+**Diagnosis:**
+```bash
+df -h /                  # disk overall
+docker system df         # totals per type
+docker system df -v      # per-image / per-cache breakdown
+```
+
+**One-shot cleanup (safe, no impact to running containers):**
+```bash
+docker builder prune -af   # build cache (rebuilds slower next deploy, ~5-10 min)
+docker image prune -af     # dangling images
+docker container prune -f  # stopped containers
+```
+
+**Automated weekly prune (systemd timer + Telegram notify):**
+
+Unit files live in repo at `docs/systemd/docker-prune.{service,timer}`; deployed copies under `/etc/systemd/system/`. Service runs `scripts/docker_prune_notify.sh`, which:
+1. Snapshots `df -h /` before/after.
+2. Runs `docker builder prune -af --filter until=168h` + `docker image prune -af --filter until=168h`.
+3. Posts a Telegram message with disk delta, bytes reclaimed, and OK/FAIL status. Reads `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` from `config/.env` via grep (avoids sourcing the full env).
+
+Timer fires Sun 03:00 with up to 10min jitter.
+
+Install / re-deploy after script changes:
+```bash
+sudo cp /home/jer/quant-fund/docs/systemd/docker-prune.service /etc/systemd/system/
+sudo cp /home/jer/quant-fund/docs/systemd/docker-prune.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now docker-prune.timer
+```
+
+Manual test run (sends a real Telegram message — fine for verification):
+```bash
+sudo systemctl start docker-prune.service
+journalctl -u docker-prune.service -n 30 --no-pager
+```
+
+Verify schedule:
+```bash
+systemctl list-timers docker-prune.timer --no-pager
+```
+
+Disable:
+```bash
+sudo systemctl disable --now docker-prune.timer
+```
 
 ---
 

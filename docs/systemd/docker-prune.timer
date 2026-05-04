@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly Docker prune (build cache + dangling images)
+Documentation=file:///home/jer/quant-fund/docs/OPERATIONS.md
+
+[Timer]
+OnCalendar=Sun 03:00:00
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target
