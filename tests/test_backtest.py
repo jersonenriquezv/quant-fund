@@ -429,13 +429,16 @@ class TestPositionSizing:
     def test_leverage_cap(self):
         """Leverage capped at MAX_LEVERAGE when risk-based size is too large."""
         sim = TradeSimulator(initial_capital=1000)
-        # entry=50000, sl=49850 → distance=$150 (0.3%)
+        # entry=50000, sl=49950 → distance=$50 (0.1%)
         # MIN_RISK_DISTANCE_PCT patched to 0.1% so this passes
         # risk = 1000 * 0.02 = $20
-        # size = 20 / 150 = 0.133 BTC → notional = 6,667 → leverage = 6.67x
-        # Capped: leverage=MAX → notional=MAX*1000 → size=MAX*1000/50000
-        setup = _setup(direction="long", entry=50000, sl=49850,
-                       tp1=50150, tp2=50300)
+        # size = 20 / 50 = 0.4 BTC → notional = 20,000 → leverage = 20x
+        # Capped at MAX_LEVERAGE: leverage=MAX, notional=MAX*1000,
+        # size=MAX*1000/50000 (e.g. 0.2 at 10x, 0.1 at 5x).
+        # Distance kept tight enough to overshoot MAX_LEVERAGE comfortably,
+        # so the test stays valid if MAX_LEVERAGE moves between 5x and ~15x.
+        setup = _setup(direction="long", entry=50000, sl=49950,
+                       tp1=50050, tp2=50100)
         candle0 = _candle(timestamp=1000000)
 
         sim.on_setup(setup, candle0)
