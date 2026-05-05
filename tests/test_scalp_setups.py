@@ -103,6 +103,12 @@ def _enable_scalp_shadow():
     return patch("strategy_service.scalp_setups.settings.SCALP_SHADOW_ENABLED", True)
 
 
+def _disable_scalp_shadow():
+    """Force-disable SCALP_SHADOW_ENABLED so the gate test does not depend on
+    the ambient .env value (which may be `true` in dev environments)."""
+    return patch("strategy_service.scalp_setups.settings.SCALP_SHADOW_ENABLED", False)
+
+
 # ============================================================
 # Gate behavior
 # ============================================================
@@ -111,12 +117,13 @@ class TestScalpEnabledGate:
 
     def test_returns_none_when_disabled(self):
         evaluator = ScalpSetupEvaluator()
-        # Disabled by default — even with valid inputs, no setup.
+        # Even with valid inputs, gate must short-circuit when disabled.
         candles = _flat_history(base_price=100.0, count=21, start_ts_ms=0)
         snap = _snapshot_with_flush(pair="BTC/USDT", flush_ts_ms=0)
-        result = evaluator.evaluate_liq_reclaim(
-            "BTC/USDT", candles, snap, now_ms=1_000,
-        )
+        with _disable_scalp_shadow():
+            result = evaluator.evaluate_liq_reclaim(
+                "BTC/USDT", candles, snap, now_ms=1_000,
+            )
         assert result is None
 
 
@@ -392,7 +399,8 @@ class TestSweepChochGate:
     def test_returns_none_when_disabled(self):
         evaluator = ScalpSetupEvaluator()
         candles = _sweep_choch_history()
-        result = evaluator.evaluate_sweep_choch("BTC/USDT", candles, None)
+        with _disable_scalp_shadow():
+            result = evaluator.evaluate_sweep_choch("BTC/USDT", candles, None)
         assert result is None
 
     def test_returns_none_with_too_few_candles(self):
@@ -618,10 +626,11 @@ class TestVolCvdGate:
 
     def test_returns_none_when_disabled(self):
         evaluator = ScalpSetupEvaluator()
-        result = evaluator.evaluate_vol_cvd_divergence(
-            "BTC/USDT", _vol_cvd_history(), _cvd_snapshot(cvd_5m=500),
-            orderbook=_ob(),
-        )
+        with _disable_scalp_shadow():
+            result = evaluator.evaluate_vol_cvd_divergence(
+                "BTC/USDT", _vol_cvd_history(), _cvd_snapshot(cvd_5m=500),
+                orderbook=_ob(),
+            )
         assert result is None
 
     def test_returns_none_with_too_few_candles(self):
@@ -853,7 +862,8 @@ class TestFundingExtremeGate:
             base_price=100.0, count=_FUNDING_FLAT_LOOKBACK_BARS, range_pct=0.001,
         )
         snap = _funding_snapshot(rate=0.001)
-        result = evaluator.evaluate_funding_extreme("BTC/USDT", candles, snap)
+        with _disable_scalp_shadow():
+            result = evaluator.evaluate_funding_extreme("BTC/USDT", candles, snap)
         assert result is None
 
     def test_returns_none_with_too_few_candles(self):
@@ -983,7 +993,9 @@ class TestRandomBaseline:
     def test_returns_none_when_disabled(self):
         evaluator = ScalpSetupEvaluator()
         # Force fire prob to 1.0 so any non-zero output proves the gate works.
-        with patch("strategy_service.scalp_setups.settings.SCALP_BASELINE_FIRE_PROB", 1.0):
+        with _disable_scalp_shadow(), patch(
+            "strategy_service.scalp_setups.settings.SCALP_BASELINE_FIRE_PROB", 1.0,
+        ):
             result = evaluator.evaluate_random_baseline(
                 "BTC/USDT", self._baseline_candles(), None,
                 rng=random.Random(0),
