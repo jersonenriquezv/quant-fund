@@ -544,11 +544,20 @@ class TestReplayRealShadows:
         for row in rows:
             (setup_id, direction, entry, sl, tp1, tp2, size,
              outcome_db, hi, lo, close, fill_ts) = row
+            expected = outcome_db.replace("shadow_", "")
             pos = Position(
                 direction=direction, entry_price=float(entry),
-                sl_price=float(sl), tp1_price=float(tp1), tp2_price=float(tp2),
+                # For breakeven rows the SL was already moved to entry on a
+                # candle prior to the resolve candle. Single-candle replay
+                # cannot reconstruct that state from the original SL alone,
+                # so pre-arm BE here to mirror the live position state at
+                # the moment the resolve candle ticked. Non-BE rows keep
+                # the original SL.
+                sl_price=float(entry) if expected == "breakeven" else float(sl),
+                tp1_price=float(tp1), tp2_price=float(tp2),
                 position_size=float(size),
                 filled=bool(fill_ts),  # if filled candle recorded, position was filled
+                tp1_touched=expected == "breakeven",
                 be_confirm_closes=0,
             )
             if pos.filled:
@@ -559,7 +568,6 @@ class TestReplayRealShadows:
             else:
                 # No-fill path — resolve_candle means timeout on filled row only
                 engine = "unknown"
-            expected = outcome_db.replace("shadow_", "")
             if engine == expected:
                 matches += 1
             else:

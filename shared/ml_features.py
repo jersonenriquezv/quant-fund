@@ -16,6 +16,7 @@ from typing import Optional
 
 import numpy as np
 
+from config.settings import settings
 from shared.models import TradeSetup, MarketSnapshot
 
 
@@ -146,30 +147,29 @@ def extract_setup_features(
     else:
         features["sweep_tier"] = None
 
-    # Funding tier
-    if "funding_extreme" in conf_str:
-        features["funding_tier"] = "extreme"
-    elif "funding_moderate" in conf_str:
-        features["funding_tier"] = "moderate"
-    elif "funding_mild" in conf_str:
-        features["funding_tier"] = "mild"
-    else:
-        features["funding_tier"] = None
+    # Funding tier — derived from raw snapshot.funding.rate against
+    # FUNDING_MILD/MODERATE/EXTREME thresholds. Direction-agnostic so the ML
+    # feature captures crowding magnitude on both sides; the strategy gate
+    # (setups.py:_check_volume_confirmation) emits direction-filtered confluence
+    # strings for trading decisions, but for ML we want the raw regime signal
+    # regardless of trade direction. Audit (W17 2026-04-24) flagged the prior
+    # confluence-string parse as 100% null because the gate filters out the
+    # majority of cases.
+    features["funding_tier"] = _funding_tier_from_rate(
+        snapshot.funding.rate if snapshot and snapshot.funding else None
+    )
 
-    # OI delta (numeric) — extracted from oi_delta_X.XXpct confluence
+    # OI delta (numeric) — extracted from oi_delta_X.XXpct confluence (always
+    # emitted unconditionally by the detector when a prior OI snapshot exists).
     features["oi_delta_pct"] = _extract_float(conf_str, r"oi_delta_(-?[\d.]+)pct")
     if features["oi_delta_pct"] and features["oi_delta_pct"] != 0:
         features["oi_delta_pct"] = features["oi_delta_pct"] / 100.0  # Convert to fraction
 
-    # OI rising tier
-    if "oi_rising_strong" in conf_str:
-        features["oi_rising_tier"] = "strong"
-    elif "oi_rising_moderate" in conf_str:
-        features["oi_rising_tier"] = "moderate"
-    elif "oi_rising_mild" in conf_str:
-        features["oi_rising_tier"] = "mild"
-    else:
-        features["oi_rising_tier"] = None
+    # OI rising tier — derived from extracted oi_delta_pct so the tier matches
+    # the raw delta one-to-one. Mirrors detector logic (setups.py:1110) but
+    # decoupled from confluence-string emission (which only fires for positive
+    # rising deltas, hiding the negative-delta cases from training).
+    features["oi_rising_tier"] = _oi_rising_tier_from_delta(features["oi_delta_pct"])
 
     # Buy/sell dominance tier
     if "buy_dominance_strong" in conf_str or "sell_dominance_strong" in conf_str:
@@ -443,7 +443,44 @@ def extract_setup_features(
     else:
         features["trading_session"] = "overlap"
 
+    # --- Regime label (v18) ---
+    # Categorical regime tag derived from existing volatility/trend/squeeze
+    # features. Used by the redesign engines (§4.4) as a pre-filter and
+    # logged as ML feature for every setup. v1 heuristic — see
+    # _compute_regime_label docstring for thresholds and missing-input policy.
+    features["regime_label"] = _compute_regime_label(
+        atr_ratio=features.get("volatility_regime_ratio"),
+        adx_14=features.get("adx_14"),
+        bb_squeeze=features.get("bb_squeeze"),
+        bb_squeeze_percentile=features.get("bb_squeeze_percentile"),
+        btc_return_short=features.get("btc_return_20"),
+        spread_bps=features.get("spread_bps"),
+        fear_greed=features.get("fear_greed_score"),
+    )
+
+    # Engine/benchmark lossless metrics. Prefix-guarded so only known
+    # engine namespaces can land in ml_setups, and canonical fields
+    # (already populated above) always win to prevent accidental
+    # overwrite of pair/setup_type/entry_price/etc.
+    extras = getattr(setup, "extra_features", None) or {}
+    for key, val in extras.items():
+        if not isinstance(key, str):
+            continue
+        if not any(key.startswith(p) for p in _EXTRA_FEATURE_PREFIXES):
+            continue
+        if key in features:
+            continue
+        features[key] = val
+
     return features
+
+
+# Whitelist of namespaces allowed to flow from setup.extra_features into
+# the ml_setups feature dict. Add new engines/benchmarks here as they
+# ship lossless metrics.
+_EXTRA_FEATURE_PREFIXES: tuple[str, ...] = (
+    "engine1_", "engine2_", "engine3_", "engine4_", "bench_",
+)
 
 
 def extract_risk_context(risk_service, capital_override: float | None = None) -> dict:
@@ -852,3 +889,130 @@ def _is_pd_aligned(pd_zone: str, direction: str) -> bool:
     if pd_zone == "premium" and direction == "short":
         return True
     return False
+
+
+def _funding_tier_from_rate(rate: float | None) -> str | None:
+    """Direction-agnostic funding tier from raw rate magnitude.
+
+    Mirrors strategy_service/setups.py:_check_volume_confirmation thresholds
+    (FUNDING_MILD/MODERATE/EXTREME), but does not gate on trade direction
+    so ML training sees crowding magnitude on every setup. Returns None
+    when rate is missing or below the mild threshold.
+    """
+    if rate is None:
+        return None
+    abs_rate = abs(rate)
+    if abs_rate >= settings.FUNDING_EXTREME_THRESHOLD:
+        return "extreme"
+    if abs_rate >= settings.FUNDING_MODERATE_THRESHOLD:
+        return "moderate"
+    if abs_rate >= settings.FUNDING_MILD_THRESHOLD:
+        return "mild"
+    return None
+
+
+def _compute_regime_label(
+    *,
+    atr_ratio: float | None,
+    adx_14: float | None,
+    bb_squeeze: bool | None,
+    bb_squeeze_percentile: float | None,
+    btc_return_short: float | None,
+    spread_bps: float | None,
+    fear_greed: float | None,
+) -> str:
+    """Categorical market regime tag from existing v17 features.
+
+    v1 heuristic table — NOT optimized. Documented thresholds, not tuned
+    parameters. Future calibration runs may revise once an engine has
+    enough resolved samples per regime to justify it (see redesign §4.4).
+
+    Inputs are all already extracted in extract_setup_features:
+    - atr_ratio: `volatility_regime_ratio` (ATR(5) / ATR(50))
+    - adx_14: ADX(14) trend strength
+    - bb_squeeze / bb_squeeze_percentile: Bollinger band width regime
+    - btc_return_short: 20-bar BTC return on the LTF (proxy for ~60m)
+    - spread_bps: orderbook spread in bps
+    - fear_greed: Fear & Greed score (0–100)
+
+    Returns one of: trend_strong, trend_weak, range, compression,
+    breakout, hostile.
+
+    Missing-input policy (deliberate):
+    - Do NOT default to `hostile` on missing inputs — that would
+      under-count tradeable regimes when a single feed is stale.
+    - `hostile` is reserved for explicit hostile evidence. When the
+      signal is partial, fall back to `range` (low ADX) or
+      `trend_weak` (mid ADX) as the most conservative tradeable label.
+    """
+    # --- Hard hostile (explicit evidence only) ---
+    if spread_bps is not None and spread_bps > 5.0:
+        return "hostile"
+    if btc_return_short is not None and abs(btc_return_short) > 0.025:
+        return "hostile"
+    if fear_greed is not None and fear_greed < 5:
+        return "hostile"
+    if atr_ratio is not None and (atr_ratio < 0.5 or atr_ratio > 3.0):
+        return "hostile"
+
+    # --- Compression: low BB width + low ADX + bounded volatility ---
+    is_squeeze = (
+        bb_squeeze is True
+        or (bb_squeeze_percentile is not None and bb_squeeze_percentile <= 0.20)
+    )
+    if (
+        is_squeeze
+        and adx_14 is not None and adx_14 < 20
+        and atr_ratio is not None and 0.5 <= atr_ratio <= 1.3
+    ):
+        return "compression"
+
+    # --- Breakout: ADX rising + volatility expanding ---
+    if (
+        adx_14 is not None and adx_14 >= 20
+        and atr_ratio is not None and atr_ratio >= 1.3
+    ):
+        return "breakout"
+
+    # --- Trend strong: high ADX + sane volatility band ---
+    if (
+        adx_14 is not None and adx_14 >= 25
+        and atr_ratio is not None and 0.8 <= atr_ratio <= 3.0
+    ):
+        return "trend_strong"
+
+    # --- Trend weak: moderate ADX, no compression ---
+    if adx_14 is not None and 18 <= adx_14 < 25:
+        return "trend_weak"
+
+    # --- Range: low ADX, no compression conditions met ---
+    if adx_14 is not None and adx_14 < 18:
+        return "range"
+
+    # --- Fallback when ADX unavailable ---
+    # Conservative: trend_weak when partial data exists (some signal),
+    # range when nothing useful is available.
+    if atr_ratio is not None or bb_squeeze is not None:
+        return "trend_weak"
+    return "range"
+
+
+def _oi_rising_tier_from_delta(oi_delta_pct: float | None) -> str | None:
+    """Direction-agnostic OI rising tier from delta-as-fraction.
+
+    Mirrors strategy_service/setups.py:1110 thresholds but works on the
+    extracted numeric `oi_delta_pct` (already a fraction at this point in
+    extract_setup_features), so dropping deltas (negative) return None
+    while strong/moderate/mild positive deltas tier up. The detector also
+    emits an `oi_dropping_X` confluence — that is captured by other
+    feature columns (`oi_delta_pct` is signed).
+    """
+    if oi_delta_pct is None or oi_delta_pct <= 0:
+        return None
+    if oi_delta_pct >= settings.OI_DELTA_STRONG_PCT:
+        return "strong"
+    if oi_delta_pct >= settings.OI_DELTA_MODERATE_PCT:
+        return "moderate"
+    if oi_delta_pct >= settings.OI_DELTA_MILD_PCT:
+        return "mild"
+    return None

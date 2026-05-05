@@ -1,0 +1,12 @@
+[Unit]
+Description=Docker build cache + dangling images prune (with Telegram notify)
+Documentation=file:///home/jer/quant-fund/docs/OPERATIONS.md
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/jer/quant-fund/scripts/docker_prune_notify.sh
+StandardOutput=journal
+StandardError=journal

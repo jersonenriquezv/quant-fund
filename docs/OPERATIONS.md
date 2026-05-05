@@ -73,6 +73,33 @@ docker compose up -d --build web
 - Verify health after deploy: `curl http://localhost:8000/api/health`
 - Check Grafana for anomalies after deploy: http://100.120.181.11:3001
 
+### Parallel Branch Work — git worktrees
+
+Each repo can only have ONE branch checked out per working directory. Multiple Claude/terminal sessions opened on the same path share that branch. To work on two branches in parallel without `git checkout` thrashing, use git worktrees: each worktree is a sibling directory with its own checked-out branch, sharing the same `.git` history.
+
+| Worktree | Branch | Use |
+|---|---|---|
+| `/home/jer/quant-fund` | active feature (e.g. `feat/scalp-shadow-signals`) | primary editor / bot deploy source |
+| `/home/jer/quant-fund-engine1` | `feat/engine1-v1b-eth-short` | parallel feature in flight |
+| `/home/jer/quant-fund/.claude/worktrees/agent-*` | scratch | spawned by Claude agents (auto-pruned when no changes) |
+
+```bash
+# Create
+git worktree add /home/jer/quant-fund-NAME feat/branch-name
+
+# List
+git worktree list
+
+# Remove (only if branch is merged or you're sure)
+git worktree remove /home/jer/quant-fund-NAME
+```
+
+**Rules:**
+- Bot deploy reads from `/home/jer/quant-fund` only — `docker compose up -d --build bot` builds whatever is checked out there. Worktrees do NOT auto-deploy.
+- One worktree per branch (git refuses duplicate checkouts).
+- PRs are remote-only — worktrees do not affect PR state on GitHub.
+- Each Claude session's statusline shows the branch of ITS worktree, so sessions don't override each other.
+
 ---
 
 ## 3. Recovery Procedures
@@ -118,6 +145,58 @@ Redis data is ephemeral cache — bot repopulates on next candle cycle. No recov
 5. Restore PostgreSQL backup
 6. `docker compose up -d --build`
 7. Verify: health endpoint, Grafana, Telegram alerts
+8. Reinstall disk maintenance timer (see "Disk Bloat" below)
+
+### Disk Bloat (Docker build cache)
+
+**Symptom:** `df -h /` near full, but `pg_database_size('quant_fund')` is small. Real culprit is usually Docker build cache + dangling images. Build cache has no native rotation.
+
+**Diagnosis:**
+```bash
+df -h /                  # disk overall
+docker system df         # totals per type
+docker system df -v      # per-image / per-cache breakdown
+```
+
+**One-shot cleanup (safe, no impact to running containers):**
+```bash
+docker builder prune -af   # build cache (rebuilds slower next deploy, ~5-10 min)
+docker image prune -af     # dangling images
+docker container prune -f  # stopped containers
+```
+
+**Automated weekly prune (systemd timer + Telegram notify):**
+
+Unit files live in repo at `docs/systemd/docker-prune.{service,timer}`; deployed copies under `/etc/systemd/system/`. Service runs `scripts/docker_prune_notify.sh`, which:
+1. Snapshots `df -h /` before/after.
+2. Runs `docker builder prune -af --filter until=168h` + `docker image prune -af --filter until=168h`.
+3. Posts a Telegram message with disk delta, bytes reclaimed, and OK/FAIL status. Reads `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` from `config/.env` via grep (avoids sourcing the full env).
+
+Timer fires Sun 03:00 with up to 10min jitter.
+
+Install / re-deploy after script changes:
+```bash
+sudo cp /home/jer/quant-fund/docs/systemd/docker-prune.service /etc/systemd/system/
+sudo cp /home/jer/quant-fund/docs/systemd/docker-prune.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now docker-prune.timer
+```
+
+Manual test run (sends a real Telegram message — fine for verification):
+```bash
+sudo systemctl start docker-prune.service
+journalctl -u docker-prune.service -n 30 --no-pager
+```
+
+Verify schedule:
+```bash
+systemctl list-timers docker-prune.timer --no-pager
+```
+
+Disable:
+```bash
+sudo systemctl disable --now docker-prune.timer
+```
 
 ---
 
@@ -130,7 +209,7 @@ Redis data is ephemeral cache — bot repopulates on next candle cycle. No recov
 - Migrations use `ALTER TABLE ADD COLUMN IF NOT EXISTS` (idempotent)
 - Version tracking via `schema_version` table — each migration records its version number
 
-### Current Schema Version: 18
+### Current Schema Version: 21
 
 | Version | Description | Date |
 |---------|-------------|------|
@@ -145,6 +224,9 @@ Redis data is ephemeral cache — bot repopulates on next candle cycle. No recov
 | 16 | ml_setups: WaveTrend + ADX/DI + Bollinger + Stochastic RSI | 2026-04 |
 | 17 | ml_setups: shadow resolution candle trace | 2026-04 |
 | 18 | trades: capital_at_trade snapshot | 2026-04 |
+| 19 | ml_setups: regime_label categorical | 2026-04 |
+| 20 | ml_setups: widen outcome_type to VARCHAR(50) (idempotent — prod already widened ad-hoc) | 2026-04 |
+| 21 | ml_setups: Engine 1 lossless metric columns (engine1_impulse_atr_multiple, engine1_pullback_depth_pct, engine1_pullback_candle_count, engine1_entry_atr_distance) | 2026-04 |
 
 ### Adding a New Migration
 

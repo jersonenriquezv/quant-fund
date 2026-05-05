@@ -153,7 +153,12 @@ async def on_candle_confirmed(candle: Candle) -> None:
     # Block new HTF campaign if intraday position active on same pair
     # (handled in _evaluate_htf_pipeline)
 
-    setup = _strategy_service.evaluate(candle.pair, candle)
+    # Multi-signal collection: evaluate_all() runs the SAME state-update pass
+    # as evaluate() and returns ALL valid setups in detection order.
+    # Live execution still consumes at most ONE setup per candle (the first
+    # ENABLED one); shadow logging consumes every SHADOW_MODE setup.
+    # See docs/strategy_redesign_2026_04.md §Phase 0.5.
+    all_setups = _strategy_service.evaluate_all(candle.pair, candle)
     _publish_strategy_state(candle.pair)
 
     # Position Guardian — evaluate open positions against live market conditions
@@ -171,12 +176,40 @@ async def on_candle_confirmed(candle: Candle) -> None:
         except Exception as e:
             logger.error(f"Position Guardian error: {e}")
 
-    if setup is None:
+    # Scalp shadow signals (docs/plans/scalp_shadow_v1.md). Independent of
+    # the SMC cascade — appended to the multi-setup list so each gets routed
+    # through _process_pipeline_setup (shadow path). evaluate_scalp returns
+    # at most one TradeSetup per call and is gated by SCALP_SHADOW_ENABLED.
+    if settings.SCALP_SHADOW_ENABLED:
+        scalp_setup = _strategy_service.evaluate_scalp(candle.pair, candle)
+        if scalp_setup is not None:
+            all_setups = list(all_setups) + [scalp_setup]
+
+    if not all_setups:
         return
 
     global _last_setup_detected_time
     _last_setup_detected_time = time.time()
 
+    live_executed = False
+    for setup in all_setups:
+        live_taken = await _process_pipeline_setup(
+            setup, candle, allow_live=not live_executed,
+        )
+        if live_taken:
+            live_executed = True
+
+    _emit_metric("pipeline_latency_ms", (time.monotonic() - pipeline_start) * 1000, candle.pair)
+
+
+async def _process_pipeline_setup(setup, candle: Candle, *, allow_live: bool) -> bool:
+    """Run dedup → ml-log → shadow OR live pipeline for a single setup.
+
+    Returns True if this setup consumed the candle's live-execution slot
+    (caller uses the flag to lock further live runs in the same candle).
+    Returns False otherwise — including all shadow paths, dedup hits,
+    risk rejections, and skipped-because-allow_live=False.
+    """
     logger.info(
         f"Trade setup detected: type={setup.setup_type} pair={setup.pair} "
         f"direction={setup.direction} entry={setup.entry_price:.2f} "
@@ -198,12 +231,13 @@ async def on_candle_confirmed(candle: Candle) -> None:
             )
             _ml_log_setup(setup, candle)
             _ml_resolve_outcome(setup.setup_id, "data_blocked")
-            return
+            return False
 
-    # Dedup: block identical setups within TTL (covers ALL setup types, not just Claude)
-    # NOTE: entry_price intentionally excluded — same pair/direction/type within TTL
-    # is the same trade idea even if the OB recalculates to a slightly different price.
-    # Including price caused duplicate orders (e.g. 73038 vs 72937 = different keys).
+    # Dedup: block identical setups within TTL (covers ALL setup types).
+    # Key is (pair, direction, setup_type) — already per-setup-type, so
+    # multi-emit (engines + legacy + benchmarks on same candle) does not
+    # mutually deduplicate. Live and shadow share this cache by design;
+    # `dedup_ttl` differs per shadow-vs-live to control re-evaluation cadence.
     dedup_key = (setup.pair, setup.direction, setup.setup_type)
     now = time.time()
     last_eval = _setup_dedup_cache.get(dedup_key)
@@ -215,7 +249,7 @@ async def on_candle_confirmed(candle: Candle) -> None:
             f"{setup.setup_type} entry={setup.entry_price:.2f} — "
             f"already processed {int(now - last_eval)}s ago, skipping"
         )
-        return
+        return False
 
     # --- ML: capture feature snapshot AFTER dedup (dedup adds no ML value) ---
     _ml_log_setup(setup, candle)
@@ -230,7 +264,16 @@ async def on_candle_confirmed(candle: Candle) -> None:
                 f"not in {allowed_dirs} — skipping"
             )
             _ml_resolve_outcome(setup.setup_id, "shadow_direction_filtered")
-            return
+            return False
+        # Pair filter: quarantine setups to research pairs (BTC+ETH for d_*)
+        allowed_pairs = settings.SHADOW_PAIR_FILTER.get(setup.setup_type)
+        if allowed_pairs is not None and setup.pair not in allowed_pairs:
+            logger.debug(
+                f"Shadow pair filter: {setup.setup_type} {setup.pair} "
+                f"not in {allowed_pairs} — skipping"
+            )
+            _ml_resolve_outcome(setup.setup_id, "shadow_pair_filtered")
+            return False
         # Risk check: run but do NOT gate on result. Log as ML feature only.
         risk_approval = None
         if _risk_service is not None:
@@ -264,14 +307,23 @@ async def on_candle_confirmed(candle: Candle) -> None:
         _setup_dedup_cache[dedup_key] = time.time()
         if not accepted:
             _ml_resolve_outcome(setup.setup_id, "shadow_dedup")
-            return
+            return False
         logger.info(
             f"Shadow mode: {setup.setup_type} {setup.pair} {setup.direction} "
             f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
             f"risk_ok={risk_approval.approved if risk_approval else 'N/A'} "
             f"— tracking (${settings.SHADOW_CAPITAL} virtual)"
         )
-        return
+        return False
+
+    # --- Live path begins. Multi-emit guard: at most one live execution
+    #     per candle. If a prior setup already consumed the slot, skip.
+    if not allow_live:
+        logger.info(
+            f"Live slot already taken this candle — skipping {setup.setup_type} "
+            f"{setup.pair} {setup.direction}"
+        )
+        return False
 
     # --- Emergency halt: block new live trades while monitoring continues ---
     if settings.TRADING_HALTED:
@@ -280,7 +332,7 @@ async def on_candle_confirmed(candle: Candle) -> None:
             f"— new trades blocked (env TRADING_HALTED=true)"
         )
         _ml_resolve_outcome(setup.setup_id, "trading_halted")
-        return
+        return False
 
     # Pre-check: can this pair meet exchange minimum order size?
     min_size = settings.MIN_ORDER_SIZES.get(setup.pair, 0)
@@ -300,7 +352,7 @@ async def on_candle_confirmed(candle: Candle) -> None:
                 f"have ${max_notional:.0f} at {settings.MAX_LEVERAGE}x)"
             )
             _ml_resolve_outcome(setup.setup_id, "risk_rejected")
-            return
+            return False
 
     # Layer 3: AI Service — Claude filter
     decision = None
@@ -319,10 +371,10 @@ async def on_candle_confirmed(candle: Candle) -> None:
         decision = await _evaluate_with_claude(setup, candle)
         if decision is None:
             _ml_resolve_outcome(setup.setup_id, "ai_rejected")
-            return
+            return False
         if not decision.approved:
             _ml_resolve_outcome(setup.setup_id, "ai_rejected")
-            return
+            return False
 
     # Layer 4: Risk Service (pass AI confidence for bet sizing)
     approval = None
@@ -360,7 +412,7 @@ async def on_candle_confirmed(candle: Candle) -> None:
             if "sl too close" in reason_lower or "risk distance" in reason_lower:
                 _setup_dedup_cache[dedup_key] = time.time()
                 logger.debug(f"Dedup: cached risk-rejected setup {dedup_key}")
-            return
+            return False
         logger.info(
             f"Risk approved: size={approval.position_size:.6f} "
             f"leverage={approval.leverage:.2f}x risk={approval.risk_pct*100:.1f}%"
@@ -376,9 +428,13 @@ async def on_candle_confirmed(candle: Candle) -> None:
         )
         _ml_resolve_outcome(setup.setup_id, "risk_rejected")
         _setup_dedup_cache[dedup_key] = time.time()
-        return
+        return False
 
-    # Layer 5: Execution (or Signal)
+    # Layer 5: Execution (or Signal). Reaching this point consumes the
+    # candle's live-execution slot regardless of whether the order
+    # actually places (a NetworkError may mean the order reached OKX
+    # but we never saw the response — competing live setups must wait
+    # the next candle).
     if approval is not None and approval.approved:
         if settings.SIGNAL_ONLY:
             logger.info(f"Signal mode: sending signal for {setup.pair} {setup.direction}")
@@ -392,8 +448,9 @@ async def on_candle_confirmed(candle: Candle) -> None:
             # reached OKX but we didn't get the response. Without this, the
             # next candle retries and creates a duplicate live order.
             _setup_dedup_cache[dedup_key] = time.time()
+        return True
 
-    _emit_metric("pipeline_latency_ms", (time.monotonic() - pipeline_start) * 1000, candle.pair)
+    return False
 
 
 # ================================================================

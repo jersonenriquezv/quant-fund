@@ -2,11 +2,12 @@
 
 > Source of truth for system state. Updated on every material change.
 > Reflects code reality — if code and doc disagree, fix the doc.
+> Documentation rule: this file is the operational source of truth. `README.md` is a portfolio overview; `docs/context/*` explains concepts and history and may intentionally lag unless this baseline links to it.
 
-**Last updated:** 2026-04-23
-**ML Feature Version:** 17
+**Last updated:** 2026-05-04
+**ML Feature Version:** 18
 **Bot status:** SHADOW-ONLY (OKX_SANDBOX=false, ENABLED_SETUPS=[], ~$86 capital untouched)
-**Active experiment:** `batch1_tp1_rr_1_3_2026_04_20` (TP1_RR=1.3 BE fix)
+**Active experiment:** `engine1_eth_short_v1b_2026_05_04` (Engine 1 v1b isolates ETH short only after v1 diagnostics: BTC and ETH long negative, ETH short only positive slice; benchmarks mirror ETH scope)
 **Monitoring:** Grafana dashboard `shadow-health` + systemd user timer `shadow-health-alert.timer` (hourly)
 
 ---
@@ -27,18 +28,19 @@
 | A (Sweep+CHoCH+OB) | **SHADOW (short only)** | swing, long disabled (5% WR 1/20) | short 33%, long 5% |
 | B (BOS+FVG+OB) | **SHADOW** | swing, max entry dist 2% (was 3%) | 0-7.7% |
 | C (Funding Squeeze) | **DISABLED** | signal folded into confluence | 0 resolved |
-| D_choch (LTF CHoCH) | **SHADOW** | quick, data collection | 75% backtest |
-| D_bos (LTF BOS) | **SHADOW** | quick, best shadow performer | 50% (2/4 shadow) |
+| D_choch (LTF CHoCH) | **SHADOW (BTC+ETH only)** | quick, quarantined 2026-04-27 (redesign §3.4) | 75% backtest |
+| D_bos (LTF BOS) | **SHADOW (BTC+ETH only)** | quick, quarantined 2026-04-27 (redesign §3.5) | 50% (2/4 shadow) |
 | E (Cascade Reversal) | **DISABLED** | signal folded into confluence | 0W/1L |
 | F (Pure OB Retest) | **SHADOW** | swing, was live until 04-15 | 50% (1TP/1SL live) |
 | G (Breaker Block) | **DISABLED** | 0/4 WR. Removed 04-16. | 0% |
 | H (Momentum/Impulse) | **DISABLED** | — | 10.7% WR (28 trades). Removed 04-13. |
+| Engine 1 (Trend-Pullback / Impulse Retest) | **SHADOW (ETH short only)** | v1b isolated 2026-05-04; pre-emission scope filter prevents out-of-scope benchmark orphans; benchmarks mirror ETH scope | v1: ETH short only positive slice; BTC + ETH long quarantined |
 
 ### Risk Guardrails
 | Parameter | Value | Notes |
 |-----------|-------|-------|
 | RISK_PER_TRADE | 1% | Dynamic sizing via PositionSizer (was: flat $20 margin) |
-| MAX_LEVERAGE | 7x | Cap on PositionSizer output |
+| MAX_LEVERAGE | 10x | Cap on PositionSizer output (raised 2026-04-29 — see changelog) |
 | MAX_OPEN_POSITIONS | 8 | |
 | MAX_TRADES_PER_DAY | 20 | |
 | MAX_DAILY_DRAWDOWN | 10% | was 5%, raised for $20/$108 capital ratio |
@@ -72,7 +74,7 @@
 | SWEEP_MIN_VOLUME_RATIO | 1.5x | default |
 | SETUP_A_ENTRY_PCT | 50% | deepened from 65% (04-02): shadow 9% WR, SL within noise |
 | SETUP_A_MODE | continuation | changed from "both" (04-02): 17/17 SL on counter-trend |
-| SETUP_A_MAX_SWEEP_CHOCH_GAP | 60 | aggressive mode (Optuna: 45) |
+| SETUP_A_MAX_SWEEP_CHOCH_GAP | 45 | Optuna-validated; synced from 60 on 2026-04-27 (doc-truth pre-work, redesign §3.1) |
 | SETUP_A_MAX_ENTRY_DISTANCE_PCT | 5% | added 04-15: consistency with B/F |
 | FUNDING_MILD_THRESHOLD | 0.0001 | 0.01% — mild directional crowding |
 | FUNDING_MODERATE_THRESHOLD | 0.0003 | 0.03% — was EXTREME, now moderate |
@@ -229,7 +231,7 @@ Reference for VPS sizing when migrating from Nitro 5.
 | H2 | OI delta adds predictive value | Audit: was existence-check only | Track oi_rising/oi_dropping confluence presence vs trade outcome |
 | H3 | Setup F ≥ Setup B (F = B minus FVG gate) | Backtest: F 58.8% WR vs B 49% when both structural | B disabled, F enabled — compare live |
 | H4 | Restored thresholds (ATR 0.35%, OB vol 1.3) reduce false positives | Audit: relaxed values let noise through | Compare setup frequency and WR vs aggressive period |
-| H5 | HTF undefined blocks too many setups in range markets | ~60% of time no 4H/1H trend defined | If no trades after 1-2 weeks, try HTF_BIAS_REQUIRE_4H=false |
+| ~~H5~~ | ~~HTF undefined blocks too many setups in range markets~~ | Already implemented: `HTF_BIAS_REQUIRE_4H=False` (settings.py:402). Hypothesis closed 2026-04-27. | — |
 | H6 | Meta-labeling model (AFML Ch.3) > LLM filter | AI v1 destroyed B, AI v2 89.6% approval = no value | Train classifier on ml_setups v4+ data, replace Claude |
 | H7 | Half-Kelly bet sizing improves risk-adjusted returns | AFML Ch.10: size proportional to calibrated P(profit) | Wire BET_SIZING after calibrated model exists |
 
@@ -252,12 +254,12 @@ Reference for VPS sizing when migrating from Nitro 5.
 
 ## 7. ML Feature Versioning
 
-**Current version:** 17 (set in `config/settings.py:ML_FEATURE_VERSION`)
+**Current version:** 18 (set in `config/settings.py:ML_FEATURE_VERSION`)
 **Storage:** `ml_setups.feature_version` column in PostgreSQL
-**Query training data:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL AND outcome_type NOT IN ('ai_rejected','data_blocked','filled_orphaned','replaced','risk_rejected','shadow_dedup','shadow_direction_filtered','shadow_orphaned','trading_halted','unfilled_timeout')`
+**Query training data:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL AND outcome_type NOT IN ('ai_rejected','data_blocked','filled_orphaned','replaced','risk_rejected','shadow_dedup','shadow_direction_filtered','shadow_pair_filtered','shadow_orphaned','trading_halted','unfilled_timeout')`
 
 Whitelist autoritativa de `outcome_type` en `data_service.data_store.VALID_OUTCOMES`. Labels fuera del set generan WARNING. El filtro non-market se centraliza en `NON_MARKET_OUTCOMES` + helper `ml_market_outcome_filter_sql()` (mismo módulo) — usarlo en scripts/queries nuevas para evitar drift.
-**Experiment tracking:** `experiment_id` column (migration 15). Current: `freeze_v15_2026_04_16`. Filter: `WHERE experiment_id = 'freeze_v15_2026_04_16'` for clean freeze data.
+**Experiment tracking:** `experiment_id` column (migration 15). Current: `redesign_pre_2026_04_27`. Filter: `WHERE experiment_id = 'redesign_pre_2026_04_27'` for clean post-redesign-prework data.
 
 | Version | Date | Changes | Training Status |
 |---------|------|---------|-----------------|
@@ -276,6 +278,8 @@ Whitelist autoritativa de `outcome_type` en `data_service.data_store.VALID_OUTCO
 | v14 | 04-14+ | Orderbook spread/imbalance, BTC correlation (return + vol ratio), volatility regime, trading session | **TRAINING READY** |
 | v15 | 04-16+ | WaveTrend (Cipher B core): wt_wt1/wt_wt2 oscillator, wt_cross (bull/bear), wt_zone (oversold/overbought/neutral), wt_aligned (cross matches setup direction in extreme zone) | **TRAINING READY** |
 | v16 | 04-16+ | ADX(14) + DI+/DI- (trend strength + direction), Bollinger(20,2) width/%B/squeeze percentile, Stochastic RSI(14,14,3,3) %K/%D/zone/cross | **TRAINING READY** |
+| v17 | 04-23+ | `pd_aligned` strict (equilibrium no longer counts as aligned for either side); VALID_OUTCOMES whitelist + `filled_slippage` outcome; setup_d normalization | **TRAINING READY** |
+| v18 | 04-27+ | `regime_label` categorical (trend_strong/weak/range/compression/breakout/hostile) from ADX+BBW+ATR+spread+btc-return+F&G; `funding_tier`/`oi_rising_tier` derived from raw signal magnitude (decoupled from direction-gated confluence strings — fixes W17 100% null) | **TRAINING READY** |
 
 **When to bump:** Increment `ML_FEATURE_VERSION` whenever strategy params change in ways that alter feature semantics (OB scoring weights, PD rules, confluence logic, threshold changes).
 
@@ -344,6 +348,21 @@ Three storages hold trade-like rows. Only ONE is authoritative for ML training /
 
 **Principle:** each batch ships + passes bar before next starts. No parallel strategy work during infra phase.
 
+### Side experiment — Scalp Shadow v1 (2026-05-04)
+
+Independent shadow-only experiment for microstructural scalping signals, separate from the SMC roadmap above. Plan: `docs/plans/scalp_shadow_v1.md`.
+
+- **experiment_id:** `scalp_v1_2026_05` (env-overridable via `SCALP_EXPERIMENT_ID`)
+- **Master switch:** `SCALP_SHADOW_ENABLED` (default `false`)
+- **Timeframe:** `SCALP_TIMEFRAME` (default `5m`; bumps to `1m` once a fetcher commit lands)
+- **Setup types:** `scalp_liq_reclaim_v1`, `scalp_sweep_choch_v1`, `scalp_vol_cvd_div_v1`, `scalp_funding_extreme_v1`, `scalp_random_baseline_v1` — all routed through `SHADOW_MODE_SETUPS`, zero live execution.
+- **Per-signal params:** `settings.SCALP_SIGNAL_PARAMS` (TP%, SL%, time_stop_seconds). `ShadowMonitor` reads `time_stop_seconds` at `add_shadow` and resolves as `shadow_time_stop`.
+- **Cross-signal dedup:** 30s window per pair (`SCALP_DEDUP_WINDOW_SECONDS`) inside `StrategyService.evaluate_scalp`.
+- **Pipeline wiring:** `main.py` calls `evaluate_scalp` only when the SMC cascade returned `None`, gated by the master switch.
+- **Validation rules (must all hold to graduate to live):** N >= 100, WR_post_fees > 50%, PF_post_fees > 1.5, beats `scalp_random_baseline_v1` WR by >= 15pp, freq >= 5/day. Fees adjustment uses `SCALP_ROUND_TRIP_FEE_PCT` (default 0.11%).
+- **Report:** `python scripts/report_scalp_shadow.py [--since YYYY-MM-DD] [--pair BTC/USDT]`. Markdown table per signal with raw + post-fees metrics, baseline delta, decision rule output.
+- **Exit:** >= 100 outcomes per signal OR 4 weeks elapsed. Final summary lands in `docs/audits/`.
+
 ---
 
 ## 8. Changelog
@@ -366,6 +385,77 @@ Three storages hold trade-like rows. Only ONE is authoritative for ML training /
 **Operator note (post-deploy):** Shadow PnL collected before this date used the fixed-`$250` fallback. Reports comparing pre/post must filter by `created_at >= 2026-05-05` or by `experiment_id` switch. `shadow_position_size` and `shadow_margin` distributions in `ml_setups` will scale `5–10×` larger on tight-SL setups.
 
 **Tests:** `tests/test_shadow_monitor_sizing.py` — 14 cases covering risk-amount contract, leverage cap, edge cases (`distance=0`, `entry<=0`), parametrized parity with `PositionSizer.calculate`.
+
+### 2026-05-04 — Engine 1 v1b ETH-Short Isolation
+**What changed:**
+- `EXPERIMENT_ID` changed to `engine1_eth_short_v1b_2026_05_04`.
+- `engine1_trend_pullback` shadow scope narrowed to `ETH/USDT` shorts only.
+- Engine 1 benchmarks narrowed to `ETH/USDT` and are only co-emitted after the primary Engine 1 setup passes the same research scope.
+
+**Why:** Engine 1 v1 reached enough outcomes to make a coarse decision before 100: BTC long/short and ETH long were negative, while ETH short was the only positive slice. The old sample also had repeated geometries and benchmark orphan/drift artifacts. v1b asks one clean question: does ETH-short Engine 1 survive with cleaner scope and 10x runtime sizing?
+
+**Expected impact:** Lower Telegram volume, fewer repeated/out-of-scope benchmark rows, and a cleaner ETH-short sample. No TP, BE, trailing, entry geometry, SL geometry, or detector thresholds changed.
+
+### 2026-05-04 — Shadow Sizing Clarity + Runtime Leverage Sync + Benchmark Telegram Silencing
+**What changed:**
+- Runtime `config/.env` `MAX_LEVERAGE` synced from 5x to the documented 10x policy.
+- Shadow Telegram/log messages now distinguish risk target/effective risk, margin, notional, and leverage.
+- `bench_engine1_*` setups now silence TRACKING + FILL Telegram alerts; only RESOLVE ships (`execution_service/shadow_monitor.py:_notify_detection`, `_notify_fill`).
+
+**Why:** Shadow mode should size from `SHADOW_CAPITAL=$500` at `RISK_PER_TRADE=1%` (target risk `$5`) when leverage allows it. The previous Telegram wording showed only margin (for example `$25`), which made capped BTC shadows look like fixed-margin trades even when risk-based sizing was active. Each Engine 1 detection co-emits two benchmark setups, which previously triggered 9 alerts per detection (3 lifecycle × 3 setups) — too noisy without adding signal.
+
+**Expected impact:** Tight-SL shadow setups can reach the intended `$5` risk more often at 10x. Telegram alert volume drops ~44% (9 → 5 per detection) without losing edge-comparison data — benchmark RESOLVE outcomes still ship and DB rows are unaffected. No entry, SL, TP, BE, trailing, detector, or live-promotion logic changed.
+
+### 2026-04-29 — MAX_LEVERAGE 7x → 10x (policy change)
+**What changed:**
+- `MAX_LEVERAGE` raised from 7 to 10 in `config/settings.py`
+- SYSTEM_BASELINE §1 risk guardrails table updated
+
+**Why:** Position sizing was capital-bound on small SL distances at 7x — kept rejecting valid setups with risk_pct < 1%. Raising to 10x lets the PositionSizer hit the intended risk per trade for tight SL geometries.
+
+**Expected impact:** Slightly larger positions on tight-SL setups. RISK_PER_TRADE (1%) and MAX_PORTFOLIO_HEAT_PCT (6%) remain unchanged — total risk envelope is preserved.
+
+### 2026-04-24 — Pre-trade Bybit checklist (`/check` Telegram)
+**Files:** `scripts/pretrade_check.py` (new), `scripts/explain_bot.py`, `bybit_pretrade_checks` table (new)
+
+**What changed:**
+- **New Telegram command `/check SYMBOL side entry SL TP [lev=N] [thesis…]`** — manual Bybit trade sanity check before entry.
+- Gathers: live Bybit ticker (price, funding, OI, 24h range), account balance, last 15 bybit_trade_annotations same symbol+side, aggregated ml_setups stats for same pair+direction (last 90d).
+- Feeds structured payload to Claude Opus 4.7 (`CLAUDE_MODEL_AUDIT`). Returns strict JSON: score 0-10, verdict (strong/ok/weak/skip), size suggestion, max safe leverage, green/red flags, missing confluences, coaching notes.
+- Formats verdict with emoji to Telegram; logs full payload + report to `bybit_pretrade_checks` table for regression (compare pre-trade check vs actual outcome).
+- CLI standalone: `python scripts/pretrade_check.py "/check BTC long 77500 76800 79000"`.
+
+**Why:** manual Bybit trading is the biggest dollar lever ($4.6k vs $86 bot). Pre-entry second-opinion forces thesis articulation + surfaces historical self-leaks ("your last 5 BTC longs are 0/5 — this setup has the same structure"). Low-risk, high-value application of Opus 4.7.
+
+**Safety:** read-only (no order placement). Direction sanity enforced in parser (long requires SL<entry<TP; short the inverse). Symbol whitelist = bot's 7 pairs. Fails soft if Bybit API down.
+
+### 2026-04-24 — Weekly edge audit (Claude Opus 4.7)
+**Files:** `scripts/weekly_edge_audit.py` (new), `config/settings.py`, `systemd/quant-edge-audit.{service,timer}` (new), `ml_edge_audits` table (new)
+
+**What changed:**
+- **New offline audit pipeline.** Pulls resolved `ml_setups` + closed `trades` + shadow outcomes for last N days, aggregates by setup/pair/hour/htf_bias/feature tier, feeds to Claude Opus 4.7, emits narrative markdown audit.
+- **Model:** `CLAUDE_MODEL_AUDIT=claude-opus-4-7` (env-overridable). Separate from live AI filter `CLAUDE_MODEL`. Prompt caching enabled via `cache_control` on system prompt (not yet crossing 1024-token threshold — activates as prompt grows).
+- **Storage:** `ml_edge_audits` table (period_start/end, experiment_id, payload JSONB, report_md, tokens, cache metrics). Markdown written to `docs/audits/edge-audit-YYYY-WW.md`.
+- **Schedule:** `quant-edge-audit.timer` — Sunday 10:00 UTC weekly. Install: `sudo cp systemd/quant-edge-audit.{service,timer} /etc/systemd/system/ && sudo systemctl enable --now quant-edge-audit.timer`.
+- **Safety:** `--min-setups 10` default bails if sample too small; `--dry-run` skips API call. Offline-only — never touches live pipeline.
+
+**Why:** meta-labeling roadmap (AFML) needs narrative edge analysis, not just numbers. Shadow mode data accumulating; weekly audit surfaces leaks (feature tier instrumentation gaps, session-time effects, long/short asymmetry) before live re-enable.
+
+**How to use:**
+- On-demand: `venv/bin/python scripts/weekly_edge_audit.py --days 7`
+- Force with low sample: `--min-setups 0`
+- Query history: `SELECT period_start, n_setups, win_rate_pct, tokens_in FROM ml_edge_audits ORDER BY id DESC`
+
+### 2026-04-24 — Fix: `_evaluate_quick_setups` NameError (state_4h/state_1h/volume_profile)
+**Files:** `strategy_service/service.py`
+
+**What changed:**
+- Added `state_4h`, `state_1h`, `volume_profile` as explicit parameters to `_evaluate_quick_setups`. Previously referenced as free variables (introduced by commit `28f66841` Batch 4 on 2026-04-21), causing `NameError` on every LTF candle across all pairs.
+- `evaluate()` now passes these down to the quick-setup path.
+
+**Why:** Production bug. Bot logged `Pipeline callback error: ... name 'state_4h' is not defined` on every 5m+15m candle for ~3 days. Setup D (quick) was completely dead — every evaluation raised before any setup logic ran. Swing setups (A/B/F) survived only because `return setup` on match exited `evaluate()` before reaching the broken quick-setup call.
+
+**Impact:** Setup D reactivated. Zero pipeline callback errors post-fix (verified in logs). Tests: 915 pass.
 
 ### 2026-04-23 — Audit fase 4.3: §BAJA hardening
 **Files:** `main.py`, `risk_service/state_tracker.py`

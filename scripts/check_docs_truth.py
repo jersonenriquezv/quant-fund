@@ -40,6 +40,41 @@ SETUP_LABELS = {
 RISK_DOC_PATH = ROOT / "docs" / "context" / "04-risk.md"
 AI_DOC_PATH = ROOT / "docs" / "context" / "03-ai-filter.md"
 
+# Modules that must have a sub-CLAUDE.md governing edit rules.
+# Add new modules here as their sub-CLAUDE.md is created.
+SUB_CLAUDEMD_REQUIRED = (
+    "strategy_service",
+    "risk_service",
+    "execution_service",
+    "data_service",
+    "ai_service",
+    "dashboard",
+)
+
+MEMORY_DIR = Path.home() / ".claude" / "projects" / "-home-jer-quant-fund" / "memory"
+
+# Settings whose name appears in SYSTEM_BASELINE but live elsewhere
+# (env-only, dynamic, removed, or grouped under another constant).
+# These names are skipped by check_baseline_settings_exist.
+BASELINE_SETTING_EXEMPT = {
+    "TP1_RR_RATIO",
+    "SETUP_TP2_RR",
+    "SHADOW_FEAR_LONG_GATE",
+    "SHADOW_MIN_HOUR_UTC",
+    "SETUP_H_",
+    "ENTRY_TIMEOUT",
+    "MAX_TRADE_DURATION",
+    "TRAILING_TP_ENABLED",
+    "QUICK_OB_MAX_DISTANCE_PCT",
+    "SETUP_D_ENTRY_PCT",
+    "SETUP_A_MAX_SWEEP_CHOCH_GAP",
+    "SHADOW_DEDUP_TTL",
+    "TRADING_PAIRS",
+    "HTF_TIMEFRAMES",
+    "LTF_TIMEFRAMES",
+    "SWING_SETUP_TIMEFRAMES",
+}
+
 # Constants whose doc table value must exactly match settings.py.
 # Format: setting name → expected doc representation (plain = str(value)).
 BASELINE_CONSTANTS = {
@@ -112,8 +147,20 @@ def load_settings_defaults() -> dict[str, object]:
                     try:
                         values[target] = _eval_node(value)
                     except Exception:
-                        continue
+                        # Cannot evaluate (complex expression like getenv().lower() == "true")
+                        # but record name as a sentinel so existence checks still pass.
+                        values.setdefault(target, _UNEVALUATED)
     return values
+
+
+class _Unevaluated:
+    """Sentinel for settings whose value AST eval cannot resolve."""
+
+    def __repr__(self) -> str:
+        return "<unevaluated>"
+
+
+_UNEVALUATED = _Unevaluated()
 
 
 def latest_schema_version() -> int:
@@ -398,6 +445,67 @@ def check_wallet_counts(settings_vals: dict[str, object], issues: list[str]) -> 
                       f"BTC wallet count must be {btc_count}, doc says {btc_match.group(1)}")
 
 
+def check_sub_claudemd(issues: list[str]) -> None:
+    """Each module in SUB_CLAUDEMD_REQUIRED must have a CLAUDE.md."""
+    for module in SUB_CLAUDEMD_REQUIRED:
+        module_dir = ROOT / module
+        if not module_dir.exists():
+            continue
+        sub_doc = module_dir / "CLAUDE.md"
+        if not sub_doc.exists():
+            issues.append(
+                f"{module}/: sub-CLAUDE.md missing — module touched by edit rules but doc absent"
+            )
+
+
+def check_memory_pointers(issues: list[str]) -> None:
+    """MEMORY.md must only link to existing files in the memory directory."""
+    index = MEMORY_DIR / "MEMORY.md"
+    if not index.exists():
+        return
+    text = index.read_text()
+    # Match markdown links `[Title](file.md)` — only relative .md links
+    for match in re.finditer(r"\[[^\]]+\]\(([^)]+\.md)\)", text):
+        target = match.group(1)
+        # Skip absolute or http links
+        if target.startswith(("http://", "https://", "/")):
+            continue
+        target_path = MEMORY_DIR / target
+        if not target_path.exists():
+            line_no = text[: match.start()].count("\n") + 1
+            issues.append(f"{index.relative_to(Path.home())}:{line_no}: dead link → {target}")
+
+
+def check_baseline_settings_exist(settings: dict[str, object], issues: list[str]) -> None:
+    """Every UPPER_CASE setting name in SYSTEM_BASELINE §1 must exist in settings.py."""
+    baseline = BASELINE_PATH.read_text()
+    section_start = baseline.find("## 1. Active Configuration")
+    section_end = baseline.find("## 2.", section_start) if section_start >= 0 else -1
+    if section_start < 0 or section_end < 0:
+        return
+    section = baseline[section_start:section_end]
+
+    seen: set[str] = set()
+    # Match table rows: `| SETTING_NAME | value | ...`
+    for match in re.finditer(r"\|\s*([A-Z][A-Z0-9_]{3,})\s*\|", section):
+        name = match.group(1)
+        if name in seen:
+            continue
+        seen.add(name)
+        # Skip exempt names and table headers
+        if name in BASELINE_SETTING_EXEMPT or name in {"PARAMETER", "VALUE", "NOTES", "SOURCE", "SETUP"}:
+            continue
+        if any(name.startswith(prefix) for prefix in ("PARAMETER", "VALUE")):
+            continue
+        if name not in settings:
+            line_no = baseline[: section_start + match.start()].count("\n") + 1
+            issues.append(
+                f"{BASELINE_PATH.relative_to(ROOT)}:{line_no}: "
+                f"'{name}' documented but not found in config/settings.py "
+                f"(remove from doc or add to BASELINE_SETTING_EXEMPT)"
+            )
+
+
 def main() -> int:
     issues: list[str] = []
     settings = load_settings_defaults()
@@ -407,6 +515,9 @@ def main() -> int:
     check_risk_docs(settings, issues)
     check_ai_docs(settings, issues)
     check_wallet_counts(settings, issues)
+    check_sub_claudemd(issues)
+    check_memory_pointers(issues)
+    check_baseline_settings_exist(settings, issues)
 
     if issues:
         print("Docs truth check failed:")

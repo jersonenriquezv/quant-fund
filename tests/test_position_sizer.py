@@ -67,14 +67,15 @@ class TestLeverageCap:
     """Test that leverage is capped at MAX_LEVERAGE."""
 
     def test_leverage_capped_at_max(self, sizer):
-        """Very tight SL would require >5x, should be capped."""
+        """Very tight SL should cap at the configured max leverage."""
         size, lev = sizer.calculate(
             entry=50000, sl=49900, capital=1000, risk_pct=0.02
         )
         # Uncapped: distance=100, risk=20, size=0.2, lev=(0.2*50000)/1000=10x
-        # Capped: lev=5, notional=5000, size=5000/50000=0.1
+        # Capped: notional=capital*MAX_LEVERAGE, size=notional/entry.
         assert lev == float(settings.MAX_LEVERAGE)
-        assert pytest.approx(size, rel=1e-6) == 0.1
+        expected_size = (1000 * settings.MAX_LEVERAGE) / 50000
+        assert pytest.approx(size, rel=1e-6) == expected_size
 
     def test_exactly_at_max_leverage(self, sizer):
         """Exactly at max leverage should not be capped."""
@@ -126,5 +127,4 @@ class TestEdgeCases:
         # risk = 1, distance = 1000, size = 0.001
         assert pytest.approx(size, rel=1e-6) == 0.001
         assert pytest.approx(lev, rel=1e-6) == 1.0
-
 
