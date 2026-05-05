@@ -130,7 +130,7 @@ Redis data is ephemeral cache — bot repopulates on next candle cycle. No recov
 - Migrations use `ALTER TABLE ADD COLUMN IF NOT EXISTS` (idempotent)
 - Version tracking via `schema_version` table — each migration records its version number
 
-### Current Schema Version: 15
+### Current Schema Version: 18
 
 | Version | Description | Date |
 |---------|-------------|------|
@@ -142,6 +142,9 @@ Redis data is ephemeral cache — bot repopulates on next candle cycle. No recov
 | 13 | ml_setups: RSI + microstructure features | 2026-04 |
 | 14 | ml_setups: orderbook, BTC correlation, volatility regime, session | 2026-04 |
 | 15 | ml_setups: experiment_id column for freeze protocol | 2026-04 |
+| 16 | ml_setups: WaveTrend + ADX/DI + Bollinger + Stochastic RSI | 2026-04 |
+| 17 | ml_setups: shadow resolution candle trace | 2026-04 |
+| 18 | trades: capital_at_trade snapshot | 2026-04 |
 
 ### Adding a New Migration
 
