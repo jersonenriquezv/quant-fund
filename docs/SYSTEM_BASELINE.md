@@ -4,7 +4,7 @@
 > Reflects code reality — if code and doc disagree, fix the doc.
 
 **Last updated:** 2026-04-23
-**ML Feature Version:** 16
+**ML Feature Version:** 17
 **Bot status:** SHADOW-ONLY (OKX_SANDBOX=false, ENABLED_SETUPS=[], ~$86 capital untouched)
 **Active experiment:** `batch1_tp1_rr_1_3_2026_04_20` (TP1_RR=1.3 BE fix)
 **Monitoring:** Grafana dashboard `shadow-health` + systemd user timer `shadow-health-alert.timer` (hourly)
