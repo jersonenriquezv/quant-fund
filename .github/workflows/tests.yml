@@ -26,4 +26,12 @@ jobs:
           pip install pytest
 
       - name: Run pytest
+        env:
+          # Several tests assume specific values from dev `.env` rather than
+          # patching settings explicitly. Mirror those values here so CI
+          # matches local. TODO: refactor each test to patch settings, then
+          # remove this block.
+          OKX_SANDBOX: "false"
+          COOLDOWN_MINUTES: "15"
+          SETUP_A_MODE: both
         run: python -m pytest tests/ --tb=short -q
