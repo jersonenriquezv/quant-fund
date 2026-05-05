@@ -367,6 +367,25 @@ Independent shadow-only experiment for microstructural scalping signals, separat
 
 ## 8. Changelog
 
+### 2026-05-05 — Shadow fallback sizing: replace fixed-notional hack with risk-based formula
+**Files:** `execution_service/shadow_monitor.py`, `tests/test_shadow_monitor_sizing.py`
+
+**What changed:**
+- **Shadow fallback sizing** (the path taken when `risk_service.check()` rejects, typically by `MIN_RISK_DISTANCE_PCT` for tight-SL setups like scalp) now uses the same formula as `risk_service.PositionSizer.calculate`:
+  - `distance = abs(entry - sl)`
+  - `risk_amount = SHADOW_CAPITAL × RISK_PER_TRADE` (= $5 with defaults)
+  - `position_size = risk_amount / distance`
+  - `notional = size × entry`; `leverage = notional / SHADOW_CAPITAL`, capped at `MAX_LEVERAGE`
+- The old hack (commit `7bd8827`) used a fixed `$25 margin × MAX_LEVERAGE` (= `$250` notional) regardless of SL distance, producing SL/TP losses in cents that did not reflect any real risk per trade.
+- **Live execution unaffected.** When `risk_service` rejects in live, it returns `position_size=0`, which `main._process_pipeline_setup` filters before `execute()` runs. The fallback path is shadow-only.
+- New `RiskApproval` dataclass (frozen) replaces the previous `_FallbackApproval` ad-hoc class for type safety.
+
+**Why:** under the old hack, a `0.40%` SL on a `$2,374` ETH setup produced `~$5` gross gain on TP and `~$1.50` gross loss on SL — neither reflected the intended `$5` risk-per-trade target. With this fix, gross SL = `$5` whenever the leverage cap does not bind. When the cap binds (very tight SLs, < `RISK_PER_TRADE / MAX_LEVERAGE` ≈ `0.10%`), the cap shrinks the position so realized loss is **below** target risk (safer direction, same as live `PositionSizer`).
+
+**Operator note (post-deploy):** Shadow PnL collected before this date used the fixed-`$250` fallback. Reports comparing pre/post must filter by `created_at >= 2026-05-05` or by `experiment_id` switch. `shadow_position_size` and `shadow_margin` distributions in `ml_setups` will scale `5–10×` larger on tight-SL setups.
+
+**Tests:** `tests/test_shadow_monitor_sizing.py` — 14 cases covering risk-amount contract, leverage cap, edge cases (`distance=0`, `entry<=0`), parametrized parity with `PositionSizer.calculate`.
+
 ### 2026-05-04 — Engine 1 v1b ETH-Short Isolation
 **What changed:**
 - `EXPERIMENT_ID` changed to `engine1_eth_short_v1b_2026_05_04`.

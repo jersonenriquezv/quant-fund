@@ -378,6 +378,29 @@ All exit paths now compute PnL before closing:
 - Benchmarks (`bench_engine1_*`) silencian TRACKING + FILL — solo emiten RESOLVE. Razón: co-emiten con cada Engine 1 detection y triplicarían el volumen sin agregar señal de lifecycle. Outcome final sigue llegando para comparación de edge.
 - Setups normales (Engine 1, swing/quick) emiten los 3 alerts.
 
+### Shadow Monitor — sizing (2026-05-05)
+`ShadowMonitor.add_shadow(setup, risk_approval)` aplica esta lógica de sizing:
+
+1. **Approval con `position_size > 0`** (caso normal — risk_service aprobó): se usa `position_size` y `leverage` directamente del `RiskApproval`. Sizing ya viene calculado por `risk_service.PositionSizer`.
+2. **Approval ausente o `position_size <= 0`** (caso fallback — guardrail rechazó, típicamente `MIN_RISK_DISTANCE_PCT` para scalp): el monitor recomputa con la **misma fórmula** que `PositionSizer.calculate`:
+   ```
+   distance     = abs(entry - sl)
+   risk_amount  = SHADOW_CAPITAL * RISK_PER_TRADE   # $5 con defaults
+   size         = risk_amount / distance
+   notional     = size * entry
+   leverage     = notional / SHADOW_CAPITAL          # cap a MAX_LEVERAGE
+   ```
+   Si `leverage > MAX_LEVERAGE`, se cappea: `notional = SHADOW_CAPITAL * MAX_LEVERAGE`, `size` se recomputa. Cuando el cap entra, la posición se reduce y la pérdida realizada queda **por debajo** del target (safer).
+3. **Skip:** si `distance <= 0` o `entry_price <= 0` → `add_shadow` retorna `False` sin trackear.
+
+El fallback existe porque shadow es **data collection** — un setup que falla `MIN_RISK_DISTANCE_PCT` igual debe ser tracked para ML. Antes (commit `7bd8827`) el fallback usaba notional fijo `$25 × MAX_LEVERAGE = $250` independiente del SL distance, lo cual rompía el modelo de riesgo: SL/TP en centavos sin relación con `RISK_PER_TRADE × SHADOW_CAPITAL`.
+
+**Live execution no se ve afectado.** Cuando `risk_service` rechaza en live, retorna `position_size=0` y `main._process_pipeline_setup` filtra antes de `execute()`. El fallback path es shadow-only.
+
+**Tests:** `tests/test_shadow_monitor_sizing.py` — risk-amount contract, leverage cap, edge cases, parity con `PositionSizer.calculate`.
+
+**Impacto histórico:** Shadow PnL anterior al `2026-05-05` usó el `$250` fijo. Reportes que comparan pre/post deben filtrar por `created_at` o `experiment_id`. Distribución de `shadow_position_size` y `shadow_margin` escala 5–10× para setups con SL apretado.
+
 ## Limitaciones conocidas
 
 - Estado de posiciones se pierde en restart (SL/TP siguen en exchange, positions re-adopted via sync_exchange_positions)
