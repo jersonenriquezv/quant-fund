@@ -117,6 +117,10 @@ def _wire_services(
     strategy = MagicMock()
     strategy.evaluate.return_value = setup
     strategy.evaluate_all.return_value = [setup] if setup is not None else []
+    # evaluate_scalp is invoked when settings.SCALP_SHADOW_ENABLED is true
+    # (e.g. when a dev .env sets it). Default to None so the pipeline does
+    # not append a MagicMock-as-setup to all_setups.
+    strategy.evaluate_scalp.return_value = None
     strategy.get_htf_bias.return_value = htf_bias
     strategy.get_active_order_blocks.return_value = []
     strategy.is_ob_failed.return_value = False
