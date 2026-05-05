@@ -22,7 +22,7 @@ from dataclasses import asdict, dataclass, field
 
 from config.settings import settings
 from shared.logger import setup_logger
-from shared.models import TradeSetup
+from shared.models import RiskApproval, TradeSetup
 from shared.notifier import TelegramNotifier
 from shared.pnl_engine import (
     CandleSlice,
@@ -150,24 +150,47 @@ class ShadowMonitor:
                     )
                     return False
 
-        # Fallback sizing if risk_approval is missing or rejected —
-        # shadow is data collection, always track
+        # Risk-based fallback when risk_service rejects (commonly via
+        # MIN_RISK_DISTANCE_PCT for tight-SL strategies like scalp). Shadow
+        # still tracks for data collection, but sizing must mirror
+        # risk_service.PositionSizer so theoretical PnL reflects what a real
+        # RISK_PER_TRADE-per-trade position would yield. Live execution never
+        # reaches this path: risk_service rejection sets position_size=0,
+        # which is filtered upstream in main._process_pipeline_setup before
+        # execute() runs.
         if risk_approval is None or risk_approval.position_size <= 0:
-            fallback_margin = settings.SHADOW_CAPITAL * 0.05  # 5% of virtual capital
-            fallback_leverage = settings.MAX_LEVERAGE
-            fallback_notional = fallback_margin * fallback_leverage
-            fallback_size = fallback_notional / setup.entry_price if setup.entry_price > 0 else 0
+            distance = abs(setup.entry_price - setup.sl_price)
+            if distance <= 0 or setup.entry_price <= 0:
+                logger.warning(f"Shadow: cannot size {setup.setup_id}, skipping")
+                return False
+
+            risk_amount = settings.SHADOW_CAPITAL * settings.RISK_PER_TRADE
+            fallback_size = risk_amount / distance
+            fallback_notional = fallback_size * setup.entry_price
+            fallback_leverage = fallback_notional / settings.SHADOW_CAPITAL
+
+            # Cap at MAX_LEVERAGE — mirrors PositionSizer.calculate (risk_service/position_sizer.py).
+            # When SL distance is very tight, implied leverage exceeds the cap;
+            # we recompute size from the capped notional. Because the cap
+            # SHRINKS the position, the realized SL loss falls BELOW
+            # risk_amount in this edge case (same trade-off as the live sizer:
+            # leverage discipline beats hitting the exact risk target).
+            if fallback_leverage > settings.MAX_LEVERAGE:
+                fallback_leverage = float(settings.MAX_LEVERAGE)
+                fallback_notional = settings.SHADOW_CAPITAL * fallback_leverage
+                fallback_size = fallback_notional / setup.entry_price
+
             if fallback_size <= 0:
                 logger.warning(f"Shadow: cannot size {setup.setup_id}, skipping")
                 return False
 
-            # Create a minimal approval-like object for sizing
-            class _FallbackApproval:
-                approved = False
-                position_size = fallback_size
-                leverage = fallback_leverage
-                reason = "fallback_sizing"
-            risk_approval = _FallbackApproval()
+            risk_approval = RiskApproval(
+                approved=False,
+                position_size=fallback_size,
+                leverage=fallback_leverage,
+                risk_pct=settings.RISK_PER_TRADE,
+                reason="fallback_sizing_risk_based",
+            )
 
         risk = abs(setup.entry_price - setup.sl_price)
         if risk <= 0 or setup.entry_price <= 0:
