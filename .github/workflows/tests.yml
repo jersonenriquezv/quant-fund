@@ -1,0 +1,37 @@
+name: tests
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Run pytest
+        env:
+          # Several tests assume specific values from dev `.env` rather than
+          # patching settings explicitly. Mirror those values here so CI
+          # matches local. TODO: refactor each test to patch settings, then
+          # remove this block.
+          OKX_SANDBOX: "false"
+          COOLDOWN_MINUTES: "15"
+          SETUP_A_MODE: both
+        run: python -m pytest tests/ --tb=short -q
