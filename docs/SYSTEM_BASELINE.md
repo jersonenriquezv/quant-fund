@@ -374,6 +374,21 @@ Independent shadow-only experiment for microstructural scalping signals, separat
 
 ## 8. Changelog
 
+### 2026-05-06 — Engine 1 cluster dedup: suppress repeated emissions on same impulse
+**Files:** `strategy_service/service.py`, `strategy_service/engines/trend_pullback.py`, `tests/test_engine_trend_pullback.py`, `tests/test_strategy_integration.py`
+
+**What changed:**
+- `TrendPullbackEngine.evaluate` now writes `engine1_impulse_origin_ts` (timestamp of the impulse's first candle) into `TradeSetup.extra_features`.
+- `StrategyService._engine1_is_cluster_duplicate(setup)` is the new dedup helper. It tracks `(pair, direction) -> last impulse_origin_ts` per service instance and returns True when a fresh setup repeats the cached impulse. Hit at the engine1 callsite in `_evaluate_for_state` so duplicate emissions never reach `on_match`.
+
+**Why:** Maker fill-rate audit (`docs/audits/engine1-maker-fillrate-2026-05-05.md` §3.4) showed a single 2026-04-29 ETH impulse produced 5 detections in 50 minutes, all resolving as identical-priced `shadow_tp`. Inflated headline N (37 raw → effective ~10–15 events) and concentrated edge in single market events. The previous shadow_monitor dedup released once a position filled, allowing the engine to re-emit on every confirmed 5m bar over the same impulse-pullback cycle.
+
+**Expected impact:** engine1 emission volume drops on impulse re-detections (no more 5 fires/50min on one impulse). Per-impulse-cycle effective sample N should now match raw N. Re-running `scripts/engine1_fillrate_study.py` post-merge will give a cleaner edge measurement; the 2 winners that flipped sign in the 3bps margin scenario should disappear or stay as a single contribution rather than 5.
+
+**Tests:** 6 new `TestEngine1ClusterDedup` cases (first-emit caches, repeat suppresses, new impulse re-arms, per-direction and per-pair scoping, missing-field fallback) + 1 engine-level test verifying `engine1_impulse_origin_ts` matches the impulse start candle. 288 strategy/engine/scalp tests pass.
+
+**Operator note:** No experiment_id bump — this is a behavior fix, not a parameter regime change. Old engine1 ml_setups rows under `redesign_pre_2026_04_27` retain their cluster-duplicated outcomes; new rows are clean from this commit forward.
+
 ### 2026-05-05 — Scalp silent detectors: calibrate `liq_reclaim` and `funding_extreme` thresholds
 **Files:** `strategy_service/scalp_setups.py`, `tests/test_scalp_setups.py`, `scripts/scalp_silent_detector_audit.py`, `docs/audits/scalp-silent-detectors-2026-05-05.md`
 

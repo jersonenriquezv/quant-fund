@@ -82,6 +82,16 @@ class StrategyService:
         # within SCALP_DEDUP_WINDOW_SECONDS on the same pair.
         self._scalp_last_fire: dict[str, float] = {}
 
+        # Engine 1 cluster dedup: (pair, direction) => impulse_origin_ts of
+        # the last emitted setup. The engine re-evaluates on every confirmed
+        # 5m candle, so the same impulse-pullback cycle would otherwise emit
+        # multiple setups (same entry/SL) until the structure breaks. Same
+        # impulse_origin_ts => same impulse => suppress. Background and
+        # detection: docs/audits/engine1-maker-fillrate-2026-05-05.md §3.4
+        # showed a single 2026-04-29 impulse produced 5 detections in 50 min
+        # all resolving as identical-priced shadow_tp.
+        self._engine1_last_impulse_ts: dict[tuple[str, str], int] = {}
+
         # Per-pair orderbook cache for the scalp path. Avoids hitting OKX
         # REST every candle when only Signal 3 needs spread data. Entries
         # are tuples of (fetched_at_ts, orderbook_dict_or_None).
@@ -107,6 +117,31 @@ class StrategyService:
             return False
 
         return True
+
+    def _engine1_is_cluster_duplicate(self, engine_setup: TradeSetup) -> bool:
+        """Return True if `engine_setup` repeats the last impulse for this
+        (pair, direction). Updates the per-(pair,direction) cache when a
+        new impulse is observed.
+
+        Engine 1 detects on every confirmed 5m bar, so the same
+        impulse-pullback cycle would otherwise emit multiple shadow setups
+        with identical entry/SL until the structure breaks. Dedup key is
+        the impulse's origin timestamp — `extra_features.engine1_impulse_origin_ts`.
+        """
+        impulse_ts = engine_setup.extra_features.get("engine1_impulse_origin_ts")
+        if impulse_ts is None:
+            return False
+        dedup_key = (engine_setup.pair, engine_setup.direction)
+        last_impulse_ts = self._engine1_last_impulse_ts.get(dedup_key)
+        if impulse_ts == last_impulse_ts:
+            logger.debug(
+                f"Engine1 cluster dedup: pair={engine_setup.pair} "
+                f"direction={engine_setup.direction} "
+                f"impulse_ts={impulse_ts} — already emitted, skip"
+            )
+            return True
+        self._engine1_last_impulse_ts[dedup_key] = int(impulse_ts)
+        return False
 
     def evaluate(self, pair: str,
                  trigger_candle: Candle) -> Optional[TradeSetup]:
@@ -460,6 +495,8 @@ class StrategyService:
                             f"Engine1 scope filtered: pair={pair} "
                             f"direction={engine_setup.direction}"
                         )
+                        continue
+                    if self._engine1_is_cluster_duplicate(engine_setup):
                         continue
                     logger.info(
                         f"Engine1 Trend-Pullback found: pair={pair} "
