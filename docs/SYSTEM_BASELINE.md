@@ -4,10 +4,12 @@
 > Reflects code reality — if code and doc disagree, fix the doc.
 > Documentation rule: this file is the operational source of truth. `README.md` is a portfolio overview; `docs/context/*` explains concepts and history and may intentionally lag unless this baseline links to it.
 
-**Last updated:** 2026-05-04
+**Last updated:** 2026-05-06
 **ML Feature Version:** 18
 **Bot status:** SHADOW-ONLY (OKX_SANDBOX=false, ENABLED_SETUPS=[], ~$86 capital untouched)
-**Active experiment:** `engine1_eth_short_v1b_2026_05_04` (Engine 1 v1b isolates ETH short only after v1 diagnostics: BTC and ETH long negative, ETH short only positive slice; benchmarks mirror ETH scope)
+**Active experiment:** `engine1_eth_short_v1b_2026_05_04` (settings.py default since commit `7ccf2bc` 2026-05-04). Engine 1 v1b isolates ETH short only after v1 diagnostics: BTC and ETH long negative, ETH short only positive slice; benchmarks mirror ETH scope.
+
+> **Data tag reality (2026-05-06):** All 1510 engine1 ml_setups rows in DB are tagged `redesign_pre_2026_04_27` (legacy env override active during the v1 collection window). Zero rows under `engine1_eth_short_v1b_2026_05_04` because engine1 stopped emitting on 2026-05-05 14:10 UTC when HTF flipped to long (engine1 is short-only via `SHADOW_DIRECTION_FILTER`). `scripts/report_engine1_shadow.py` reads the new ID and therefore reports 0 — querying under the legacy ID is the only way to see existing data until HTF flips back.
 **Monitoring:** Grafana dashboard `shadow-health` + systemd user timer `shadow-health-alert.timer` (hourly)
 
 ---
@@ -34,7 +36,7 @@
 | F (Pure OB Retest) | **SHADOW** | swing, was live until 04-15 | 50% (1TP/1SL live) |
 | G (Breaker Block) | **DISABLED** | 0/4 WR. Removed 04-16. | 0% |
 | H (Momentum/Impulse) | **DISABLED** | — | 10.7% WR (28 trades). Removed 04-13. |
-| Engine 1 (Trend-Pullback / Impulse Retest) | **SHADOW (ETH short only)** | v1b isolated 2026-05-04; pre-emission scope filter prevents out-of-scope benchmark orphans; benchmarks mirror ETH scope | v1: ETH short only positive slice; BTC + ETH long quarantined |
+| Engine 1 (Trend-Pullback / Impulse Retest) | **SHADOW (ETH short only) — frozen since 2026-05-05 14:10** | v1b isolated 2026-05-04; pre-emission scope filter prevents out-of-scope benchmark orphans; benchmarks mirror ETH scope. HTF on ETH flipped long → no qualifying short impulses; engine still scans (logs show `impulse dir short != HTF long` rejections) | v1: ETH short only positive slice; BTC + ETH long quarantined |
 
 ### Risk Guardrails
 | Parameter | Value | Notes |
@@ -259,7 +261,7 @@ Reference for VPS sizing when migrating from Nitro 5.
 **Query training data:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL AND outcome_type NOT IN ('ai_rejected','data_blocked','filled_orphaned','replaced','risk_rejected','shadow_dedup','shadow_direction_filtered','shadow_pair_filtered','shadow_orphaned','trading_halted','unfilled_timeout')`
 
 Whitelist autoritativa de `outcome_type` en `data_service.data_store.VALID_OUTCOMES`. Labels fuera del set generan WARNING. El filtro non-market se centraliza en `NON_MARKET_OUTCOMES` + helper `ml_market_outcome_filter_sql()` (mismo módulo) — usarlo en scripts/queries nuevas para evitar drift.
-**Experiment tracking:** `experiment_id` column (migration 15). Current: `redesign_pre_2026_04_27`. Filter: `WHERE experiment_id = 'redesign_pre_2026_04_27'` for clean post-redesign-prework data.
+**Experiment tracking:** `experiment_id` column (migration 15). settings.py default: `engine1_eth_short_v1b_2026_05_04` (active for emissions since commit `7ccf2bc` 2026-05-04). Legacy data still under `redesign_pre_2026_04_27` (env override that was active during v1 collection window — all 1510 engine1 rows + 109 scalp rows). When querying engine1 historically, filter on the legacy ID; when querying scalp, see Side experiment §9 — note `SCALP_EXPERIMENT_ID` is currently a reporting-only field (does not tag inserts).
 
 | Version | Date | Changes | Training Status |
 |---------|------|---------|-----------------|
@@ -373,6 +375,24 @@ Independent shadow-only experiment for microstructural scalping signals, separat
 ---
 
 ## 8. Changelog
+
+### 2026-05-06 — Engine 1 status snapshot (docs-only sync, no code change)
+**Files:** `docs/SYSTEM_BASELINE.md`, memory `project_engine1_shadow.md`
+
+**Reality check** at end of v1b experiment window:
+- Total engine1 resolved outcomes in DB: **115** (60 short + 55 long), all under legacy `experiment_id=redesign_pre_2026_04_27`. Memory snapshot from 2026-04-30 said 51 — outdated.
+- Era split (era boundary = sizing fix on 2026-05-05):
+  - **pre-2026-05-05** (sizing $250 fixed + cluster bias pre-dedup): 98 resolved. Long 38 → 9 TP / 4 SL / 25 BE, net **−$14.00**. Short 60 → 16 TP / 14 SL / 30 BE, net **−$3.53**.
+  - **2026-05-05 (sizing-fix day)**: 17 long resolved → 5 TP / 2 SL / 10 BE, net **+$1.33**. Only era with risk-based sizing AND cluster dedup partially in effect, N too small.
+  - **post-2026-05-06 (dedup-fix merged)**: **0 resolved**. Engine1 has not emitted since 2026-05-05 14:10 — direction filter `["short"]` × HTF flipped long.
+- Useful WR (TP/(TP+SL)) by direction across all eras: short 53.3% (16/30), long 70% (14/20). Long high WR but losing money — TPs ($3 avg) smaller than SLs ($10 avg). Geometry asymmetry, not direction edge.
+
+**Why this matters:**
+- Memory said checkpoint was 75 outcomes; we're at 115 but the data is **dirty** (sizing changed mid-experiment, cluster bias inflates pre-dedup data). Effective clean N ≈ 17.
+- The "v1b isolation" decision (commit `7ccf2bc`) tagged settings default but didn't bump explicit env, so data continued under legacy ID. Reports under new ID return zero.
+- Re-run `scripts/engine1_fillrate_study.py` is BLOCKED until either (a) HTF flips back to short and N≥30 fresh outcomes accumulate under `engine1_eth_short_v1b_2026_05_04`, or (b) we relax the direction filter for ETH long during this regime.
+
+**No config change in this entry.** Decision deferred — see `Open Problems` and memory `project_engine1_shadow.md`.
 
 ### 2026-05-06 — Engine 1 cluster dedup: suppress repeated emissions on same impulse
 **Files:** `strategy_service/service.py`, `strategy_service/engines/trend_pullback.py`, `tests/test_engine_trend_pullback.py`, `tests/test_strategy_integration.py`
