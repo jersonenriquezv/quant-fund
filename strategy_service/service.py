@@ -586,7 +586,9 @@ class StrategyService:
             return None
 
         scalp_tf = settings.SCALP_TIMEFRAME
-        candles = self._data.get_candles(pair, scalp_tf, count=30)
+        # 50 candles: ADX(14) Wilder smoothing needs ~42 (period*3) and the
+        # sweep_choch lookback needs 22; 50 covers both with margin.
+        candles = self._data.get_candles(pair, scalp_tf, count=50)
         if not candles:
             return None
         market_snapshot = self._data.get_market_snapshot(pair)
@@ -598,18 +600,17 @@ class StrategyService:
             self._scalp_last_fire[pair] = now
             return setup
 
+        # Cached orderbook — used by sweep_choch (book_imbalance fade gate,
+        # v2) and by vol_cvd (spread chaos gate). Cached per-pair so the REST
+        # call is paid at most once per SCALP_ORDERBOOK_CACHE_TTL_SECONDS.
+        orderbook = self._get_cached_orderbook(pair, now)
         setup = self._scalp_setups.evaluate_sweep_choch(
-            pair, candles, market_snapshot,
+            pair, candles, market_snapshot, orderbook=orderbook,
         )
         if setup is not None:
             self._scalp_last_fire[pair] = now
             return setup
 
-        # Signal 3 needs orderbook spread for the chaos filter. Fetch lazily
-        # AND cached per-pair so signals 1-2 don't pay the REST roundtrip
-        # when they would have fired first, and consecutive candles share
-        # the same snapshot for SCALP_ORDERBOOK_CACHE_TTL_SECONDS.
-        orderbook = self._get_cached_orderbook(pair, now)
         setup = self._scalp_setups.evaluate_vol_cvd_divergence(
             pair, candles, market_snapshot, orderbook=orderbook,
         )

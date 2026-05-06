@@ -947,7 +947,13 @@ class Settings:
     # Disabled by default — each detector commit flips its own setup_type into
     # SHADOW_MODE_SETUPS once wired. The master flag is a kill switch.
     SCALP_SHADOW_ENABLED: bool = os.getenv("SCALP_SHADOW_ENABLED", "false").lower() == "true"
-    SCALP_EXPERIMENT_ID: str = os.getenv("SCALP_EXPERIMENT_ID", "scalp_v1_2026_05")
+    # v2 (2026-05-05): adds ADX + book_imbalance fade-pattern filters to
+    # scalp_sweep_choch_v1 after v1 dataset (76 outcomes) showed 5:1 SL:TP and
+    # book_imbalance flipping sign vs direction (long SL avg imb 16, long TP
+    # avg 1.2; short TP avg imb 11.6, short SL avg 4.5). Filters target the
+    # fade pattern: long requires balanced book, short requires bid stacking
+    # to fade. Old v1 data stays under previous experiment_id.
+    SCALP_EXPERIMENT_ID: str = os.getenv("SCALP_EXPERIMENT_ID", "scalp_v2_filtered_2026_05_05")
 
     # Candle timeframe used by scalp detectors. Defaults to 5m because the
     # bot does not currently fetch 1m candles (LTF_TIMEFRAMES = 5m, 15m).
@@ -996,6 +1002,27 @@ class Settings:
     # while cutting REST traffic by ~10x at SCALP_TIMEFRAME=5m.
     SCALP_ORDERBOOK_CACHE_TTL_SECONDS: int = int(
         os.getenv("SCALP_ORDERBOOK_CACHE_TTL_SECONDS", "30")
+    )
+
+    # scalp_sweep_choch_v1 — v2 fade-pattern filters (added 2026-05-05).
+    # Min ADX(14) on the scalp timeframe to allow emission. v1 data showed
+    # range/compression/hostile regimes dominated SL outcomes; trend_weak
+    # (ADX 18-25) was the lowest tradeable bucket. Below 18 = pure range,
+    # sweep+CHoCH gets stopped on noise.
+    SCALP_SWEEP_CHOCH_MIN_ADX: float = float(
+        os.getenv("SCALP_SWEEP_CHOCH_MIN_ADX", "18.0")
+    )
+    # book_imbalance_ratio = depth_bid_usd / depth_ask_usd within ±0.1% of mid.
+    # v1 hypothesis: extreme imbalance against direction = absorbed liquidity
+    # (spoof/iceberg) and the sweep is the absorption signature, not real flow.
+    # Long requires balanced-or-thin-bid book (imb < max). Short requires
+    # stacked-bid book that gets faded (imb > min). When orderbook is missing,
+    # filter is skipped (do not block on stale data — avoid noise injection).
+    SCALP_SWEEP_CHOCH_BOOK_IMB_LONG_MAX: float = float(
+        os.getenv("SCALP_SWEEP_CHOCH_BOOK_IMB_LONG_MAX", "3.0")
+    )
+    SCALP_SWEEP_CHOCH_BOOK_IMB_SHORT_MIN: float = float(
+        os.getenv("SCALP_SWEEP_CHOCH_BOOK_IMB_SHORT_MIN", "3.0")
     )
 
     # ========================
