@@ -376,6 +376,26 @@ Independent shadow-only experiment for microstructural scalping signals, separat
 
 ## 8. Changelog
 
+### 2026-05-06 — Fix `SCALP_EXPERIMENT_ID` wiring + bump to `scalp_v3_clean_2026_05_06`
+**Files:** `main.py`, `config/settings.py`
+
+**What changed:**
+- `_ml_log_setup` now branches on `setup.setup_type in SCALP_SETUP_TYPES` and tags scalp inserts with `SCALP_EXPERIMENT_ID` (default `scalp_v3_clean_2026_05_06`). Non-scalp inserts continue using the global `EXPERIMENT_ID`.
+- Boot log now prints both IDs + sources (env override vs settings default).
+
+**Why:** `SCALP_EXPERIMENT_ID` was defined in `config/settings.py` and read by `scripts/report_scalp_shadow.py`, but `_ml_log_setup` always wrote `settings.EXPERIMENT_ID`. Result: every scalp v1 + v2 row in `ml_setups` is tagged with whichever global experiment was active at insertion time (`redesign_pre_2026_04_27` for early v1 data, `engine1_eth_short_v1b_2026_05_04` after the 2026-05-04 flip). Reports under the new ID returned zero. v2 fade-pattern filter changes (PR #14) silently mixed with engine1 ID instead of isolating under their own.
+
+**Impact:**
+- All future scalp inserts go under `scalp_v3_clean_2026_05_06`. Old v1/v2 data **not migrated** — stays under the engine1/legacy IDs and is queryable via explicit `experiment_id` predicate. Migration would require parsing setup_type and rewriting rows; not worth it for shadow-only data.
+- Fresh dataset starts at zero. Need ~2-4 weeks for `scalp_sweep_choch_v1` to accumulate N≥30 under v3 before any kill/keep decision. `liq_reclaim` and `funding_extreme` (calibrated 2026-05-05) still on slow timeline.
+
+**Tests:** existing scalp tests (`tests/test_scalp_setups.py`, `tests/test_report_scalp_shadow.py`) still pass — 80 cases. No new test for the wiring branch because it's a one-line conditional in `_ml_log_setup`; hitting it requires DB integration test infrastructure that doesn't exist for that callsite yet.
+
+**Operator note:** Old data still queryable. Examples:
+- v1 sweep_choch under legacy: `experiment_id='redesign_pre_2026_04_27' AND setup_type='scalp_sweep_choch_v1'` (63 rows)
+- v2 sweep_choch (filters added but tagged with engine1 ID): `experiment_id='engine1_eth_short_v1b_2026_05_04' AND setup_type='scalp_sweep_choch_v1'` (19 rows)
+- v3 clean (fresh): `experiment_id='scalp_v3_clean_2026_05_06'`
+
 ### 2026-05-06 — Engine 1 status snapshot (docs-only sync, no code change)
 **Files:** `docs/SYSTEM_BASELINE.md`, memory `project_engine1_shadow.md`
 

@@ -947,13 +947,17 @@ class Settings:
     # Disabled by default — each detector commit flips its own setup_type into
     # SHADOW_MODE_SETUPS once wired. The master flag is a kill switch.
     SCALP_SHADOW_ENABLED: bool = os.getenv("SCALP_SHADOW_ENABLED", "false").lower() == "true"
-    # v2 (2026-05-05): adds ADX + book_imbalance fade-pattern filters to
-    # scalp_sweep_choch_v1 after v1 dataset (76 outcomes) showed 5:1 SL:TP and
-    # book_imbalance flipping sign vs direction (long SL avg imb 16, long TP
-    # avg 1.2; short TP avg imb 11.6, short SL avg 4.5). Filters target the
-    # fade pattern: long requires balanced book, short requires bid stacking
-    # to fade. Old v1 data stays under previous experiment_id.
-    SCALP_EXPERIMENT_ID: str = os.getenv("SCALP_EXPERIMENT_ID", "scalp_v2_filtered_2026_05_05")
+    # v3 (2026-05-06): clean experiment_id reset after discovering that v1+v2
+    # rows were silently tagged with the global EXPERIMENT_ID instead of
+    # SCALP_EXPERIMENT_ID — `_ml_log_setup` ignored this field until the
+    # `fix/scalp-experiment-id-wiring` PR. v2 filter changes (ADX +
+    # book_imbalance) and v1 baseline are therefore mixed under
+    # `redesign_pre_2026_04_27` / `engine1_eth_short_v1b_2026_05_04` in DB.
+    # No code-side filter change in this entry — just isolation. Future
+    # signal/threshold changes still bump this ID. Old data queryable via
+    # `SCALP_EXPERIMENT_ID=scalp_v2_filtered_2026_05_05` env override (note:
+    # that override only worked for reporting; inserts pre-fix used global ID).
+    SCALP_EXPERIMENT_ID: str = os.getenv("SCALP_EXPERIMENT_ID", "scalp_v3_clean_2026_05_06")
 
     # Candle timeframe used by scalp detectors. Defaults to 5m because the
     # bot does not currently fetch 1m candles (LTF_TIMEFRAMES = 5m, 15m).

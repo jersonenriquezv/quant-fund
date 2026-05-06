@@ -501,12 +501,20 @@ def _ml_log_setup(setup, candle: Candle) -> None:
             override = settings.SHADOW_CAPITAL if is_shadow else None
             risk_ctx = extract_risk_context(_risk_service, capital_override=override)
 
+        # Scalp setups live under their own experiment_id so v1/v2/v3 datasets
+        # stay separable from engine1/swing experiments. Without this branch,
+        # bumping SCALP_EXPERIMENT_ID has no effect on inserts — only on
+        # report scripts — and v2 filter changes get silently mixed with the
+        # active engine1 EXPERIMENT_ID. See PR fix/scalp-experiment-id-wiring.
+        is_scalp = setup.setup_type in settings.SCALP_SETUP_TYPES
+        experiment_id = settings.SCALP_EXPERIMENT_ID if is_scalp else settings.EXPERIMENT_ID
+
         ok = _data_service.postgres.insert_ml_setup(
             setup_id=setup.setup_id,
             features=features,
             risk_context=risk_ctx,
             feature_version=settings.ML_FEATURE_VERSION,
-            experiment_id=settings.EXPERIMENT_ID,
+            experiment_id=experiment_id,
         )
         _emit_metric("ml_setup_insert_ok" if ok else "ml_setup_insert_error", 1, setup.pair)
     except Exception as e:
@@ -1147,9 +1155,12 @@ def validate_config() -> bool:
     # training queries, and post-hoc analysis can reconstruct the regime.
     env_exp = os.getenv("EXPERIMENT_ID")
     exp_source = "env override" if env_exp else "settings default"
+    env_scalp_exp = os.getenv("SCALP_EXPERIMENT_ID")
+    scalp_exp_source = "env override" if env_scalp_exp else "settings default"
     logger.info(
         f"ML tagging: feature_version={settings.ML_FEATURE_VERSION} "
-        f"experiment_id='{settings.EXPERIMENT_ID}' ({exp_source})"
+        f"experiment_id='{settings.EXPERIMENT_ID}' ({exp_source}) "
+        f"scalp_experiment_id='{settings.SCALP_EXPERIMENT_ID}' ({scalp_exp_source})"
     )
 
     if settings.HTF_CAMPAIGN_ENABLED:
