@@ -482,6 +482,29 @@ class TestEngineEvaluate:
         assert "engine1_impulse_atr_" in " ".join(out.confluences)
         assert "engine1_pullback_depth_" in " ".join(out.confluences)
 
+    def test_emits_impulse_origin_ts_in_extra_features(self):
+        """Cluster dedup at the StrategyService level keys off this field.
+
+        It must equal the timestamp of the impulse's first candle so two
+        emissions over the same impulse share the same origin timestamp.
+        """
+        from strategy_service.engines.trend_pullback import detect_impulse_pullback, compute_atr
+        eng = TrendPullbackEngine()
+        candles = self._build_full_history()
+        out = eng.evaluate(
+            pair="BTC/USDT",
+            candles=candles,
+            current_price=candles[-1].close,
+            htf_bias="bullish",
+            swings_htf=[120.0, 130.0],
+        )
+        assert out is not None
+        atr = compute_atr(candles, period=14)
+        impulse, _ = detect_impulse_pullback(candles, atr)
+        assert out.extra_features.get("engine1_impulse_origin_ts") == int(
+            candles[impulse.start_idx].timestamp
+        )
+
     def test_entry_distance_gate_rejects_far_entry(self):
         eng = TrendPullbackEngine()
         candles = self._build_full_history()
