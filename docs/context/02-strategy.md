@@ -131,6 +131,7 @@ Status actual:
 ### `service.py` — Facade
 - `StrategyService(data_service)` — obtiene candles del DataService. Inicializa `VolumeProfileAnalyzer` si `VP_ENABLED`.
 - `evaluate(pair, candle)` — evalúa LTF candles en orden: A → B → F → G → D. Retorna `TradeSetup | None`. Pasa swing_highs/lows HTF + volume_profile a swing setups.
+- `evaluate_scalp(pair, trigger_candle)` — entry point del experimento scalp shadow. Gate `SCALP_SHADOW_ENABLED`, dedup `SCALP_DEDUP_WINDOW_SECONDS` por par. Pull `count=50` candles (warmup ADX). Orden: liq_reclaim → sweep_choch → vol_cvd_div → funding_extreme → random_baseline. Orderbook se cachea (`_get_cached_orderbook`, TTL `SCALP_ORDERBOOK_CACHE_TTL_SECONDS`) y se inyecta a `evaluate_sweep_choch` (filtro book_imbalance v2) y `evaluate_vol_cvd_divergence` (spread chaos).
 - `evaluate_htf(pair, candle)` — evalúa 4H candles para HTF campaigns. Bias desde Daily. Detectores corren con params HTF (OB age 168h, distance 10%, FVG age 168h). Overrides temporales de settings durante evaluación. Gate: `HTF_ENABLED_SETUPS` (default: A, B, F).
 - `get_htf_swing_levels(pair)` — `(swing_highs, swing_lows)` de 4H. Usado por CampaignMonitor para trailing SL.
 - **`ENABLED_SETUPS` gate** — post-detection, verifica `setup.setup_type in settings.ENABLED_SETUPS`. Si no está habilitado → debug + continúa. **Actual: `[]`** (SHADOW-only). `SHADOW_MODE_SETUPS` enruta a shadow monitor.
