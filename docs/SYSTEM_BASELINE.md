@@ -376,6 +376,25 @@ Independent shadow-only experiment for microstructural scalping signals, separat
 
 ## 8. Changelog
 
+### 2026-05-06 — Shadow capital basis: real-capital backup for shadow sizing
+**Files:** `config/settings.py`, `execution_service/shadow_monitor.py`, `main.py`, `tests/test_shadow_monitor_sizing.py`
+
+**What changed:**
+- New setting `SHADOW_CAPITAL_BASIS` env (`"fictional"` default | `"real"`). When `"real"`, shadow sizing uses `SHADOW_REAL_CAPITAL_USD` (default $108, mirrors current OKX balance) instead of the historical `SHADOW_CAPITAL` ($500 fiction).
+- New helper `settings.effective_shadow_capital` returns the active basis value. All shadow callsites (`shadow_monitor.add_shadow` fallback, `ShadowPosition.target_risk_usd`, `_ml_log_setup` capital_override, `_process_pipeline_setup` risk dry-run, pair-diagnostic boot log, shadow-monitor init log) now read through this helper.
+- `__post_init__` validates basis ∈ {fictional, real} and `SHADOW_REAL_CAPITAL_USD > 0`. Boot log emits both `SHADOW_CAPITAL_BASIS` and the resolved value.
+- 4 new tests in `TestShadowCapitalBasis` lock the toggle behavior.
+
+**Why:** Previous shadow PnL was projected against $500 fictional capital while the live OKX account has ~$108. Position notionals are 4.6× larger in shadow than they would be in reality, which makes shadow PnL non-comparable with live execution. With the new toggle, an operator can flip basis to `"real"` to project what each signal would have earned/lost given the actual capital constraint — materially changing the kill/keep call for tight-SL signals (scalp 0.15% SL: real notional $1,080 → fee-adjusted R:R degrades from clean 2:1 to ~0.8:1 net).
+
+**How to use:**
+- Default behavior unchanged — opt-in only.
+- Enable: `SHADOW_CAPITAL_BASIS=real SHADOW_REAL_CAPITAL_USD=108` in `.env`.
+- **Always bump experiment_id when flipping** — sizing change alters PnL distributions. Examples: `SCALP_EXPERIMENT_ID=scalp_v3_real_2026_05_06`, `EXPERIMENT_ID=engine1_real_capital_2026_05_06`. Otherwise post-flip rows mix with pre-flip rows under the same tag, contaminating analysis.
+- `risk_capital` column on `ml_setups` already snapshots the effective capital at insert time, so historical queries can group/filter by it.
+
+**Operator decision deferred:** flipping basis changes the meaning of every shadow PnL going forward. Current dataset is already noisy from prior contamination (sizing-fix mid-experiment, experiment_id misrouting). Recommend running both basis modes in parallel for at least one signal cycle before fully cutting over — flip first on a fresh `EXPERIMENT_ID` and let it accumulate N≥30 before comparing real vs fictional.
+
 ### 2026-05-06 — Fix `SCALP_EXPERIMENT_ID` wiring + bump to `scalp_v3_clean_2026_05_06`
 **Files:** `main.py`, `config/settings.py`
 

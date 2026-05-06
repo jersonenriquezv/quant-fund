@@ -279,7 +279,7 @@ async def _process_pipeline_setup(setup, candle: Candle, *, allow_live: bool) ->
         if _risk_service is not None:
             risk_approval = _risk_service.check(
                 setup, dry_run=True,
-                capital_override=settings.SHADOW_CAPITAL,
+                capital_override=settings.effective_shadow_capital,
             )
 
             # Persist risk check result to ml_setups (ML feature, not a gate)
@@ -312,7 +312,7 @@ async def _process_pipeline_setup(setup, candle: Candle, *, allow_live: bool) ->
             f"Shadow mode: {setup.setup_type} {setup.pair} {setup.direction} "
             f"entry={setup.entry_price:.2f} sl={setup.sl_price:.2f} "
             f"risk_ok={risk_approval.approved if risk_approval else 'N/A'} "
-            f"— tracking (${settings.SHADOW_CAPITAL} virtual)"
+            f"— tracking (${settings.effective_shadow_capital} virtual, basis={settings.SHADOW_CAPITAL_BASIS})"
         )
         return False
 
@@ -498,7 +498,7 @@ def _ml_log_setup(setup, candle: Candle) -> None:
         risk_ctx = None
         if _risk_service is not None:
             is_shadow = setup.setup_type in settings.SHADOW_MODE_SETUPS
-            override = settings.SHADOW_CAPITAL if is_shadow else None
+            override = settings.effective_shadow_capital if is_shadow else None
             risk_ctx = extract_risk_context(_risk_service, capital_override=override)
 
         # Scalp setups live under their own experiment_id so v1/v2/v3 datasets
@@ -1053,7 +1053,7 @@ def _log_pair_diagnostics(capital: float, postgres) -> None:
     """
     risk_pct = settings.RISK_PER_TRADE
     live_risk = capital * risk_pct
-    shadow_capital = settings.SHADOW_CAPITAL
+    shadow_capital = settings.effective_shadow_capital
     shadow_risk = shadow_capital * risk_pct
     typical_sl_pct = 0.01
 
@@ -1175,7 +1175,7 @@ def validate_config() -> bool:
         live_setups = [s for s in settings.ENABLED_SETUPS if s not in settings.SHADOW_MODE_SETUPS]
         logger.info(
             f"SHADOW: {settings.SHADOW_MODE_SETUPS} "
-            f"(${settings.SHADOW_CAPITAL} virtual)"
+            f"(${settings.effective_shadow_capital} virtual, basis={settings.SHADOW_CAPITAL_BASIS})"
         )
         logger.info(f"LIVE: {live_setups}")
 
@@ -1245,7 +1245,7 @@ async def main() -> None:
         _shadow_monitor = ShadowMonitor(_data_service, notifier=_notifier)
         logger.info(
             f"Shadow Monitor initialized: {settings.SHADOW_MODE_SETUPS} "
-            f"(${settings.SHADOW_CAPITAL} virtual)"
+            f"(${settings.effective_shadow_capital} virtual, basis={settings.SHADOW_CAPITAL_BASIS})"
         )
 
     # Create CampaignMonitor for HTF position trades (when enabled)

@@ -935,9 +935,41 @@ class Settings:
     # Fictional capital for shadow mode position sizing ($500 USDT).
     # Shadow R:R and position sizes reflect realistic trades you'd take later.
     SHADOW_CAPITAL: float = float(os.getenv("SHADOW_CAPITAL", "500"))
+
+    # Shadow capital basis — toggles whether sizing math uses SHADOW_CAPITAL
+    # (fictional, default) or SHADOW_REAL_CAPITAL_USD (mirrors actual OKX
+    # balance). When basis="real", shadow PnL projects what a real-money
+    # trade would have earned/lost given the current account size — letting
+    # us decide signal viability with the actual capital constraint instead
+    # of a $500 fiction. SHADOW_CAPITAL is *not* overwritten so historical
+    # rows (where risk_capital was snapshotted at insert) remain comparable.
+    # Bump SCALP_EXPERIMENT_ID and/or EXPERIMENT_ID when flipping basis so
+    # pre/post-flip data stays separable.
+    SHADOW_CAPITAL_BASIS: str = os.getenv("SHADOW_CAPITAL_BASIS", "fictional").lower()
+
+    # Real OKX account capital used when SHADOW_CAPITAL_BASIS=real. Memory
+    # records ~$108 as the current balance (April 2026). Override per
+    # environment when the balance changes materially.
+    SHADOW_REAL_CAPITAL_USD: float = float(os.getenv("SHADOW_REAL_CAPITAL_USD", "108"))
+
     # Shadow mode timeout (hours) — max time to wait for theoretical fill + outcome
     SHADOW_ENTRY_TIMEOUT_HOURS: int = int(os.getenv("SHADOW_ENTRY_TIMEOUT_HOURS", "12"))
     SHADOW_TRADE_TIMEOUT_HOURS: int = int(os.getenv("SHADOW_TRADE_TIMEOUT_HOURS", "12"))
+
+    @property
+    def effective_shadow_capital(self) -> float:
+        """Return the capital basis used for shadow position sizing.
+
+        - "fictional" (default): SHADOW_CAPITAL ($500). Historical behavior.
+        - "real": SHADOW_REAL_CAPITAL_USD ($108). Mirrors actual OKX balance.
+
+        Centralized helper so every callsite (shadow_monitor, _ml_log_setup
+        capital_override) uses the same value. Anything reading SHADOW_CAPITAL
+        directly should switch to this property.
+        """
+        if self.SHADOW_CAPITAL_BASIS == "real":
+            return self.SHADOW_REAL_CAPITAL_USD
+        return self.SHADOW_CAPITAL
 
     # ========================
     # SCALP SHADOW SIGNALS — v1 experiment (docs/plans/scalp_shadow_v1.md)
@@ -1105,6 +1137,14 @@ class Settings:
             raise ValueError(f"MAX_WEEKLY_DRAWDOWN={self.MAX_WEEKLY_DRAWDOWN} out of safe range (0, 0.30]")
         if not (1 <= self.MAX_OPEN_POSITIONS <= 20):
             raise ValueError(f"MAX_OPEN_POSITIONS={self.MAX_OPEN_POSITIONS} out of safe range [1, 20]")
+        if self.SHADOW_CAPITAL_BASIS not in ("fictional", "real"):
+            raise ValueError(
+                f"SHADOW_CAPITAL_BASIS={self.SHADOW_CAPITAL_BASIS!r} must be 'fictional' or 'real'"
+            )
+        if self.SHADOW_REAL_CAPITAL_USD <= 0:
+            raise ValueError(
+                f"SHADOW_REAL_CAPITAL_USD={self.SHADOW_REAL_CAPITAL_USD} must be positive"
+            )
 
 
 
