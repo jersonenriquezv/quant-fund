@@ -71,7 +71,7 @@ class ShadowPosition:
 
     @property
     def target_risk_usd(self) -> float:
-        return settings.SHADOW_CAPITAL * settings.RISK_PER_TRADE
+        return settings.effective_shadow_capital * settings.RISK_PER_TRADE
 
     @property
     def initial_risk_usd(self) -> float:
@@ -188,10 +188,11 @@ class ShadowMonitor:
                 logger.warning(f"Shadow: cannot size {setup.setup_id}, skipping")
                 return False
 
-            risk_amount = settings.SHADOW_CAPITAL * settings.RISK_PER_TRADE
+            shadow_capital = settings.effective_shadow_capital
+            risk_amount = shadow_capital * settings.RISK_PER_TRADE
             fallback_size = risk_amount / distance
             fallback_notional = fallback_size * setup.entry_price
-            fallback_leverage = fallback_notional / settings.SHADOW_CAPITAL
+            fallback_leverage = fallback_notional / shadow_capital
 
             # Cap at MAX_LEVERAGE — mirrors PositionSizer.calculate (risk_service/position_sizer.py).
             # When SL distance is very tight, implied leverage exceeds the cap;
@@ -201,7 +202,7 @@ class ShadowMonitor:
             # leverage discipline beats hitting the exact risk target).
             if fallback_leverage > settings.MAX_LEVERAGE:
                 fallback_leverage = float(settings.MAX_LEVERAGE)
-                fallback_notional = settings.SHADOW_CAPITAL * fallback_leverage
+                fallback_notional = shadow_capital * fallback_leverage
                 fallback_size = fallback_notional / setup.entry_price
 
             if fallback_size <= 0:
