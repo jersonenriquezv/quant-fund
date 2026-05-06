@@ -352,10 +352,17 @@ Three storages hold trade-like rows. Only ONE is authoritative for ML training /
 
 Independent shadow-only experiment for microstructural scalping signals, separate from the SMC roadmap above. Plan: `docs/plans/scalp_shadow_v1.md`.
 
-- **experiment_id:** `scalp_v1_2026_05` (env-overridable via `SCALP_EXPERIMENT_ID`)
+- **experiment_id:** `scalp_v2_filtered_2026_05_05` (env-overridable via `SCALP_EXPERIMENT_ID`). Bumped from `scalp_v1_2026_05` after v1 review of `scalp_sweep_choch_v1` (76 outcomes, 5:1 SL:TP) wired the v2 fade-pattern filters described below. Old v1 rows stay queryable under the previous experiment_id.
 - **Master switch:** `SCALP_SHADOW_ENABLED` (default `false`)
 - **Timeframe:** `SCALP_TIMEFRAME` (default `5m`; bumps to `1m` once a fetcher commit lands)
 - **Setup types:** `scalp_liq_reclaim_v1`, `scalp_sweep_choch_v1`, `scalp_vol_cvd_div_v1`, `scalp_funding_extreme_v1`, `scalp_random_baseline_v1` — all routed through `SHADOW_MODE_SETUPS`, zero live execution.
+- **`scalp_sweep_choch_v1` v2 filters (added 2026-05-05):**
+  - **ADX(14) gate:** ADX on `SCALP_TIMEFRAME` must be `>= SCALP_SWEEP_CHOCH_MIN_ADX` (default `18.0`). When the candle window is too short for ADX warmup the detector also blocks rather than emit blind. Sub-trend regimes dominated v1 SLs.
+  - **Book imbalance gate (fade pattern):** when an orderbook snapshot is available, `book_imbalance_ratio = depth_bid_usd / depth_ask_usd`:
+    - `long`  requires imbalance `< SCALP_SWEEP_CHOCH_BOOK_IMB_LONG_MAX` (default `3.0`).
+    - `short` requires imbalance `> SCALP_SWEEP_CHOCH_BOOK_IMB_SHORT_MIN` (default `3.0`).
+    - Missing or zero-depth orderbook → gate skipped (do not block on stale data).
+  - Caller wiring: `StrategyService.evaluate_scalp` now fetches the cached orderbook before `evaluate_sweep_choch` (was: only before `evaluate_vol_cvd_divergence`) and bumps the candle pull from 30 to 50 to cover ADX warmup.
 - **Per-signal params:** `settings.SCALP_SIGNAL_PARAMS` (TP%, SL%, time_stop_seconds). `ShadowMonitor` reads `time_stop_seconds` at `add_shadow` and resolves as `shadow_time_stop`.
 - **Cross-signal dedup:** 30s window per pair (`SCALP_DEDUP_WINDOW_SECONDS`) inside `StrategyService.evaluate_scalp`.
 - **Pipeline wiring:** `main.py` calls `evaluate_scalp` only when the SMC cascade returned `None`, gated by the master switch.
@@ -366,6 +373,29 @@ Independent shadow-only experiment for microstructural scalping signals, separat
 ---
 
 ## 8. Changelog
+
+### 2026-05-05 — `scalp_sweep_choch_v1` v2 fade-pattern filters
+**Files:** `strategy_service/scalp_setups.py`, `strategy_service/service.py`, `config/settings.py`, `tests/test_scalp_setups.py`, `docs/context/02-strategy.md`
+
+**What changed:**
+- `evaluate_sweep_choch` now applies two filters before emitting:
+  1. **ADX(14) trend gate** — rejects setups when `ADX < SCALP_SWEEP_CHOCH_MIN_ADX` (default `18.0`) on the scalp timeframe, and when ADX cannot be computed at all.
+  2. **Orderbook imbalance fade gate** — when an orderbook snapshot is available, longs require `book_imbalance < SCALP_SWEEP_CHOCH_BOOK_IMB_LONG_MAX` and shorts require `book_imbalance > SCALP_SWEEP_CHOCH_BOOK_IMB_SHORT_MIN` (both default `3.0`). Missing orderbook → gate skipped.
+- `StrategyService.evaluate_scalp` fetches the cached orderbook before `evaluate_sweep_choch` (was: only before `evaluate_vol_cvd_divergence`) and pulls 50 scalp candles instead of 30 to cover ADX warmup.
+- `SCALP_EXPERIMENT_ID` bumped from `scalp_v1_2026_05` to `scalp_v2_filtered_2026_05_05` so v1 vs v2 outcomes stay separable in `ml_setups`. The scalp report script reads the live setting and now filters automatically.
+- Confluence list adds `adx_14=<value>` for traceability.
+
+**Why:** v1 of `scalp_sweep_choch_v1` produced 76 resolved outcomes with `30 SL / 6 TP / 8 BE / 23 timeout` (5:1 SL:TP, worse than the random baseline). Feature analysis showed:
+- LONG SL avg `book_imbalance` 16.0 vs LONG TP avg 1.2 → stacked bids correlated with losses (institutional absorption / spoofing pattern, not real support).
+- SHORT TP avg `book_imbalance` 11.6 vs SHORT SL avg 4.5 → high bid stack + sweep = shorts that worked. Inverts the naive book-imbalance read.
+- Regime breakdown: range/compression/hostile dominated SL outcomes; only `trend_strong` had BE > SL.
+- Median time-to-SL `<1.1 min` for longs, `<0.6 min` for shorts → 0.15% SL stopped on noise inside sub-trend regimes.
+
+**Expected impact:** lower emission rate (sub-trend candles + balanced books no longer fire). Hypothesis: WR moves from ~16% (TP / TP+SL+BE+timeout) toward parity with or above random baseline; minimum bar before any decision is `N≥30` resolved outcomes under the new experiment_id.
+
+**Tests:** `tests/test_scalp_setups.py::TestSweepChochV2Filters` — 9 cases covering ADX unavailable, ADX below min, default-warmup pass-through, long blocked by stacked bids, long passes balanced book, short blocked by balanced book, short passes stacked bids, zero-depth orderbook fall-through, ADX value emitted in confluences. Existing 12 sweep_choch tests updated for new helper signature.
+
+**Operator note:** `python scripts/report_scalp_shadow.py` will report empty for the new experiment_id until shadow outcomes accumulate. Old v1 data stays queryable by overriding `SCALP_EXPERIMENT_ID=scalp_v1_2026_05`.
 
 ### 2026-05-05 — Shadow fallback sizing: replace fixed-notional hack with risk-based formula
 **Files:** `execution_service/shadow_monitor.py`, `tests/test_shadow_monitor_sizing.py`
