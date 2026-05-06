@@ -258,7 +258,7 @@ class TestWickReclaim:
             )
         assert setup is None
         # Sanity check on threshold constant — keeps the test honest if it's tuned.
-        assert _LIQ_RECLAIM_WICK_THRESHOLD == 0.005
+        assert _LIQ_RECLAIM_WICK_THRESHOLD == 0.003
 
     def test_no_signal_when_close_breaks_above_range(self):
         evaluator = ScalpSetupEvaluator()
@@ -318,7 +318,7 @@ class TestNoLookahead:
         )
         future_last = _make_candle(
             ts_ms=21 * 60_000,
-            o=100.0, h=100.4, l=99.6, c=100.1,  # tiny wicks — should not fire
+            o=100.0, h=100.15, l=99.85, c=100.05,  # tiny wicks — should not fire
         )
         future[-1] = future_last
         with _enable_scalp_shadow():
@@ -1051,12 +1051,12 @@ class TestFundingExtremeFilters:
         candles = _flat_window(
             base_price=100.0, count=_FUNDING_FLAT_LOOKBACK_BARS, range_pct=0.001,
         )
-        # 0.0003 < 0.0005 threshold.
-        snap = _funding_snapshot(rate=0.0003)
+        # 0.00015 < 0.0002 threshold.
+        snap = _funding_snapshot(rate=0.00015)
         with _enable_scalp_shadow():
             result = evaluator.evaluate_funding_extreme("BTC/USDT", candles, snap)
         assert result is None
-        assert _FUNDING_RATE_THRESHOLD == 0.0005
+        assert _FUNDING_RATE_THRESHOLD == 0.0002
 
     def test_no_signal_when_range_too_wide(self):
         evaluator = ScalpSetupEvaluator()

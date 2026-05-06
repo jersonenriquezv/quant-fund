@@ -374,6 +374,24 @@ Independent shadow-only experiment for microstructural scalping signals, separat
 
 ## 8. Changelog
 
+### 2026-05-05 — Scalp silent detectors: calibrate `liq_reclaim` and `funding_extreme` thresholds
+**Files:** `strategy_service/scalp_setups.py`, `tests/test_scalp_setups.py`, `scripts/scalp_silent_detector_audit.py`, `docs/audits/scalp-silent-detectors-2026-05-05.md`
+
+**What changed:**
+- `_LIQ_RECLAIM_WICK_THRESHOLD`: `0.005` → `0.003` (0.5% → 0.3%).
+- `_LIQ_RECLAIM_FLUSH_MAX_AGE_MS`: `5 * 60 * 1000` → `10 * 60 * 1000` (5min → 10min).
+- `_FUNDING_RATE_THRESHOLD`: `0.0005` → `0.0002` (0.05% → 0.02%).
+
+**Why:** Phase 1A (PR #15) reported both signals at zero outcomes ever. Audit script (`scripts/scalp_silent_detector_audit.py`) confirmed:
+- `funding_extreme` threshold of 0.05% was 5× higher than the 30-day max funding rate observed across all 7 pairs (max abs |rate| = 0.0427% on AVAX). Mathematically impossible to fire.
+- `liq_reclaim` gates aligned only 2/72 (2.8%) historical OI flushes. Root cause: 0.5% wick threshold is large for 5m candles even after 2% OI flushes; OI poll cadence (5min) sometimes misaligns with the 5m candle close that completes the wick-reclaim pattern. Relaxed to 0.3% wick + 10min window → 11/72 (15.3%) historical alignment.
+
+**Expected impact:** post-calibration projected fires per 30 days — `liq_reclaim` ~5–10, `funding_extreme` ~1–3. Both still slow; will need 1–6 months to accumulate N≥30. If a signal still produces zero after 30 days, deeper redesign required (different thesis, different threshold, or kill).
+
+**Tests:** 52 scalp tests pass. Two threshold assertions updated; one no-lookahead test had its appended-candle wicks shrunk to stay sub-threshold under the new value.
+
+**Operator note:** `SCALP_EXPERIMENT_ID` not bumped here — PR #14 (`feat/scalp-v2-fade-pattern-filters`) already bumps it to `scalp_v2_filtered_2026_05_05`. Old data was empty for these signals so no contamination risk from sharing the v2 id once both PRs land.
+
 ### 2026-05-05 — `scalp_sweep_choch_v1` v2 fade-pattern filters
 **Files:** `strategy_service/scalp_setups.py`, `strategy_service/service.py`, `config/settings.py`, `tests/test_scalp_setups.py`, `docs/context/02-strategy.md`
 

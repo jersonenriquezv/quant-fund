@@ -31,11 +31,21 @@ from shared.models import Candle, MarketSnapshot, TradeSetup
 logger = setup_logger("strategy_scalp_setups")
 
 # Wick reclaim threshold — minimum wick size as fraction of close price.
-_LIQ_RECLAIM_WICK_THRESHOLD = 0.005  # 0.5%
+_LIQ_RECLAIM_WICK_THRESHOLD = 0.003  # 0.3% — was 0.5% pre-2026-05-05; relaxed
+                                    # after silent-detector audit showed only
+                                    # 2/72 historical OI flushes aligned with
+                                    # the prior gate set. See
+                                    # docs/audits/scalp-silent-detectors-2026-05-05.md.
 # Lookback bars (excluding the trigger candle itself) for the inside-range check.
 _LIQ_RECLAIM_LOOKBACK_BARS = 20
 # Max age of OI flush events (ms) considered fresh enough to anchor a reclaim.
-_LIQ_RECLAIM_FLUSH_MAX_AGE_MS = 5 * 60 * 1000
+_LIQ_RECLAIM_FLUSH_MAX_AGE_MS = 10 * 60 * 1000  # was 5 min pre-2026-05-05;
+                                                # extended to better cover the
+                                                # window between an OI flush
+                                                # snapshot (5-min poll cadence)
+                                                # and the subsequent 5m candle
+                                                # close that completes the
+                                                # wick-reclaim pattern.
 
 # Sweep + CHoCH:
 # Lookback bars for prior high/low envelope (excluding sweep + confirm candles).
@@ -58,7 +68,11 @@ _VOL_CVD_MAX_SPREAD = 0.0002
 # Funding extreme + flat price:
 # Min |funding_rate| (8h convention, fraction not pct) to qualify as extreme.
 # 0.0005 = 0.05% per 8h period (~0.15%/day annualized ~55%).
-_FUNDING_RATE_THRESHOLD = 0.0005
+_FUNDING_RATE_THRESHOLD = 0.0002  # 0.02% — was 0.05% pre-2026-05-05; lowered
+                                  # because the prior threshold was never
+                                  # crossed in 30 days of OKX data (max
+                                  # observed |rate| = 0.0427%). Audit:
+                                  # docs/audits/scalp-silent-detectors-2026-05-05.md.
 # Number of bars to scan for the flat-price condition. Tuned for SCALP_TIMEFRAME=5m
 # (6 * 5min = 30min). Bump when 1m fetcher lands.
 _FUNDING_FLAT_LOOKBACK_BARS = 6
