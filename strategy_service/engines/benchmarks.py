@@ -18,8 +18,9 @@ Two benchmarks ship in v1:
 
 Both share the trigger candle with Engine 1 — they are emitted as
 additional `TradeSetup` objects through `evaluate_all()`, produce their
-own `ml_setups` rows under their own `setup_type`, and are quarantined to
-BTC + ETH via `SHADOW_PAIR_FILTER`.
+own `ml_setups` rows under their own `setup_type`, and inherit Engine 1's
+pair scope through `SHADOW_PAIR_FILTER` (omitted entries → all
+`TRADING_PAIRS`).
 
 Dedup safety: main.py keys on `(pair, direction, setup_type)`. Each
 benchmark has its own setup_type, so they never suppress Engine 1 nor
