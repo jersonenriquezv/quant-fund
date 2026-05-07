@@ -376,6 +376,17 @@ Independent shadow-only experiment for microstructural scalping signals, separat
 
 ## 8. Changelog
 
+### 2026-05-07 — Kill `scalp_sweep_choch_v1` detector
+**Files:** `strategy_service/service.py`, `config/settings.py`, `docs/SYSTEM_BASELINE.md`
+
+**What changed:**
+- `evaluate_scalp` no longer invokes `evaluate_sweep_choch`. Detector code retained in `strategy_service/scalp_setups.py` for historical replay only.
+- `SHADOW_MODE_SETUPS` entry commented out (kept inline as record). `SCALP_SETUP_TYPES` retained intact so report scripts and historical queries still resolve the type.
+
+**Why:** Across all eras the signal failed every viability bar. Cumulative N=113 outcomes (8 TP / 51 SL / 12 BE / 42 TS) → WR 13.6% excl be+ts. v3-clean isolation slice (`experiment_id='scalp_v3_clean_2026_05_06'`, N=30): 1 TP / 12 SL / 3 BE / 14 TS → WR **7.7%** vs 30% for `scalp_random_baseline_v1` on the same era. v2 fade-pattern filters (ADX + book imbalance) added 2026-05-05 did not rescue. Continuing the experiment burns ML slots without producing signal.
+
+**Operator note:** Historical rows remain queryable via `setup_type='scalp_sweep_choch_v1'`. The 4 surviving scalp signals (`liq_reclaim`, `vol_cvd_div`, `funding_extreme`, `random_baseline`) keep collecting normally.
+
 ### 2026-05-06 — Shadow capital basis: real-capital backup for shadow sizing
 **Files:** `config/settings.py`, `execution_service/shadow_monitor.py`, `main.py`, `tests/test_shadow_monitor_sizing.py`
 

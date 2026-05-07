@@ -896,7 +896,9 @@ class Settings:
         # Listing here makes the pipeline route them through the shadow path.
         # Plan: docs/plans/scalp_shadow_v1.md.
         "scalp_liq_reclaim_v1",
-        "scalp_sweep_choch_v1",
+        # "scalp_sweep_choch_v1" — killed 2026-05-07: WR 7.7% under
+        # scalp_v3_clean_2026_05_06 (N=30) vs 30% random baseline. Detector
+        # call removed in strategy_service/service.py.evaluate_scalp.
         "scalp_vol_cvd_div_v1",
         "scalp_funding_extreme_v1",
         "scalp_random_baseline_v1",
