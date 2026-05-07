@@ -7,9 +7,9 @@
 **Last updated:** 2026-05-06
 **ML Feature Version:** 18
 **Bot status:** SHADOW-ONLY (OKX_SANDBOX=false, ENABLED_SETUPS=[], ~$86 capital untouched)
-**Active experiment:** `engine1_eth_short_v1b_2026_05_04` (settings.py default since commit `7ccf2bc` 2026-05-04). Engine 1 v1b isolates ETH short only after v1 diagnostics: BTC and ETH long negative, ETH short only positive slice; benchmarks mirror ETH scope.
+**Active experiment:** `engine1_short_multipair_v1c_2026_05_07` (settings.py default since this commit). Engine 1 v1c relaxes the v1b ETH-only pair filter to all `TRADING_PAIRS` while keeping the short-only direction filter. Triggered by 0 emissions in 55h under v1b: ETH produced no qualifying impulses while BTC/SOL/LINK/AVAX detected short impulses but had HTF=long (rejected at dir-vs-HTF gate). Long-impulse history was negative across measured pairs and is intentionally still excluded.
 
-> **Data tag reality (2026-05-06):** All 1510 engine1 ml_setups rows in DB are tagged `redesign_pre_2026_04_27` (legacy env override active during the v1 collection window). Zero rows under `engine1_eth_short_v1b_2026_05_04` because engine1 stopped emitting on 2026-05-05 14:10 UTC when HTF flipped to long (engine1 is short-only via `SHADOW_DIRECTION_FILTER`). `scripts/report_engine1_shadow.py` reads the new ID and therefore reports 0 — querying under the legacy ID is the only way to see existing data until HTF flips back.
+> **Data tag reality (2026-05-07):** All historical engine1 ml_setups rows are tagged `redesign_pre_2026_04_27` (legacy env override active during the v1/v1b collection window). Zero rows under either v1b or v1c yet. Once HTF on any pair flips bearish, v1c emissions begin accumulating under `engine1_short_multipair_v1c_2026_05_07` and `scripts/report_engine1_shadow.py` will start reporting non-zero. Querying under the legacy ID is still the only way to see existing pre-v1c data.
 **Monitoring:** Grafana dashboard `shadow-health` + systemd user timer `shadow-health-alert.timer` (hourly)
 
 ---
@@ -36,7 +36,7 @@
 | F (Pure OB Retest) | **SHADOW** | swing, was live until 04-15 | 50% (1TP/1SL live) |
 | G (Breaker Block) | **DISABLED** | 0/4 WR. Removed 04-16. | 0% |
 | H (Momentum/Impulse) | **DISABLED** | — | 10.7% WR (28 trades). Removed 04-13. |
-| Engine 1 (Trend-Pullback / Impulse Retest) | **SHADOW (ETH short only) — frozen since 2026-05-05 14:10** | v1b isolated 2026-05-04; pre-emission scope filter prevents out-of-scope benchmark orphans; benchmarks mirror ETH scope. HTF on ETH flipped long → no qualifying short impulses; engine still scans (logs show `impulse dir short != HTF long` rejections) | v1: ETH short only positive slice; BTC + ETH long quarantined |
+| Engine 1 (Trend-Pullback / Impulse Retest) | **SHADOW (all pairs, short only) — v1c live since 2026-05-07** | v1c relaxes v1b ETH-only pair filter to all `TRADING_PAIRS`; direction filter unchanged (`["short"]`). Audit (issue #22) confirmed v1b ran 55h with 0 emissions because ETH produced no impulses while BTC/SOL/LINK/AVAX impulses were rejected by HTF=long. Benchmarks (`bench_engine1_*`) co-emit on the same pair scope. Engine activates per pair when its HTF flips bearish | v1: ETH short only positive slice (+$6.66 / 37 trades); BTC + ETH long historically negative |
 
 ### Risk Guardrails
 | Parameter | Value | Notes |
@@ -261,7 +261,7 @@ Reference for VPS sizing when migrating from Nitro 5.
 **Query training data:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL AND outcome_type NOT IN ('ai_rejected','data_blocked','filled_orphaned','replaced','risk_rejected','shadow_dedup','shadow_direction_filtered','shadow_pair_filtered','shadow_orphaned','trading_halted','unfilled_timeout')`
 
 Whitelist autoritativa de `outcome_type` en `data_service.data_store.VALID_OUTCOMES`. Labels fuera del set generan WARNING. El filtro non-market se centraliza en `NON_MARKET_OUTCOMES` + helper `ml_market_outcome_filter_sql()` (mismo módulo) — usarlo en scripts/queries nuevas para evitar drift.
-**Experiment tracking:** `experiment_id` column (migration 15). settings.py default: `engine1_eth_short_v1b_2026_05_04` (active for emissions since commit `7ccf2bc` 2026-05-04). Legacy data still under `redesign_pre_2026_04_27` (env override that was active during v1 collection window — all 1510 engine1 rows + 109 scalp rows). When querying engine1 historically, filter on the legacy ID; when querying scalp, see Side experiment §9 — note `SCALP_EXPERIMENT_ID` is currently a reporting-only field (does not tag inserts).
+**Experiment tracking:** `experiment_id` column (migration 15). settings.py default: `engine1_short_multipair_v1c_2026_05_07` (v1c, active since 2026-05-07). Prior defaults: `engine1_eth_short_v1b_2026_05_04` (v1b, 2026-05-04 → 2026-05-07; zero rows accrued — replaced before validation), `redesign_pre_2026_04_27` (env override during v1 collection window — all 1510 historical engine1 rows + 109 scalp rows tagged here). When querying engine1 historically, filter on the legacy ID; when querying scalp, see Side experiment §9.
 
 | Version | Date | Changes | Training Status |
 |---------|------|---------|-----------------|
@@ -375,6 +375,24 @@ Independent shadow-only experiment for microstructural scalping signals, separat
 ---
 
 ## 8. Changelog
+
+### 2026-05-07 — Engine 1 v1c: relax pair filter to all TRADING_PAIRS (short only)
+**Files:** `config/settings.py`, `strategy_service/engines/benchmarks.py`, `docs/SYSTEM_BASELINE.md`. Closes issue #22.
+
+**What changed:**
+- `SHADOW_PAIR_FILTER` no longer carries entries for `engine1_trend_pullback`, `bench_engine1_random_direction`, `bench_engine1_market_now`. Omitted entries default to all `TRADING_PAIRS` per the existing pair-filter contract.
+- `EXPERIMENT_ID` default bumped to `engine1_short_multipair_v1c_2026_05_07` so v1c rows segregate from v1b history at insert time.
+- `SHADOW_DIRECTION_FILTER["engine1_trend_pullback"] = ["short"]` unchanged. Long-impulse history was negative across measured pairs.
+- Updated docstring in `engines/benchmarks.py` to reflect the inherited (non-quarantined) pair scope.
+
+**Why:** v1b (ETH-only) collected 0 outcomes in 55h post-freeze. Audit (issue #22) showed ETH produced no qualifying impulses in current vol regime while BTC/SOL/LINK/AVAX detected short impulses that were rejected at `dir != HTF` gate (those pairs had HTF=long). Pair filter was strictly subtractive: every pair where engine1 was actually firing was blocked from emission. Relaxing it lets v1c emit whenever any pair has HTF=bearish + qualifying short impulse, without changing detector parameters or geometry. Direction filter stays `["short"]` so the historically-negative long slice is still excluded.
+
+**How to interpret:**
+- v1c rows live under `experiment_id='engine1_short_multipair_v1c_2026_05_07'`. Slice by `pair` for per-pair edge analysis.
+- v1b is effectively skipped: zero rows accrued, configuration replaced before validation. v1 history under `redesign_pre_2026_04_27` is the only prior dataset.
+- Promotion gate: ≥30 v1c resolved outcomes (TP/SL/BE/timeout) before any kill/keep call. Earlier than that, sample is too small to distinguish edge from noise across pairs.
+
+**Tests:** 288 pass (`test_strategy_integration`, `test_engine_trend_pullback`, `test_engine1_benchmarks`, `test_setups`, `test_quick_setups`, `test_scalp_setups`).
 
 ### 2026-05-07 — Kill `scalp_sweep_choch_v1` detector
 **Files:** `strategy_service/service.py`, `config/settings.py`, `docs/SYSTEM_BASELINE.md`
