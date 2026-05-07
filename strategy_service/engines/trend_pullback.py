@@ -448,7 +448,12 @@ class TrendPullbackEngine:
         # Lossless raw metrics for ML — confluence strings above are
         # formatted/truncated and lose precision. Full set kept here so
         # future audits can recover the exact decision inputs.
+        # `engine1_impulse_origin_ts` = timestamp of the impulse's first
+        # candle. Used by StrategyService to dedup repeated emissions of
+        # the same impulse-pullback cycle (engine re-detects on every new
+        # 5m bar; the same impulse must not fire 5+ shadow setups).
         entry_atr_distance = abs(entry - current_price) / atr if atr > 0 else 0.0
+        impulse_origin_ts = int(candles[impulse.start_idx].timestamp)
         extra_features: dict[str, int | float | str | bool | None] = {
             "engine1_impulse_atr_multiple": float(impulse.atr_multiple),
             "engine1_impulse_body_ratio": float(impulse.avg_body_ratio),
@@ -461,6 +466,7 @@ class TrendPullbackEngine:
                 pullback.max_opposing_body_ratio
             ),
             "engine1_entry_atr_distance": float(entry_atr_distance),
+            "engine1_impulse_origin_ts": impulse_origin_ts,
         }
 
         last_candle = candles[-1]

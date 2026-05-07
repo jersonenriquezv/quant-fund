@@ -896,7 +896,9 @@ class Settings:
         # Listing here makes the pipeline route them through the shadow path.
         # Plan: docs/plans/scalp_shadow_v1.md.
         "scalp_liq_reclaim_v1",
-        "scalp_sweep_choch_v1",
+        # "scalp_sweep_choch_v1" — killed 2026-05-07: WR 7.7% under
+        # scalp_v3_clean_2026_05_06 (N=30) vs 30% random baseline. Detector
+        # call removed in strategy_service/service.py.evaluate_scalp.
         "scalp_vol_cvd_div_v1",
         "scalp_funding_extreme_v1",
         "scalp_random_baseline_v1",
@@ -935,9 +937,41 @@ class Settings:
     # Fictional capital for shadow mode position sizing ($500 USDT).
     # Shadow R:R and position sizes reflect realistic trades you'd take later.
     SHADOW_CAPITAL: float = float(os.getenv("SHADOW_CAPITAL", "500"))
+
+    # Shadow capital basis — toggles whether sizing math uses SHADOW_CAPITAL
+    # (fictional, default) or SHADOW_REAL_CAPITAL_USD (mirrors actual OKX
+    # balance). When basis="real", shadow PnL projects what a real-money
+    # trade would have earned/lost given the current account size — letting
+    # us decide signal viability with the actual capital constraint instead
+    # of a $500 fiction. SHADOW_CAPITAL is *not* overwritten so historical
+    # rows (where risk_capital was snapshotted at insert) remain comparable.
+    # Bump SCALP_EXPERIMENT_ID and/or EXPERIMENT_ID when flipping basis so
+    # pre/post-flip data stays separable.
+    SHADOW_CAPITAL_BASIS: str = os.getenv("SHADOW_CAPITAL_BASIS", "fictional").lower()
+
+    # Real OKX account capital used when SHADOW_CAPITAL_BASIS=real. Memory
+    # records ~$108 as the current balance (April 2026). Override per
+    # environment when the balance changes materially.
+    SHADOW_REAL_CAPITAL_USD: float = float(os.getenv("SHADOW_REAL_CAPITAL_USD", "108"))
+
     # Shadow mode timeout (hours) — max time to wait for theoretical fill + outcome
     SHADOW_ENTRY_TIMEOUT_HOURS: int = int(os.getenv("SHADOW_ENTRY_TIMEOUT_HOURS", "12"))
     SHADOW_TRADE_TIMEOUT_HOURS: int = int(os.getenv("SHADOW_TRADE_TIMEOUT_HOURS", "12"))
+
+    @property
+    def effective_shadow_capital(self) -> float:
+        """Return the capital basis used for shadow position sizing.
+
+        - "fictional" (default): SHADOW_CAPITAL ($500). Historical behavior.
+        - "real": SHADOW_REAL_CAPITAL_USD ($108). Mirrors actual OKX balance.
+
+        Centralized helper so every callsite (shadow_monitor, _ml_log_setup
+        capital_override) uses the same value. Anything reading SHADOW_CAPITAL
+        directly should switch to this property.
+        """
+        if self.SHADOW_CAPITAL_BASIS == "real":
+            return self.SHADOW_REAL_CAPITAL_USD
+        return self.SHADOW_CAPITAL
 
     # ========================
     # SCALP SHADOW SIGNALS — v1 experiment (docs/plans/scalp_shadow_v1.md)
@@ -947,7 +981,17 @@ class Settings:
     # Disabled by default — each detector commit flips its own setup_type into
     # SHADOW_MODE_SETUPS once wired. The master flag is a kill switch.
     SCALP_SHADOW_ENABLED: bool = os.getenv("SCALP_SHADOW_ENABLED", "false").lower() == "true"
-    SCALP_EXPERIMENT_ID: str = os.getenv("SCALP_EXPERIMENT_ID", "scalp_v1_2026_05")
+    # v3 (2026-05-06): clean experiment_id reset after discovering that v1+v2
+    # rows were silently tagged with the global EXPERIMENT_ID instead of
+    # SCALP_EXPERIMENT_ID — `_ml_log_setup` ignored this field until the
+    # `fix/scalp-experiment-id-wiring` PR. v2 filter changes (ADX +
+    # book_imbalance) and v1 baseline are therefore mixed under
+    # `redesign_pre_2026_04_27` / `engine1_eth_short_v1b_2026_05_04` in DB.
+    # No code-side filter change in this entry — just isolation. Future
+    # signal/threshold changes still bump this ID. Old data queryable via
+    # `SCALP_EXPERIMENT_ID=scalp_v2_filtered_2026_05_05` env override (note:
+    # that override only worked for reporting; inserts pre-fix used global ID).
+    SCALP_EXPERIMENT_ID: str = os.getenv("SCALP_EXPERIMENT_ID", "scalp_v3_clean_2026_05_06")
 
     # Candle timeframe used by scalp detectors. Defaults to 5m because the
     # bot does not currently fetch 1m candles (LTF_TIMEFRAMES = 5m, 15m).
@@ -996,6 +1040,27 @@ class Settings:
     # while cutting REST traffic by ~10x at SCALP_TIMEFRAME=5m.
     SCALP_ORDERBOOK_CACHE_TTL_SECONDS: int = int(
         os.getenv("SCALP_ORDERBOOK_CACHE_TTL_SECONDS", "30")
+    )
+
+    # scalp_sweep_choch_v1 — v2 fade-pattern filters (added 2026-05-05).
+    # Min ADX(14) on the scalp timeframe to allow emission. v1 data showed
+    # range/compression/hostile regimes dominated SL outcomes; trend_weak
+    # (ADX 18-25) was the lowest tradeable bucket. Below 18 = pure range,
+    # sweep+CHoCH gets stopped on noise.
+    SCALP_SWEEP_CHOCH_MIN_ADX: float = float(
+        os.getenv("SCALP_SWEEP_CHOCH_MIN_ADX", "18.0")
+    )
+    # book_imbalance_ratio = depth_bid_usd / depth_ask_usd within ±0.1% of mid.
+    # v1 hypothesis: extreme imbalance against direction = absorbed liquidity
+    # (spoof/iceberg) and the sweep is the absorption signature, not real flow.
+    # Long requires balanced-or-thin-bid book (imb < max). Short requires
+    # stacked-bid book that gets faded (imb > min). When orderbook is missing,
+    # filter is skipped (do not block on stale data — avoid noise injection).
+    SCALP_SWEEP_CHOCH_BOOK_IMB_LONG_MAX: float = float(
+        os.getenv("SCALP_SWEEP_CHOCH_BOOK_IMB_LONG_MAX", "3.0")
+    )
+    SCALP_SWEEP_CHOCH_BOOK_IMB_SHORT_MIN: float = float(
+        os.getenv("SCALP_SWEEP_CHOCH_BOOK_IMB_SHORT_MIN", "3.0")
     )
 
     # ========================
@@ -1074,6 +1139,14 @@ class Settings:
             raise ValueError(f"MAX_WEEKLY_DRAWDOWN={self.MAX_WEEKLY_DRAWDOWN} out of safe range (0, 0.30]")
         if not (1 <= self.MAX_OPEN_POSITIONS <= 20):
             raise ValueError(f"MAX_OPEN_POSITIONS={self.MAX_OPEN_POSITIONS} out of safe range [1, 20]")
+        if self.SHADOW_CAPITAL_BASIS not in ("fictional", "real"):
+            raise ValueError(
+                f"SHADOW_CAPITAL_BASIS={self.SHADOW_CAPITAL_BASIS!r} must be 'fictional' or 'real'"
+            )
+        if self.SHADOW_REAL_CAPITAL_USD <= 0:
+            raise ValueError(
+                f"SHADOW_REAL_CAPITAL_USD={self.SHADOW_REAL_CAPITAL_USD} must be positive"
+            )
 
 
 

@@ -4,10 +4,12 @@
 > Reflects code reality — if code and doc disagree, fix the doc.
 > Documentation rule: this file is the operational source of truth. `README.md` is a portfolio overview; `docs/context/*` explains concepts and history and may intentionally lag unless this baseline links to it.
 
-**Last updated:** 2026-05-04
+**Last updated:** 2026-05-06
 **ML Feature Version:** 18
 **Bot status:** SHADOW-ONLY (OKX_SANDBOX=false, ENABLED_SETUPS=[], ~$86 capital untouched)
-**Active experiment:** `engine1_eth_short_v1b_2026_05_04` (Engine 1 v1b isolates ETH short only after v1 diagnostics: BTC and ETH long negative, ETH short only positive slice; benchmarks mirror ETH scope)
+**Active experiment:** `engine1_eth_short_v1b_2026_05_04` (settings.py default since commit `7ccf2bc` 2026-05-04). Engine 1 v1b isolates ETH short only after v1 diagnostics: BTC and ETH long negative, ETH short only positive slice; benchmarks mirror ETH scope.
+
+> **Data tag reality (2026-05-06):** All 1510 engine1 ml_setups rows in DB are tagged `redesign_pre_2026_04_27` (legacy env override active during the v1 collection window). Zero rows under `engine1_eth_short_v1b_2026_05_04` because engine1 stopped emitting on 2026-05-05 14:10 UTC when HTF flipped to long (engine1 is short-only via `SHADOW_DIRECTION_FILTER`). `scripts/report_engine1_shadow.py` reads the new ID and therefore reports 0 — querying under the legacy ID is the only way to see existing data until HTF flips back.
 **Monitoring:** Grafana dashboard `shadow-health` + systemd user timer `shadow-health-alert.timer` (hourly)
 
 ---
@@ -34,7 +36,7 @@
 | F (Pure OB Retest) | **SHADOW** | swing, was live until 04-15 | 50% (1TP/1SL live) |
 | G (Breaker Block) | **DISABLED** | 0/4 WR. Removed 04-16. | 0% |
 | H (Momentum/Impulse) | **DISABLED** | — | 10.7% WR (28 trades). Removed 04-13. |
-| Engine 1 (Trend-Pullback / Impulse Retest) | **SHADOW (ETH short only)** | v1b isolated 2026-05-04; pre-emission scope filter prevents out-of-scope benchmark orphans; benchmarks mirror ETH scope | v1: ETH short only positive slice; BTC + ETH long quarantined |
+| Engine 1 (Trend-Pullback / Impulse Retest) | **SHADOW (ETH short only) — frozen since 2026-05-05 14:10** | v1b isolated 2026-05-04; pre-emission scope filter prevents out-of-scope benchmark orphans; benchmarks mirror ETH scope. HTF on ETH flipped long → no qualifying short impulses; engine still scans (logs show `impulse dir short != HTF long` rejections) | v1: ETH short only positive slice; BTC + ETH long quarantined |
 
 ### Risk Guardrails
 | Parameter | Value | Notes |
@@ -259,7 +261,7 @@ Reference for VPS sizing when migrating from Nitro 5.
 **Query training data:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL AND outcome_type NOT IN ('ai_rejected','data_blocked','filled_orphaned','replaced','risk_rejected','shadow_dedup','shadow_direction_filtered','shadow_pair_filtered','shadow_orphaned','trading_halted','unfilled_timeout')`
 
 Whitelist autoritativa de `outcome_type` en `data_service.data_store.VALID_OUTCOMES`. Labels fuera del set generan WARNING. El filtro non-market se centraliza en `NON_MARKET_OUTCOMES` + helper `ml_market_outcome_filter_sql()` (mismo módulo) — usarlo en scripts/queries nuevas para evitar drift.
-**Experiment tracking:** `experiment_id` column (migration 15). Current: `redesign_pre_2026_04_27`. Filter: `WHERE experiment_id = 'redesign_pre_2026_04_27'` for clean post-redesign-prework data.
+**Experiment tracking:** `experiment_id` column (migration 15). settings.py default: `engine1_eth_short_v1b_2026_05_04` (active for emissions since commit `7ccf2bc` 2026-05-04). Legacy data still under `redesign_pre_2026_04_27` (env override that was active during v1 collection window — all 1510 engine1 rows + 109 scalp rows). When querying engine1 historically, filter on the legacy ID; when querying scalp, see Side experiment §9 — note `SCALP_EXPERIMENT_ID` is currently a reporting-only field (does not tag inserts).
 
 | Version | Date | Changes | Training Status |
 |---------|------|---------|-----------------|
@@ -352,10 +354,17 @@ Three storages hold trade-like rows. Only ONE is authoritative for ML training /
 
 Independent shadow-only experiment for microstructural scalping signals, separate from the SMC roadmap above. Plan: `docs/plans/scalp_shadow_v1.md`.
 
-- **experiment_id:** `scalp_v1_2026_05` (env-overridable via `SCALP_EXPERIMENT_ID`)
+- **experiment_id:** `scalp_v2_filtered_2026_05_05` (env-overridable via `SCALP_EXPERIMENT_ID`). Bumped from `scalp_v1_2026_05` after v1 review of `scalp_sweep_choch_v1` (76 outcomes, 5:1 SL:TP) wired the v2 fade-pattern filters described below. Old v1 rows stay queryable under the previous experiment_id.
 - **Master switch:** `SCALP_SHADOW_ENABLED` (default `false`)
 - **Timeframe:** `SCALP_TIMEFRAME` (default `5m`; bumps to `1m` once a fetcher commit lands)
 - **Setup types:** `scalp_liq_reclaim_v1`, `scalp_sweep_choch_v1`, `scalp_vol_cvd_div_v1`, `scalp_funding_extreme_v1`, `scalp_random_baseline_v1` — all routed through `SHADOW_MODE_SETUPS`, zero live execution.
+- **`scalp_sweep_choch_v1` v2 filters (added 2026-05-05):**
+  - **ADX(14) gate:** ADX on `SCALP_TIMEFRAME` must be `>= SCALP_SWEEP_CHOCH_MIN_ADX` (default `18.0`). When the candle window is too short for ADX warmup the detector also blocks rather than emit blind. Sub-trend regimes dominated v1 SLs.
+  - **Book imbalance gate (fade pattern):** when an orderbook snapshot is available, `book_imbalance_ratio = depth_bid_usd / depth_ask_usd`:
+    - `long`  requires imbalance `< SCALP_SWEEP_CHOCH_BOOK_IMB_LONG_MAX` (default `3.0`).
+    - `short` requires imbalance `> SCALP_SWEEP_CHOCH_BOOK_IMB_SHORT_MIN` (default `3.0`).
+    - Missing or zero-depth orderbook → gate skipped (do not block on stale data).
+  - Caller wiring: `StrategyService.evaluate_scalp` now fetches the cached orderbook before `evaluate_sweep_choch` (was: only before `evaluate_vol_cvd_divergence`) and bumps the candle pull from 30 to 50 to cover ADX warmup.
 - **Per-signal params:** `settings.SCALP_SIGNAL_PARAMS` (TP%, SL%, time_stop_seconds). `ShadowMonitor` reads `time_stop_seconds` at `add_shadow` and resolves as `shadow_time_stop`.
 - **Cross-signal dedup:** 30s window per pair (`SCALP_DEDUP_WINDOW_SECONDS`) inside `StrategyService.evaluate_scalp`.
 - **Pipeline wiring:** `main.py` calls `evaluate_scalp` only when the SMC cascade returned `None`, gated by the master switch.
@@ -366,6 +375,130 @@ Independent shadow-only experiment for microstructural scalping signals, separat
 ---
 
 ## 8. Changelog
+
+### 2026-05-07 — Kill `scalp_sweep_choch_v1` detector
+**Files:** `strategy_service/service.py`, `config/settings.py`, `docs/SYSTEM_BASELINE.md`
+
+**What changed:**
+- `evaluate_scalp` no longer invokes `evaluate_sweep_choch`. Detector code retained in `strategy_service/scalp_setups.py` for historical replay only.
+- `SHADOW_MODE_SETUPS` entry commented out (kept inline as record). `SCALP_SETUP_TYPES` retained intact so report scripts and historical queries still resolve the type.
+
+**Why:** Across all eras the signal failed every viability bar. Cumulative N=113 outcomes (8 TP / 51 SL / 12 BE / 42 TS) → WR 13.6% excl be+ts. v3-clean isolation slice (`experiment_id='scalp_v3_clean_2026_05_06'`, N=30): 1 TP / 12 SL / 3 BE / 14 TS → WR **7.7%** vs 30% for `scalp_random_baseline_v1` on the same era. v2 fade-pattern filters (ADX + book imbalance) added 2026-05-05 did not rescue. Continuing the experiment burns ML slots without producing signal.
+
+**Operator note:** Historical rows remain queryable via `setup_type='scalp_sweep_choch_v1'`. The 4 surviving scalp signals (`liq_reclaim`, `vol_cvd_div`, `funding_extreme`, `random_baseline`) keep collecting normally.
+
+### 2026-05-06 — Shadow capital basis: real-capital backup for shadow sizing
+**Files:** `config/settings.py`, `execution_service/shadow_monitor.py`, `main.py`, `tests/test_shadow_monitor_sizing.py`
+
+**What changed:**
+- New setting `SHADOW_CAPITAL_BASIS` env (`"fictional"` default | `"real"`). When `"real"`, shadow sizing uses `SHADOW_REAL_CAPITAL_USD` (default $108, mirrors current OKX balance) instead of the historical `SHADOW_CAPITAL` ($500 fiction).
+- New helper `settings.effective_shadow_capital` returns the active basis value. All shadow callsites (`shadow_monitor.add_shadow` fallback, `ShadowPosition.target_risk_usd`, `_ml_log_setup` capital_override, `_process_pipeline_setup` risk dry-run, pair-diagnostic boot log, shadow-monitor init log) now read through this helper.
+- `__post_init__` validates basis ∈ {fictional, real} and `SHADOW_REAL_CAPITAL_USD > 0`. Boot log emits both `SHADOW_CAPITAL_BASIS` and the resolved value.
+- 4 new tests in `TestShadowCapitalBasis` lock the toggle behavior.
+
+**Why:** Previous shadow PnL was projected against $500 fictional capital while the live OKX account has ~$108. Position notionals are 4.6× larger in shadow than they would be in reality, which makes shadow PnL non-comparable with live execution. With the new toggle, an operator can flip basis to `"real"` to project what each signal would have earned/lost given the actual capital constraint — materially changing the kill/keep call for tight-SL signals (scalp 0.15% SL: real notional $1,080 → fee-adjusted R:R degrades from clean 2:1 to ~0.8:1 net).
+
+**How to use:**
+- Default behavior unchanged — opt-in only.
+- Enable: `SHADOW_CAPITAL_BASIS=real SHADOW_REAL_CAPITAL_USD=108` in `.env`.
+- **Always bump experiment_id when flipping** — sizing change alters PnL distributions. Examples: `SCALP_EXPERIMENT_ID=scalp_v3_real_2026_05_06`, `EXPERIMENT_ID=engine1_real_capital_2026_05_06`. Otherwise post-flip rows mix with pre-flip rows under the same tag, contaminating analysis.
+- `risk_capital` column on `ml_setups` already snapshots the effective capital at insert time, so historical queries can group/filter by it.
+
+**Operator decision deferred:** flipping basis changes the meaning of every shadow PnL going forward. Current dataset is already noisy from prior contamination (sizing-fix mid-experiment, experiment_id misrouting). Recommend running both basis modes in parallel for at least one signal cycle before fully cutting over — flip first on a fresh `EXPERIMENT_ID` and let it accumulate N≥30 before comparing real vs fictional.
+
+### 2026-05-06 — Fix `SCALP_EXPERIMENT_ID` wiring + bump to `scalp_v3_clean_2026_05_06`
+**Files:** `main.py`, `config/settings.py`
+
+**What changed:**
+- `_ml_log_setup` now branches on `setup.setup_type in SCALP_SETUP_TYPES` and tags scalp inserts with `SCALP_EXPERIMENT_ID` (default `scalp_v3_clean_2026_05_06`). Non-scalp inserts continue using the global `EXPERIMENT_ID`.
+- Boot log now prints both IDs + sources (env override vs settings default).
+
+**Why:** `SCALP_EXPERIMENT_ID` was defined in `config/settings.py` and read by `scripts/report_scalp_shadow.py`, but `_ml_log_setup` always wrote `settings.EXPERIMENT_ID`. Result: every scalp v1 + v2 row in `ml_setups` is tagged with whichever global experiment was active at insertion time (`redesign_pre_2026_04_27` for early v1 data, `engine1_eth_short_v1b_2026_05_04` after the 2026-05-04 flip). Reports under the new ID returned zero. v2 fade-pattern filter changes (PR #14) silently mixed with engine1 ID instead of isolating under their own.
+
+**Impact:**
+- All future scalp inserts go under `scalp_v3_clean_2026_05_06`. Old v1/v2 data **not migrated** — stays under the engine1/legacy IDs and is queryable via explicit `experiment_id` predicate. Migration would require parsing setup_type and rewriting rows; not worth it for shadow-only data.
+- Fresh dataset starts at zero. Need ~2-4 weeks for `scalp_sweep_choch_v1` to accumulate N≥30 under v3 before any kill/keep decision. `liq_reclaim` and `funding_extreme` (calibrated 2026-05-05) still on slow timeline.
+
+**Tests:** existing scalp tests (`tests/test_scalp_setups.py`, `tests/test_report_scalp_shadow.py`) still pass — 80 cases. No new test for the wiring branch because it's a one-line conditional in `_ml_log_setup`; hitting it requires DB integration test infrastructure that doesn't exist for that callsite yet.
+
+**Operator note:** Old data still queryable. Examples:
+- v1 sweep_choch under legacy: `experiment_id='redesign_pre_2026_04_27' AND setup_type='scalp_sweep_choch_v1'` (63 rows)
+- v2 sweep_choch (filters added but tagged with engine1 ID): `experiment_id='engine1_eth_short_v1b_2026_05_04' AND setup_type='scalp_sweep_choch_v1'` (19 rows)
+- v3 clean (fresh): `experiment_id='scalp_v3_clean_2026_05_06'`
+
+### 2026-05-06 — Engine 1 status snapshot (docs-only sync, no code change)
+**Files:** `docs/SYSTEM_BASELINE.md`, memory `project_engine1_shadow.md`
+
+**Reality check** at end of v1b experiment window:
+- Total engine1 resolved outcomes in DB: **115** (60 short + 55 long), all under legacy `experiment_id=redesign_pre_2026_04_27`. Memory snapshot from 2026-04-30 said 51 — outdated.
+- Era split (era boundary = sizing fix on 2026-05-05):
+  - **pre-2026-05-05** (sizing $250 fixed + cluster bias pre-dedup): 98 resolved. Long 38 → 9 TP / 4 SL / 25 BE, net **−$14.00**. Short 60 → 16 TP / 14 SL / 30 BE, net **−$3.53**.
+  - **2026-05-05 (sizing-fix day)**: 17 long resolved → 5 TP / 2 SL / 10 BE, net **+$1.33**. Only era with risk-based sizing AND cluster dedup partially in effect, N too small.
+  - **post-2026-05-06 (dedup-fix merged)**: **0 resolved**. Engine1 has not emitted since 2026-05-05 14:10 — direction filter `["short"]` × HTF flipped long.
+- Useful WR (TP/(TP+SL)) by direction across all eras: short 53.3% (16/30), long 70% (14/20). Long high WR but losing money — TPs ($3 avg) smaller than SLs ($10 avg). Geometry asymmetry, not direction edge.
+
+**Why this matters:**
+- Memory said checkpoint was 75 outcomes; we're at 115 but the data is **dirty** (sizing changed mid-experiment, cluster bias inflates pre-dedup data). Effective clean N ≈ 17.
+- The "v1b isolation" decision (commit `7ccf2bc`) tagged settings default but didn't bump explicit env, so data continued under legacy ID. Reports under new ID return zero.
+- Re-run `scripts/engine1_fillrate_study.py` is BLOCKED until either (a) HTF flips back to short and N≥30 fresh outcomes accumulate under `engine1_eth_short_v1b_2026_05_04`, or (b) we relax the direction filter for ETH long during this regime.
+
+**No config change in this entry.** Decision deferred — see `Open Problems` and memory `project_engine1_shadow.md`.
+
+### 2026-05-06 — Engine 1 cluster dedup: suppress repeated emissions on same impulse
+**Files:** `strategy_service/service.py`, `strategy_service/engines/trend_pullback.py`, `tests/test_engine_trend_pullback.py`, `tests/test_strategy_integration.py`
+
+**What changed:**
+- `TrendPullbackEngine.evaluate` now writes `engine1_impulse_origin_ts` (timestamp of the impulse's first candle) into `TradeSetup.extra_features`.
+- `StrategyService._engine1_is_cluster_duplicate(setup)` is the new dedup helper. It tracks `(pair, direction) -> last impulse_origin_ts` per service instance and returns True when a fresh setup repeats the cached impulse. Hit at the engine1 callsite in `_evaluate_for_state` so duplicate emissions never reach `on_match`.
+
+**Why:** Maker fill-rate audit (`docs/audits/engine1-maker-fillrate-2026-05-05.md` §3.4) showed a single 2026-04-29 ETH impulse produced 5 detections in 50 minutes, all resolving as identical-priced `shadow_tp`. Inflated headline N (37 raw → effective ~10–15 events) and concentrated edge in single market events. The previous shadow_monitor dedup released once a position filled, allowing the engine to re-emit on every confirmed 5m bar over the same impulse-pullback cycle.
+
+**Expected impact:** engine1 emission volume drops on impulse re-detections (no more 5 fires/50min on one impulse). Per-impulse-cycle effective sample N should now match raw N. Re-running `scripts/engine1_fillrate_study.py` post-merge will give a cleaner edge measurement; the 2 winners that flipped sign in the 3bps margin scenario should disappear or stay as a single contribution rather than 5.
+
+**Tests:** 6 new `TestEngine1ClusterDedup` cases (first-emit caches, repeat suppresses, new impulse re-arms, per-direction and per-pair scoping, missing-field fallback) + 1 engine-level test verifying `engine1_impulse_origin_ts` matches the impulse start candle. 288 strategy/engine/scalp tests pass.
+
+**Operator note:** No experiment_id bump — this is a behavior fix, not a parameter regime change. Old engine1 ml_setups rows under `redesign_pre_2026_04_27` retain their cluster-duplicated outcomes; new rows are clean from this commit forward.
+
+### 2026-05-05 — Scalp silent detectors: calibrate `liq_reclaim` and `funding_extreme` thresholds
+**Files:** `strategy_service/scalp_setups.py`, `tests/test_scalp_setups.py`, `scripts/scalp_silent_detector_audit.py`, `docs/audits/scalp-silent-detectors-2026-05-05.md`
+
+**What changed:**
+- `_LIQ_RECLAIM_WICK_THRESHOLD`: `0.005` → `0.003` (0.5% → 0.3%).
+- `_LIQ_RECLAIM_FLUSH_MAX_AGE_MS`: `5 * 60 * 1000` → `10 * 60 * 1000` (5min → 10min).
+- `_FUNDING_RATE_THRESHOLD`: `0.0005` → `0.0002` (0.05% → 0.02%).
+
+**Why:** Phase 1A (PR #15) reported both signals at zero outcomes ever. Audit script (`scripts/scalp_silent_detector_audit.py`) confirmed:
+- `funding_extreme` threshold of 0.05% was 5× higher than the 30-day max funding rate observed across all 7 pairs (max abs |rate| = 0.0427% on AVAX). Mathematically impossible to fire.
+- `liq_reclaim` gates aligned only 2/72 (2.8%) historical OI flushes. Root cause: 0.5% wick threshold is large for 5m candles even after 2% OI flushes; OI poll cadence (5min) sometimes misaligns with the 5m candle close that completes the wick-reclaim pattern. Relaxed to 0.3% wick + 10min window → 11/72 (15.3%) historical alignment.
+
+**Expected impact:** post-calibration projected fires per 30 days — `liq_reclaim` ~5–10, `funding_extreme` ~1–3. Both still slow; will need 1–6 months to accumulate N≥30. If a signal still produces zero after 30 days, deeper redesign required (different thesis, different threshold, or kill).
+
+**Tests:** 52 scalp tests pass. Two threshold assertions updated; one no-lookahead test had its appended-candle wicks shrunk to stay sub-threshold under the new value.
+
+**Operator note:** `SCALP_EXPERIMENT_ID` not bumped here — PR #14 (`feat/scalp-v2-fade-pattern-filters`) already bumps it to `scalp_v2_filtered_2026_05_05`. Old data was empty for these signals so no contamination risk from sharing the v2 id once both PRs land.
+
+### 2026-05-05 — `scalp_sweep_choch_v1` v2 fade-pattern filters
+**Files:** `strategy_service/scalp_setups.py`, `strategy_service/service.py`, `config/settings.py`, `tests/test_scalp_setups.py`, `docs/context/02-strategy.md`
+
+**What changed:**
+- `evaluate_sweep_choch` now applies two filters before emitting:
+  1. **ADX(14) trend gate** — rejects setups when `ADX < SCALP_SWEEP_CHOCH_MIN_ADX` (default `18.0`) on the scalp timeframe, and when ADX cannot be computed at all.
+  2. **Orderbook imbalance fade gate** — when an orderbook snapshot is available, longs require `book_imbalance < SCALP_SWEEP_CHOCH_BOOK_IMB_LONG_MAX` and shorts require `book_imbalance > SCALP_SWEEP_CHOCH_BOOK_IMB_SHORT_MIN` (both default `3.0`). Missing orderbook → gate skipped.
+- `StrategyService.evaluate_scalp` fetches the cached orderbook before `evaluate_sweep_choch` (was: only before `evaluate_vol_cvd_divergence`) and pulls 50 scalp candles instead of 30 to cover ADX warmup.
+- `SCALP_EXPERIMENT_ID` bumped from `scalp_v1_2026_05` to `scalp_v2_filtered_2026_05_05` so v1 vs v2 outcomes stay separable in `ml_setups`. The scalp report script reads the live setting and now filters automatically.
+- Confluence list adds `adx_14=<value>` for traceability.
+
+**Why:** v1 of `scalp_sweep_choch_v1` produced 76 resolved outcomes with `30 SL / 6 TP / 8 BE / 23 timeout` (5:1 SL:TP, worse than the random baseline). Feature analysis showed:
+- LONG SL avg `book_imbalance` 16.0 vs LONG TP avg 1.2 → stacked bids correlated with losses (institutional absorption / spoofing pattern, not real support).
+- SHORT TP avg `book_imbalance` 11.6 vs SHORT SL avg 4.5 → high bid stack + sweep = shorts that worked. Inverts the naive book-imbalance read.
+- Regime breakdown: range/compression/hostile dominated SL outcomes; only `trend_strong` had BE > SL.
+- Median time-to-SL `<1.1 min` for longs, `<0.6 min` for shorts → 0.15% SL stopped on noise inside sub-trend regimes.
+
+**Expected impact:** lower emission rate (sub-trend candles + balanced books no longer fire). Hypothesis: WR moves from ~16% (TP / TP+SL+BE+timeout) toward parity with or above random baseline; minimum bar before any decision is `N≥30` resolved outcomes under the new experiment_id.
+
+**Tests:** `tests/test_scalp_setups.py::TestSweepChochV2Filters` — 9 cases covering ADX unavailable, ADX below min, default-warmup pass-through, long blocked by stacked bids, long passes balanced book, short blocked by balanced book, short passes stacked bids, zero-depth orderbook fall-through, ADX value emitted in confluences. Existing 12 sweep_choch tests updated for new helper signature.
+
+**Operator note:** `python scripts/report_scalp_shadow.py` will report empty for the new experiment_id until shadow outcomes accumulate. Old v1 data stays queryable by overriding `SCALP_EXPERIMENT_ID=scalp_v1_2026_05`.
 
 ### 2026-05-05 — Shadow fallback sizing: replace fixed-notional hack with risk-based formula
 **Files:** `execution_service/shadow_monitor.py`, `tests/test_shadow_monitor_sizing.py`

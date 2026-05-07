@@ -1091,6 +1091,90 @@ class TestEvaluateAll:
         assert StrategyService._shadow_scope_allows(setup) is True
 
 
+class TestEngine1ClusterDedup:
+    """Cluster dedup suppresses repeated emissions of the same
+    impulse-pullback cycle. Background:
+    docs/audits/engine1-maker-fillrate-2026-05-05.md §3.4.
+    """
+
+    @staticmethod
+    def _setup_with_impulse_ts(impulse_ts: int, *, pair: str = "ETH/USDT",
+                               direction: str = "short"):
+        from shared.models import TradeSetup
+        return TradeSetup(
+            timestamp=0, pair=pair, direction=direction,
+            setup_type="engine1_trend_pullback",
+            entry_price=2300.0, sl_price=2350.0,
+            tp1_price=2280.0, tp2_price=2260.0,
+            confluences=[], htf_bias="bearish",
+            ob_timeframe="15m",
+            extra_features={"engine1_impulse_origin_ts": impulse_ts},
+        )
+
+    def test_first_emission_is_not_duplicate_and_caches_ts(self):
+        ds = MagicMock()
+        svc = StrategyService(ds)
+        setup = self._setup_with_impulse_ts(12345)
+        assert svc._engine1_is_cluster_duplicate(setup) is False
+        assert svc._engine1_last_impulse_ts[("ETH/USDT", "short")] == 12345
+
+    def test_repeat_same_impulse_ts_is_duplicate(self):
+        ds = MagicMock()
+        svc = StrategyService(ds)
+        first = self._setup_with_impulse_ts(12345)
+        repeat = self._setup_with_impulse_ts(12345)
+        assert svc._engine1_is_cluster_duplicate(first) is False
+        assert svc._engine1_is_cluster_duplicate(repeat) is True
+        # Cache must not advance on duplicate.
+        assert svc._engine1_last_impulse_ts[("ETH/USDT", "short")] == 12345
+
+    def test_new_impulse_after_old_is_not_duplicate(self):
+        ds = MagicMock()
+        svc = StrategyService(ds)
+        first = self._setup_with_impulse_ts(12345)
+        second_impulse = self._setup_with_impulse_ts(99999)
+        svc._engine1_is_cluster_duplicate(first)
+        assert svc._engine1_is_cluster_duplicate(second_impulse) is False
+        assert svc._engine1_last_impulse_ts[("ETH/USDT", "short")] == 99999
+
+    def test_dedup_is_per_direction(self):
+        ds = MagicMock()
+        svc = StrategyService(ds)
+        short_setup = self._setup_with_impulse_ts(12345, direction="short")
+        long_setup = self._setup_with_impulse_ts(12345, direction="long")
+        svc._engine1_is_cluster_duplicate(short_setup)
+        # Same impulse_ts but different direction is a fresh signal.
+        assert svc._engine1_is_cluster_duplicate(long_setup) is False
+
+    def test_dedup_is_per_pair(self):
+        ds = MagicMock()
+        svc = StrategyService(ds)
+        eth_setup = self._setup_with_impulse_ts(12345, pair="ETH/USDT")
+        btc_setup = self._setup_with_impulse_ts(12345, pair="BTC/USDT")
+        svc._engine1_is_cluster_duplicate(eth_setup)
+        # Same impulse_ts on a different pair is impossible in practice but
+        # the dedup key must still scope per pair to avoid cross-pair masking.
+        assert svc._engine1_is_cluster_duplicate(btc_setup) is False
+
+    def test_missing_impulse_origin_ts_disables_dedup(self):
+        from shared.models import TradeSetup
+        ds = MagicMock()
+        svc = StrategyService(ds)
+        # Old engine version (or a benchmark) that does not populate the field.
+        setup = TradeSetup(
+            timestamp=0, pair="ETH/USDT", direction="short",
+            setup_type="engine1_trend_pullback",
+            entry_price=2300.0, sl_price=2350.0,
+            tp1_price=2280.0, tp2_price=2260.0,
+            confluences=[], htf_bias="bearish",
+            ob_timeframe="15m",
+            extra_features={},
+        )
+        assert svc._engine1_is_cluster_duplicate(setup) is False
+        # Cache must not be populated when the dedup key is unknown.
+        assert ("ETH/USDT", "short") not in svc._engine1_last_impulse_ts
+
+
 # ============================================================
 # Helper: mock DataService with bullish trend
 # ============================================================

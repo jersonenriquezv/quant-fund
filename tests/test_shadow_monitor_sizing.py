@@ -330,3 +330,43 @@ class TestFallbackParityWithPositionSizer:
         )
         assert pos.position_size == pytest.approx(expected_size, rel=1e-9)
         assert pos.leverage == pytest.approx(expected_lev, rel=1e-9)
+
+
+class TestShadowCapitalBasis:
+    """SHADOW_CAPITAL_BASIS toggle controls which capital value drives shadow
+    sizing. fictional → SHADOW_CAPITAL ($500). real → SHADOW_REAL_CAPITAL_USD
+    ($108 default). Helper: settings.effective_shadow_capital.
+    """
+
+    def test_default_basis_is_fictional(self):
+        assert settings.SHADOW_CAPITAL_BASIS == "fictional"
+        assert settings.effective_shadow_capital == settings.SHADOW_CAPITAL
+
+    def test_real_basis_returns_real_capital(self, monkeypatch):
+        monkeypatch.setattr(settings, "SHADOW_CAPITAL_BASIS", "real")
+        assert settings.effective_shadow_capital == settings.SHADOW_REAL_CAPITAL_USD
+
+    def test_real_basis_drives_fallback_sizing(self, monkeypatch):
+        """Position size scales with the active basis, not raw SHADOW_CAPITAL."""
+        monkeypatch.setattr(settings, "SHADOW_CAPITAL_BASIS", "real")
+        mon = _make_monitor()
+        setup = _mk_setup(setup_id="basis_real", entry=1000.0, sl_pct=0.005)
+        accepted = mon.add_shadow(setup, orderbook=None, risk_approval=None)
+        assert accepted is True
+
+        pos = mon._positions[setup.setup_id]
+        risk_amount = settings.SHADOW_REAL_CAPITAL_USD * settings.RISK_PER_TRADE
+        expected_size = risk_amount / abs(setup.entry_price - setup.sl_price)
+        assert pos.position_size == pytest.approx(expected_size, rel=1e-9)
+
+    def test_target_risk_property_uses_basis(self, monkeypatch):
+        """ShadowPosition.target_risk_usd reflects the active basis."""
+        monkeypatch.setattr(settings, "SHADOW_CAPITAL_BASIS", "real")
+        mon = _make_monitor()
+        setup = _mk_setup(setup_id="basis_target_risk", entry=2000.0, sl_pct=0.004)
+        mon.add_shadow(setup, orderbook=None, risk_approval=None)
+        pos = mon._positions[setup.setup_id]
+        assert pos.target_risk_usd == pytest.approx(
+            settings.SHADOW_REAL_CAPITAL_USD * settings.RISK_PER_TRADE,
+            rel=1e-9,
+        )

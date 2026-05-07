@@ -82,6 +82,16 @@ class StrategyService:
         # within SCALP_DEDUP_WINDOW_SECONDS on the same pair.
         self._scalp_last_fire: dict[str, float] = {}
 
+        # Engine 1 cluster dedup: (pair, direction) => impulse_origin_ts of
+        # the last emitted setup. The engine re-evaluates on every confirmed
+        # 5m candle, so the same impulse-pullback cycle would otherwise emit
+        # multiple setups (same entry/SL) until the structure breaks. Same
+        # impulse_origin_ts => same impulse => suppress. Background and
+        # detection: docs/audits/engine1-maker-fillrate-2026-05-05.md §3.4
+        # showed a single 2026-04-29 impulse produced 5 detections in 50 min
+        # all resolving as identical-priced shadow_tp.
+        self._engine1_last_impulse_ts: dict[tuple[str, str], int] = {}
+
         # Per-pair orderbook cache for the scalp path. Avoids hitting OKX
         # REST every candle when only Signal 3 needs spread data. Entries
         # are tuples of (fetched_at_ts, orderbook_dict_or_None).
@@ -107,6 +117,31 @@ class StrategyService:
             return False
 
         return True
+
+    def _engine1_is_cluster_duplicate(self, engine_setup: TradeSetup) -> bool:
+        """Return True if `engine_setup` repeats the last impulse for this
+        (pair, direction). Updates the per-(pair,direction) cache when a
+        new impulse is observed.
+
+        Engine 1 detects on every confirmed 5m bar, so the same
+        impulse-pullback cycle would otherwise emit multiple shadow setups
+        with identical entry/SL until the structure breaks. Dedup key is
+        the impulse's origin timestamp — `extra_features.engine1_impulse_origin_ts`.
+        """
+        impulse_ts = engine_setup.extra_features.get("engine1_impulse_origin_ts")
+        if impulse_ts is None:
+            return False
+        dedup_key = (engine_setup.pair, engine_setup.direction)
+        last_impulse_ts = self._engine1_last_impulse_ts.get(dedup_key)
+        if impulse_ts == last_impulse_ts:
+            logger.debug(
+                f"Engine1 cluster dedup: pair={engine_setup.pair} "
+                f"direction={engine_setup.direction} "
+                f"impulse_ts={impulse_ts} — already emitted, skip"
+            )
+            return True
+        self._engine1_last_impulse_ts[dedup_key] = int(impulse_ts)
+        return False
 
     def evaluate(self, pair: str,
                  trigger_candle: Candle) -> Optional[TradeSetup]:
@@ -461,6 +496,8 @@ class StrategyService:
                             f"direction={engine_setup.direction}"
                         )
                         continue
+                    if self._engine1_is_cluster_duplicate(engine_setup):
+                        continue
                     logger.info(
                         f"Engine1 Trend-Pullback found: pair={pair} "
                         f"direction={engine_setup.direction} "
@@ -586,7 +623,9 @@ class StrategyService:
             return None
 
         scalp_tf = settings.SCALP_TIMEFRAME
-        candles = self._data.get_candles(pair, scalp_tf, count=30)
+        # 50 candles: ADX(14) Wilder smoothing needs ~42 (period*3) and the
+        # sweep_choch lookback needs 22; 50 covers both with margin.
+        candles = self._data.get_candles(pair, scalp_tf, count=50)
         if not candles:
             return None
         market_snapshot = self._data.get_market_snapshot(pair)
@@ -598,18 +637,14 @@ class StrategyService:
             self._scalp_last_fire[pair] = now
             return setup
 
-        setup = self._scalp_setups.evaluate_sweep_choch(
-            pair, candles, market_snapshot,
-        )
-        if setup is not None:
-            self._scalp_last_fire[pair] = now
-            return setup
-
-        # Signal 3 needs orderbook spread for the chaos filter. Fetch lazily
-        # AND cached per-pair so signals 1-2 don't pay the REST roundtrip
-        # when they would have fired first, and consecutive candles share
-        # the same snapshot for SCALP_ORDERBOOK_CACHE_TTL_SECONDS.
+        # Cached orderbook — used by vol_cvd (spread chaos gate). Cached
+        # per-pair so the REST call is paid at most once per
+        # SCALP_ORDERBOOK_CACHE_TTL_SECONDS.
         orderbook = self._get_cached_orderbook(pair, now)
+        # scalp_sweep_choch_v1 killed 2026-05-07: WR 7.7% under v3-clean
+        # (1 TP / 12 SL / 3 BE / 14 TS, N=30) vs 30% random baseline.
+        # v2 fade-pattern filters did not rescue. Detector retained for
+        # historical replay; not invoked in live shadow path.
         setup = self._scalp_setups.evaluate_vol_cvd_divergence(
             pair, candles, market_snapshot, orderbook=orderbook,
         )

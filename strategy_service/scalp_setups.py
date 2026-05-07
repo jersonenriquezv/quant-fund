@@ -1,12 +1,13 @@
 """
-Scalp Shadow Signals — v1 experiment.
+Scalp Shadow Signals — v1 detectors with v2 filter overlay (2026-05-05).
 
 Microstructural scalping signals tested in shadow mode only. No live execution.
-Plan: docs/plans/scalp_shadow_v1.md.
+Plan: docs/plans/scalp_shadow_v1.md. SYSTEM_BASELINE §"Scalp Shadow v1".
 
 Five candidates (4 signals + control baseline):
 - scalp_liq_reclaim_v1     — OI drop + wick reclaim
 - scalp_sweep_choch_v1     — sweep of 20-bar high/low + 1m CHoCH
+                             (v2 filters: ADX(14) + book_imbalance fade gate)
 - scalp_vol_cvd_div_v1     — 3-sigma volume + CVD/price divergence
 - scalp_funding_extreme_v1 — funding extreme + flat price last 30min
 - scalp_random_baseline_v1 — random control, frequency-matched
@@ -24,16 +25,27 @@ from typing import Optional
 
 from config.settings import settings
 from shared.logger import setup_logger
+from shared.ml_features import _compute_adx
 from shared.models import Candle, MarketSnapshot, TradeSetup
 
 logger = setup_logger("strategy_scalp_setups")
 
 # Wick reclaim threshold — minimum wick size as fraction of close price.
-_LIQ_RECLAIM_WICK_THRESHOLD = 0.005  # 0.5%
+_LIQ_RECLAIM_WICK_THRESHOLD = 0.003  # 0.3% — was 0.5% pre-2026-05-05; relaxed
+                                    # after silent-detector audit showed only
+                                    # 2/72 historical OI flushes aligned with
+                                    # the prior gate set. See
+                                    # docs/audits/scalp-silent-detectors-2026-05-05.md.
 # Lookback bars (excluding the trigger candle itself) for the inside-range check.
 _LIQ_RECLAIM_LOOKBACK_BARS = 20
 # Max age of OI flush events (ms) considered fresh enough to anchor a reclaim.
-_LIQ_RECLAIM_FLUSH_MAX_AGE_MS = 5 * 60 * 1000
+_LIQ_RECLAIM_FLUSH_MAX_AGE_MS = 10 * 60 * 1000  # was 5 min pre-2026-05-05;
+                                                # extended to better cover the
+                                                # window between an OI flush
+                                                # snapshot (5-min poll cadence)
+                                                # and the subsequent 5m candle
+                                                # close that completes the
+                                                # wick-reclaim pattern.
 
 # Sweep + CHoCH:
 # Lookback bars for prior high/low envelope (excluding sweep + confirm candles).
@@ -56,7 +68,11 @@ _VOL_CVD_MAX_SPREAD = 0.0002
 # Funding extreme + flat price:
 # Min |funding_rate| (8h convention, fraction not pct) to qualify as extreme.
 # 0.0005 = 0.05% per 8h period (~0.15%/day annualized ~55%).
-_FUNDING_RATE_THRESHOLD = 0.0005
+_FUNDING_RATE_THRESHOLD = 0.0002  # 0.02% — was 0.05% pre-2026-05-05; lowered
+                                  # because the prior threshold was never
+                                  # crossed in 30 days of OKX data (max
+                                  # observed |rate| = 0.0427%). Audit:
+                                  # docs/audits/scalp-silent-detectors-2026-05-05.md.
 # Number of bars to scan for the flat-price condition. Tuned for SCALP_TIMEFRAME=5m
 # (6 * 5min = 30min). Bump when 1m fetcher lands.
 _FUNDING_FLAT_LOOKBACK_BARS = 6
@@ -213,6 +229,7 @@ class ScalpSetupEvaluator:
         pair: str,
         candles: list[Candle],
         snapshot: Optional[MarketSnapshot],
+        orderbook: Optional[dict] = None,
     ) -> Optional[TradeSetup]:
         """Signal 2 — Sweep + CHoCH (close-back-inside).
 
@@ -223,6 +240,17 @@ class ScalpSetupEvaluator:
         - Confirm candle (`candles[-1]`): closes back inside the prior
           envelope and has a body >= `_SWEEP_CHOCH_MIN_BODY_RATIO` of its
           full range. The body direction must reject the sweep.
+
+        v2 fade-pattern filters (added 2026-05-05 after 76-outcome v1 review):
+        - ADX(14) on scalp timeframe must be >= SCALP_SWEEP_CHOCH_MIN_ADX.
+          Sub-trend regimes (range/compression/hostile) dominated v1 SLs.
+        - Orderbook imbalance gate when orderbook is available:
+            long  → book_imbalance < SCALP_SWEEP_CHOCH_BOOK_IMB_LONG_MAX
+            short → book_imbalance > SCALP_SWEEP_CHOCH_BOOK_IMB_SHORT_MIN
+          v1 data: long SL avg imb 16.0 vs long TP avg 1.2; short TP avg 11.6
+          vs short SL avg 4.5. Stacked bids that get swept = institutional
+          absorption, not real support — the sweep is the absorption signature.
+        Orderbook missing → skip imbalance gate (avoid blocking on stale data).
 
         Direction: counter to the sweep (high swept => short, low swept => long).
         TP/SL/time_stop come from settings.SCALP_SIGNAL_PARAMS.
@@ -282,6 +310,46 @@ class ScalpSetupEvaluator:
         if body_ratio < _SWEEP_CHOCH_MIN_BODY_RATIO:
             return None
 
+        # v2 filter — ADX trend gate. Reject sub-trend regimes where the
+        # 0.15% SL gets stopped on noise before the thesis develops.
+        adx_result = _compute_adx(candles, period=14)
+        if adx_result is None:
+            # Insufficient candles for ADX warmup — block emission rather
+            # than emit blind in a setup with a known noise problem.
+            logger.debug(
+                f"sweep_choch {pair}: ADX unavailable ({len(candles)} candles), skip"
+            )
+            return None
+        adx_value = adx_result[0]
+        if adx_value < settings.SCALP_SWEEP_CHOCH_MIN_ADX:
+            logger.debug(
+                f"sweep_choch {pair} {direction}: ADX {adx_value:.1f} < "
+                f"{settings.SCALP_SWEEP_CHOCH_MIN_ADX} — sub-trend regime, skip"
+            )
+            return None
+
+        # v2 filter — orderbook imbalance fade gate. When orderbook is
+        # missing fall through (do not block on stale data).
+        if orderbook is not None:
+            depth_bid = orderbook.get("depth_bid_usd") or 0.0
+            depth_ask = orderbook.get("depth_ask_usd") or 0.0
+            if depth_bid > 0 and depth_ask > 0:
+                imb = depth_bid / depth_ask
+                long_max = settings.SCALP_SWEEP_CHOCH_BOOK_IMB_LONG_MAX
+                short_min = settings.SCALP_SWEEP_CHOCH_BOOK_IMB_SHORT_MIN
+                if direction == "long" and imb >= long_max:
+                    logger.debug(
+                        f"sweep_choch {pair} long: book_imb {imb:.2f} >= "
+                        f"{long_max} — bid stacking, fade pattern, skip"
+                    )
+                    return None
+                if direction == "short" and imb <= short_min:
+                    logger.debug(
+                        f"sweep_choch {pair} short: book_imb {imb:.2f} <= "
+                        f"{short_min} — no bid stack to fade, skip"
+                    )
+                    return None
+
         tp_pct = params["tp_pct"] / 100.0
         sl_pct = params["sl_pct"] / 100.0
         entry = confirm.close
@@ -301,6 +369,7 @@ class ScalpSetupEvaluator:
             f"body_ratio={body_ratio:.2f}",
             f"prior_high={prior_high:.4f}",
             f"prior_low={prior_low:.4f}",
+            f"adx_14={adx_value:.1f}",
         ]
 
         logger.info(

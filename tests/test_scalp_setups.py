@@ -258,7 +258,7 @@ class TestWickReclaim:
             )
         assert setup is None
         # Sanity check on threshold constant — keeps the test honest if it's tuned.
-        assert _LIQ_RECLAIM_WICK_THRESHOLD == 0.005
+        assert _LIQ_RECLAIM_WICK_THRESHOLD == 0.003
 
     def test_no_signal_when_close_breaks_above_range(self):
         evaluator = ScalpSetupEvaluator()
@@ -318,7 +318,7 @@ class TestNoLookahead:
         )
         future_last = _make_candle(
             ts_ms=21 * 60_000,
-            o=100.0, h=100.4, l=99.6, c=100.1,  # tiny wicks — should not fire
+            o=100.0, h=100.15, l=99.85, c=100.05,  # tiny wicks — should not fire
         )
         future[-1] = future_last
         with _enable_scalp_shadow():
@@ -367,16 +367,36 @@ def _sweep_choch_history(
     base_price: float = 100.0,
     prior_high: float = 100.5,
     prior_low: float = 99.5,
+    adx_warmup: int = 30,
 ) -> list[Candle]:
-    """Return 22 confirmed 5m candles: 20 prior + 1 sweep + 1 confirm slot.
+    """Return `adx_warmup + 22` confirmed 5m candles.
 
-    The slots at indices [-2] and [-1] are placeholders that callers replace
-    with the specific sweep/confirm shape they want to test.
+    Layout:
+    - First `adx_warmup` candles trend upward in tiny steps so ADX(14)
+      computed on the full series exceeds the v2 SCALP_SWEEP_CHOCH_MIN_ADX
+      gate (default 18). Without warmup the ADX helper returns None and
+      the v2 filter blocks emission. Set `adx_warmup=0` to test the
+      "ADX unavailable" path explicitly.
+    - Next 20 candles are the prior-envelope window used by the detector.
+    - Last 2 candles are sweep + confirm placeholders that callers
+      overwrite with the specific shape they want to test.
     """
     candles: list[Candle] = []
-    for i in range(_SWEEP_CHOCH_LOOKBACK_BARS):
+    # ADX warmup — gentle uptrend, each step +0.05 close, +DM dominant,
+    # -DM ~0. With Wilder smoothing this yields ADX well above 18.
+    for i in range(adx_warmup):
+        p = base_price - (adx_warmup - i) * 0.05
         candles.append(_make_candle(
             ts_ms=i * 60_000,
+            o=p,
+            h=p + 0.05,
+            l=p - 0.02,
+            c=p + 0.02,
+        ))
+    base_offset = adx_warmup
+    for i in range(_SWEEP_CHOCH_LOOKBACK_BARS):
+        candles.append(_make_candle(
+            ts_ms=(base_offset + i) * 60_000,
             o=base_price - 0.1,
             h=prior_high,
             l=prior_low,
@@ -384,11 +404,11 @@ def _sweep_choch_history(
         ))
     # Sweep + confirm slots — populated per test.
     candles.append(_make_candle(
-        ts_ms=_SWEEP_CHOCH_LOOKBACK_BARS * 60_000,
+        ts_ms=(base_offset + _SWEEP_CHOCH_LOOKBACK_BARS) * 60_000,
         o=base_price, h=base_price + 0.1, l=base_price - 0.1, c=base_price,
     ))
     candles.append(_make_candle(
-        ts_ms=(_SWEEP_CHOCH_LOOKBACK_BARS + 1) * 60_000,
+        ts_ms=(base_offset + _SWEEP_CHOCH_LOOKBACK_BARS + 1) * 60_000,
         o=base_price, h=base_price + 0.1, l=base_price - 0.1, c=base_price,
     ))
     return candles
@@ -405,7 +425,9 @@ class TestSweepChochGate:
 
     def test_returns_none_with_too_few_candles(self):
         evaluator = ScalpSetupEvaluator()
-        candles = _sweep_choch_history()[:-1]  # 21 bars (need 22)
+        # adx_warmup=0 so the only candles present are the 22-bar envelope;
+        # dropping one drops below the minimum required by the detector.
+        candles = _sweep_choch_history(adx_warmup=0)[:-1]  # 21 bars (need 22)
         with _enable_scalp_shadow():
             result = evaluator.evaluate_sweep_choch("BTC/USDT", candles, None)
         assert result is None
@@ -563,6 +585,137 @@ class TestSweepChochNoLookahead:
         with _enable_scalp_shadow():
             shifted = evaluator.evaluate_sweep_choch("BTC/USDT", candles_plus, None)
         assert shifted is None
+
+
+class TestSweepChochV2Filters:
+    """v2 fade-pattern filters added 2026-05-05 — ADX trend gate +
+    book_imbalance gate. Each test sets up a SHORT pattern via the
+    high-sweep + bearish-confirm shape used by TestSweepChochSignals.
+    """
+
+    @staticmethod
+    def _short_pattern_candles(adx_warmup: int = 30) -> list[Candle]:
+        candles = _sweep_choch_history(adx_warmup=adx_warmup)
+        candles[-2] = _make_candle(
+            ts_ms=20 * 60_000,
+            o=100.4, h=101.0, l=100.0, c=100.6,
+        )
+        candles[-1] = _make_candle(
+            ts_ms=21 * 60_000,
+            o=100.4, h=100.5, l=99.7, c=99.8,
+        )
+        return candles
+
+    @staticmethod
+    def _long_pattern_candles(adx_warmup: int = 30) -> list[Candle]:
+        candles = _sweep_choch_history(adx_warmup=adx_warmup)
+        candles[-2] = _make_candle(
+            ts_ms=20 * 60_000,
+            o=99.6, h=100.0, l=99.0, c=99.4,
+        )
+        candles[-1] = _make_candle(
+            ts_ms=21 * 60_000,
+            o=99.6, h=100.3, l=99.5, c=100.2,
+        )
+        return candles
+
+    def test_blocks_when_adx_unavailable(self):
+        """Below ADX warmup window — helper returns None and detector blocks."""
+        evaluator = ScalpSetupEvaluator()
+        # 22 candles: enough for sweep_choch shape, NOT enough for ADX(14).
+        candles = self._short_pattern_candles(adx_warmup=0)
+        with _enable_scalp_shadow():
+            setup = evaluator.evaluate_sweep_choch("BTC/USDT", candles, None)
+        assert setup is None
+
+    def test_blocks_when_adx_below_min(self):
+        """ADX present but under threshold — sub-trend regime, no emit."""
+        evaluator = ScalpSetupEvaluator()
+        candles = self._short_pattern_candles(adx_warmup=30)
+        # Force the gate to bite by raising the min above any computable ADX.
+        with _enable_scalp_shadow(), \
+             patch("strategy_service.scalp_setups.settings.SCALP_SWEEP_CHOCH_MIN_ADX", 999.0):
+            setup = evaluator.evaluate_sweep_choch("BTC/USDT", candles, None)
+        assert setup is None
+
+    def test_emits_with_default_warmup_and_no_orderbook(self):
+        """Default helper produces ADX > 18; without orderbook, imbalance gate
+        is skipped and emission proceeds."""
+        evaluator = ScalpSetupEvaluator()
+        candles = self._short_pattern_candles()
+        with _enable_scalp_shadow():
+            setup = evaluator.evaluate_sweep_choch("BTC/USDT", candles, None)
+        assert setup is not None
+        assert setup.direction == "short"
+
+    def test_long_blocked_by_high_book_imbalance(self):
+        """Long with stacked-bid book (imb >= long_max) → fade pattern,
+        skip emission."""
+        evaluator = ScalpSetupEvaluator()
+        candles = self._long_pattern_candles()
+        # imb = 10000 / 1000 = 10.0 >> long_max=3.0
+        orderbook = {"depth_bid_usd": 10000.0, "depth_ask_usd": 1000.0}
+        with _enable_scalp_shadow():
+            setup = evaluator.evaluate_sweep_choch(
+                "BTC/USDT", candles, None, orderbook=orderbook,
+            )
+        assert setup is None
+
+    def test_long_passes_with_balanced_book(self):
+        evaluator = ScalpSetupEvaluator()
+        candles = self._long_pattern_candles()
+        # imb = 1000 / 1100 = 0.91 < long_max=3.0
+        orderbook = {"depth_bid_usd": 1000.0, "depth_ask_usd": 1100.0}
+        with _enable_scalp_shadow():
+            setup = evaluator.evaluate_sweep_choch(
+                "BTC/USDT", candles, None, orderbook=orderbook,
+            )
+        assert setup is not None
+        assert setup.direction == "long"
+
+    def test_short_blocked_by_balanced_book(self):
+        """Short needs stacked-bid book to fade. Without it, skip."""
+        evaluator = ScalpSetupEvaluator()
+        candles = self._short_pattern_candles()
+        # imb = 1000 / 1100 = 0.91 << short_min=3.0
+        orderbook = {"depth_bid_usd": 1000.0, "depth_ask_usd": 1100.0}
+        with _enable_scalp_shadow():
+            setup = evaluator.evaluate_sweep_choch(
+                "BTC/USDT", candles, None, orderbook=orderbook,
+            )
+        assert setup is None
+
+    def test_short_passes_with_high_book_imbalance(self):
+        evaluator = ScalpSetupEvaluator()
+        candles = self._short_pattern_candles()
+        # imb = 9000 / 1000 = 9.0 > short_min=3.0
+        orderbook = {"depth_bid_usd": 9000.0, "depth_ask_usd": 1000.0}
+        with _enable_scalp_shadow():
+            setup = evaluator.evaluate_sweep_choch(
+                "BTC/USDT", candles, None, orderbook=orderbook,
+            )
+        assert setup is not None
+        assert setup.direction == "short"
+
+    def test_orderbook_with_zero_depth_falls_through(self):
+        """Malformed orderbook (zero ask depth) → imbalance gate skipped,
+        emission depends on other filters only."""
+        evaluator = ScalpSetupEvaluator()
+        candles = self._short_pattern_candles()
+        orderbook = {"depth_bid_usd": 5000.0, "depth_ask_usd": 0.0}
+        with _enable_scalp_shadow():
+            setup = evaluator.evaluate_sweep_choch(
+                "BTC/USDT", candles, None, orderbook=orderbook,
+            )
+        assert setup is not None
+
+    def test_adx_value_emitted_in_confluences(self):
+        evaluator = ScalpSetupEvaluator()
+        candles = self._short_pattern_candles()
+        with _enable_scalp_shadow():
+            setup = evaluator.evaluate_sweep_choch("BTC/USDT", candles, None)
+        assert setup is not None
+        assert any(c.startswith("adx_14=") for c in setup.confluences)
 
 
 # ============================================================
@@ -898,12 +1051,12 @@ class TestFundingExtremeFilters:
         candles = _flat_window(
             base_price=100.0, count=_FUNDING_FLAT_LOOKBACK_BARS, range_pct=0.001,
         )
-        # 0.0003 < 0.0005 threshold.
-        snap = _funding_snapshot(rate=0.0003)
+        # 0.00015 < 0.0002 threshold.
+        snap = _funding_snapshot(rate=0.00015)
         with _enable_scalp_shadow():
             result = evaluator.evaluate_funding_extreme("BTC/USDT", candles, snap)
         assert result is None
-        assert _FUNDING_RATE_THRESHOLD == 0.0005
+        assert _FUNDING_RATE_THRESHOLD == 0.0002
 
     def test_no_signal_when_range_too_wide(self):
         evaluator = ScalpSetupEvaluator()
