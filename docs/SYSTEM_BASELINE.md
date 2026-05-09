@@ -357,7 +357,7 @@ Independent shadow-only experiment for microstructural scalping signals, separat
 - **experiment_id:** `scalp_v2_filtered_2026_05_05` (env-overridable via `SCALP_EXPERIMENT_ID`). Bumped from `scalp_v1_2026_05` after v1 review of `scalp_sweep_choch_v1` (76 outcomes, 5:1 SL:TP) wired the v2 fade-pattern filters described below. Old v1 rows stay queryable under the previous experiment_id.
 - **Master switch:** `SCALP_SHADOW_ENABLED` (default `false`)
 - **Timeframe:** `SCALP_TIMEFRAME` (default `5m`; bumps to `1m` once a fetcher commit lands)
-- **Setup types:** `scalp_liq_reclaim_v1`, `scalp_sweep_choch_v1`, `scalp_vol_cvd_div_v1`, `scalp_funding_extreme_v1`, `scalp_random_baseline_v1` — all routed through `SHADOW_MODE_SETUPS`, zero live execution.
+- **Setup types:** `scalp_liq_reclaim_v1`, `scalp_sweep_choch_v1` (killed 2026-05-07), `scalp_vol_cvd_div_v1`, `scalp_funding_extreme_v1` (killed 2026-05-09), `scalp_random_baseline_v1` — all routed through `SHADOW_MODE_SETUPS`, zero live execution. Surviving in pipeline: `liq_reclaim`, `vol_cvd_div`, `random_baseline`.
 - **`scalp_sweep_choch_v1` v2 filters (added 2026-05-05):**
   - **ADX(14) gate:** ADX on `SCALP_TIMEFRAME` must be `>= SCALP_SWEEP_CHOCH_MIN_ADX` (default `18.0`). When the candle window is too short for ADX warmup the detector also blocks rather than emit blind. Sub-trend regimes dominated v1 SLs.
   - **Book imbalance gate (fade pattern):** when an orderbook snapshot is available, `book_imbalance_ratio = depth_bid_usd / depth_ask_usd`:
@@ -375,6 +375,19 @@ Independent shadow-only experiment for microstructural scalping signals, separat
 ---
 
 ## 8. Changelog
+
+### 2026-05-09 — Kill `scalp_funding_extreme_v1` detector
+**Files:** `strategy_service/service.py`, `config/settings.py`, `docs/SYSTEM_BASELINE.md`
+
+**What changed:**
+- `evaluate_scalp` no longer invokes `evaluate_funding_extreme`. Detector code retained in `strategy_service/scalp_setups.py` for historical replay.
+- `SHADOW_MODE_SETUPS` entry commented out. `SCALP_SETUP_TYPES` retained intact for historical queries.
+
+**Why:** 0 emissions in 4 days under `scalp_v3_clean_2026_05_06` despite the 2026-05-05 calibration that lowered `_FUNDING_RATE_THRESHOLD` to 0.0002 (0.02%, p99 of OKX 30-day funding rate distribution per `docs/audits/scalp-silent-detectors-2026-05-05.md`). Audit predicted 1–3 fires/30d post-calibration; observed rate confirms OKX SWAP funding is structurally capped tighter than the Bitmex/Binance regime where the original "extreme spike" thesis was designed. Continuing the experiment yields no data on a multi-month timeline. Future redesign path: replace point-in-time threshold with a "persistent funding" detector (rate sustained above threshold for X hours).
+
+**Operator note:** Historical rows queryable via `setup_type='scalp_funding_extreme_v1'`. The 3 surviving scalp signals (`liq_reclaim`, `vol_cvd_div`, `random_baseline`) keep collecting normally. `liq_reclaim` and `vol_cvd_div` review point: 2026-06-08 — kill if either has <10 emissions by then.
+
+**Tests:** 128 pass (`test_scalp_setups`, `test_strategy_integration`, `test_main_pipeline`).
 
 ### 2026-05-07 — Engine 1 v1c: relax pair filter to all TRADING_PAIRS (short only)
 **Files:** `config/settings.py`, `strategy_service/engines/benchmarks.py`, `docs/SYSTEM_BASELINE.md`. Closes issue #22.
