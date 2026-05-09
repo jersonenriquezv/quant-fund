@@ -652,12 +652,14 @@ class StrategyService:
             self._scalp_last_fire[pair] = now
             return setup
 
-        setup = self._scalp_setups.evaluate_funding_extreme(
-            pair, candles, market_snapshot,
-        )
-        if setup is not None:
-            self._scalp_last_fire[pair] = now
-            return setup
+        # scalp_funding_extreme_v1 killed 2026-05-09: 0 emissions in 4 days
+        # under scalp_v3_clean_2026_05_06 despite threshold already at p99 of
+        # OKX 30d funding-rate distribution (audit
+        # docs/audits/scalp-silent-detectors-2026-05-05.md). OKX SWAP funding
+        # is structurally capped tighter than Bitmex/Binance — original
+        # detector thesis ("extreme spike") does not apply to this venue.
+        # Detector retained for historical replay; not invoked in live shadow
+        # path. Future redesign: "persistent funding" (rate sustained X hours).
 
         # Random control — frequency-matched baseline. Sits last so a real
         # signal always wins the slot when both would fire on the same candle.

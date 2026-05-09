@@ -900,7 +900,12 @@ class Settings:
         # scalp_v3_clean_2026_05_06 (N=30) vs 30% random baseline. Detector
         # call removed in strategy_service/service.py.evaluate_scalp.
         "scalp_vol_cvd_div_v1",
-        "scalp_funding_extreme_v1",
+        # "scalp_funding_extreme_v1" — killed 2026-05-09: 0 emissions in 4
+        # days under scalp_v3_clean_2026_05_06 despite threshold already at
+        # p99 of OKX 30d funding-rate distribution. OKX SWAP funding is
+        # capped tighter than Bitmex/Binance; original "extreme spike"
+        # thesis does not apply to this venue. Detector call removed in
+        # strategy_service/service.py.evaluate_scalp.
         "scalp_random_baseline_v1",
         # "setup_g" — removed 2026-04-16: 0/4 WR. Breaker blocks too weak.
         # "setup_c" — removed 2026-04-13: no OB anchor. Signal is now a confluence booster.
