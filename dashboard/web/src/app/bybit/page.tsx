@@ -3,7 +3,14 @@
 import { useEffect, useState, useCallback, useMemo } from "react";
 import Link from "next/link";
 import { fetchApi } from "@/lib/api";
-import type { BybitAnnotation, BybitSummary, BybitEquityPoint, BybitPendingOrder } from "@/lib/api";
+import type { BybitAnnotation, BybitSummary, BybitEquityPoint, BybitPendingOrder, BybitGradeStats, BybitGradeStatsRow } from "@/lib/api";
+
+const GRADE_COLORS: Record<string, string> = {
+  A: "#b2fd02",
+  B: "#9ca3af",
+  C: "#f59e0b",
+  D: "#ff4d4d",
+};
 
 function fmt(n: number | null | undefined, d: number = 2): string {
   if (n == null || Number.isNaN(n)) return "—";
@@ -31,6 +38,7 @@ export default function BybitLogPage() {
   const [pending, setPending] = useState<BybitPendingOrder[]>([]);
   const [summary, setSummary] = useState<BybitSummary | null>(null);
   const [equity, setEquity] = useState<BybitEquityPoint[]>([]);
+  const [gradeStats, setGradeStats] = useState<BybitGradeStatsRow[]>([]);
   const [filter, setFilter] = useState<string>("all");
   const [days, setDays] = useState(30);
   const [loading, setLoading] = useState(true);
@@ -40,11 +48,12 @@ export default function BybitLogPage() {
     try {
       const status = filter === "open" || filter === "closed" ? filter : undefined;
       const qs = status ? `?status=${status}&limit=100` : "?limit=100";
-      const [list, sum, eq, pend] = await Promise.all([
+      const [list, sum, eq, pend, gs] = await Promise.all([
         fetchApi<BybitAnnotation[]>(`/bybit/annotations${qs}`),
         fetchApi<BybitSummary>(`/bybit/summary?days=${days}`),
         fetchApi<{ points: BybitEquityPoint[] }>(`/bybit/equity-curve?days=${days}`),
         fetchApi<BybitPendingOrder[]>(`/bybit/pending?status=pending&limit=50`),
+        fetchApi<BybitGradeStats>(`/bybit/grade-stats?days=${days}`),
       ]);
       let final = list;
       if (filter === "unannotated") final = list.filter((t) => !t.thesis_pre);
@@ -52,6 +61,7 @@ export default function BybitLogPage() {
       setSummary(sum);
       setEquity(eq.points);
       setPending(pend);
+      setGradeStats(gs.by_grade);
     } finally {
       setLoading(false);
     }
@@ -137,6 +147,14 @@ export default function BybitLogPage() {
           </div>
         </div>
         <EquityChart points={equity} />
+      </section>
+
+      <section className="grade-section">
+        <div className="section-head">
+          <span className="eyebrow">DECISION QUALITY — BY AUTO GRADE</span>
+          <span className="grade-hint">closed trades · {days}D</span>
+        </div>
+        <GradeStatsTable rows={gradeStats} />
       </section>
 
       <section className="log-section">
@@ -253,10 +271,17 @@ export default function BybitLogPage() {
           margin: 24px auto 0 auto;
         }
 
-        .curve-section, .log-section, .pending-section {
+        .curve-section, .log-section, .pending-section, .grade-section {
           max-width: 1400px;
           margin: 0 auto;
           padding: 40px 32px;
+        }
+        .grade-section { padding-top: 24px; padding-bottom: 24px; }
+        .grade-hint {
+          font-size: 10px;
+          letter-spacing: 0.15em;
+          color: rgba(255,255,255,0.35);
+          font-family: "JetBrains Mono", monospace;
         }
         .pending-section { padding-top: 32px; padding-bottom: 8px; }
         .pending-list { border-top: 1px solid rgba(255,255,255,0.08); }
@@ -307,7 +332,7 @@ export default function BybitLogPage() {
           .log-header { padding: 28px 16px 16px; }
           .log-subtitle { font-size: 16px; }
           .hero-stats { grid-template-columns: repeat(2, 1fr); }
-          .curve-section, .log-section { padding: 28px 16px; }
+          .curve-section, .log-section, .grade-section { padding: 28px 16px; }
         }
       `}</style>
     </div>
@@ -730,6 +755,145 @@ function PendingRow({ p }: { p: BybitPendingOrder }) {
         }
       `}</style>
     </Link>
+  );
+}
+
+function GradeStatsTable({ rows }: { rows: BybitGradeStatsRow[] }) {
+  if (!rows.length) {
+    return (
+      <div className="gs-empty">
+        — no closed trades graded in this window —
+      </div>
+    );
+  }
+  const order = ["A", "B", "C", "D"];
+  const sorted = [...rows].sort((a, b) => order.indexOf(a.auto_grade) - order.indexOf(b.auto_grade));
+  return (
+    <div className="gs-wrap">
+      <table className="gs-tbl">
+        <thead>
+          <tr>
+            <th className="gs-grade-col">GRADE</th>
+            <th className="num">N</th>
+            <th className="num">WR</th>
+            <th className="num">PF</th>
+            <th className="num">AVG $</th>
+            <th className="num">AVG %</th>
+            <th className="num">NET $</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((r) => {
+            const color = GRADE_COLORS[r.auto_grade] || "#fff";
+            const netCls = r.total_pnl_usd >= 0 ? "pos" : "neg";
+            return (
+              <tr key={r.auto_grade}>
+                <td className="gs-grade-cell">
+                  <span className="g-pill" style={{ color, borderColor: color, background: `${color}1a` }}>{r.auto_grade}</span>
+                </td>
+                <td className="num">{r.n}</td>
+                <td className="num">{r.win_rate_pct != null ? `${r.win_rate_pct.toFixed(1)}%` : "—"}</td>
+                <td className="num">{r.profit_factor != null ? r.profit_factor.toFixed(2) : "—"}</td>
+                <td className={`num ${r.avg_pnl_usd >= 0 ? "pos" : "neg"}`}>{r.avg_pnl_usd >= 0 ? "+" : ""}${fmt(r.avg_pnl_usd)}</td>
+                <td className={`num ${r.avg_pnl_pct >= 0 ? "pos" : "neg"}`}>{r.avg_pnl_pct >= 0 ? "+" : ""}{r.avg_pnl_pct.toFixed(2)}%</td>
+                <td className={`num ${netCls}`}>{r.total_pnl_usd >= 0 ? "+" : ""}${fmt(r.total_pnl_usd)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <p className="gs-foot">
+        Auto-grade scores <strong>decision quality</strong> (confluences at entry) — not outcome.
+        If <code>D</code> trades outperform <code>A</code>, your rubric is mis-calibrated for current regime,
+        or the auto-classifier is missing structural signals you actually use.
+      </p>
+      <style jsx>{`
+        .gs-empty {
+          padding: 40px 0;
+          text-align: center;
+          color: rgba(255,255,255,0.35);
+          font-size: 12px;
+          letter-spacing: 0.18em;
+          border-top: 1px solid rgba(255,255,255,0.08);
+          border-bottom: 1px solid rgba(255,255,255,0.08);
+        }
+        .gs-wrap {
+          border-top: 1px solid rgba(255,255,255,0.08);
+          border-bottom: 1px solid rgba(255,255,255,0.08);
+        }
+        .gs-tbl {
+          width: 100%;
+          border-collapse: collapse;
+          font-family: "JetBrains Mono", monospace;
+          font-size: 12px;
+        }
+        .gs-tbl th {
+          text-align: left;
+          font-size: 9px;
+          letter-spacing: 0.18em;
+          color: rgba(255,255,255,0.4);
+          font-weight: 600;
+          padding: 14px 14px;
+          border-bottom: 1px solid rgba(255,255,255,0.08);
+        }
+        .gs-tbl th.num { text-align: right; }
+        .gs-tbl td {
+          padding: 14px 14px;
+          border-bottom: 1px solid rgba(255,255,255,0.04);
+        }
+        .gs-tbl td.num {
+          text-align: right;
+          font-variant-numeric: tabular-nums;
+          color: rgba(255,255,255,0.88);
+        }
+        .gs-tbl td.num.pos { color: #b2fd02; }
+        .gs-tbl td.num.neg { color: #ff4d4d; }
+        .gs-tbl tr:hover td { background: rgba(255,255,255,0.02); }
+        .gs-grade-col { width: 80px; }
+        .gs-grade-cell { padding-left: 14px !important; }
+        .g-pill {
+          display: inline-block;
+          font-family: "Fraunces", serif;
+          font-weight: 700;
+          font-size: 18px;
+          padding: 2px 12px;
+          border: 1px solid;
+          border-radius: 2px;
+          min-width: 28px;
+          text-align: center;
+        }
+        .gs-foot {
+          margin: 14px 0 0 0;
+          padding: 0 4px;
+          font-family: "Fraunces", Georgia, serif;
+          font-style: italic;
+          font-weight: 300;
+          font-size: 13px;
+          line-height: 1.5;
+          color: rgba(255,255,255,0.55);
+        }
+        .gs-foot strong {
+          font-style: normal;
+          font-weight: 500;
+          color: rgba(255,255,255,0.85);
+        }
+        .gs-foot code {
+          font-family: "JetBrains Mono", monospace;
+          font-size: 11px;
+          padding: 0 4px;
+          color: rgba(255,255,255,0.75);
+          background: rgba(255,255,255,0.06);
+          border-radius: 2px;
+        }
+        @media (max-width: 639px) {
+          .gs-tbl { font-size: 11px; }
+          .gs-tbl th, .gs-tbl td { padding: 10px 8px; }
+          .gs-tbl th.hide-mob, .gs-tbl td.hide-mob { display: none; }
+          .g-pill { font-size: 15px; padding: 2px 8px; }
+          .gs-foot { font-size: 12px; }
+        }
+      `}</style>
+    </div>
   );
 }
 

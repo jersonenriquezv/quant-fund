@@ -1,0 +1,13 @@
+[Unit]
+Description=Quant Fund — hourly signal scanner (07:00–22:00 local)
+Documentation=file:///home/jer/quant-fund/docs/SYSTEM_BASELINE.md
+
+[Timer]
+# Runs at the top of every hour between 07:00 and 22:00 local time.
+# Outside that window the trader is asleep or off the desk; alerts wait.
+OnCalendar=*-*-* 07..22:00:00
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

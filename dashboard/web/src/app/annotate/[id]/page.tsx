@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, use } from "react";
 import Link from "next/link";
 import { fetchApi, patchApi } from "@/lib/api";
-import type { BybitAnnotation, BybitAnnotationPatch } from "@/lib/api";
+import type { BybitAnnotation, BybitAnnotationPatch, BybitGradeExplain } from "@/lib/api";
 
 const EMOTIONAL_STATES = ["calm", "confident", "FOMO", "revenge", "tired", "uncertain"];
 
@@ -25,6 +25,8 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
   const { id } = use(params);
   const annotationId = Number(id);
   const [annot, setAnnot] = useState<BybitAnnotation | null>(null);
+  const [explain, setExplain] = useState<BybitGradeExplain | null>(null);
+  const [showLegend, setShowLegend] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -45,6 +47,14 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
       setLesson(a.lesson_post || "");
       setEmotional(a.emotional_state || "");
       setScreenshot(a.screenshot_url || "");
+      if (a.auto_grade) {
+        try {
+          const ex = await fetchApi<BybitGradeExplain>(`/bybit/grade-explain/${annotationId}`);
+          setExplain(ex);
+        } catch {
+          setExplain(null);
+        }
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "load failed");
     } finally {
@@ -244,7 +254,39 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
 
       {annot.auto_setup_type && (
         <section className="auto-block">
-          <div className="ctx-eyebrow">AUTO CLASSIFICATION · v{annot.auto_classifier_version ?? "?"}</div>
+          <div className="auto-eyebrow-row">
+            <span className="ctx-eyebrow">AUTO CLASSIFICATION · v{annot.auto_classifier_version ?? "?"}</span>
+            <button
+              type="button"
+              className="legend-toggle"
+              onClick={() => setShowLegend((v) => !v)}
+              aria-expanded={showLegend}
+            >
+              {showLegend ? "hide legend ▴" : "what is this? ▾"}
+            </button>
+          </div>
+
+          {showLegend && (
+            <div className="legend">
+              <div className="legend-title">How grading works</div>
+              <p className="legend-body">
+                <strong>net score = confluences − detractors.</strong> Decision quality at entry,
+                not PnL. A trade can earn a D and still win — the score measures whether the
+                structural context was present, nothing more.
+              </p>
+              <div className="legend-grid">
+                <div><span className="g g-A">A</span> ≥ 6 net</div>
+                <div><span className="g g-B">B</span> ≥ 4 net</div>
+                <div><span className="g g-C">C</span> ≥ 2 net</div>
+                <div><span className="g g-D">D</span> &lt; 2 net</div>
+              </div>
+              <p className="legend-foot">
+                Full rubric: <code>docs/SYSTEM_BASELINE.md §10</code>. Detector code:{" "}
+                <code>strategy_service/trade_classifier.py</code>.
+              </p>
+            </div>
+          )}
+
           <div className="auto-head">
             <div className="auto-setup">
               <span className="al">SETUP</span>
@@ -261,21 +303,56 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
             <div className="auto-counts">
               <span className="pos">+{annot.auto_confluences?.length ?? 0}</span>
               <span className="neg">-{annot.auto_detractors?.length ?? 0}</span>
+              {explain && <span className="net">net {explain.net_score >= 0 ? "+" : ""}{explain.net_score}</span>}
             </div>
           </div>
-          {(annot.auto_confluences?.length ?? 0) > 0 && (
-            <div className="auto-chips">
-              {annot.auto_confluences!.map((c) => (
-                <span key={c} className="auto-chip pos">✓ {c}</span>
-              ))}
-            </div>
-          )}
-          {(annot.auto_detractors?.length ?? 0) > 0 && (
-            <div className="auto-chips">
-              {annot.auto_detractors!.map((c) => (
-                <span key={c} className="auto-chip neg">✗ {c}</span>
-              ))}
-            </div>
+
+          {explain ? (
+            <>
+              {explain.confluences.length > 0 && (
+                <div className="auto-explain">
+                  <div className="explain-head">CONFLUENCES · {explain.confluences.length}</div>
+                  <ul className="explain-list">
+                    {explain.confluences.map((c) => (
+                      <li key={c.tag} className="exp-item pos">
+                        <span className="exp-tag">✓ {c.tag}</span>
+                        <span className="exp-desc">{c.description}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {explain.detractors.length > 0 && (
+                <div className="auto-explain">
+                  <div className="explain-head">DETRACTORS · {explain.detractors.length}</div>
+                  <ul className="explain-list">
+                    {explain.detractors.map((c) => (
+                      <li key={c.tag} className="exp-item neg">
+                        <span className="exp-tag">✗ {c.tag}</span>
+                        <span className="exp-desc">{c.description}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              {(annot.auto_confluences?.length ?? 0) > 0 && (
+                <div className="auto-chips">
+                  {annot.auto_confluences!.map((c) => (
+                    <span key={c} className="auto-chip pos">✓ {c}</span>
+                  ))}
+                </div>
+              )}
+              {(annot.auto_detractors?.length ?? 0) > 0 && (
+                <div className="auto-chips">
+                  {annot.auto_detractors!.map((c) => (
+                    <span key={c} className="auto-chip neg">✗ {c}</span>
+                  ))}
+                </div>
+              )}
+            </>
           )}
         </section>
       )}
@@ -527,6 +604,156 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
         }
         .auto-chip.pos { color: #b2fd02; background: rgba(178,253,2,0.05); border-color: rgba(178,253,2,0.2); }
         .auto-chip.neg { color: #ff4d4d; background: rgba(255,77,77,0.05); border-color: rgba(255,77,77,0.2); }
+
+        .auto-eyebrow-row {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 12px;
+          flex-wrap: wrap;
+          margin-bottom: 8px;
+        }
+        .legend-toggle {
+          background: transparent;
+          border: 1px solid rgba(255,255,255,0.16);
+          color: rgba(255,255,255,0.55);
+          font-family: "JetBrains Mono", monospace;
+          font-size: 10px;
+          letter-spacing: 0.08em;
+          padding: 4px 10px;
+          border-radius: 2px;
+          cursor: pointer;
+          transition: all 0.15s;
+        }
+        .legend-toggle:hover { color: #fff; border-color: rgba(255,255,255,0.32); }
+        .legend {
+          margin-bottom: 12px;
+          padding: 14px 16px;
+          background: rgba(255,255,255,0.03);
+          border: 1px solid rgba(255,255,255,0.1);
+          border-radius: 2px;
+        }
+        .legend-title {
+          font-size: 10px;
+          letter-spacing: 0.18em;
+          color: rgba(255,255,255,0.55);
+          font-weight: 700;
+          margin-bottom: 8px;
+        }
+        .legend-body {
+          margin: 0 0 10px 0;
+          font-family: "Fraunces", Georgia, serif;
+          font-style: italic;
+          font-weight: 300;
+          font-size: 14px;
+          line-height: 1.5;
+          color: rgba(255,255,255,0.78);
+        }
+        .legend-body strong {
+          font-style: normal;
+          font-weight: 500;
+          font-family: "JetBrains Mono", monospace;
+          font-size: 12px;
+          color: #fff;
+          letter-spacing: 0.04em;
+        }
+        .legend-grid {
+          display: grid;
+          grid-template-columns: repeat(4, 1fr);
+          gap: 8px;
+          font-family: "JetBrains Mono", monospace;
+          font-size: 11px;
+          color: rgba(255,255,255,0.65);
+          margin-bottom: 10px;
+        }
+        .legend-grid .g {
+          display: inline-block;
+          font-family: "Fraunces", serif;
+          font-weight: 700;
+          font-size: 14px;
+          padding: 1px 6px;
+          margin-right: 6px;
+          border-radius: 2px;
+        }
+        .legend-grid .g-A { color: #b2fd02; background: rgba(178,253,2,0.12); }
+        .legend-grid .g-B { color: #9ca3af; background: rgba(156,163,175,0.15); }
+        .legend-grid .g-C { color: #f59e0b; background: rgba(245,158,11,0.12); }
+        .legend-grid .g-D { color: #ff4d4d; background: rgba(255,77,77,0.12); }
+        .legend-foot {
+          margin: 0;
+          font-size: 10px;
+          color: rgba(255,255,255,0.4);
+          letter-spacing: 0.04em;
+        }
+        .legend-foot code {
+          font-family: "JetBrains Mono", monospace;
+          color: rgba(255,255,255,0.65);
+          font-size: 10px;
+        }
+        .auto-counts .net {
+          color: rgba(255,255,255,0.55);
+          padding-left: 8px;
+          border-left: 1px solid rgba(255,255,255,0.12);
+        }
+        .auto-explain {
+          margin-top: 14px;
+        }
+        .explain-head {
+          font-size: 9px;
+          letter-spacing: 0.2em;
+          color: rgba(255,255,255,0.4);
+          font-weight: 700;
+          margin-bottom: 6px;
+        }
+        .explain-list {
+          list-style: none;
+          margin: 0;
+          padding: 0;
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+        .exp-item {
+          display: grid;
+          grid-template-columns: 220px 1fr;
+          gap: 12px;
+          padding: 8px 12px;
+          border-radius: 2px;
+          font-size: 12px;
+          line-height: 1.4;
+          border: 1px solid rgba(255,255,255,0.06);
+        }
+        .exp-item.pos {
+          background: rgba(178,253,2,0.04);
+          border-color: rgba(178,253,2,0.18);
+        }
+        .exp-item.neg {
+          background: rgba(255,77,77,0.04);
+          border-color: rgba(255,77,77,0.18);
+        }
+        .exp-tag {
+          font-family: "JetBrains Mono", monospace;
+          font-size: 11px;
+          font-weight: 600;
+          letter-spacing: 0.02em;
+        }
+        .exp-item.pos .exp-tag { color: #b2fd02; }
+        .exp-item.neg .exp-tag { color: #ff4d4d; }
+        .exp-desc {
+          color: rgba(255,255,255,0.78);
+          font-family: "Fraunces", Georgia, serif;
+          font-weight: 300;
+          font-size: 13px;
+          line-height: 1.45;
+        }
+        @media (max-width: 639px) {
+          .legend-grid { grid-template-columns: repeat(2, 1fr); }
+          .exp-item {
+            grid-template-columns: 1fr;
+            gap: 4px;
+          }
+          .exp-desc { font-size: 12px; }
+        }
 
         .form {
           max-width: 720px;

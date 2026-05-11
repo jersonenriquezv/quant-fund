@@ -1,0 +1,14 @@
+[Unit]
+Description=Quant Fund — daily signal scanner (Telegram alerts for auto-grade A/B setups)
+Documentation=file:///home/jer/quant-fund/docs/SYSTEM_BASELINE.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/jer/quant-fund
+EnvironmentFile=/home/jer/quant-fund/config/.env
+ExecStart=/home/jer/quant-fund/venv/bin/python scripts/signal_scanner.py
+StandardOutput=journal
+StandardError=journal
+Nice=10

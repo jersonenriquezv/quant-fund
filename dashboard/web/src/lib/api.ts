@@ -423,6 +423,34 @@ export interface BybitEquityPoint {
   trade_pnl: number;
 }
 
+export interface BybitGradeExplain {
+  annotation_id: number;
+  auto_setup_type: string | null;
+  auto_grade: string | null;
+  classifier_version: number | null;
+  net_score: number;
+  grade_thresholds: Record<string, string>;
+  confluences: Array<{ tag: string; description: string }>;
+  detractors: Array<{ tag: string; description: string }>;
+}
+
+export interface BybitGradeStatsRow {
+  auto_grade: string;
+  n: number;
+  wins: number;
+  losses: number;
+  win_rate_pct: number | null;
+  profit_factor: number | null;
+  avg_pnl_usd: number;
+  avg_pnl_pct: number;
+  total_pnl_usd: number;
+}
+
+export interface BybitGradeStats {
+  days: number;
+  by_grade: BybitGradeStatsRow[];
+}
+
 export interface BybitPendingOrder {
   id: number;
   order_id: string;
