@@ -999,7 +999,14 @@ class Settings:
     # signal/threshold changes still bump this ID. Old data queryable via
     # `SCALP_EXPERIMENT_ID=scalp_v2_filtered_2026_05_05` env override (note:
     # that override only worked for reporting; inserts pre-fix used global ID).
-    SCALP_EXPERIMENT_ID: str = os.getenv("SCALP_EXPERIMENT_ID", "scalp_v3_clean_2026_05_06")
+    # v4 (2026-05-11): tune pass after audit.
+    # - vol_cvd_div: z_score 3.0 -> 2.0, spread cap 2bps -> 5bps (0 emit/5d
+    #   in v3-clean).
+    # - liq_reclaim: dropped inside-range gate (4 emit/5d in v3-clean despite
+    #   the 5/5 wick + flush relaxes — inside-range was the structural
+    #   killer per the silent-detector audit).
+    # Bump isolates new emission profile from v3 so edge stats stay clean.
+    SCALP_EXPERIMENT_ID: str = os.getenv("SCALP_EXPERIMENT_ID", "scalp_v4_tune_2026_05_11")
 
     # Candle timeframe used by scalp detectors. Defaults to 5m because the
     # bot does not currently fetch 1m candles (LTF_TIMEFRAMES = 5m, 15m).

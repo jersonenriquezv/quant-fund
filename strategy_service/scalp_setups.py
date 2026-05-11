@@ -57,13 +57,17 @@ _SWEEP_CHOCH_MIN_BODY_RATIO = 0.60
 # Volume Z-score + CVD divergence:
 # Lookback bars for the volume mean/std baseline (excludes trigger candle).
 _VOL_CVD_LOOKBACK_BARS = 20
-# Minimum trigger-volume Z-score over the baseline.
-_VOL_CVD_Z_THRESHOLD = 3.0
+# Minimum trigger-volume Z-score over the baseline. Lowered 3.0 -> 2.0 on
+# 2026-05-11 after 0 emissions in 5 days under scalp_v3_clean_2026_05_06.
+# z=3.0 is ~p99.7 of normal vol — too strict for 5m crypto. z=2.0 is ~p97.7.
+_VOL_CVD_Z_THRESHOLD = 2.0
 # Minimum |cvd_5m| / (buy_volume + sell_volume) — filters out borderline
 # imbalances where the sign of CVD is just noise. 0.20 ~ a 60/40 split.
 _VOL_CVD_MIN_IMBALANCE = 0.20
-# Max acceptable orderbook spread as fraction of mid. 2 bps = 0.0002.
-_VOL_CVD_MAX_SPREAD = 0.0002
+# Max acceptable orderbook spread as fraction of mid. Relaxed 2bps -> 5bps
+# on 2026-05-11. Original 2bps was tighter than OKX liquid-pair median spread
+# during normal hours; combined with z=3.0 it pushed emissions to 0/5d.
+_VOL_CVD_MAX_SPREAD = 0.0005
 
 # Funding extreme + flat price:
 # Min |funding_rate| (8h convention, fraction not pct) to qualify as extreme.
@@ -106,12 +110,14 @@ class ScalpSetupEvaluator:
     ) -> Optional[TradeSetup]:
         """Signal 1 — Liquidation reclaim.
 
-        Trigger: any OI flush event for this pair within the last 5 minutes
+        Trigger: any OI flush event for this pair within the last 10 minutes
         (data_service.oi_flush_detector → MarketSnapshot.recent_oi_flushes).
-        Confirmation: most recent confirmed candle has a wick >= 0.5% on one
-        side, larger than the wick on the other side, and closes back inside
-        the previous 20-bar range.
+        Confirmation: most recent confirmed candle has a wick >= 0.3% on one
+        side, larger than the wick on the other side.
         Direction: counter to the dominant wick (lower wick → long, upper wick → short).
+
+        Inside-range gate dropped 2026-05-11 — see scalp_v4_tune_2026_05_11
+        rationale in the function body.
 
         Returns a TradeSetup ready for shadow tracking, or None if no signal.
 
@@ -126,8 +132,10 @@ class ScalpSetupEvaluator:
 
         if not candles:
             return None
-        # Need at least lookback + 1 candles. The trigger candle is candles[-1];
-        # the inside-range check looks at the prior _LIQ_RECLAIM_LOOKBACK_BARS.
+        # Warmup guard: keep _LIQ_RECLAIM_LOOKBACK_BARS + 1 (=21) candles so
+        # the OI flush detector and snapshot have settled. The inside-range
+        # check that originally required this window was dropped 2026-05-11
+        # but the warmup is still useful to skip cold-start emissions.
         if len(candles) < _LIQ_RECLAIM_LOOKBACK_BARS + 1:
             return None
 
@@ -169,17 +177,15 @@ class ScalpSetupEvaluator:
         else:
             return None
 
-        # Inside-range confirmation. The trigger close must sit within the
-        # high/low envelope of the prior 20 candles. This excludes momentum
-        # breakouts (where the close already left the range) and keeps only
-        # cases where the wick was rejected back into prior structure.
-        prior = candles[-(_LIQ_RECLAIM_LOOKBACK_BARS + 1):-1]
-        if len(prior) != _LIQ_RECLAIM_LOOKBACK_BARS:
-            return None
-        prior_high = max(c.high for c in prior)
-        prior_low = min(c.low for c in prior)
-        if not (prior_low <= trigger.close <= prior_high):
-            return None
+        # Inside-range gate dropped 2026-05-11 after the relaxed wick
+        # threshold (0.5% -> 0.3%) plus extended flush window (5min -> 10min)
+        # still produced only 4 emissions in 5 days under
+        # scalp_v3_clean_2026_05_06. Historical alignment audit showed only
+        # 1/71 OI flushes satisfied wick+inside-range together — the gate
+        # was structurally incompatible with flush dynamics, since a real
+        # liquidation often breaks the prior range before the reclaim wick
+        # forms. The OI flush + wick reclaim pair is the core thesis;
+        # inside-range was a noise filter that turned out to be the killer.
 
         # Build TP/SL from configured percentages. tp1 sits at the midpoint
         # of the entry-tp2 segment, matching the existing breakeven-on-TP1
