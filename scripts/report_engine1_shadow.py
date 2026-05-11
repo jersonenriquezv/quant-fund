@@ -6,7 +6,9 @@ Summarizes the live state of Engine 1 + benchmarks for the active experiment:
   - resolved n + TP/SL/BE/timeout breakdown
   - dedup rate
   - pending (NULL outcome) rows + stale-pending age
-  - pair leakage outside expected scope (BTC/ETH)
+  - pair leakage outside expected scope (defaults to SHADOW_PAIR_FILTER
+    entry for Engine 1; falls back to all TRADING_PAIRS when omitted, which
+    is the v1c "all pairs short-only" mode)
   - co-emission drift between engine1_trend_pullback and its two benchmarks,
     computed over a paired cohort defined by detection-event proximity
   - orphan benchmark rows (in-scope bench rows from a detection pass with
@@ -62,7 +64,7 @@ ENGINE1_SETUPS: tuple[str, ...] = (
 )
 ENGINE1_PRIMARY = "engine1_trend_pullback"
 EXPECTED_PAIRS: tuple[str, ...] = tuple(
-    settings.SHADOW_PAIR_FILTER.get(ENGINE1_PRIMARY, ("BTC/USDT", "ETH/USDT"))
+    settings.SHADOW_PAIR_FILTER.get(ENGINE1_PRIMARY, settings.TRADING_PAIRS)
 )
 N_TARGET = 50
 PENDING_STALE_HOURS = 24
@@ -388,7 +390,10 @@ def compute_verdict(
     sospechoso_reasons: list[str] = []
 
     if leaks:
-        roto_reasons.append(f"pair leakage: {len(leaks)} row group(s) outside BTC/ETH")
+        roto_reasons.append(
+            f"pair leakage: {len(leaks)} row group(s) outside "
+            f"{', '.join(EXPECTED_PAIRS)}"
+        )
     for s, delta in drift_effective.items():
         if abs(delta) > DRIFT_TOLERANCE_ROWS:
             roto_reasons.append(
@@ -488,7 +493,7 @@ def main() -> int:
             f"{s:<34} {a['total']:>6} {a['in_scope_emissions']:>5} {a['resolved']:>4} "
             f"{a['tp']:>4} {a['sl']:>4} {a['be']:>4} {a['to']:>4} {a['dedup']:>6} {a['pending']:>5} {a['pair_filtered']:>5}"
         )
-    print("  emis = in-scope emissions (BTC+ETH, excl. pair_filtered)")
+    print(f"  emis = in-scope emissions ({', '.join(EXPECTED_PAIRS)}, excl. pair_filtered)")
     print("  res  = resolved = tp + sl + be + to (terminal outcomes)")
     print("  to   = shadow_timeout (terminal, separate from tp/sl/be)")
     print("  pf   = shadow_pair_filtered (quarantine - working as intended)")

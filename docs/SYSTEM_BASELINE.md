@@ -354,7 +354,12 @@ Three storages hold trade-like rows. Only ONE is authoritative for ML training /
 
 Independent shadow-only experiment for microstructural scalping signals, separate from the SMC roadmap above. Plan: `docs/plans/scalp_shadow_v1.md`.
 
-- **experiment_id:** `scalp_v2_filtered_2026_05_05` (env-overridable via `SCALP_EXPERIMENT_ID`). Bumped from `scalp_v1_2026_05` after v1 review of `scalp_sweep_choch_v1` (76 outcomes, 5:1 SL:TP) wired the v2 fade-pattern filters described below. Old v1 rows stay queryable under the previous experiment_id.
+- **experiment_id:** `scalp_v4_tune_2026_05_11` (env-overridable via `SCALP_EXPERIMENT_ID`). Bumps history:
+  - `scalp_v1_2026_05` — first batch, mixed wiring.
+  - `scalp_v2_filtered_2026_05_05` — added v2 `sweep_choch` filters.
+  - `scalp_v3_clean_2026_05_06` — clean experiment_id reset after the `_ml_log_setup` SCALP_EXPERIMENT_ID wiring fix (PR #19).
+  - `scalp_v4_tune_2026_05_11` — current. `vol_cvd_div` z 3.0→2.0 + spread 2bps→5bps; `liq_reclaim` inside-range gate dropped. See §8 changelog.
+  Old rows stay queryable under their experiment_id.
 - **Master switch:** `SCALP_SHADOW_ENABLED` (default `false`)
 - **Timeframe:** `SCALP_TIMEFRAME` (default `5m`; bumps to `1m` once a fetcher commit lands)
 - **Setup types:** `scalp_liq_reclaim_v1`, `scalp_sweep_choch_v1` (killed 2026-05-07), `scalp_vol_cvd_div_v1`, `scalp_funding_extreme_v1` (killed 2026-05-09), `scalp_random_baseline_v1` — all routed through `SHADOW_MODE_SETUPS`, zero live execution. Surviving in pipeline: `liq_reclaim`, `vol_cvd_div`, `random_baseline`.
@@ -374,7 +379,116 @@ Independent shadow-only experiment for microstructural scalping signals, separat
 
 ---
 
+## 10. Bybit Manual Trade Grading (auto-classifier)
+
+> Purpose: deterministic **decision-quality** score for every manual Bybit trade. Measures whether confluences were present at entry; does **not** measure PnL. `bybit_watcher` calls `strategy_service.trade_classifier.classify()` on every position open and stores `auto_setup_type`, `auto_confluences`, `auto_detractors`, `auto_grade` on `bybit_trade_annotations`.
+
+**Implementation:** `strategy_service/trade_classifier.py` (`CLASSIFIER_VERSION = 1`).
+
+### Grade thresholds
+```
+net_score = len(confluences) - len(detractors)
+A: net_score >= 6
+B: net_score >= 4
+C: net_score >= 2
+D: net_score <  2
+```
+
+### Confluences (+1 each)
+| Tag | Trigger |
+|---|---|
+| `htf_4h_aligned` | 4H bias matches trade direction |
+| `htf_1h_aligned` | 1H bias matches trade direction |
+| `OB_{tf}_in_zone` / `OB_{tf}_near` | Aligned order block on `tf`: price inside OB, or distance ≤1% |
+| `FVG_{tf}_in_zone` / `FVG_{tf}_near` | Aligned fair-value gap on `tf` |
+| `sweep_recent` | Aligned liquidity sweep in last 12h |
+| `sweep_institutional` | Same, with swept level touched ≥3 times |
+| `BOS_{tf}` / `CHoCH_{tf}` | Aligned structure break on `tf` (last 24h) |
+| `break_strong_displacement` | Any aligned break with displacement ≥0.3% |
+| `cvd_1h_aligned` | 1H CVD sign matches trade direction |
+| `funding_neutral` | abs(funding rate) <0.03% |
+| `oi_not_crowded` | abs(OI Δ 1h) <2% |
+| `liq_cluster_magnet` | Nearest liquidation cluster <3% away |
+| `inside_value_area` | Current price within 4H value area |
+| `at_hvn` | Within 0.5% of a high-volume node |
+| `volume_absorption` | Last 5m: vol ≥2× avg, body/range <0.35 (rejection wick) |
+| `volume_displacement` | Last 5m: vol ≥2× avg, body/range ≥0.60 (impulse) |
+| `orderbook_bid_heavy` / `_ask_heavy` | Top-20 imbalance ≥0.15 in trade direction |
+| `rsi_divergence_{bull/bear}` | RSI divergence aligned with trade |
+| `adx_trending_aligned` | ADX(14) ≥25 and DI direction matches trade |
+| `stoch_rsi_cross_{bull/bear}` | StochRSI %K/%D cross aligned with trade |
+
+### Detractors (−1 each)
+| Tag | Trigger |
+|---|---|
+| `counter_htf_4h` | 4H bias opposes trade direction |
+| `funding_extreme_against_{long/short}` | funding rate >0.05% against trade |
+| `oi_longs_crowded` / `oi_shorts_crowded` | OI Δ 1h >3% |
+| `cvd_1h_against` | 1H CVD sign opposes trade |
+| `ml_{flag}` | Any momentum flag from `ml_features.momentum_flags` (`rsi_weak`, `adx_counter`, `stoch_extreme`) |
+| `extended_above_vah` (long) / `extended_below_val` (short) | Long entering above value area / short below — late-trade flag |
+
+### Setup-type mapping (priority order)
+1. sweep + OB in/near → `B_sweep`
+2. BOS + HTF aligned + OB in/near → `A_swing_long` / `A_swing_short`
+3. CHoCH + OB in/near → `D_choch`
+4. BOS + OB in/near → `D_bos`
+5. Price outside value area + displacement → `F_breakout`
+6. Else → `discretion`
+
+### What grading does NOT do
+- Does **not** read PnL. A `D` trade can win; an `A` trade can lose. Grade tracks **process**, not outcome.
+- Does **not** validate SL/TP placement. R:R checks live in `pretrade_check.py` (`/check` Telegram).
+- Does **not** block the trade. Pure annotation.
+
+### Reading the grade
+- `A` (≥6 net): six independent confluences with zero detractors, or strong confluence stack outweighing a few negatives. High-conviction stack.
+- `B` (≥4): solid alignment, some friction.
+- `C` (≥2): minimal confluence — typically a single setup type with weak surrounding context.
+- `D` (<2): below confluence threshold. Most discretionary "feel" trades land here.
+
+### Where surfaced
+- Annotation form: `/annotate/{id}` shows `AUTO CLASSIFICATION` block with chips per confluence/detractor (`dashboard/web/src/app/annotate/[id]/page.tsx`).
+- Trade list: `/bybit` shows grade pill on each row, and `auto_grade` aggregate stats (added 2026-05-11 — see changelog).
+- API: `GET /api/bybit/annotations/{id}` returns full classification + `GET /api/manual/grade-explain/{id}` returns human-readable breakdown.
+
+### When to update the rubric
+1. Bump `CLASSIFIER_VERSION` in `strategy_service/trade_classifier.py`.
+2. Document the change here.
+3. Older rows keep their original `auto_classifier_version` — do not retroactively reclassify (changes the historical decision-quality signal).
+
+---
+
 ## 8. Changelog
+
+### 2026-05-11 — Scalp v4 tune: `vol_cvd_div` + `liq_reclaim` gate relax, engine1 report pair fallback
+**Files:** `strategy_service/scalp_setups.py`, `config/settings.py`, `scripts/report_engine1_shadow.py`, `tests/test_scalp_setups.py`, `docs/SYSTEM_BASELINE.md`
+
+**What changed:**
+- `_VOL_CVD_Z_THRESHOLD`: 3.0 → 2.0. `_VOL_CVD_MAX_SPREAD`: 0.0002 → 0.0005.
+- `evaluate_liq_reclaim`: removed inside-range gate (prior_low ≤ trigger.close ≤ prior_high). Wick + flush alignment remain the only triggers. Warmup guard of 21 candles retained.
+- `SCALP_EXPERIMENT_ID` default bumped to `scalp_v4_tune_2026_05_11` to isolate the new emission profile from v3.
+- `scripts/report_engine1_shadow.py`: `EXPECTED_PAIRS` now falls back to `settings.TRADING_PAIRS` when the setup is omitted from `SHADOW_PAIR_FILTER`. The v1c relax (2026-05-07) intentionally omitted Engine 1 to allow all 7 pairs short-only; the prior hardcoded BTC+ETH fallback was firing false `WARN pair leakage` for DOGE rows and inverting the drift sign (paired = −7 across both benches).
+- Removed two obsolete tests (`test_no_signal_when_close_breaks_above_range`, `test_uses_only_prior_lookback_for_range`) that targeted the dropped inside-range gate. Updated two threshold tests to assert the new constants.
+
+**Why:** Under `scalp_v3_clean_2026_05_06` (5 days), `vol_cvd_div` emitted 0 rows and `liq_reclaim` emitted 4 (all in one hour, post-relax). Audit `docs/audits/scalp-silent-detectors-2026-05-05.md` showed only 1/71 historical OI flushes satisfied wick + inside-range together — inside-range was structurally incompatible with flush dynamics. For `vol_cvd_div`, z=3.0 (~p99.7) was tighter than 5-minute crypto volume distributions warrant, and the 2bps spread cap was tighter than OKX's normal-hours median for liquid pairs. Goal: get both detectors to ≥10 emissions by the 2026-06-08 review point so the kill-or-keep call is data-driven.
+
+**Operator note:** Engine 1 v1c report now reads SANO (paired drift +0/+0, no pair-leakage warnings). Pre-fix data: `scalp_v3_clean_2026_05_06` rows remain queryable; do not mix with v4 emission counts when computing edge.
+
+**Tests:** 1139 pass (1 xfail unchanged).
+
+### 2026-05-11 — Bybit grading documentation + dashboard surface + signal scanner
+**Files:** `docs/SYSTEM_BASELINE.md` (this §10), `dashboard/api/manual/`, `dashboard/api/routes/bybit.py`, `dashboard/web/src/app/{bybit,annotate/[id]}/page.tsx`, `scripts/signal_scanner.py` (new), `docs/systemd/signal-scanner.timer` (new)
+
+**What changed:**
+- Documented the deterministic A/B/C/D auto-grading rubric (confluences, detractors, setup-type mapping, what it does NOT do).
+- Added `/api/bybit/grade-stats` aggregate (closed trades grouped by `auto_grade`: WR, PF, avg PnL, count). Surfaced on `/bybit` page.
+- Added `/api/manual/grade-explain/{annotation_id}` returning human-readable per-tag descriptions. Annotate page now renders a legend tooltip + per-confluence explanation.
+- `scripts/signal_scanner.py` runs daily via systemd timer. Iterates `TRADING_PAIRS` × {long,short}, builds context snapshots, runs the same classifier, computes entry/SL/TP from nearest aligned OB, and sends Telegram alerts when `auto_grade in {A, B}` AND R:R ≥ 1.5.
+
+**Why:** auto-grade was opaque (no doc), invisible at aggregate level (no PnL correlation surfaced), and one-way (no proactive signaling). User feedback 2026-05-11.
+
+**Notes:** signal scanner is annotation-only — does **not** execute. Bot remains shadow-only.
 
 ### 2026-05-09 — Kill `scalp_funding_extreme_v1` detector
 **Files:** `strategy_service/service.py`, `config/settings.py`, `docs/SYSTEM_BASELINE.md`

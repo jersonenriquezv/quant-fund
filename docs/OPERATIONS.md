@@ -198,6 +198,42 @@ Disable:
 sudo systemctl disable --now docker-prune.timer
 ```
 
+### Signal scanner (Bybit auto-grade alerts)
+
+`scripts/signal_scanner.py` scans every pair × direction, runs the auto-classifier, and Telegrams alerts for grade A/B setups with R:R ≥ 1.5. Annotation-only — never executes. See `docs/SYSTEM_BASELINE.md §10` for the grading rubric.
+
+Unit files: `docs/systemd/signal-scanner.{service,timer}`. Timer runs hourly between 07:00 and 22:00 local. Dedup window per pair/direction is 6h (`signal_scanner_alerts` table). State table is auto-created on first run.
+
+Install:
+```bash
+sudo cp /home/jer/quant-fund/docs/systemd/signal-scanner.service /etc/systemd/system/
+sudo cp /home/jer/quant-fund/docs/systemd/signal-scanner.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now signal-scanner.timer
+```
+
+Dry-run (prints to stdout, no Telegram, no DB write):
+```bash
+cd /home/jer/quant-fund && venv/bin/python scripts/signal_scanner.py --dry-run
+```
+
+Inspect:
+```bash
+systemctl list-timers signal-scanner.timer --no-pager
+journalctl -u signal-scanner.service -n 50 --no-pager
+psql -d quant_fund -c "SELECT scanned_at, pair, direction, auto_grade, rr FROM signal_scanner_alerts ORDER BY scanned_at DESC LIMIT 20;"
+```
+
+Tune (edit `scripts/signal_scanner.py` constants):
+- `MIN_GRADE` — minimum grade to alert (default `B`; flip to `A` for fewer/stronger).
+- `MIN_RR` — minimum R:R (default `1.5`).
+- `DEDUP_HOURS` — suppress repeat alerts (default `6`).
+
+Disable:
+```bash
+sudo systemctl disable --now signal-scanner.timer
+```
+
 ---
 
 ## 4. Schema Management

@@ -260,20 +260,12 @@ class TestWickReclaim:
         # Sanity check on threshold constant — keeps the test honest if it's tuned.
         assert _LIQ_RECLAIM_WICK_THRESHOLD == 0.003
 
-    def test_no_signal_when_close_breaks_above_range(self):
-        evaluator = ScalpSetupEvaluator()
-        candles = _flat_history(base_price=100.0, count=21, start_ts_ms=0)
-        # Close above prior 20-bar high — momentum breakout, not a reclaim.
-        candles[-1] = _make_candle(
-            ts_ms=21 * 60_000,
-            o=101.0, h=103.0, l=99.5, c=102.5,
-        )
-        snap = _snapshot_with_flush(pair="BTC/USDT", flush_ts_ms=21 * 60_000)
-        with _enable_scalp_shadow():
-            setup = evaluator.evaluate_liq_reclaim(
-                "BTC/USDT", candles, snap, now_ms=21 * 60_000,
-            )
-        assert setup is None
+    # Inside-range gate dropped 2026-05-11 (audit
+    # docs/audits/scalp-silent-detectors-2026-05-05.md follow-up). The two
+    # prior tests `test_no_signal_when_close_breaks_above_range` and
+    # `test_uses_only_prior_lookback_for_range` targeted that gate and were
+    # removed alongside the gate. Wick + flush alignment remain the only
+    # trigger conditions, covered by the wick/direction tests above.
 
 
 # ============================================================
@@ -326,37 +318,6 @@ class TestNoLookahead:
                 "BTC/USDT", future, snap, now_ms=21 * 60_000,
             )
         assert shifted is None
-
-    def test_uses_only_prior_lookback_for_range(self):
-        """The inside-range envelope must be built from prior bars only.
-
-        Stuff a high spike into the trigger candle itself — if the detector
-        included it in prior_high it would always include the trigger close
-        trivially. The trigger candle's own high should be excluded.
-        """
-        evaluator = ScalpSetupEvaluator()
-        candles = _flat_history(base_price=100.0, count=21, start_ts_ms=0)
-        # Push prior 20 bars to a tight band around 100. Then trigger has
-        # close above prior high but high spike inside trigger only.
-        for i in range(20):
-            candles[i] = _make_candle(
-                ts_ms=i * 60_000,
-                o=99.5, h=100.5, l=99.4, c=100.0,
-            )
-        candles[-1] = _make_candle(
-            ts_ms=21 * 60_000,
-            o=101.0, h=200.0, l=100.0, c=101.5,  # close above prior high
-        )
-        snap = _snapshot_with_flush(pair="BTC/USDT", flush_ts_ms=21 * 60_000)
-        with _enable_scalp_shadow():
-            setup = evaluator.evaluate_liq_reclaim(
-                "BTC/USDT", candles, snap, now_ms=21 * 60_000,
-            )
-        # Close (101.5) is above prior_high (100.5) so reclaim fails — no setup.
-        # If detector had reached into trigger.high (200) for prior_high it
-        # would have returned a setup.
-        assert setup is None
-
 
 # ============================================================
 # Signal 2 — sweep + CHoCH (close-back-inside)
@@ -838,21 +799,24 @@ class TestVolCvdFilters:
         candles = self._trigger_history(
             trigger_open=100.0, trigger_close=100.5, trigger_volume=500.0,
         )
-        # 5 bps > 2 bps cap.
-        wide = _ob(spread=0.0005)
+        # 10 bps > 5 bps cap (v4 tune 2026-05-11).
+        wide = _ob(spread=0.0010)
         with _enable_scalp_shadow():
             result = evaluator.evaluate_vol_cvd_divergence(
                 "BTC/USDT", candles, _cvd_snapshot(cvd_5m=-500),
                 orderbook=wide,
             )
         assert result is None
-        assert _VOL_CVD_MAX_SPREAD == 0.0002
+        assert _VOL_CVD_MAX_SPREAD == 0.0005
 
     def test_no_signal_when_z_below_threshold(self):
         evaluator = ScalpSetupEvaluator()
-        # Trigger volume only marginally above baseline.
+        # Trigger volume only marginally above baseline. With v4 z=2.0,
+        # baseline mean=100/std=0 would force inf — _vol_cvd_history actually
+        # generates variation so z is finite. Trigger volume 100.01 yields
+        # z well below 2.0.
         candles = self._trigger_history(
-            trigger_open=100.0, trigger_close=100.5, trigger_volume=101.0,
+            trigger_open=100.0, trigger_close=100.5, trigger_volume=100.01,
         )
         with _enable_scalp_shadow():
             result = evaluator.evaluate_vol_cvd_divergence(
@@ -860,7 +824,7 @@ class TestVolCvdFilters:
                 orderbook=_ob(),
             )
         assert result is None
-        assert _VOL_CVD_Z_THRESHOLD == 3.0
+        assert _VOL_CVD_Z_THRESHOLD == 2.0
 
     def test_no_signal_when_cvd_imbalance_too_small(self):
         evaluator = ScalpSetupEvaluator()
