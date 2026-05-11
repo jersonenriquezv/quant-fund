@@ -461,6 +461,30 @@ D: net_score <  2
 
 ## 8. Changelog
 
+### 2026-05-11 — ML v0 engine1 meta-label baseline (decision gate)
+**Files:** `scripts/ml_v0_engine1.py` (new), `docs/audits/ml-v0-engine1-2026-05-11.md` (new). Issue: #25. PR: #26.
+
+**What changed:**
+- New script trains a LightGBM binary classifier over `engine1_trend_pullback` rows with `shadow_tp` / `shadow_sl` outcomes. Time-sorted 80/20 holdout (no look-ahead), `scale_pos_weight` for class balance, fixed seed, early stopping.
+- 30+ columns dropped to prevent leakage: identity, outcome-derived, post-fill `shadow_*`, mid-trade guardian flags, absolute prices, timestamps. PR #26 description records the leakage-audit history (AUC went 1.00 → 0.94 → 0.92 → 0.72 as leakers were removed one batch at a time).
+- Generated audit report records AUC train/test, top-15 feature importance, and a verdict mapped to the decision rules in issue #25.
+
+**Why:** Engine 1 v1c WR 24% vs `bench_engine1_random_direction` 21.7% at N=129 was inconclusive. Before investing 1 week of code + 4 weeks of data on Engine 2 (`strategy_redesign_2026_04.md §4.2`), this baseline answers whether the features captured during 26 days of shadow mode contain predictive signal or are noise. Cost is one script + minutes of compute; the answer steers the next month of work.
+
+**Result (baseline run 2026-05-11):**
+- N=58 binary (31 TP / 27 SL), 47 train / 11 test.
+- AUC train 0.9847 / AUC test **0.7222**.
+- Verdict EDGE CLARO per the issue #25 thresholds, **flagged provisional** because overfit gap >0.20 and holdout N<20.
+- Top features: `engine1_impulse_atr_multiple`, `funding_rate`, `minus_di_14`, `risk_distance_pct`, `wt_wt1`, `hour_of_day`.
+
+**Re-train schedule:**
+- 2026-05-25 — N≈100. Compare AUC vs baseline.
+- 2026-06-08 — N≈200. Decision point: if AUC test holds ≥0.60, no Engine 2 yet; if it collapses to ≤0.55, start Engine 2 per `strategy_redesign_2026_04.md §4.2`.
+
+**Operator note:** Pipeline health (`python scripts/report_engine1_shadow.py`) runs weekly Mondays. ML v0 re-train (`python scripts/ml_v0_engine1.py`) only on the two dates above. Do not tune the model or detectors between runs — that defeats the gate.
+
+**Tests:** No new tests (script is one-shot analysis, not production code). Existing 1139 pass unchanged.
+
 ### 2026-05-11 — Scalp v4 tune: `vol_cvd_div` + `liq_reclaim` gate relax, engine1 report pair fallback
 **Files:** `strategy_service/scalp_setups.py`, `config/settings.py`, `scripts/report_engine1_shadow.py`, `tests/test_scalp_setups.py`, `docs/SYSTEM_BASELINE.md`
 
