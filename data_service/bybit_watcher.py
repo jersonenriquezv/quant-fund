@@ -89,6 +89,13 @@ class BybitWatcher:
         self._dashboard_base = os.getenv(
             "DASHBOARD_PUBLIC_URL", "http://100.120.181.11:3000"
         )
+        # Ensure schema is current — idempotent, safe to call on every startup.
+        # Prevents missing-column errors after deploys that ship migrations.
+        try:
+            from data_service.bybit_sync import BybitSync
+            BybitSync().ensure_tables()
+        except Exception as exc:
+            logger.warning(f"ensure_tables on startup failed: {exc}")
 
     def _conn(self):
         return psycopg2.connect(
