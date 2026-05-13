@@ -350,6 +350,38 @@ Three storages hold trade-like rows. Only ONE is authoritative for ML training /
 
 **Principle:** each batch ships + passes bar before next starts. No parallel strategy work during infra phase.
 
+### FREEZE — Strategy work halted (2026-05-13 → 2026-06-08)
+
+Per grill verdict `docs/grill/bot-viability-2026-05-13.md`. SMC class empirically dead (0/10 setups beat random at N≥15). Bot in shadow-only mode through ML v0 re-train cycle.
+
+**Forbidden until 6/8 (or earlier ML kill):**
+- New setups, even small ones
+- Any commit touching `strategy_service/`, `quick_setups.py`, `scalp_setups.py`, `engines/`
+- ML feature version bumps
+- Engine 2 / Engine 3 work
+- Scalp variant tuning
+
+**Allowed:**
+- Bug fixes in `data_service/`, `risk_service/`, `execution_service/` that do not change setup behavior
+- Bybit-side work (separate plan: `docs/plans/bybit-leak-measurement.md`)
+- Docs, monitoring, infrastructure
+
+**Decision dates:**
+- 5/25 — first ML v0 re-train. AUC ≥0.65 → wait for 6/8 confirm. AUC <0.55 → kill bot early. Between → wait.
+- 6/8 — final ML v0 re-train. Decides hard-kill vs extract-platform.
+
+### Side plan — Bybit leak measurement Phase 0 (2026-05-13)
+
+**STATUS: done — pivoted after Phase 1.** Phase 1 surfaced 2 quantified leaks (rule 11 day-of-week 41% violation, rule 14 journal 5% fill) that made Phases 2-4 obsolete. See `docs/plans/bybit-leak-measurement.md` revision note.
+
+### Side plan — Bybit journal enforcement (2026-05-13)
+
+Replaces leak-measurement Phases 2-4. Goal: lift `bybit_trade_annotations` fill rate from 5% → ≥80% so future grills have data to work with. Tracer = audit current workflow end-to-end to find the actual failure stage. Plan: `docs/plans/bybit-journal-enforcement.md`. Action C (`/grill-me strategy-edge-on-btc-eth`) queued behind Phase 3 success.
+
+### Bybit rules taxonomy rewrite (2026-05-13)
+
+Original 14-rule taxonomy was AI-generated theatre — user confessed 5-95% violation rates depending on rule. Rewrite grilled in `docs/grill/rules-rewrite-2026-05-13.md`. New taxonomy v3 in `docs/grill/bybit-rules-taxonomy.md`. Hard validation gate Rule 13 = N=30 trades with full journal before any scaling or rule changes. Real edge thesis: POC mean reversion with 4H 50 EMA trend filter + 3-confluence minimum + Limit-only enforcement.
+
 ### Side experiment — Scalp Shadow v1 (2026-05-04)
 
 Independent shadow-only experiment for microstructural scalping signals, separate from the SMC roadmap above. Plan: `docs/plans/scalp_shadow_v1.md`.
