@@ -634,6 +634,61 @@ class BybitWatcher:
             direction = "ADD" if delta > 0 else "REDUCE"
             logger.info(f"{direction} {k.symbol} {k.side} delta={delta:+.4f} new_size={curr[k].size}")
 
+    async def _enforce_journal_deadline(self, curr_pending: dict[str, PendingOrder]) -> None:
+        """Rule 6 enforcement — cancel pending limit orders that have no thesis_pre filled past deadline.
+
+        Skips Market orders (whitelist) and orders already past terminal state.
+        Stamps `enforcement_cancelled_at` on success so we don't double-fire.
+        Bybit cancel triggers normal _emit_pending_diff flow on next tick.
+        """
+        if not settings.BYBIT_JOURNAL_ENFORCEMENT_ENABLED:
+            return
+        deadline_sec = settings.BYBIT_JOURNAL_ENFORCEMENT_DEADLINE_SEC
+        whitelist = set(settings.BYBIT_JOURNAL_ENFORCEMENT_WHITELIST_ORDER_TYPES)
+        with self._conn() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT order_id, symbol, side, order_type, placed_at
+                FROM bybit_pending_orders
+                WHERE status = 'pending'
+                  AND thesis_pre IS NULL
+                  AND enforcement_cancelled_at IS NULL
+                  AND placed_at <= NOW() - (%s || ' seconds')::INTERVAL
+                """,
+                (deadline_sec,),
+            )
+            candidates = [dict(r) for r in cur.fetchall()]
+        for c in candidates:
+            if c["order_type"] in whitelist:
+                continue
+            if c["order_id"] not in curr_pending:
+                # Order already gone from Bybit — let _emit_pending_diff handle as filled/cancelled.
+                continue
+            try:
+                self.client.cancel_order(category="linear", symbol=c["symbol"], orderId=c["order_id"])
+            except Exception as exc:
+                logger.error(f"enforcement cancel failed for {c['order_id']}: {exc}")
+                await self._send_telegram(
+                    f"⚠️ Enforcement cancel FAILED for {c['symbol']} {c['side']}: {exc}"
+                )
+                continue
+            with self._conn() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE bybit_pending_orders SET enforcement_cancelled_at = NOW(), updated_at = NOW() WHERE order_id = %s",
+                    (c["order_id"],),
+                )
+                conn.commit()
+            mins = deadline_sec // 60
+            await self._send_telegram(
+                f"<b>❌ ORDEN AUTO-CANCELADA</b>\n"
+                f"{c['symbol']} {c['side']} — sin <code>thesis_pre</code> tras {mins} min.\n"
+                f"Rule 6 enforcement. Llena el journal antes de la próxima orden."
+            )
+            logger.warning(
+                f"ENFORCEMENT_CANCEL {c['symbol']} {c['side']} order_id={c['order_id']} "
+                f"age_sec={(datetime.now(tz=timezone.utc) - c['placed_at']).total_seconds():.0f}"
+            )
+
     async def tick(self) -> None:
         try:
             curr_pos = self._fetch_positions()
@@ -661,6 +716,12 @@ class BybitWatcher:
             self._last_state = curr_pos
             self._last_pending = curr_pending
             return
+
+        # Rule 6 enforcement runs BEFORE diff so cancel resolves naturally on next tick
+        try:
+            await self._enforce_journal_deadline(curr_pending)
+        except Exception as exc:
+            logger.error(f"_enforce_journal_deadline failed: {exc}")
 
         # Emit position diff first (so pending diff can detect filled orders)
         opened_pos = [k for k in curr_pos if k not in self._last_state]

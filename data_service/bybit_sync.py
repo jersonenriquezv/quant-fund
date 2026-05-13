@@ -207,6 +207,7 @@ class BybitSync:
         ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS auto_detractors JSONB;
         ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS auto_grade CHAR(1);
         ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS auto_classifier_version SMALLINT;
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS enforcement_cancelled_at TIMESTAMPTZ;
         """
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(ddl_executions)

@@ -38,6 +38,12 @@ class Settings:
     BYBIT_API_SECRET: str = os.getenv("BYBIT_API_SECRET", "")
     BYBIT_TESTNET: bool = os.getenv("BYBIT_TESTNET", "false").lower() == "true"
 
+    # Rule 6 enforcement: auto-cancel pending limit orders without thesis_pre after deadline.
+    # Soft launch: disabled by default. Flip to true when ready to commit to journal-first workflow.
+    BYBIT_JOURNAL_ENFORCEMENT_ENABLED: bool = os.getenv("BYBIT_JOURNAL_ENFORCEMENT_ENABLED", "false").lower() == "true"
+    BYBIT_JOURNAL_ENFORCEMENT_DEADLINE_SEC: int = int(os.getenv("BYBIT_JOURNAL_ENFORCEMENT_DEADLINE_SEC", "300"))
+    BYBIT_JOURNAL_ENFORCEMENT_WHITELIST_ORDER_TYPES: List[str] = field(default_factory=lambda: ["Market"])
+
     # ========================
     # APIs EXTERNAS
     # ========================
