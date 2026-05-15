@@ -372,6 +372,8 @@ export interface BybitAnnotation {
   confluences: string[] | null;
   confidence: number | null;
   thesis_pre: string | null;
+  trigger_condition: string | null;
+  thesis_invalidation: string | null;
   lesson_post: string | null;
   emotional_state: string | null;
   grade_self: string | null;
@@ -395,6 +397,8 @@ export interface BybitAnnotationPatch {
   confluences?: string[] | null;
   confidence?: number | null;
   thesis_pre?: string | null;
+  trigger_condition?: string | null;
+  thesis_invalidation?: string | null;
   lesson_post?: string | null;
   emotional_state?: string | null;
   grade_self?: string | null;

@@ -33,6 +33,8 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
   const [error, setError] = useState<string>("");
 
   const [thesis, setThesis] = useState("");
+  const [trigger, setTrigger] = useState("");
+  const [invalidation, setInvalidation] = useState("");
   const [lesson, setLesson] = useState("");
   const [emotional, setEmotional] = useState("");
   const [screenshot, setScreenshot] = useState("");
@@ -44,6 +46,8 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
       const a = await fetchApi<BybitAnnotation>(`/bybit/annotations/${annotationId}`);
       setAnnot(a);
       setThesis(a.thesis_pre || "");
+      setTrigger(a.trigger_condition || "");
+      setInvalidation(a.thesis_invalidation || "");
       setLesson(a.lesson_post || "");
       setEmotional(a.emotional_state || "");
       setScreenshot(a.screenshot_url || "");
@@ -71,6 +75,8 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
     try {
       const payload: BybitAnnotationPatch = {
         thesis_pre: thesis || null,
+        trigger_condition: trigger || null,
+        thesis_invalidation: invalidation || null,
         lesson_post: lesson || null,
         emotional_state: emotional || null,
         screenshot_url: screenshot || null,
@@ -378,6 +384,24 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
               </button>
             ))}
           </div>
+        </Field>
+
+        <Field label="TRIGGER · WHAT FIRED THE ENTRY (RULE 1)">
+          <textarea
+            rows={3}
+            value={trigger}
+            onChange={(e) => setTrigger(e.target.value)}
+            placeholder="e.g. rebote en POC 4H 79.2k con vela cuerpo entero + RSI<30 5m"
+          />
+        </Field>
+
+        <Field label="INVALIDATION · WHAT BREAKS THESIS (RULE 11)">
+          <textarea
+            rows={3}
+            value={invalidation}
+            onChange={(e) => setInvalidation(e.target.value)}
+            placeholder="e.g. cierre 15m > 80.1k = thesis short rota (distinto del SL price)"
+          />
         </Field>
 
         <Field label="THESIS / WHY I ENTERED (OPTIONAL)">

@@ -31,9 +31,13 @@ Mobile annotation form filled BEFORE placing limit order:
 - 3+ confluences listed
 - Thesis 1-3 lines
 - Emotional state honest
+- **`trigger_condition`** — concrete fire-event (e.g. "rebote en POC 4H 79.2k con vela cuerpo entero + RSI<30 5m"). Structured sub-field of Rule 1 ("planned level"). Added 2026-05-15.
+- **`thesis_invalidation`** — market behaviour that breaks the thesis, distinct from SL price (e.g. "cierre 15m > 80.1k = thesis short rota"). Structured sub-field of Rule 11 ("pre-TP1 escape only on invalidation"). Added 2026-05-15.
 
 Form auto-rejects if emotional state ∈ {impaciente, FOMO, revanchero}.
 No journal entry = no trade. Engineering enforcement in `docs/plans/bybit-journal-enforcement.md`.
+
+**Note 2026-05-15:** `trigger_condition` and `thesis_invalidation` are STRUCTURED SUB-FIELDS of existing Rules 1 + 11, NOT new rules. Rule 13 (no new binding rules during N=30 test) is therefore not violated — these capture content the user was already supposed to write inside `thesis_pre` prose, but in queryable columns. See `docs/plans/manual-edge-discipline-2026-05-15.md` Phase 1 for instrumentation rationale.
 
 ---
 
