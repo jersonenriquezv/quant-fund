@@ -398,7 +398,8 @@ class BybitWatcher:
         with self._conn() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """
-                SELECT id, entry_price, size FROM bybit_trade_annotations
+                SELECT id, entry_price, size, trigger_condition, thesis_invalidation
+                FROM bybit_trade_annotations
                 WHERE symbol = %s AND side = %s AND status = 'open'
                 ORDER BY opened_at DESC LIMIT 1
                 """,
@@ -407,6 +408,18 @@ class BybitWatcher:
             annot = cur.fetchone()
             if not annot:
                 return None
+
+            missing: list[str] = []
+            if not annot.get("trigger_condition"):
+                missing.append("trigger_condition")
+            if not annot.get("thesis_invalidation"):
+                missing.append("thesis_invalidation")
+            if missing:
+                logger.warning(
+                    f"bybit_watcher: journal_fields_missing on close "
+                    f"annotation_id={annot['id']} symbol={key.symbol} side={key.side} "
+                    f"missing={missing}"
+                )
 
             cur.execute(
                 """

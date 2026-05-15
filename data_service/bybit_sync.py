@@ -157,6 +157,8 @@ class BybitSync:
         ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS auto_detractors JSONB;
         ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS auto_grade CHAR(1);
         ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS auto_classifier_version SMALLINT;
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS trigger_condition TEXT;
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS thesis_invalidation TEXT;
         """
         ddl_pending = """
         CREATE TABLE IF NOT EXISTS bybit_pending_orders (

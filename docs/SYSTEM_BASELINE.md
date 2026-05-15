@@ -378,6 +378,10 @@ Per grill verdict `docs/grill/bot-viability-2026-05-13.md`. SMC class empiricall
 
 Replaces leak-measurement Phases 2-4. Goal: lift `bybit_trade_annotations` fill rate from 5% → ≥80% so future grills have data to work with. Tracer = audit current workflow end-to-end to find the actual failure stage. Plan: `docs/plans/bybit-journal-enforcement.md`. Action C (`/grill-me strategy-edge-on-btc-eth`) queued behind Phase 3 success.
 
+### Side plan — Manual edge discipline instrumentation (2026-05-15)
+
+Pre-trade structured fields (`trigger_condition`, `thesis_invalidation`) + falsification widget on `/bybit` page + consolidated Telegram checklist. Instruments v3 rules without adding new binding rules (respects Rule 13). Plan: `docs/plans/manual-edge-discipline-2026-05-15.md`. Source grill: `docs/grill/manual-edge-discipline-2026-05-15.md`. Unblocks Action C grill at N=30 rule-compliant trades.
+
 ### Bybit rules taxonomy rewrite (2026-05-13)
 
 Original 14-rule taxonomy was AI-generated theatre — user confessed 5-95% violation rates depending on rule. Rewrite grilled in `docs/grill/rules-rewrite-2026-05-13.md`. New taxonomy v3 in `docs/grill/bybit-rules-taxonomy.md`. Hard validation gate Rule 13 = N=30 trades with full journal before any scaling or rule changes. Real edge thesis: POC mean reversion with 4H 50 EMA trend filter + 3-confluence minimum + Limit-only enforcement.

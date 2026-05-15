@@ -21,6 +21,8 @@ class AnnotationUpdate(BaseModel):
     confluences: list[str] | None = None
     confidence: int | None = Field(default=None, ge=1, le=5)
     thesis_pre: str | None = None
+    trigger_condition: str | None = None
+    thesis_invalidation: str | None = None
     lesson_post: str | None = None
     emotional_state: str | None = None
     grade_self: str | None = Field(default=None, pattern=r"^[ABCDF]$")
@@ -40,6 +42,8 @@ class AnnotationOut(BaseModel):
     confluences: list[str] | None
     confidence: int | None
     thesis_pre: str | None
+    trigger_condition: str | None
+    thesis_invalidation: str | None
     lesson_post: str | None
     emotional_state: str | None
     grade_self: str | None
@@ -85,6 +89,8 @@ def _row_to_out(r: dict) -> AnnotationOut:
         confluences=confluences,
         confidence=r.get("confidence"),
         thesis_pre=r.get("thesis_pre"),
+        trigger_condition=r.get("trigger_condition"),
+        thesis_invalidation=r.get("thesis_invalidation"),
         lesson_post=r.get("lesson_post"),
         emotional_state=r.get("emotional_state"),
         grade_self=r.get("grade_self"),
