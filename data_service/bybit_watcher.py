@@ -96,6 +96,20 @@ class BybitWatcher:
             BybitSync().ensure_tables()
         except Exception as exc:
             logger.warning(f"ensure_tables on startup failed: {exc}")
+        # Hydrate in-memory state from DB so restarts don't silence the diff.
+        # Without this, the first post-restart tick sees empty prev state and
+        # treated any existing pending/positions as "bootstrap" (no alert),
+        # dropping notifications for orders placed while the watcher was down.
+        try:
+            self._last_pending = self._load_pending_from_db()
+            self._last_state = self._load_positions_from_db()
+            if self._last_pending or self._last_state:
+                logger.info(
+                    f"bybit_watcher: hydrated from DB — "
+                    f"{len(self._last_state)} position(s), {len(self._last_pending)} pending"
+                )
+        except Exception as exc:
+            logger.warning(f"hydrate_state_from_db failed: {exc}")
 
     def _conn(self):
         return psycopg2.connect(
@@ -165,6 +179,68 @@ class BybitWatcher:
                     position_idx=int(r.get("positionIdx") or 0),
                     placed_at=placed,
                     raw=r,
+                )
+        return out
+
+    def _load_pending_from_db(self) -> dict[str, PendingOrder]:
+        """Reconstruct prior in-memory pending state from DB on startup."""
+        out: dict[str, PendingOrder] = {}
+        with self._conn() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT order_id, order_link_id, symbol, side, order_type,
+                       qty, price, trigger_price, stop_order_type, time_in_force,
+                       reduce_only, position_idx, placed_at
+                FROM bybit_pending_orders
+                WHERE status = 'pending'
+                """
+            )
+            for r in cur.fetchall():
+                oid = r["order_id"]
+                out[oid] = PendingOrder(
+                    order_id=oid,
+                    order_link_id=r.get("order_link_id") or "",
+                    symbol=r.get("symbol") or "",
+                    side=r.get("side") or "",
+                    order_type=r.get("order_type") or "",
+                    qty=float(r.get("qty") or 0),
+                    price=float(r.get("price") or 0),
+                    trigger_price=float(r["trigger_price"]) if r.get("trigger_price") is not None else None,
+                    stop_order_type=r.get("stop_order_type") or "",
+                    time_in_force=r.get("time_in_force") or "",
+                    reduce_only=bool(r.get("reduce_only")),
+                    position_idx=int(r.get("position_idx") or 0),
+                    placed_at=r["placed_at"],
+                    raw={},
+                )
+        return out
+
+    def _load_positions_from_db(self) -> dict[PositionKey, PositionState]:
+        """Reconstruct prior in-memory position state from open annotations."""
+        out: dict[PositionKey, PositionState] = {}
+        with self._conn() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT ON (symbol, side)
+                    symbol, side, opened_at, entry_price, size, leverage
+                FROM bybit_trade_annotations
+                WHERE status = 'open'
+                ORDER BY symbol, side, opened_at DESC
+                """
+            )
+            for r in cur.fetchall():
+                key = PositionKey(
+                    symbol=r.get("symbol") or "",
+                    side=r.get("side") or "",
+                    position_idx=0,  # not stored in annotation; OneWay mode = 0
+                )
+                out[key] = PositionState(
+                    key=key,
+                    size=float(r.get("size") or 0),
+                    entry_price=float(r.get("entry_price") or 0),
+                    leverage=float(r.get("leverage") or 0),
+                    updated_at=r["opened_at"],
+                    raw={},
                 )
         return out
 
@@ -707,22 +783,6 @@ class BybitWatcher:
         except Exception as exc:
             logger.error(f"fetch_pending failed: {exc}")
             curr_pending = {}
-
-        # Bootstrap: first tick, snapshot without alerts
-        bootstrap = not self._last_state and not self._last_pending
-        if bootstrap and (curr_pos or curr_pending):
-            logger.info(
-                f"bootstrap: {len(curr_pos)} position(s) + {len(curr_pending)} pending order(s), "
-                "snapshotting without alerts"
-            )
-            # Insert existing pending into DB without alerting
-            for p in curr_pending.values():
-                ctx = self._context_snapshot(PositionKey(symbol=p.symbol, side=p.side))
-                auto = self._classify(ctx)
-                self._upsert_pending(p, ctx, auto)
-            self._last_state = curr_pos
-            self._last_pending = curr_pending
-            return
 
         # Rule 6 enforcement runs BEFORE diff so cancel resolves naturally on next tick
         try:
