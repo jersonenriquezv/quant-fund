@@ -76,12 +76,14 @@ Total estimate: ~200 LOC, within ≤500 limit.
   - `python -m pytest tests/test_bybit_annotation_fields.py -v --tb=short` → **5/5 PASSED** (0.49s). Covers: AnnotationUpdate accepts both new fields; unset-field exclusion; `_row_to_out` roundtrips populated values; `_row_to_out` handles NULL; bybit_sync DDL source contains both ALTER lines.
   - `python -m pytest tests/test_bybit_watcher_enforcement.py -v --tb=short` → **6/6 PASSED** (regression). PR #29 enforcement path unaffected.
   - `cd dashboard/web && npm run build` → **compiled successfully in 5.9s, 0 errors, 0 warnings.** `/annotate/[id]` route bundle 7.2 kB (was ~7 kB before).
-- **Manual checks pending (user to verify before "advance"):**
-  - [ ] View `/annotate/<id>` at 375px wide on iPhone SE — both new TRIGGER and INVALIDATION fields visible above THESIS, no overflow, mobile keyboard works.
-  - [ ] Save annotation with values in both new fields → GET returns them, persisted in DB.
-  - [ ] Open next limit order on Bybit. Fill `trigger_condition` AND `thesis_invalidation` in the form before order fills or 5-min auto-cancel.
-  - [ ] Repeat across **5 attempted trades** — tracer gate is ≥4 of 5 with both fields filled.
-  - [ ] On close of any trade with NULL trigger or invalidation, watcher logs WARNING `journal_fields_missing` (tail logs to confirm).
+- **Manual checks (user-verified 2026-05-15):**
+  - [x] View `/annotate/<id>` at 375px wide on iPhone SE — both new TRIGGER and INVALIDATION fields visible above THESIS, no overflow, mobile keyboard works.
+  - [x] Save annotation with values in both new fields → GET returns them, persisted in DB.
+  - [x] On close of any trade with NULL trigger or invalidation, watcher logs WARNING `journal_fields_missing` (verified via tail).
+- **Tracer (multi-day, pending):**
+  - [ ] 5 Bybit limit orders after 2026-05-15 with ≥4 having both `trigger_condition` AND `thesis_invalidation` populated. Query in plan body.
+- **CI:**
+  - PR #31 pytest pass 1m12s after fix `c368767` (install `dashboard/api/requirements.txt` in CI).
 - **Rollback trigger fired:** no
 - **Files changed:** 7
   - `data_service/bybit_sync.py` (+2 LOC — migration ALTER lines)
