@@ -497,6 +497,23 @@ D: net_score <  2
 
 ## 8. Changelog
 
+### 2026-05-19 — Bybit watcher periodic sync + Rule 10/11 operational clarifications
+**Files:** `data_service/bybit_watcher.py`, `config/settings.py`, `docs/grill/bybit-rules-taxonomy.md`, `docs/grill/discipline-no-manual-exits-2026-05-19.md` (new).
+
+**What changed:**
+- `bybit_watcher.py`: new `_periodic_sync_loop` coroutine spawned in `run_forever`. Pulls `bybit_executions` + `bybit_closed_pnl` every `BYBIT_PERIODIC_SYNC_SEC` (default 1800s) with a `BYBIT_PERIODIC_SYNC_DAYS`-day lookback (default 2). Toggle: `BYBIT_PERIODIC_SYNC_ENABLED` (default true).
+- `bybit_rules-taxonomy.md`: operational clarifications appended to Rule 10 (TP trigger-Market, TP frozen post-entry, SL only moves to breakeven after +1R) and Rule 11 (manual close before TP1 only when price touches pre-recorded `thesis_invalidation`; without recorded invalidation, manual close forbidden). Same Phase 1 framing — clarification of existing rules, not a new Rule. Rule 13 freeze respected.
+- New grill `docs/grill/discipline-no-manual-exits-2026-05-19.md` records the decision tree.
+
+**Why:** Audit showed `bybit_executions` sync dead 33 days (2026-04-16 → 2026-05-19) because the watcher only calls `sync_closed_pnl` on close events and the manual `scripts/sync_bybit.py` was never cronned. Without the executions table fresh, rule-compliance measurement (planned post Rule 13 forward test) is blind. User also confessed three discretionary post-entry behaviors (early Market close, stuck close-Limit, moved TP/SL). Grilled against the default-kill stance: kill the request for new journaling fields (Gate 0 shows 1/5 fill rate — more fields = more empty fields), commit to discipline + minimal infra instead.
+
+**Result:**
+- Periodic sync runs in-process; manual `scripts/sync_bybit.py` still available but no longer required.
+- Existing tests (11) pass; no new tests because the loop is wall-clock-driven and idempotent — same behavior as the close-path sync call already covered by integration runs.
+- Initial catch-up sync executed manually 2026-05-19: 137 executions + 32 closed PnL upserted, span now 2026-03-22 → 2026-05-19.
+
+**Operator note:** Discipline commitment is non-code — falsification = ≤2 rule violations in next 30 Bybit trades, per Rule 13 forward test gate.
+
 ### 2026-05-11 — ML v0 engine1 meta-label baseline (decision gate)
 **Files:** `scripts/ml_v0_engine1.py` (new), `docs/audits/ml-v0-engine1-2026-05-11.md` (new). Issue: #25. PR: #26.
 

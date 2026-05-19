@@ -61,10 +61,19 @@ SL placed at order time. Structural (below S, above R), never mathematical ("at 
 - TP2 hit (3R): close remaining 50%
 - Zero discretion post-fill
 
+**Operational clarification (2026-05-19):**
+- TP orders on Bybit configured as **trigger-Market**, never trigger-Limit. Fee math (maker 0.02% vs taker 0.055% ≈ $0.175 per $500 close) loses badly versus a single missed TP swing ($5-10). Use trigger-Market unless running tight-spread scalps (out of swing scope).
+- TP price does NOT move after entry. Period.
+- SL moves only to breakeven, only after price runs +1R from entry (classical free trade). SL never moves against the position.
+
 ### Rule 11 — Pre-TP1 escape only on invalidation
 Close before TP1 ONLY if technical thesis invalidated (structure broken in LTF, opposite structure stronger). Reason mandatory in `exit_reason_early` field.
 
 Not for fear. Not for "looks weird." Not for news.
+
+**Operational clarification (2026-05-19):**
+- "Invalidated" = price touches the `thesis_invalidation` value recorded pre-trade (Phase 1 field, see Rule 6). If `thesis_invalidation` was not recorded at entry, manual close before TP1 is forbidden.
+- Any close before TP1 without a touched, pre-recorded invalidation = rule violation. Counted in Rule 13 forward test. Tolerance ≤2 violations per 30 trades.
 
 ---
 
