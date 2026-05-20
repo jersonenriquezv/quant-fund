@@ -398,7 +398,8 @@ class BybitWatcher:
         with self._conn() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """
-                SELECT id, entry_price, size FROM bybit_trade_annotations
+                SELECT id, entry_price, size, trigger_condition, thesis_invalidation
+                FROM bybit_trade_annotations
                 WHERE symbol = %s AND side = %s AND status = 'open'
                 ORDER BY opened_at DESC LIMIT 1
                 """,
@@ -407,6 +408,18 @@ class BybitWatcher:
             annot = cur.fetchone()
             if not annot:
                 return None
+
+            missing: list[str] = []
+            if not annot.get("trigger_condition"):
+                missing.append("trigger_condition")
+            if not annot.get("thesis_invalidation"):
+                missing.append("thesis_invalidation")
+            if missing:
+                logger.warning(
+                    f"bybit_watcher: journal_fields_missing on close "
+                    f"annotation_id={annot['id']} symbol={key.symbol} side={key.side} "
+                    f"missing={missing}"
+                )
 
             cur.execute(
                 """
@@ -737,8 +750,34 @@ class BybitWatcher:
         self._last_state = curr_pos
         self._last_pending = curr_pending
 
+    async def _periodic_sync_loop(self) -> None:
+        """Pull bybit_executions + bybit_closed_pnl on a fixed interval.
+
+        Removes the manual `python scripts/sync_bybit.py` dependency — without
+        this loop, both tables drift whenever a close event is missed (idle
+        watcher, restart, transient API error). Idempotent inserts make the
+        overlap window safe to replay.
+        """
+        if not settings.BYBIT_PERIODIC_SYNC_ENABLED:
+            logger.info("bybit_watcher: periodic sync disabled")
+            return
+        interval = max(60, int(settings.BYBIT_PERIODIC_SYNC_SEC))
+        days = max(1, int(settings.BYBIT_PERIODIC_SYNC_DAYS))
+        logger.info(f"bybit_watcher: periodic sync every {interval}s (last {days}d)")
+        from data_service.bybit_sync import BybitSync
+        sync = BybitSync()
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                exec_n = sync.sync_executions(category="linear", days=days)
+                pnl_n = sync.sync_closed_pnl(category="linear", days=days)
+                logger.info(f"periodic_sync: execs={exec_n} closed_pnl={pnl_n}")
+            except Exception as exc:
+                logger.warning(f"periodic_sync failed: {exc}")
+
     async def run_forever(self, interval: int = POLL_INTERVAL_SEC) -> None:
         logger.info(f"bybit_watcher: started (interval={interval}s)")
+        asyncio.create_task(self._periodic_sync_loop())
         while True:
             await self.tick()
             await asyncio.sleep(interval)

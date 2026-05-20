@@ -31,9 +31,13 @@ Mobile annotation form filled BEFORE placing limit order:
 - 3+ confluences listed
 - Thesis 1-3 lines
 - Emotional state honest
+- **`trigger_condition`** — concrete fire-event (e.g. "rebote en POC 4H 79.2k con vela cuerpo entero + RSI<30 5m"). Structured sub-field of Rule 1 ("planned level"). Added 2026-05-15.
+- **`thesis_invalidation`** — market behaviour that breaks the thesis, distinct from SL price (e.g. "cierre 15m > 80.1k = thesis short rota"). Structured sub-field of Rule 11 ("pre-TP1 escape only on invalidation"). Added 2026-05-15.
 
 Form auto-rejects if emotional state ∈ {impaciente, FOMO, revanchero}.
 No journal entry = no trade. Engineering enforcement in `docs/plans/bybit-journal-enforcement.md`.
+
+**Note 2026-05-15:** `trigger_condition` and `thesis_invalidation` are STRUCTURED SUB-FIELDS of existing Rules 1 + 11, NOT new rules. Rule 13 (no new binding rules during N=30 test) is therefore not violated — these capture content the user was already supposed to write inside `thesis_pre` prose, but in queryable columns. See `docs/plans/manual-edge-discipline-2026-05-15.md` Phase 1 for instrumentation rationale.
 
 ---
 
@@ -57,10 +61,19 @@ SL placed at order time. Structural (below S, above R), never mathematical ("at 
 - TP2 hit (3R): close remaining 50%
 - Zero discretion post-fill
 
+**Operational clarification (2026-05-19):**
+- TP orders on Bybit configured as **trigger-Market**, never trigger-Limit. Fee math (maker 0.02% vs taker 0.055% ≈ $0.175 per $500 close) loses badly versus a single missed TP swing ($5-10). Use trigger-Market unless running tight-spread scalps (out of swing scope).
+- TP price does NOT move after entry. Period.
+- SL moves only to breakeven, only after price runs +1R from entry (classical free trade). SL never moves against the position.
+
 ### Rule 11 — Pre-TP1 escape only on invalidation
 Close before TP1 ONLY if technical thesis invalidated (structure broken in LTF, opposite structure stronger). Reason mandatory in `exit_reason_early` field.
 
 Not for fear. Not for "looks weird." Not for news.
+
+**Operational clarification (2026-05-19):**
+- "Invalidated" = price touches the `thesis_invalidation` value recorded pre-trade (Phase 1 field, see Rule 6). If `thesis_invalidation` was not recorded at entry, manual close before TP1 is forbidden.
+- Any close before TP1 without a touched, pre-recorded invalidation = rule violation. Counted in Rule 13 forward test. Tolerance ≤2 violations per 30 trades.
 
 ---
 

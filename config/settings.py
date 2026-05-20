@@ -44,6 +44,12 @@ class Settings:
     BYBIT_JOURNAL_ENFORCEMENT_DEADLINE_SEC: int = int(os.getenv("BYBIT_JOURNAL_ENFORCEMENT_DEADLINE_SEC", "300"))
     BYBIT_JOURNAL_ENFORCEMENT_WHITELIST_ORDER_TYPES: List[str] = field(default_factory=lambda: ["Market"])
 
+    # Periodic sync inside watcher: pulls bybit_executions + bybit_closed_pnl so manual `sync_bybit.py` is not required.
+    # 30-min cadence + 2-day lookback gives idempotent overlap that survives watcher restarts.
+    BYBIT_PERIODIC_SYNC_ENABLED: bool = os.getenv("BYBIT_PERIODIC_SYNC_ENABLED", "true").lower() == "true"
+    BYBIT_PERIODIC_SYNC_SEC: int = int(os.getenv("BYBIT_PERIODIC_SYNC_SEC", "1800"))
+    BYBIT_PERIODIC_SYNC_DAYS: int = int(os.getenv("BYBIT_PERIODIC_SYNC_DAYS", "2"))
+
     # ========================
     # APIs EXTERNAS
     # ========================
