@@ -386,6 +386,14 @@ Pre-trade structured fields (`trigger_condition`, `thesis_invalidation`) + falsi
 
 Original 14-rule taxonomy was AI-generated theatre — user confessed 5-95% violation rates depending on rule. Rewrite grilled in `docs/grill/rules-rewrite-2026-05-13.md`. New taxonomy v3 in `docs/grill/bybit-rules-taxonomy.md`. Hard validation gate Rule 13 = N=30 trades with full journal before any scaling or rule changes. Real edge thesis: POC mean reversion with 4H 50 EMA trend filter + 3-confluence minimum + Limit-only enforcement.
 
+### Side plan — Top-Down Telegram Brief (2026-05-20)
+
+Read-only analytical tool for manual Bybit entries (BTC/ETH/XRP/SOL). Swing cascade (4H→1H→30m→15m) reconciled multi-TF bias + unbroken liquidity threats, delivered via Telegram. NO `strategy_service/` touches, NO ML feature changes — FREEZE-safe. Falsification: WR comparison via `topdown_brief_used` journal annotation, 30 days post Phase 4 ship. Plan: `docs/plans/topdown-telegram-brief-2026-05-20.md`. Source grill: `docs/grill/topdown-telegram-brief-2026-05-20.md` (verdict BUILD).
+
+### Side plan — SL Classifier Post-Mortem (2026-05-20)
+
+Read-only analysis script to classify engine1 SL failures into modal types (wrong_direction / sl_too_tight_noise / late_entry / wrong_zone / counter_trend_valid). No detector / setting / ML feature changes. Falls under FREEZE "monitoring/infrastructure" allowance. Plan: `docs/plans/sl-classifier-postmortem.md`. Source grill: `docs/grill/one-step-down-cascade-2026-05-20.md` (verdict KILL on OSD cascade, pivoted to this).
+
 ### Side experiment — Scalp Shadow v1 (2026-05-04)
 
 Independent shadow-only experiment for microstructural scalping signals, separate from the SMC roadmap above. Plan: `docs/plans/scalp_shadow_v1.md`.

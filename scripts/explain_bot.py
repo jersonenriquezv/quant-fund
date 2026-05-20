@@ -235,6 +235,34 @@ class ExplainBot:
             except Exception as exc:
                 await self._send(client, f"review error: {exc}", reply_to=msg_id)
 
+        elif cmd == "/topdown":
+            try:
+                from scripts.topdown_snapshot import build_brief_text, normalize_pair, PAIRS
+                # Parse: "<pair>" or "<pair> full"
+                parts_arg = arg.split() if arg else []
+                pair_raw = parts_arg[0] if parts_arg else ""
+                mode = "full" if len(parts_arg) > 1 and parts_arg[1].lower() == "full" else "short"
+                pair = normalize_pair(pair_raw)
+                if pair is None:
+                    await self._send(
+                        client,
+                        "Usage: `/topdown <pair>` — e.g. `/topdown btc`. "
+                        "Add `full` for detail: `/topdown btc full`. "
+                        f"Supported: {', '.join(PAIRS)}",
+                        reply_to=msg_id,
+                    )
+                    return
+                await self._send(client, f"Generating top-down for {pair} ({mode})…", reply_to=msg_id)
+                rendered = await asyncio.to_thread(build_brief_text, pair, mode)
+                if rendered is None:
+                    await self._send(client, f"No data for {pair}", reply_to=msg_id)
+                    return
+                for chunk in self._chunk(rendered, 3800):
+                    await self._send(client, f"```\n{chunk}\n```", reply_to=msg_id)
+            except Exception as exc:
+                logger.exception("topdown failed")
+                await self._send(client, f"topdown error: {exc}", reply_to=msg_id)
+
         elif cmd == "/check":
             await self._send(client, "Checando setup…", reply_to=msg_id)
             try:
@@ -260,6 +288,8 @@ class ExplainBot:
                 "`/stats [days]` — quick stats (default 7d)\n"
                 "`/review [days]` — full Claude review (default 7d)\n"
                 "`/check SYMBOL side entry SL TP [lev=N] [thesis…]` — pre-trade sanity check\n"
+                "`/topdown <pair>` — short brief (recommendation + levels)\n"
+                "`/topdown <pair> full` — full multi-TF detail\n"
                 "`/explain <concept>` — explanation",
                 reply_to=msg_id,
             )
