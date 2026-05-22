@@ -1302,55 +1302,6 @@ class TestCrossSignalDedup:
         assert btc is not None
         assert eth is not None
 
-    def test_orderbook_cache_reuses_within_ttl(self):
-        """Two consecutive evaluate_scalp calls for the same pair within
-        SCALP_ORDERBOOK_CACHE_TTL_SECONDS must hit the cache and call the
-        REST orderbook endpoint exactly once.
-        """
-        ds = _mock_data_service_with_candles(_liq_reclaim_candles())
-        # Strip the OI flush so Signals 1/2 don't fire and we reach Signal 3
-        # on every call. Force baseline prob to 0 so it can't accidentally fire.
-        snap = MarketSnapshot(pair="BTC/USDT", timestamp=0, recent_oi_flushes=[])
-        ds.get_market_snapshot.return_value = snap
-        # Spread > 2bps so Signal 3 returns None; we only care that the
-        # orderbook fetch happens (or doesn't).
-        ds.get_orderbook_snapshot.return_value = {"spread": 0.001}
-        svc = StrategyService(ds)
-        trigger = _liq_reclaim_candles()[-1]
-
-        with _enable_scalp_shadow(), patch(
-            "strategy_service.scalp_setups.settings.SCALP_BASELINE_FIRE_PROB", 0.0,
-        ):
-            with patch("strategy_service.service.time.time", return_value=5_000_000.0):
-                svc.evaluate_scalp("BTC/USDT", trigger)
-            # Just inside the default 30s TTL.
-            with patch("strategy_service.service.time.time", return_value=5_000_010.0):
-                svc.evaluate_scalp("BTC/USDT", trigger)
-            # Just past the TTL — must trigger a fresh fetch.
-            with patch("strategy_service.service.time.time", return_value=5_000_031.0):
-                svc.evaluate_scalp("BTC/USDT", trigger)
-
-        # Two REST calls expected: first miss + second miss after expiry.
-        assert ds.get_orderbook_snapshot.call_count == 2
-
-    def test_orderbook_cache_is_per_pair(self):
-        """A fresh cache entry on BTC must not satisfy ETH's lookup."""
-        ds = _mock_data_service_with_candles(_liq_reclaim_candles())
-        snap = MarketSnapshot(pair="BTC/USDT", timestamp=0, recent_oi_flushes=[])
-        ds.get_market_snapshot.return_value = snap
-        ds.get_orderbook_snapshot.return_value = {"spread": 0.001}
-        svc = StrategyService(ds)
-        trigger = _liq_reclaim_candles()[-1]
-
-        with _enable_scalp_shadow(), patch(
-            "strategy_service.scalp_setups.settings.SCALP_BASELINE_FIRE_PROB", 0.0,
-        ):
-            with patch("strategy_service.service.time.time", return_value=6_000_000.0):
-                svc.evaluate_scalp("BTC/USDT", trigger)
-                svc.evaluate_scalp("ETH/USDT", trigger)
-        # One fetch per pair.
-        assert ds.get_orderbook_snapshot.call_count == 2
-
     def test_no_setup_does_not_arm_dedup(self):
         """Calls that return None must not start the dedup window — otherwise
         a quiet candle would block the next genuine signal.

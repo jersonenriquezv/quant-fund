@@ -905,7 +905,11 @@ class Settings:
         # "scalp_sweep_choch_v1" — killed 2026-05-07: WR 7.7% under
         # scalp_v3_clean_2026_05_06 (N=30) vs 30% random baseline. Detector
         # call removed in strategy_service/service.py.evaluate_scalp.
-        "scalp_vol_cvd_div_v1",
+        # "scalp_vol_cvd_div_v1" — killed 2026-05-22: combined v3+v4 N=6
+        # over 16d (1 TP / 1 SL / 0 BE / 4 TS, ~$1 net); v4 tune
+        # (z 3.0→2.0 + spread 2bps→5bps, 2026-05-11) failed to revive
+        # emission rate. Detector call + orderbook fetch removed in
+        # strategy_service/service.py.evaluate_scalp.
         # "scalp_funding_extreme_v1" — killed 2026-05-09: 0 emissions in 4
         # days under scalp_v3_clean_2026_05_06 despite threshold already at
         # p99 of OKX 30d funding-rate distribution. OKX SWAP funding is

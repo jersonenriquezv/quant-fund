@@ -4,7 +4,7 @@
 > Reflects code reality — if code and doc disagree, fix the doc.
 > Documentation rule: this file is the operational source of truth. `README.md` is a portfolio overview; `docs/context/*` explains concepts and history and may intentionally lag unless this baseline links to it.
 
-**Last updated:** 2026-05-06
+**Last updated:** 2026-05-22
 **ML Feature Version:** 18
 **Bot status:** SHADOW-ONLY (OKX_SANDBOX=false, ENABLED_SETUPS=[], ~$86 capital untouched)
 **Active experiment:** `engine1_short_multipair_v1c_2026_05_07` (settings.py default since this commit). Engine 1 v1c relaxes the v1b ETH-only pair filter to all `TRADING_PAIRS` while keeping the short-only direction filter. Triggered by 0 emissions in 55h under v1b: ETH produced no qualifying impulses while BTC/SOL/LINK/AVAX detected short impulses but had HTF=long (rejected at dir-vs-HTF gate). Long-impulse history was negative across measured pairs and is intentionally still excluded.
@@ -394,7 +394,7 @@ Independent shadow-only experiment for microstructural scalping signals, separat
   Old rows stay queryable under their experiment_id.
 - **Master switch:** `SCALP_SHADOW_ENABLED` (default `false`)
 - **Timeframe:** `SCALP_TIMEFRAME` (default `5m`; bumps to `1m` once a fetcher commit lands)
-- **Setup types:** `scalp_liq_reclaim_v1`, `scalp_sweep_choch_v1` (killed 2026-05-07), `scalp_vol_cvd_div_v1`, `scalp_funding_extreme_v1` (killed 2026-05-09), `scalp_random_baseline_v1` — all routed through `SHADOW_MODE_SETUPS`, zero live execution. Surviving in pipeline: `liq_reclaim`, `vol_cvd_div`, `random_baseline`.
+- **Setup types:** `scalp_liq_reclaim_v1`, `scalp_sweep_choch_v1` (killed 2026-05-07), `scalp_vol_cvd_div_v1` (killed 2026-05-22), `scalp_funding_extreme_v1` (killed 2026-05-09), `scalp_random_baseline_v1` — all routed through `SHADOW_MODE_SETUPS`, zero live execution. Surviving in pipeline: `liq_reclaim`, `random_baseline`.
 - **`scalp_sweep_choch_v1` v2 filters (added 2026-05-05):**
   - **ADX(14) gate:** ADX on `SCALP_TIMEFRAME` must be `>= SCALP_SWEEP_CHOCH_MIN_ADX` (default `18.0`). When the candle window is too short for ADX warmup the detector also blocks rather than emit blind. Sub-trend regimes dominated v1 SLs.
   - **Book imbalance gate (fade pattern):** when an orderbook snapshot is available, `book_imbalance_ratio = depth_bid_usd / depth_ask_usd`:
@@ -492,6 +492,20 @@ D: net_score <  2
 ---
 
 ## 8. Changelog
+
+### 2026-05-22 — Kill `scalp_vol_cvd_div_v1` detector
+**Files:** `strategy_service/service.py`, `config/settings.py`, `docs/SYSTEM_BASELINE.md`
+
+**What changed:**
+- `evaluate_scalp` no longer invokes `evaluate_vol_cvd_divergence`. Adjacent orderbook fetch (`self._get_cached_orderbook(pair, now)`) also removed since vol_cvd was the only consumer — helper + `_scalp_ob_cache` attribute + `SCALP_ORDERBOOK_CACHE_TTL_SECONDS` setting retained for now (dead but inert, in case a future scalp signal needs spread data).
+- Detector code retained in `strategy_service/scalp_setups.py` for historical replay.
+- `SHADOW_MODE_SETUPS` entry commented out. `SCALP_SETUP_TYPES` + `SCALP_SIGNAL_PARAMS` entries retained intact for historical queries.
+
+**Why:** Combined N=6 over 16 days across v3 + v4 (`scalp_v3_clean_2026_05_06`: 1 TP / 1 SL / 0 BE / 2 TS, ~−$5; `scalp_v4_tune_2026_05_11`: 1 TP / 1 SL / 0 BE / 1 TS, ~+$5 — net ~$0 over 16d). The v4 tune (z 3.0→2.0 + spread 2bps→5bps, 2026-05-11) was the explicit rescue attempt and failed: 3 emissions in 11 days, statistically indistinguishable from the v3 baseline of 0/5d. Audit thesis (the relax should push toward ≥10 emissions by 2026-06-08) is already empirically dead — pulling the plug 17 days early so the surviving scalp signals (`liq_reclaim`, `random_baseline`) keep collecting under a cleaner pipeline.
+
+**Operator note:** Historical rows queryable via `setup_type='scalp_vol_cvd_div_v1'`. Surviving scalp signals: `liq_reclaim` (review point 2026-06-08 unchanged — kill if <10 emissions by then), `random_baseline` (permanent benchmark). No `SCALP_EXPERIMENT_ID` bump — only `liq_reclaim` + `random_baseline` keep emitting under `scalp_v4_tune_2026_05_11`, signal regime for survivors is unchanged.
+
+**Tests:** Detector + its tests intact in `tests/test_scalp_setups.py` (replay validation). Full suite expected green.
 
 ### 2026-05-11 — ML v0 engine1 meta-label baseline (decision gate)
 **Files:** `scripts/ml_v0_engine1.py` (new), `docs/audits/ml-v0-engine1-2026-05-11.md` (new). Issue: #25. PR: #26.
