@@ -35,9 +35,11 @@ from scripts.topdown_snapshot import (
     _pd_bias_conflict, _sweep_distance_pct, _sweep_actionable,
     _trade_triplet, _bos_session_quality,
     _compute_pdh_pdl, _compute_pwh_pwl, _daily_bias_chain, _today_candle_status,
+    _daily_atr, _adaptive_tp,
     DISPLACEMENT_LOOKBACK_N, DISPLACEMENT_BASELINE_N,
     TARGET_MIN_R_MULTIPLE, ICT_KILLZONES, SWEEP_MAX_ACTIONABLE_PCT,
     DAILY_DOJI_TOLERANCE, DAILY_CHAIN_N,
+    ATR_PERIOD, ADAPTIVE_TP_ATR_MULTIPLE,
 )
 
 
@@ -950,3 +952,185 @@ class TestDailyContextRenderIntegration:
         out = _render_telegram_markdown(snap)
         n = len(out.split("\n"))
         assert n <= 40, f"Brief too long after DAILY CONTEXT: {n}\n{out}"
+
+
+# ---------------------------------------------------------------------------
+# PR3 v2 — Adaptive TP via Daily ATR
+# ---------------------------------------------------------------------------
+
+
+class TestDailyATR:
+    def test_basic_atr_constant_range(self):
+        # 20 candles, each with TR ≈ 2.0 (high-low = 2, prev_close ~= mid)
+        candles = []
+        base = 1_700_000_000_000
+        for i in range(20):
+            candles.append(_make_daily(100, 101, 99, 100,
+                                       ts_ms=base + i * 86_400_000))
+        atr = _daily_atr(candles, period=14)
+        assert atr is not None
+        # All TRs = 2.0 → ATR(14) = 2.0
+        assert atr == pytest.approx(2.0, abs=0.01)
+
+    def test_returns_none_insufficient_candles(self):
+        candles = [_make_daily(100, 101, 99, 100, ts_ms=i) for i in range(10)]
+        assert _daily_atr(candles, period=14) is None
+
+    def test_atr_handles_gaps(self):
+        # 15 candles, day 5 has a gap up — TR includes |high - prev_close|
+        candles = []
+        for i in range(15):
+            if i == 5:
+                # Gap up: open at 110, range 110-115, prev close was 100
+                candles.append(_make_daily(110, 115, 110, 113, ts_ms=i * 86_400_000))
+            else:
+                candles.append(_make_daily(100, 101, 99, 100, ts_ms=i * 86_400_000))
+        atr = _daily_atr(candles, period=14)
+        assert atr is not None
+        assert atr > 2.0  # gap pulls average up
+
+
+class TestAdaptiveTP:
+    def test_single_when_short_distance(self):
+        # entry 100, sl 102, final 99 (1pt away), ATR 2.0, threshold = 4.0
+        # 1 < 4 → single
+        r = _adaptive_tp(100, 102, 99, [], daily_atr=2.0)
+        assert r["mode"] == "single"
+        assert r["tp1"] == 99
+        assert r["tp2"] is None
+        assert r["splits"] == [100]
+
+    def test_single_when_no_atr(self):
+        r = _adaptive_tp(100, 102, 90, [], daily_atr=None)
+        assert r["mode"] == "single"
+
+    def test_scaled_with_intermediate(self):
+        # entry 100, sl 102, final 90 (10pt away), ATR 3.0, threshold = 6.0
+        # 10 > 6 → scaled. Intermediate at 97.5 (2.5 from entry, within 1× ATR=3)
+        intermediate = type("L", (), {"price": 97.5})()
+        r = _adaptive_tp(100, 102, 90, [intermediate], daily_atr=3.0)
+        assert r["mode"] == "scaled"
+        assert r["tp1"] == 97.5
+        assert r["tp2"] == 90
+        assert r["splits"] == [50, 50]
+
+    def test_scaled_fallback_to_single_no_intermediate(self):
+        # Long distance but no intermediate within 1× ATR → single fallback
+        r = _adaptive_tp(100, 102, 90, [], daily_atr=3.0)
+        assert r["mode"] == "single"
+        assert r.get("fallback_reason") == "no_intermediate_in_range"
+
+    def test_scaled_picks_closest_to_1x_atr(self):
+        # Multiple intermediates: 99 (1 away), 98 (2 away), 97 (3 away, == ATR).
+        # ATR = 3, threshold for scaled = 6. Final at 92 (8 away → scaled).
+        # Should pick 97 (closest to 1× ATR distance).
+        intermediates = [
+            type("L", (), {"price": 99})(),
+            type("L", (), {"price": 98})(),
+            type("L", (), {"price": 97})(),
+        ]
+        r = _adaptive_tp(100, 102, 92, intermediates, daily_atr=3.0)
+        assert r["mode"] == "scaled"
+        assert r["tp1"] == 97
+
+    def test_intermediate_past_final_target_excluded(self):
+        # Short trade: entry 100, final 86 (14 away). ATR=4 (intermediate
+        # range 4 from entry, threshold 2*ATR=8). target_distance 14 > 8 → scaled.
+        # Intermediate at 85 (below final 86) → excluded.
+        # Intermediate at 97 (3 from entry, ≤ ATR=4, between entry+final) → valid.
+        intermediates = [
+            type("L", (), {"price": 85})(),  # past final 86, excluded
+            type("L", (), {"price": 97})(),  # valid
+        ]
+        r = _adaptive_tp(100, 102, 86, intermediates, daily_atr=4.0)
+        assert r["mode"] == "scaled"
+        assert r["tp1"] == 97
+
+    def test_long_trade_direction_handled(self):
+        # entry 100, sl 98, final 110 (10pt above). ATR 3, threshold 6. Scaled.
+        # Intermediate at 102 (2 above entry, within ATR).
+        intermediates = [type("L", (), {"price": 102})()]
+        r = _adaptive_tp(100, 98, 110, intermediates, daily_atr=3.0)
+        assert r["mode"] == "scaled"
+        assert r["tp1"] == 102
+
+
+class TestAdaptiveTPRenderIntegration:
+    def _snap_with_long_distance_setup(self):
+        """SHORT setup with long-distance target requiring scaled TP."""
+        latest_break = StructureBreak(
+            timestamp=1_000_000, break_type="bos", direction="bearish",
+            break_price=99.0, broken_level=99.5, candle_index=10,
+        )
+        # Setup so target picker (1.5R floor) lands on far SSL 92, and
+        # adaptive TP picks intermediate 99.7 for TP1.
+        # entry sweep BSL 101, invalidation 102 → floor = (101-102)*1.5 = 1.5
+        # SSL 99.7 distance from sweep = 1.3 → BELOW floor, skipped by _pick_valid_target
+        # SSL 92 distance from sweep = 9 → passes floor, becomes target
+        # ATR=4 → intermediate range 4 from entry, threshold 2*ATR=8
+        # target_distance entry→final = 9 > 8 → scaled
+        # intermediate 99.7 is between 92 and 101, distance from entry 1.3 ≤ 4 → valid TP1
+        liq = [
+            LiquidityLevel(price=101.0, level_type="bsl", touch_count=2,
+                           timestamps=[1000], swept=False),
+            LiquidityLevel(price=99.7, level_type="ssl", touch_count=2,
+                           timestamps=[1100], swept=False),
+            LiquidityLevel(price=92.0, level_type="ssl", touch_count=2,
+                           timestamps=[1200], swept=False),
+        ]
+        state = _make_state(trend="bearish", latest_break=latest_break)
+        tfa = TFAnalysis(timeframe="4h", state=state, obs=[], fvgs=[], liquidity=liq)
+        # Daily candles with range 4 (high 102, low 98) → ATR ≈ 4
+        daily = [
+            _make_daily(100, 102, 98, 100, ts_ms=i * 86_400_000)
+            for i in range(20)
+        ]
+        return _make_snapshot(
+            tf_results={"4h": tfa}, current_price=100.0, side="short",
+            conf="medium", invalidation=102.0,
+            raw_candles={
+                "4h": _make_bear_displacement_candles(),
+                "1d": daily,
+            },
+        )
+
+    def test_scaled_tp_renders_when_long_distance(self):
+        snap = self._snap_with_long_distance_setup()
+        out = _render_telegram_markdown(snap)
+        assert "TP1:" in out
+        assert "TP2:" in out
+        assert "scaled" in out
+        assert "daily ATR" in out
+
+    def test_single_tp_renders_for_short_distance(self):
+        # Set up where target is close (single TP)
+        latest_break = StructureBreak(
+            timestamp=1_000_000, break_type="bos", direction="bearish",
+            break_price=99.0, broken_level=99.5, candle_index=10,
+        )
+        liq = [
+            LiquidityLevel(price=101.0, level_type="bsl", touch_count=2,
+                           timestamps=[1000], swept=False),
+            LiquidityLevel(price=99.0, level_type="ssl", touch_count=2,
+                           timestamps=[1100], swept=False),
+        ]
+        state = _make_state(trend="bearish", latest_break=latest_break)
+        tfa = TFAnalysis(timeframe="4h", state=state, obs=[], fvgs=[], liquidity=liq)
+        # Large ATR so threshold is high relative to small target distance
+        daily = [
+            _make_daily(100, 105, 95, 100, ts_ms=i * 86_400_000)
+            for i in range(20)
+        ]
+        snap = _make_snapshot(
+            tf_results={"4h": tfa}, current_price=100.0, side="short",
+            conf="medium", invalidation=102.0,
+            raw_candles={
+                "4h": _make_bear_displacement_candles(),
+                "1d": daily,
+            },
+        )
+        out = _render_telegram_markdown(snap)
+        # Single mode: "TP:" present, "TP1:" NOT
+        assert "TP1:" not in out
+        # Allow plain "TP:" line (single mode keeps existing format)
+        assert "TP:" in out
