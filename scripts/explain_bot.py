@@ -237,17 +237,26 @@ class ExplainBot:
 
         elif cmd == "/topdown":
             try:
-                from scripts.topdown_snapshot import build_brief_text, normalize_pair, PAIRS
-                # Parse: "<pair>" or "<pair> full"
+                from scripts.topdown_snapshot import (
+                    build_brief_text, normalize_pair, PAIRS,
+                    ensure_topdown_renders_table, log_brief_render,
+                )
+                # Parse: "<pair>" (telegram default) or "<pair> full" (console-style detail)
                 parts_arg = arg.split() if arg else []
                 pair_raw = parts_arg[0] if parts_arg else ""
-                mode = "full" if len(parts_arg) > 1 and parts_arg[1].lower() == "full" else "short"
+                mode_arg = parts_arg[1].lower() if len(parts_arg) > 1 else ""
+                if mode_arg == "full":
+                    mode = "full"
+                elif mode_arg == "short":
+                    mode = "short"
+                else:
+                    mode = "telegram"
                 pair = normalize_pair(pair_raw)
                 if pair is None:
                     await self._send(
                         client,
                         "Usage: `/topdown <pair>` — e.g. `/topdown btc`. "
-                        "Add `full` for detail: `/topdown btc full`. "
+                        "Add `full` for console-style detail. "
                         f"Supported: {', '.join(PAIRS)}",
                         reply_to=msg_id,
                     )
@@ -257,8 +266,19 @@ class ExplainBot:
                 if rendered is None:
                     await self._send(client, f"No data for {pair}", reply_to=msg_id)
                     return
-                for chunk in self._chunk(rendered, 3800):
-                    await self._send(client, f"```\n{chunk}\n```", reply_to=msg_id)
+                # telegram mode = Markdown native; full/short = monospace code block
+                if mode == "telegram":
+                    for chunk in self._chunk(rendered, 3800):
+                        await self._send(client, chunk, reply_to=msg_id)
+                else:
+                    for chunk in self._chunk(rendered, 3800):
+                        await self._send(client, f"```\n{chunk}\n```", reply_to=msg_id)
+                # Phase 3 falsification tracking — must not break user reply
+                try:
+                    await asyncio.to_thread(ensure_topdown_renders_table)
+                    await asyncio.to_thread(log_brief_render, pair, mode)
+                except Exception as track_exc:
+                    logger.warning(f"topdown brief tracking failed: {track_exc}")
             except Exception as exc:
                 logger.exception("topdown failed")
                 await self._send(client, f"topdown error: {exc}", reply_to=msg_id)
@@ -288,8 +308,9 @@ class ExplainBot:
                 "`/stats [days]` — quick stats (default 7d)\n"
                 "`/review [days]` — full Claude review (default 7d)\n"
                 "`/check SYMBOL side entry SL TP [lev=N] [thesis…]` — pre-trade sanity check\n"
-                "`/topdown <pair>` — short brief (recommendation + levels)\n"
-                "`/topdown <pair> full` — full multi-TF detail\n"
+                "`/topdown <pair>` — Telegram-Markdown ICT brief (mobile)\n"
+                "`/topdown <pair> short` — legacy compact console output\n"
+                "`/topdown <pair> full` — full multi-TF technical detail\n"
                 "`/explain <concept>` — explanation",
                 reply_to=msg_id,
             )
