@@ -36,10 +36,12 @@ from scripts.topdown_snapshot import (
     _trade_triplet, _bos_session_quality,
     _compute_pdh_pdl, _compute_pwh_pwl, _daily_bias_chain, _today_candle_status,
     _daily_atr, _adaptive_tp,
+    _trend_duration, _ltf_flip_vs_htf, _last_candle_impulse, _wick_into_liquidity,
     DISPLACEMENT_LOOKBACK_N, DISPLACEMENT_BASELINE_N,
     TARGET_MIN_R_MULTIPLE, ICT_KILLZONES, SWEEP_MAX_ACTIONABLE_PCT,
     DAILY_DOJI_TOLERANCE, DAILY_CHAIN_N,
     ATR_PERIOD, ADAPTIVE_TP_ATR_MULTIPLE,
+    LTF_FLIP_MAX_CANDLES, IMPULSE_BIG_RATIO, IMPULSE_EXTREME_RATIO,
 )
 
 
@@ -1134,3 +1136,261 @@ class TestAdaptiveTPRenderIntegration:
         assert "TP1:" not in out
         # Allow plain "TP:" line (single mode keeps existing format)
         assert "TP:" in out
+
+
+# ---------------------------------------------------------------------------
+# PR4 v2 — Structure Context (HTF duration + LTF flip + impulse + wick)
+# ---------------------------------------------------------------------------
+
+
+class TestTrendDuration:
+    def test_basic_duration(self):
+        # Bear trend, BOS at ts=1000, current candle at ts=10000 (9s later)
+        brk = StructureBreak(
+            timestamp=1000, break_type="bos", direction="bearish",
+            break_price=99.0, broken_level=99.5, candle_index=5,
+        )
+        state = _make_state(trend="bearish", structure_breaks=[brk],
+                            latest_break=brk)
+        tfa = TFAnalysis(timeframe="4h", state=state, obs=[], fvgs=[], liquidity=[])
+        candles = [_make_candle(100, 101, 99, 100, ts=ts)
+                   for ts in [500, 1500, 2500, 5000, 10000]]
+        d = _trend_duration(tfa, candles)
+        assert d is not None
+        assert d["trend"] == "bearish"
+        assert d["candles_back"] == 4  # candles 1500, 2500, 5000, 10000 all >= 1000
+
+    def test_returns_none_no_breaks(self):
+        state = _make_state(trend="undefined", structure_breaks=[])
+        tfa = TFAnalysis(timeframe="4h", state=state, obs=[], fvgs=[], liquidity=[])
+        assert _trend_duration(tfa, [_make_candle(100, 101, 99, 100, ts=0)]) is None
+
+    def test_returns_none_no_candles(self):
+        brk = StructureBreak(timestamp=0, break_type="bos", direction="bearish",
+                             break_price=99.0, broken_level=99.5, candle_index=0)
+        state = _make_state(trend="bearish", structure_breaks=[brk], latest_break=brk)
+        tfa = TFAnalysis(timeframe="4h", state=state, obs=[], fvgs=[], liquidity=[])
+        assert _trend_duration(tfa, []) is None
+
+
+class TestLtfFlipVsHtf:
+    def _make_tfa(self, tf, trend, breaks):
+        latest = breaks[-1] if breaks else None
+        state = _make_state(trend=trend, structure_breaks=breaks, latest_break=latest)
+        return TFAnalysis(timeframe=tf, state=state, obs=[], fvgs=[], liquidity=[])
+
+    def test_flip_detected_when_ltf_against_htf(self):
+        # HTF bear, 15m flipped bull (most recent break is bullish, prev was bearish)
+        prev_brk = StructureBreak(timestamp=1000, break_type="bos",
+                                  direction="bearish", break_price=99,
+                                  broken_level=99.5, candle_index=2)
+        new_brk = StructureBreak(timestamp=2000, break_type="choch",
+                                 direction="bullish", break_price=101,
+                                 broken_level=100.5, candle_index=10)
+        tf_results = {
+            "4h": self._make_tfa("4h", "bearish",
+                                  [StructureBreak(timestamp=500, break_type="bos",
+                                                 direction="bearish", break_price=99,
+                                                 broken_level=99.5, candle_index=0)]),
+            "15m": self._make_tfa("15m", "bullish", [prev_brk, new_brk]),
+        }
+        r = _ltf_flip_vs_htf(tf_results)
+        assert r is not None
+        assert r["ltf_tf"] == "15m"
+        assert r["ltf_trend"] == "bullish"
+        assert r["htf_trend"] == "bearish"
+
+    def test_no_flip_when_same_direction(self):
+        # Both HTF and LTF bear → continuation, not flip
+        brk = StructureBreak(timestamp=2000, break_type="bos", direction="bearish",
+                             break_price=99, broken_level=99.5, candle_index=10)
+        tf_results = {
+            "4h": self._make_tfa("4h", "bearish", [brk]),
+            "15m": self._make_tfa("15m", "bearish", [brk]),
+        }
+        assert _ltf_flip_vs_htf(tf_results) is None
+
+    def test_returns_none_when_htf_undefined(self):
+        tf_results = {
+            "4h": self._make_tfa("4h", "undefined", []),
+            "15m": self._make_tfa("15m", "bullish",
+                                  [StructureBreak(timestamp=2000, break_type="bos",
+                                                 direction="bullish", break_price=101,
+                                                 broken_level=100.5, candle_index=10)]),
+        }
+        assert _ltf_flip_vs_htf(tf_results) is None
+
+    def test_prefers_lowest_tf(self):
+        # Both 15m AND 1h flipped against HTF — should prefer 15m
+        prev_b = StructureBreak(timestamp=500, break_type="bos", direction="bearish",
+                                break_price=99, broken_level=99.5, candle_index=0)
+        new_b = StructureBreak(timestamp=2000, break_type="choch",
+                               direction="bullish", break_price=101,
+                               broken_level=100.5, candle_index=10)
+        tf_results = {
+            "4h": self._make_tfa("4h", "bearish", [prev_b]),
+            "1h": self._make_tfa("1h", "bullish", [prev_b, new_b]),
+            "15m": self._make_tfa("15m", "bullish", [prev_b, new_b]),
+        }
+        r = _ltf_flip_vs_htf(tf_results)
+        assert r["ltf_tf"] == "15m"
+
+
+class TestLastCandleImpulse:
+    def test_big_impulse_flagged(self):
+        # 30 baseline candles with 0.5% bodies, last candle 3% body → ratio 6
+        candles = [_make_candle(100, 100.5, 99.5, 100.5, ts=i) for i in range(30)]
+        candles.append(_make_candle(100, 103.5, 99.5, 103, ts=30))
+        imp = _last_candle_impulse(candles)
+        assert imp is not None
+        assert imp["magnitude"] in ("big", "extreme")
+        assert imp["direction"] == "bull"
+        assert imp["ratio"] >= 3.0
+
+    def test_normal_impulse_not_flagged(self):
+        candles = [_make_candle(100, 100.5, 99.5, 100.5, ts=i) for i in range(31)]
+        imp = _last_candle_impulse(candles)
+        assert imp is not None
+        assert imp["magnitude"] == "normal"
+
+    def test_insufficient_candles_returns_none(self):
+        assert _last_candle_impulse([_make_candle(100, 101, 99, 100, ts=0)]) is None
+
+
+class TestWickIntoLiquidity:
+    def test_bsl_swept_by_wick(self):
+        # Last candle: high 102, close 99 → wick above level at 101.5, close below
+        candles = [_make_candle(100, 102, 99, 99, ts=0)]
+        liq = [
+            LiquidityLevel(price=101.5, level_type="bsl", touch_count=3,
+                           timestamps=[500], swept=False),
+        ]
+        r = _wick_into_liquidity(candles, liq)
+        assert r is not None
+        assert r["side"] == "bsl"
+        assert r["level_price"] == 101.5
+
+    def test_ssl_swept_by_wick(self):
+        # Last candle: low 98, close 101 → wick below level at 98.5, close above
+        candles = [_make_candle(100, 101, 98, 101, ts=0)]
+        liq = [
+            LiquidityLevel(price=98.5, level_type="ssl", touch_count=3,
+                           timestamps=[500], swept=False),
+        ]
+        r = _wick_into_liquidity(candles, liq)
+        assert r is not None
+        assert r["side"] == "ssl"
+
+    def test_no_sweep_when_close_through(self):
+        # Wick AND close above BSL → broken, not swept
+        candles = [_make_candle(100, 102, 99, 101.8, ts=0)]
+        liq = [
+            LiquidityLevel(price=101.5, level_type="bsl", touch_count=3,
+                           timestamps=[500], swept=False),
+        ]
+        assert _wick_into_liquidity(candles, liq) is None
+
+    def test_already_swept_excluded(self):
+        candles = [_make_candle(100, 102, 99, 99, ts=0)]
+        liq = [
+            LiquidityLevel(price=101.5, level_type="bsl", touch_count=3,
+                           timestamps=[500], swept=True),
+        ]
+        assert _wick_into_liquidity(candles, liq) is None
+
+    def test_prefers_highest_touch_count(self):
+        candles = [_make_candle(100, 102, 99, 99, ts=0)]
+        liq = [
+            LiquidityLevel(price=101.5, level_type="bsl", touch_count=2,
+                           timestamps=[500], swept=False),
+            LiquidityLevel(price=101.6, level_type="bsl", touch_count=5,
+                           timestamps=[600], swept=False),
+        ]
+        r = _wick_into_liquidity(candles, liq)
+        assert r["touch_count"] == 5
+
+
+class TestStructureContextRenderIntegration:
+    def _make_snap_with_structure(self, *, ltf_flip=True, big_impulse=True, wick_tap=True):
+        # 4H bear since timestamp 1_000_000, current candle at 5_000_000
+        brk_4h = StructureBreak(timestamp=1_000_000, break_type="bos",
+                                direction="bearish", break_price=99.0,
+                                broken_level=99.5, candle_index=10)
+        state_4h = _make_state(trend="bearish", structure_breaks=[brk_4h],
+                               latest_break=brk_4h)
+        candles_4h = [_make_candle(100, 101, 99, 100, ts=t)
+                      for t in [1_000_000, 2_000_000, 3_000_000, 4_000_000, 5_000_000]]
+
+        # 15m: bullish with prev bearish break → fresh flip
+        breaks_15m = []
+        if ltf_flip:
+            breaks_15m = [
+                StructureBreak(timestamp=2_000_000, break_type="bos",
+                              direction="bearish", break_price=99,
+                              broken_level=99.5, candle_index=2),
+                StructureBreak(timestamp=4_500_000, break_type="choch",
+                              direction="bullish", break_price=101,
+                              broken_level=100.5, candle_index=10),
+            ]
+        state_15m = _make_state(
+            trend="bullish" if ltf_flip else "bearish",
+            structure_breaks=breaks_15m,
+            latest_break=breaks_15m[-1] if breaks_15m else None,
+        )
+
+        # 1h candles: last candle 3% body if big_impulse; tap BSL if wick_tap
+        candles_1h = [_make_candle(100, 100.5, 99.5, 100.5, ts=i * 1000)
+                      for i in range(30)]
+        if big_impulse:
+            if wick_tap:
+                # 3% body bear close + wick to 102 (taps BSL 101.5)
+                candles_1h.append(_make_candle(100, 102, 96.5, 97, ts=30_000))
+            else:
+                candles_1h.append(_make_candle(100, 103.5, 99.5, 103, ts=30_000))
+        else:
+            candles_1h.append(_make_candle(100, 100.5, 99.5, 100.5, ts=30_000))
+
+        liq = []
+        if wick_tap:
+            liq.append(LiquidityLevel(price=101.5, level_type="bsl", touch_count=3,
+                                      timestamps=[500], swept=False))
+
+        tfa_4h = TFAnalysis(timeframe="4h", state=state_4h, obs=[], fvgs=[], liquidity=liq)
+        tfa_15m = TFAnalysis(timeframe="15m", state=state_15m, obs=[], fvgs=[], liquidity=[])
+
+        return _make_snapshot(
+            tf_results={"4h": tfa_4h, "15m": tfa_15m},
+            current_price=100.0, side="short", conf="medium",
+            invalidation=102.0,
+            raw_candles={
+                "4h": candles_4h,
+                "1h": candles_1h,
+            },
+        )
+
+    def test_structure_context_renders_all_signals(self):
+        snap = self._make_snap_with_structure()
+        out = _render_telegram_markdown(snap)
+        assert "*STRUCTURE CONTEXT:*" in out
+        assert "4H bearish since" in out
+        assert "flipped bullish vs 4H bearish" in out
+        assert "Last 1H:" in out  # big impulse line
+        assert "wick tapped" in out  # wick line
+
+    def test_structure_context_omitted_when_no_signals(self):
+        # No LTF flip, no big impulse, no wick tap
+        snap = self._make_snap_with_structure(
+            ltf_flip=False, big_impulse=False, wick_tap=False,
+        )
+        out = _render_telegram_markdown(snap)
+        # Only trend-duration line should appear, others omitted.
+        # Structure section header appears IF any line exists.
+        assert "4H bearish since" in out
+        assert "flipped" not in out
+        assert "wick tapped" not in out
+
+    def test_brief_under_45_lines_with_full_structure_context(self):
+        snap = self._make_snap_with_structure()
+        out = _render_telegram_markdown(snap)
+        n = len(out.split("\n"))
+        assert n <= 45, f"Brief too long with full structure context: {n}\n{out}"
