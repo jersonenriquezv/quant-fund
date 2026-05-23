@@ -26,6 +26,8 @@ Operational rules for Claude when modifying `data_service/`. The eyes and ears �
 | `data_integrity.py` | State enums, CVDState, CONTRACT_SIZES re-export, CircuitBreaker, can_trade_setup() |
 | `metadata.py` | OKX instrument IDs + contract sizes. Single source. `assert_supported_trading_pairs()` fails fast |
 | `data_store.py` | Redis (cache, TTL'd) + PostgreSQL (history, 11 tables). VALID_OUTCOMES + NON_MARKET_OUTCOMES + ml_market_outcome_filter_sql |
+| `bybit_watcher.py` | Bybit position-watcher daemon (separate container). Polls REST every 60s, detects open/close/modify, writes `bybit_trade_annotations` + `bybit_pending_orders`, sends Telegram alerts. `_close_annotation` SUMS every `bybit_closed_pnl` row between `opened_at` and now — required for multi-partial limit closes |
+| `bybit_sync.py` | Bybit REST sync (`get_executions`, `get_closed_pnl`). Creates + maintains `bybit_executions` + `bybit_closed_pnl` + `bybit_trade_annotations` + `bybit_pending_orders` schema. Idempotent `ensure_tables()` runs on watcher startup |
 
 ## Rules — modifying data sources
 1. **All inter-service data is a typed frozen dataclass from `shared/models.py`.** Never return raw dicts to callers. Add new fields to the dataclass, not parallel kwargs.
