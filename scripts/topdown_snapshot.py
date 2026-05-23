@@ -438,6 +438,138 @@ def _killzone_now(timestamp_ms: int) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# PR1 v2 helpers — quick wins from user testing 2026-05-23.
+# See docs/grill/topdown-v2-context-simplicity-2026-05-23.md.
+# ---------------------------------------------------------------------------
+
+# Sweep distance gate — beyond this, brief renders "spectator" instead of play.
+SWEEP_MAX_ACTIONABLE_PCT = 5.0
+
+
+def _pd_bias_conflict(reconciled_side: str, pd_zone: Optional[str]) -> bool:
+    """Detect ICT premium/discount vs reconciled bias contradiction.
+
+    ICT teaching: shorts from PREMIUM (>50% of HTF range), longs from DISCOUNT
+    (<50%). When bias is short but price is in discount → counter-PD trade,
+    lower quality. Same for long-in-premium. Equilibrium is neutral, no
+    conflict either way.
+    """
+    if reconciled_side not in ("long", "short") or pd_zone in (None, "equilibrium"):
+        return False
+    if reconciled_side == "short" and pd_zone == "discount":
+        return True
+    if reconciled_side == "long" and pd_zone == "premium":
+        return True
+    return False
+
+
+def _sweep_distance_pct(current_price: float, sweep_level: Optional[float]) -> Optional[float]:
+    """Return abs distance from current price to sweep level as percentage.
+
+    None when sweep_level is missing.
+    """
+    if sweep_level is None or current_price <= 0:
+        return None
+    return abs(sweep_level - current_price) / current_price * 100
+
+
+def _sweep_actionable(distance_pct: Optional[float],
+                       max_pct: float = SWEEP_MAX_ACTIONABLE_PCT) -> bool:
+    """Sweep entry is "actionable" only when within max_pct of current price.
+
+    Beyond that the trade is spectator territory — brief should say wait or skip.
+    """
+    if distance_pct is None:
+        return False
+    return distance_pct <= max_pct
+
+
+def _trade_triplet(snap: Snapshot) -> Optional[dict]:
+    """Compute explicit entry / SL / TP / R:R for the current play.
+
+    Entry = nearest aligned unbroken liquidity (BSL for short, SSL for long)
+            within actionable sweep distance.
+    SL = invalidation_level (4H swing) from Snapshot.
+    TP = furthest unbroken liquidity past 1.5R floor from sweep entry.
+    Returns None when any leg is missing or sweep is not actionable.
+    """
+    side = snap.reconciled_side
+    price = snap.current_price
+    inv = snap.invalidation_level
+    if side not in ("long", "short") or inv is None:
+        return None
+
+    # Collect unbroken liquidity, sort by proximity to current price
+    above_levels = []
+    below_levels = []
+    for tfa in snap.tf_results.values():
+        for lvl in tfa.liquidity:
+            if lvl.swept:
+                continue
+            if lvl.price > price:
+                above_levels.append(lvl)
+            elif lvl.price < price:
+                below_levels.append(lvl)
+    above_levels.sort(key=lambda l: l.price)            # nearest first
+    below_levels.sort(key=lambda l: l.price, reverse=True)
+
+    sweep = above_levels[0] if side == "short" and above_levels else (
+        below_levels[0] if side == "long" and below_levels else None
+    )
+    if sweep is None:
+        return None
+    sweep_pct = _sweep_distance_pct(price, sweep.price)
+    if not _sweep_actionable(sweep_pct):
+        return {"valid": False, "reason": "sweep_too_far",
+                "sweep_distance_pct": sweep_pct}
+
+    # Target picker — reuse 1.5R floor from existing helper
+    min_dist = _min_target_distance(sweep.price, inv)
+    if side == "short":
+        target = _pick_valid_target(below_levels, "short", sweep.price, min_dist)
+    else:
+        above_for_target = sorted(above_levels, key=lambda l: l.price)
+        target = _pick_valid_target(above_for_target, "long", sweep.price, min_dist)
+
+    if target is None:
+        return {"valid": False, "reason": "no_valid_target",
+                "entry": sweep.price, "sl": inv}
+
+    risk = abs(sweep.price - inv)
+    reward = abs(target.price - sweep.price)
+    rr = reward / risk if risk > 0 else 0.0
+    return {
+        "valid": True,
+        "entry": sweep.price,
+        "sl": inv,
+        "tp": target.price,
+        "rr": round(rr, 2),
+        "sweep_distance_pct": round(sweep_pct, 2),
+        "risk_pct": round(risk / sweep.price * 100, 2),
+        "reward_pct": round(reward / sweep.price * 100, 2),
+    }
+
+
+def _bos_session_quality(latest_break_ts: Optional[int]) -> Optional[dict]:
+    """Classify the killzone session of the latest BOS/CHoCH.
+
+    ICT teaching: BOS during Asian killzone often = liquidity grab / inducement,
+    lower confidence vs BOS during London or NY. Used to downgrade conviction
+    when the structural shift only has Asian-session confirmation.
+
+    Returns {session: str, quality: "high"|"low"} or None when no break.
+    """
+    if latest_break_ts is None:
+        return None
+    kz = _killzone_now(latest_break_ts)
+    if not kz["active"]:
+        return {"session": "dead zone", "quality": "low"}
+    session = kz["name"]
+    quality = "low" if session == "Asian" else "high"
+    return {"session": session, "quality": quality}
+
+
+# ---------------------------------------------------------------------------
 # Brief usage tracking — topdown_brief_renders table (Phase 3 falsification)
 # ---------------------------------------------------------------------------
 
@@ -888,7 +1020,7 @@ def _render_telegram_markdown(snap: Snapshot) -> str:
     lines.append(f"Price: `{price:.6g}`")
     lines.append("")
 
-    # BIAS
+    # BIAS — compute PD zone first to detect conflict for confidence suffix
     side = snap.reconciled_side
     conf = snap.confidence
     side_emoji = {"long": "🟢", "short": "🔴",
@@ -903,8 +1035,23 @@ def _render_telegram_markdown(snap: Snapshot) -> str:
     score = bull_score if side == "long" else (
         bear_score if side == "short" else max(bull_score, bear_score)
     )
+
+    # Precompute PD info for conflict detection (needed before BIAS render)
+    htf = snap.tf_results.get("4h")
+    pd_info = None
+    if htf is not None:
+        candles_4h = snap.raw_candles.get("4h", []) if hasattr(snap, "raw_candles") else []
+        if candles_4h:
+            pd_info = _pd_array_position(
+                htf_candles=candles_4h, htf_state=htf.state,
+                pair=pair, current_price=price, current_time_ms=snap.current_time_ms,
+            )
+    pd_zone = pd_info["zone"] if pd_info else None
+    has_pd_conflict = _pd_bias_conflict(side, pd_zone)
+    conf_suffix = " — _PD conflict_" if has_pd_conflict else ""
+
     lines.append(
-        f"*BIAS:* {side_emoji} {side.upper()} — _{conf}_ "
+        f"*BIAS:* {side_emoji} {side.upper()} — _{conf}_{conf_suffix} "
         f"({score}/{total_weight})"
     )
 
@@ -929,38 +1076,47 @@ def _render_telegram_markdown(snap: Snapshot) -> str:
                 f"({disp['direction']}, body x{disp['body_ratio']})"
             )
 
-    # PD Array position (4H range)
-    if htf is not None:
-        candles_4h = snap.raw_candles.get("4h", []) if hasattr(snap, "raw_candles") else []
-        pd_info = None
-        if candles_4h:
-            pd_info = _pd_array_position(
-                htf_candles=candles_4h, htf_state=htf.state,
-                pair=pair, current_price=price, current_time_ms=snap.current_time_ms,
-            )
-        if pd_info:
-            zone_emoji = {"premium": "🔴", "discount": "🟢",
-                          "equilibrium": "⚪"}.get(pd_info["zone"], "⚪")
-            zone_hint = ""
-            if side == "short" and pd_info["zone"] == "premium":
-                zone_hint = " — favorable shorts"
-            elif side == "long" and pd_info["zone"] == "discount":
-                zone_hint = " — favorable longs"
+    # PD Array position (4H range) — pd_info computed above for conflict check
+    if pd_info:
+        zone_emoji = {"premium": "🔴", "discount": "🟢",
+                      "equilibrium": "⚪"}.get(pd_info["zone"], "⚪")
+        zone_hint = ""
+        if side == "short" and pd_info["zone"] == "premium":
+            zone_hint = " — favorable shorts"
+        elif side == "long" and pd_info["zone"] == "discount":
+            zone_hint = " — favorable longs"
+        lines.append(
+            f"• PD Array 4H: {zone_emoji} {pd_info['position_pct']}% "
+            f"_{pd_info['zone']}_{zone_hint}"
+        )
+        if has_pd_conflict:
             lines.append(
-                f"• PD Array 4H: {zone_emoji} {pd_info['position_pct']}% "
-                f"_{pd_info['zone']}_{zone_hint}"
+                "  ⚠️ *PD-BIAS CONFLICT* — counter-PD trade, downgrade conviction"
             )
 
-    # IDM on last BOS
+    # IDM on last BOS + session quality
     if htf is not None:
         idm = _inducement_check(htf)
+        latest = htf.state.latest_break
+        session_q = _bos_session_quality(latest.timestamp if latest else None)
+        session_suffix = ""
+        if session_q:
+            sess_emoji = "🟢" if session_q["quality"] == "high" else "🟡"
+            session_suffix = (
+                f"  {sess_emoji} _{session_q['session']} session "
+                f"({session_q['quality']} quality)_"
+            )
         if idm["has_idm"]:
             lines.append(
                 f"• Last BOS: 🟢 _IDM confirmed_ "
                 f"(swept `{idm['idm_level']:.6g}`)"
             )
-        elif htf.state.latest_break is not None:
+            if session_suffix:
+                lines.append(session_suffix)
+        elif latest is not None:
             lines.append("• Last BOS: ⚪ _spontaneous (no IDM)_")
+            if session_suffix:
+                lines.append(session_suffix)
 
     # Killzone
     kz = _killzone_now(snap.current_time_ms)
@@ -1037,13 +1193,38 @@ def _render_telegram_markdown(snap: Snapshot) -> str:
         magnets.append("_(no unbroken liquidity beyond price on aligned side)_")
     lines.extend(magnets)
 
-    # PLAY IDEA — reuse existing _play_idea (already has 1.5R bug fix)
+    # PLAY — explicit Entry/SL/TP/R:R triplet (PR1 v2 enhancement) when actionable
     lines.append("")
     lines.append("*PLAY:*")
-    for ln in _play_idea(snap)[1:]:  # skip the "PLAY IDEA:" header
-        cleaned = ln.lstrip()
-        if cleaned:
-            lines.append(cleaned)
+    triplet = _trade_triplet(snap)
+    if triplet is None:
+        # No bias or no invalidation — fall back to narrative
+        for ln in _play_idea(snap)[1:]:
+            cleaned = ln.lstrip()
+            if cleaned:
+                lines.append(cleaned)
+    elif triplet.get("valid") is False:
+        if triplet.get("reason") == "sweep_too_far":
+            dist = triplet.get("sweep_distance_pct", 0)
+            lines.append(
+                f"⚠️ Sweep too far ({dist:.1f}% away) — spectator zone. "
+                f"Wait for LTF setup or skip pair."
+            )
+        elif triplet.get("reason") == "no_valid_target":
+            entry_v = triplet.get("entry")
+            sl_v = triplet.get("sl")
+            lines.append(
+                f"Entry: `{entry_v:.6g}`  SL: `{sl_v:.6g}`  "
+                f"TP: _none ≥1.5R, find manually_"
+            )
+    else:
+        e = triplet["entry"]
+        sl = triplet["sl"]
+        tp = triplet["tp"]
+        lines.append(f"Entry: `{e:.6g}`  (sweep, {triplet['sweep_distance_pct']:+.2f}%)")
+        lines.append(f"SL:    `{sl:.6g}`  ({triplet['risk_pct']:.2f}% risk)")
+        lines.append(f"TP:    `{tp:.6g}`  ({triplet['reward_pct']:.2f}% reward)")
+        lines.append(f"R:R:   `{triplet['rr']:.2f}`")
 
     # INVALIDATION
     lines.append("")
