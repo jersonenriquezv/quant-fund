@@ -393,12 +393,17 @@ class BybitWatcher:
 
     def _close_annotation(self, key: PositionKey) -> dict | None:
         """Mark most recent open annotation for (symbol, side) as closed.
-        Pulls PnL from latest bybit_closed_pnl row.
+
+        Aggregates PnL across every bybit_closed_pnl row emitted between
+        annotation's opened_at and now. Bybit emits one closed_pnl row per
+        partial reduce (each limit fill that shrinks the position), so a
+        single-row lookup undercounts trades that were scaled out via
+        multiple limit closes. Sum captures the full lifecycle.
         """
         with self._conn() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """
-                SELECT id, entry_price, size FROM bybit_trade_annotations
+                SELECT id, entry_price, size, opened_at FROM bybit_trade_annotations
                 WHERE symbol = %s AND side = %s AND status = 'open'
                 ORDER BY opened_at DESC LIMIT 1
                 """,
@@ -408,22 +413,42 @@ class BybitWatcher:
             if not annot:
                 return None
 
+            # Sum every closed_pnl row for this symbol since the position opened.
+            # Bybit's closed_pnl.side is the side of the closing order (opposite
+            # to position side), so we filter by symbol + time window only.
+            # Small clock-skew buffer so the first partial doesn't slip through.
             cur.execute(
                 """
-                SELECT id, closed_pnl, avg_exit_price, updated_time, cum_entry_value, cum_exit_value
+                SELECT
+                    SUM(closed_pnl)                          AS total_pnl,
+                    SUM(cum_entry_value)                     AS total_entry_value,
+                    SUM(cum_exit_value)                      AS total_exit_value,
+                    SUM(qty * avg_exit_price)
+                        / NULLIF(SUM(qty), 0)                AS weighted_exit_price,
+                    MAX(updated_time)                        AS last_updated,
+                    COUNT(*)                                 AS rows_counted,
+                    (array_agg(id ORDER BY updated_time DESC))[1] AS last_id
                 FROM bybit_closed_pnl
-                WHERE symbol = %s AND updated_time >= NOW() - INTERVAL '5 minutes'
-                ORDER BY updated_time DESC LIMIT 1
+                WHERE symbol = %s
+                  AND updated_time >= %s - INTERVAL '1 minute'
                 """,
-                (key.symbol,),
+                (key.symbol, annot["opened_at"]),
             )
             pnl_row = cur.fetchone()
 
-            pnl_usd = float(pnl_row["closed_pnl"]) if pnl_row else None
-            exit_price = float(pnl_row["avg_exit_price"]) if pnl_row else None
+            rows_counted = int(pnl_row["rows_counted"]) if pnl_row else 0
+            pnl_usd = float(pnl_row["total_pnl"]) if rows_counted else None
+            exit_price = float(pnl_row["weighted_exit_price"]) if rows_counted and pnl_row.get("weighted_exit_price") else None
             pnl_pct = None
-            if pnl_row and pnl_row.get("cum_entry_value"):
-                pnl_pct = 100.0 * pnl_usd / float(pnl_row["cum_entry_value"])
+            if rows_counted and pnl_row.get("total_entry_value"):
+                pnl_pct = 100.0 * pnl_usd / float(pnl_row["total_entry_value"])
+            last_id = pnl_row["last_id"] if rows_counted else None
+
+            if rows_counted > 1:
+                logger.info(
+                    f"CLOSE_AGG {key.symbol} {key.side} partials={rows_counted} "
+                    f"total_pnl={pnl_usd}"
+                )
 
             cur.execute(
                 """
@@ -438,8 +463,7 @@ class BybitWatcher:
                 WHERE id = %s
                 RETURNING id, entry_price, size, opened_at
                 """,
-                (exit_price, pnl_usd, pnl_pct,
-                 pnl_row["id"] if pnl_row else None, annot["id"]),
+                (exit_price, pnl_usd, pnl_pct, last_id, annot["id"]),
             )
             updated = cur.fetchone()
             conn.commit()
@@ -449,6 +473,7 @@ class BybitWatcher:
                 "pnl_pct": pnl_pct,
                 "exit_price": exit_price,
                 "entry_price": float(updated["entry_price"]) if updated["entry_price"] else None,
+                "partial_count": rows_counted,
             }
 
     def _fmt_auto_block(self, auto: dict) -> list[str]:

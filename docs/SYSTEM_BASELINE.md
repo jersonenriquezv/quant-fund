@@ -4,7 +4,7 @@
 > Reflects code reality — if code and doc disagree, fix the doc.
 > Documentation rule: this file is the operational source of truth. `README.md` is a portfolio overview; `docs/context/*` explains concepts and history and may intentionally lag unless this baseline links to it.
 
-**Last updated:** 2026-05-22
+**Last updated:** 2026-05-23
 **ML Feature Version:** 18
 **Bot status:** SHADOW-ONLY (OKX_SANDBOX=false, ENABLED_SETUPS=[], ~$86 capital untouched)
 **Active experiment:** `engine1_short_quarantine_v1d_2026_05_22` (settings.py default since this commit). Engine 1 v1d narrows the v1c pair scope from all `TRADING_PAIRS` to ETH / SOL / LINK / AVAX / XRP. BTC + DOGE quarantined after 14d v1c per-pair audit ranked them as the bottom two by WR (BTC 11.5% / DOGE 13.0%, both N≥30, both clearly below the next-worst pair). Direction filter unchanged (`["short"]`). Benchmarks (`bench_engine1_random_direction`, `bench_engine1_market_now`) mirror the quarantine list so paired comparisons remain apples-to-apples.
@@ -492,6 +492,20 @@ D: net_score <  2
 ---
 
 ## 8. Changelog
+
+### 2026-05-23 — Fix Bybit partial-close PnL aggregation
+**Files:** `data_service/bybit_watcher.py`, `tests/test_bybit_watcher_close_aggregation.py`, `scripts/reconcile_bybit_partial_pnl.py`
+
+**What changed:**
+- `_close_annotation` now SUMs every `bybit_closed_pnl` row emitted between annotation `opened_at` and now (1-min clock-skew buffer), instead of pulling the most recent row within a 5-minute window.
+- Stored values become: `pnl_usd = SUM(closed_pnl)`, `pnl_pct = 100 * pnl_usd / SUM(cum_entry_value)`, `exit_price = qty-weighted avg of avg_exit_price`. Returned dict now exposes `partial_count`.
+- New script `scripts/reconcile_bybit_partial_pnl.py` recomputes pnl_usd / pnl_pct / exit_price for already-closed annotations and updates rows whose stored value drifts from the aggregated value by more than the tolerance (default $0.01). Defaults to dry-run; `--apply` persists.
+
+**Why:** Bybit's v5 closed_pnl endpoint emits one row per reduce-only fill. When a position is scaled out via multiple limit closes (the user's actual workflow), the previous single-row lookup either picked only the final partial (5-minute window catches it) or returned NULL (the entire close happened more than 5 minutes before the position size hit zero). In both cases the annotation undercounted total PnL. The fix walks the full lifecycle so the annotation matches what Bybit's native UI shows as the trade total.
+
+**Tests:** `tests/test_bybit_watcher_close_aggregation.py` covers 4 cases — multi-partial aggregation, single-fill parity with legacy behavior, no closed_pnl rows synced (NULL passthrough), no open annotation found (early return). All existing `tests/test_bybit_watcher_enforcement.py` cases still pass.
+
+**Operator note:** Run `python scripts/reconcile_bybit_partial_pnl.py --days 30` first to see which past annotations are affected. `--apply` writes the corrections.
 
 ### 2026-05-22 — Engine 1 v1d: quarantine BTC + DOGE from short-multipair scope
 **Files:** `config/settings.py`, `docs/SYSTEM_BASELINE.md`
