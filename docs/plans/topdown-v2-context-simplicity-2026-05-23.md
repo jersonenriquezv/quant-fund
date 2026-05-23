@@ -123,7 +123,8 @@ Phase 1 of `/topdown` (`topdown-ict-enhancements-2026-05-23` plan) shipped 2026-
 ---
 
 ## Phase 3 — PR3 Adaptive TP via Daily ATR
-**Status:** pending (blocked until Phase 1 + Phase 2 deployed)
+**Status:** in-review (work + gate complete 2026-05-23)
+**Branch:** `feat/topdown-v2-pr3-adaptive-tp` off `feat/topdown-v2-pr2-daily-context`
 **Inputs:**
 - Phase 1 + Phase 2 in production
 - User Q3 choice: Daily ATR(14) multiple, not R ratio

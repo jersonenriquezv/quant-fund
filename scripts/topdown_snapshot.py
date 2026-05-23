@@ -538,7 +538,20 @@ def _trade_triplet(snap: Snapshot) -> Optional[dict]:
     risk = abs(sweep.price - inv)
     reward = abs(target.price - sweep.price)
     rr = reward / risk if risk > 0 else 0.0
-    return {
+
+    # PR3: adaptive TP — scaled if target distance ≥ 2× daily ATR(14).
+    # Intermediates = unbroken liquidity between entry and final target.
+    daily_candles = snap.raw_candles.get("1d", []) if hasattr(snap, "raw_candles") else []
+    atr = _daily_atr(daily_candles)
+    if side == "short":
+        intermediates = [l for l in below_levels
+                         if target.price < l.price < sweep.price]
+    else:
+        intermediates = [l for l in above_levels
+                         if sweep.price < l.price < target.price]
+    tp_info = _adaptive_tp(sweep.price, inv, target.price, intermediates, atr)
+
+    result = {
         "valid": True,
         "entry": sweep.price,
         "sl": inv,
@@ -547,7 +560,18 @@ def _trade_triplet(snap: Snapshot) -> Optional[dict]:
         "sweep_distance_pct": round(sweep_pct, 2),
         "risk_pct": round(risk / sweep.price * 100, 2),
         "reward_pct": round(reward / sweep.price * 100, 2),
+        "tp_mode": tp_info["mode"],
+        "tp1": tp_info["tp1"],
+        "tp2": tp_info["tp2"],
+        "splits": tp_info["splits"],
+        "atr": atr,
     }
+    if tp_info["mode"] == "scaled":
+        rr_tp1 = abs(tp_info["tp1"] - sweep.price) / risk if risk > 0 else 0.0
+        rr_tp2 = abs(tp_info["tp2"] - sweep.price) / risk if risk > 0 else 0.0
+        result["rr_tp1"] = round(rr_tp1, 2)
+        result["rr_tp2"] = round(rr_tp2, 2)
+    return result
 
 
 def _bos_session_quality(latest_break_ts: Optional[int]) -> Optional[dict]:
@@ -740,6 +764,111 @@ def _today_candle_status(daily_candles: list[Candle]) -> Optional[dict]:
         "side": side, "forming": forming,
         "open": today.open, "close_so_far": today.close,
         "body_pct": body_pct,
+    }
+
+
+# ---------------------------------------------------------------------------
+# PR3 v2 — Adaptive TP via Daily ATR(14).
+# Scaled (TP1 + TP2) when target distance ≥ multiple * daily_atr; single TP
+# otherwise. Crypto-volatility-aware threshold per user pick (grill Q3).
+# ---------------------------------------------------------------------------
+
+ATR_PERIOD = 14
+ADAPTIVE_TP_ATR_MULTIPLE = 2.0
+
+
+def _daily_atr(daily_candles: list[Candle], period: int = ATR_PERIOD) -> Optional[float]:
+    """ICT-friendly ATR(period) over daily candles. Standard True Range.
+
+    TR = max(high-low, |high - prev_close|, |low - prev_close|).
+    ATR = simple average of last `period` TR values.
+
+    Returns ATR in price units, or None when <period+1 candles.
+    """
+    if len(daily_candles) < period + 1:
+        return None
+    trs = []
+    for i in range(1, len(daily_candles)):
+        c = daily_candles[i]
+        prev = daily_candles[i - 1]
+        tr = max(
+            c.high - c.low,
+            abs(c.high - prev.close),
+            abs(c.low - prev.close),
+        )
+        trs.append(tr)
+    if len(trs) < period:
+        return None
+    return sum(trs[-period:]) / period
+
+
+def _adaptive_tp(
+    entry: float, sl: float, final_target: float,
+    intermediate_candidates: list,
+    daily_atr: Optional[float],
+    multiple: float = ADAPTIVE_TP_ATR_MULTIPLE,
+) -> dict:
+    """Decide single vs scaled TP based on target distance / daily ATR.
+
+    - target_distance = |final_target - entry|
+    - threshold = multiple * daily_atr
+    - If daily_atr unavailable OR target_distance < threshold → single TP.
+    - Else → scaled. TP1 = first intermediate liquidity within 1× ATR from
+      entry in the direction of the trade. TP2 = final_target. If no
+      intermediate qualifies → fall back to single (no synthetic levels).
+
+    intermediate_candidates: list of LiquidityLevel objects between entry
+    and final_target, pre-filtered by caller.
+
+    Returns dict with: mode ("single"|"scaled"), tp1, tp2, splits ([50,50]).
+    """
+    if daily_atr is None or daily_atr <= 0:
+        return {"mode": "single", "tp1": final_target, "tp2": None,
+                "splits": [100], "atr": daily_atr, "threshold": None,
+                "target_distance": abs(final_target - entry)}
+
+    threshold = multiple * daily_atr
+    target_distance = abs(final_target - entry)
+
+    if target_distance < threshold:
+        return {"mode": "single", "tp1": final_target, "tp2": None,
+                "splits": [100], "atr": daily_atr, "threshold": threshold,
+                "target_distance": target_distance}
+
+    # Long-distance — try to find intermediate within 1× ATR
+    intermediate_range = daily_atr
+    is_short = final_target < entry
+    valid = []
+    for lvl in intermediate_candidates:
+        dist_from_entry = abs(lvl.price - entry)
+        if dist_from_entry <= 0 or dist_from_entry > intermediate_range:
+            continue
+        if is_short and lvl.price >= entry:
+            continue
+        if not is_short and lvl.price <= entry:
+            continue
+        # Must not be past final_target
+        if is_short and lvl.price <= final_target:
+            continue
+        if not is_short and lvl.price >= final_target:
+            continue
+        valid.append(lvl)
+
+    if not valid:
+        # No clean intermediate → fall back to single TP at final_target
+        return {"mode": "single", "tp1": final_target, "tp2": None,
+                "splits": [100], "atr": daily_atr, "threshold": threshold,
+                "target_distance": target_distance,
+                "fallback_reason": "no_intermediate_in_range"}
+
+    # Pick intermediate closest to 1× ATR from entry (mid-range = balanced TP1)
+    valid.sort(key=lambda l: abs(abs(l.price - entry) - intermediate_range))
+    tp1 = valid[0].price
+
+    return {
+        "mode": "scaled", "tp1": tp1, "tp2": final_target,
+        "splits": [50, 50], "atr": daily_atr, "threshold": threshold,
+        "target_distance": target_distance,
     }
 
 
@@ -1441,11 +1570,25 @@ def _render_telegram_markdown(snap: Snapshot) -> str:
     else:
         e = triplet["entry"]
         sl = triplet["sl"]
-        tp = triplet["tp"]
         lines.append(f"Entry: `{e:.6g}`  (sweep, {triplet['sweep_distance_pct']:+.2f}%)")
         lines.append(f"SL:    `{sl:.6g}`  ({triplet['risk_pct']:.2f}% risk)")
-        lines.append(f"TP:    `{tp:.6g}`  ({triplet['reward_pct']:.2f}% reward)")
-        lines.append(f"R:R:   `{triplet['rr']:.2f}`")
+        # PR3: scaled vs single TP via daily ATR multiple
+        if triplet.get("tp_mode") == "scaled" and triplet.get("tp2") is not None:
+            tp1 = triplet["tp1"]
+            tp2 = triplet["tp2"]
+            lines.append(
+                f"TP1:   `{tp1:.6g}`  (50%, R:R {triplet.get('rr_tp1', 0):.2f})"
+            )
+            lines.append(
+                f"TP2:   `{tp2:.6g}`  (50%, R:R {triplet.get('rr_tp2', 0):.2f})"
+            )
+            lines.append(
+                f"_scaled — target ≥2× daily ATR (`{triplet.get('atr', 0):.4g}`)_"
+            )
+        else:
+            tp = triplet["tp"]
+            lines.append(f"TP:    `{tp:.6g}`  ({triplet['reward_pct']:.2f}% reward)")
+            lines.append(f"R:R:   `{triplet['rr']:.2f}`")
 
     # INVALIDATION
     lines.append("")
