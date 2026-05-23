@@ -32,8 +32,10 @@ from scripts.topdown_snapshot import (
     _killzone_now, _min_target_distance, _pick_valid_target,
     _play_idea, _render_telegram_markdown,
     _has_required_telegram_sections,
+    _pd_bias_conflict, _sweep_distance_pct, _sweep_actionable,
+    _trade_triplet, _bos_session_quality,
     DISPLACEMENT_LOOKBACK_N, DISPLACEMENT_BASELINE_N,
-    TARGET_MIN_R_MULTIPLE, ICT_KILLZONES,
+    TARGET_MIN_R_MULTIPLE, ICT_KILLZONES, SWEEP_MAX_ACTIONABLE_PCT,
 )
 
 
@@ -449,3 +451,254 @@ class TestTelegramRenderer:
         out = _render_telegram_markdown(snap)
         # IDM was set up with BSL swept BEFORE the BOS — should detect
         assert "IDM confirmed" in out
+
+
+# ---------------------------------------------------------------------------
+# PR1 v2 — quick wins
+# ---------------------------------------------------------------------------
+
+
+class TestPDBiasConflict:
+    def test_short_in_discount_is_conflict(self):
+        assert _pd_bias_conflict("short", "discount") is True
+
+    def test_long_in_premium_is_conflict(self):
+        assert _pd_bias_conflict("long", "premium") is True
+
+    def test_short_in_premium_no_conflict(self):
+        assert _pd_bias_conflict("short", "premium") is False
+
+    def test_long_in_discount_no_conflict(self):
+        assert _pd_bias_conflict("long", "discount") is False
+
+    def test_equilibrium_never_conflict(self):
+        assert _pd_bias_conflict("short", "equilibrium") is False
+        assert _pd_bias_conflict("long", "equilibrium") is False
+
+    def test_undefined_side_never_conflict(self):
+        assert _pd_bias_conflict("undefined", "premium") is False
+        assert _pd_bias_conflict(None, "discount") is False
+
+    def test_none_zone_never_conflict(self):
+        assert _pd_bias_conflict("short", None) is False
+
+
+class TestSweepDistance:
+    def test_distance_pct_basic(self):
+        assert _sweep_distance_pct(100.0, 105.0) == pytest.approx(5.0)
+        assert _sweep_distance_pct(100.0, 95.0) == pytest.approx(5.0)
+
+    def test_distance_pct_none_sweep(self):
+        assert _sweep_distance_pct(100.0, None) is None
+
+    def test_distance_pct_zero_price(self):
+        assert _sweep_distance_pct(0.0, 105.0) is None
+
+    def test_actionable_within_default_5pct(self):
+        assert _sweep_actionable(3.0) is True
+        assert _sweep_actionable(5.0) is True
+        assert _sweep_actionable(0.5) is True
+
+    def test_not_actionable_beyond_5pct(self):
+        assert _sweep_actionable(5.01) is False
+        assert _sweep_actionable(15.0) is False
+
+    def test_none_distance_not_actionable(self):
+        assert _sweep_actionable(None) is False
+
+
+class TestTradeTriplet:
+    def _snap_with_levels(self, side="short", price=100.0, invalidation=102.0,
+                          liquidity=None):
+        liq = liquidity or []
+        tfa = TFAnalysis(
+            timeframe="4h", state=_make_state(trend="bearish"),
+            obs=[], fvgs=[], liquidity=liq,
+        )
+        return _make_snapshot(
+            tf_results={"4h": tfa}, current_price=price,
+            side=side, conf="medium", invalidation=invalidation,
+        )
+
+    def test_valid_short_triplet(self):
+        # BSL at 101 (sweep, 1% away), invalidation 102, SSL at 95 (target far enough)
+        # Floor = (101-102)*1.5 = 1.5, target 95 is 6 away from sweep → passes
+        liq = [
+            LiquidityLevel(price=101.0, level_type="bsl", touch_count=2,
+                           timestamps=[1000], swept=False),
+            LiquidityLevel(price=95.0, level_type="ssl", touch_count=2,
+                           timestamps=[1100], swept=False),
+        ]
+        snap = self._snap_with_levels(liquidity=liq)
+        t = _trade_triplet(snap)
+        assert t is not None
+        assert t["valid"] is True
+        assert t["entry"] == 101.0
+        assert t["sl"] == 102.0
+        assert t["tp"] == 95.0
+        assert t["rr"] >= 5.0
+
+    def test_sweep_too_far_returns_invalid(self):
+        # BSL at 120 (20% above current 100) — not actionable
+        liq = [
+            LiquidityLevel(price=120.0, level_type="bsl", touch_count=2,
+                           timestamps=[1000], swept=False),
+        ]
+        snap = self._snap_with_levels(liquidity=liq)
+        t = _trade_triplet(snap)
+        assert t is not None
+        assert t["valid"] is False
+        assert t["reason"] == "sweep_too_far"
+        assert t["sweep_distance_pct"] > 5.0
+
+    def test_no_target_returns_invalid(self):
+        # Only sweep available, no SSL below
+        liq = [
+            LiquidityLevel(price=101.0, level_type="bsl", touch_count=2,
+                           timestamps=[1000], swept=False),
+        ]
+        snap = self._snap_with_levels(liquidity=liq)
+        t = _trade_triplet(snap)
+        assert t["valid"] is False
+        assert t["reason"] == "no_valid_target"
+
+    def test_undefined_side_returns_none(self):
+        snap = self._snap_with_levels(side="undefined")
+        assert _trade_triplet(snap) is None
+
+    def test_missing_invalidation_returns_none(self):
+        snap = self._snap_with_levels(invalidation=None)
+        assert _trade_triplet(snap) is None
+
+
+class TestBosSessionQuality:
+    def _ts_at_hour(self, hour: int, minute: int = 0) -> int:
+        return ((hour * 3600) + (minute * 60)) * 1000
+
+    def test_asian_session_low_quality(self):
+        q = _bos_session_quality(self._ts_at_hour(21))
+        assert q["session"] == "Asian"
+        assert q["quality"] == "low"
+
+    def test_london_session_high_quality(self):
+        q = _bos_session_quality(self._ts_at_hour(3))
+        assert q["session"] == "London"
+        assert q["quality"] == "high"
+
+    def test_ny_am_high_quality(self):
+        q = _bos_session_quality(self._ts_at_hour(13))
+        assert q["session"] == "NY AM"
+        assert q["quality"] == "high"
+
+    def test_dead_zone_low_quality(self):
+        # Hour 6 = between London and NY AM = dead zone
+        q = _bos_session_quality(self._ts_at_hour(6))
+        assert q["session"] == "dead zone"
+        assert q["quality"] == "low"
+
+    def test_no_break_returns_none(self):
+        assert _bos_session_quality(None) is None
+
+
+class TestRenderTelegramV2Integration:
+    """Verifies PR1 v2 features surface correctly in rendered brief."""
+
+    def _build_conflict_snap(self):
+        """Snap with SHORT bias but PD will be DISCOUNT — triggers conflict."""
+        latest_break = StructureBreak(
+            timestamp=1_000_000, break_type="bos", direction="bearish",
+            break_price=84.0, broken_level=84.5, candle_index=10,
+        )
+        # Range 80-90, price at 81 = ~10% (discount). Bias short = conflict.
+        swing_highs = [SwingPoint(timestamp=500_000, price=90.0, index=5, swing_type="high")]
+        swing_lows = [SwingPoint(timestamp=400_000, price=80.0, index=3, swing_type="low")]
+        liq = [
+            LiquidityLevel(price=81.5, level_type="bsl", touch_count=2,
+                           timestamps=[800_000], swept=False),
+            LiquidityLevel(price=80.2, level_type="ssl", touch_count=2,
+                           timestamps=[900_000], swept=False),
+        ]
+        state = _make_state(trend="bearish",
+                            swing_highs=swing_highs, swing_lows=swing_lows,
+                            latest_break=latest_break)
+        tfa = TFAnalysis(timeframe="4h", state=state, obs=[], fvgs=[], liquidity=liq)
+        return _make_snapshot(
+            tf_results={"4h": tfa}, current_price=81.0, side="short",
+            conf="medium", invalidation=82.0,
+            raw_candles={"4h": _make_bear_displacement_candles()},
+        )
+
+    def test_pd_bias_conflict_flag_renders(self):
+        snap = self._build_conflict_snap()
+        out = _render_telegram_markdown(snap)
+        assert "PD-BIAS CONFLICT" in out, f"Conflict flag missing:\n{out}"
+        assert "PD conflict" in out  # confidence suffix
+
+    def test_sweep_too_far_renders_spectator_warning(self):
+        latest_break = StructureBreak(
+            timestamp=1_000_000, break_type="bos", direction="bearish",
+            break_price=84.0, broken_level=84.5, candle_index=10,
+        )
+        # BSL at 120 = 20% above price 100 — way too far
+        liq = [
+            LiquidityLevel(price=120.0, level_type="bsl", touch_count=2,
+                           timestamps=[1000], swept=False),
+        ]
+        state = _make_state(trend="bearish", latest_break=latest_break)
+        tfa = TFAnalysis(timeframe="4h", state=state, obs=[], fvgs=[], liquidity=liq)
+        snap = _make_snapshot(
+            tf_results={"4h": tfa}, current_price=100.0, side="short",
+            conf="medium", invalidation=105.0,
+            raw_candles={"4h": _make_bear_displacement_candles()},
+        )
+        out = _render_telegram_markdown(snap)
+        assert "Sweep too far" in out
+        assert "spectator" in out
+
+    def test_explicit_triplet_renders_with_rr(self):
+        latest_break = StructureBreak(
+            timestamp=1_000_000, break_type="bos", direction="bearish",
+            break_price=99.0, broken_level=99.5, candle_index=10,
+        )
+        liq = [
+            LiquidityLevel(price=101.0, level_type="bsl", touch_count=2,
+                           timestamps=[1000], swept=False),
+            LiquidityLevel(price=95.0, level_type="ssl", touch_count=2,
+                           timestamps=[1100], swept=False),
+        ]
+        state = _make_state(trend="bearish", latest_break=latest_break)
+        tfa = TFAnalysis(timeframe="4h", state=state, obs=[], fvgs=[], liquidity=liq)
+        snap = _make_snapshot(
+            tf_results={"4h": tfa}, current_price=100.0, side="short",
+            conf="medium", invalidation=102.0,
+            raw_candles={"4h": _make_bear_displacement_candles()},
+        )
+        out = _render_telegram_markdown(snap)
+        assert "Entry:" in out
+        assert "SL:" in out
+        assert "TP:" in out
+        assert "R:R:" in out
+
+    def test_bos_session_quality_renders(self):
+        # Create snap with BOS at hour 3 UTC (London — high quality)
+        ts_3am = (3 * 3600) * 1000
+        latest_break = StructureBreak(
+            timestamp=ts_3am, break_type="bos", direction="bearish",
+            break_price=99.0, broken_level=99.5, candle_index=10,
+        )
+        state = _make_state(trend="bearish", latest_break=latest_break)
+        tfa = TFAnalysis(timeframe="4h", state=state, obs=[], fvgs=[], liquidity=[])
+        snap = _make_snapshot(
+            tf_results={"4h": tfa}, current_price=100.0, side="short",
+            conf="medium", invalidation=102.0,
+            raw_candles={"4h": _make_bear_displacement_candles()},
+        )
+        out = _render_telegram_markdown(snap)
+        assert "London session" in out
+        assert "high quality" in out
+
+    def test_brief_under_35_lines_with_all_v2_features(self):
+        snap = self._build_conflict_snap()
+        out = _render_telegram_markdown(snap)
+        n = len(out.split("\n"))
+        assert n <= 35, f"Brief too long: {n} lines\n{out}"
