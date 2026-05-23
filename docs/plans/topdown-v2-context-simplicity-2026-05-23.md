@@ -83,7 +83,8 @@ Phase 1 of `/topdown` (`topdown-ict-enhancements-2026-05-23` plan) shipped 2026-
 ---
 
 ## Phase 2 — PR2 Daily Context Memory
-**Status:** pending (blocked until Phase 1 deployed + manual checks confirmed)
+**Status:** in-review (work + gate complete 2026-05-23, awaiting user manual validation post-deploy)
+**Branch:** `feat/topdown-v2-pr2-daily-context` off `feat/topdown-v2-pr1-quickwins`
 **Inputs:**
 - Phase 1 PR1 merged to `feat/topdown-ict-enhancements-phase1` (or stacked if PR1 still open)
 - `candles` table data inventory confirmed: 580+ daily candles per pair, continuous 4H/1H/15m/5m ingestion
@@ -108,13 +109,16 @@ Phase 1 of `/topdown` (`topdown-ict-enhancements-2026-05-23` plan) shipped 2026-
 6. Tests: per helper + golden-file integration confirming section renders correctly + edge cases (insufficient candles, equal high, week boundary).
 
 **Verification gate:**
-- [ ] Automated: all new tests pass + existing 41+ Phase 1 tests still pass
-- [ ] Automated: SOL/USDT E2E brief stays ≤38 lines with new DAILY CONTEXT section (was 35 cap, +3 lines)
-- [ ] Automated: `_compute_pdh_pdl` correctness — feed synthetic 3-day candle series, verify computed PDH/PDL match by hand
+- [x] Automated: 88/88 topdown tests pass (was 69 after PR1 + 19 new PR2 tests)
+- [x] Automated: full suite 1238 passed, 0 regressions (was 1219 after PR1)
+- [x] Automated: SOL/USDT E2E brief = 32 lines with DAILY CONTEXT section (under 40 cap)
+- [x] Automated: `_compute_pdh_pdl` correctness covered by 5 unit tests (basic, swept, broken H, broken L, insufficient)
 - [ ] Manual: user spot-checks one pair's DAILY CONTEXT line against TradingView daily view — PDH/PDL values match
 - [ ] Rollback if: aggregation produces wrong levels (off-by-one daily boundary), section adds >5 lines to brief
 
-**Evidence:** _empty_
+**Evidence:**
+- 2026-05-23 SOL E2E (live DB) — DAILY CONTEXT shows: Today bear closed -3.08%, PDH 87.97 untaken, PDL 85.98 BROKEN (close below). Chain (5d) `🟢 🟢 🟢 🟢 🔴` (4b/1s/0d → bull but trending bear). Weekly inside (PWH 98.36 / PWL 83.29). All sections render in 32 lines total.
+- Files changed (1 modified, 1 modified test, 0 new): `M scripts/topdown_snapshot.py` (+~160 LOC: 4 PR2 helpers + render section + 1d candle load); `M tests/test_topdown_snapshot.py` (+~250 LOC: 19 new tests across 5 classes).
 
 ---
 

@@ -36,7 +36,7 @@ PAIRS = ["BTC/USDT", "ETH/USDT", "XRP/USDT", "SOL/USDT"]
 CASCADE_TFS = ["4h", "1h", "30m", "15m"]
 # HTF anchors bias — 4H weighted 2x, lower TFs 1x. Total weighted vote = 5.
 TF_WEIGHTS = {"4h": 2, "1h": 1, "30m": 1, "15m": 1}
-CANDLE_LIMIT_PER_TF = {"4h": 500, "1h": 300, "30m": 300, "15m": 300, "5m": 100}
+CANDLE_LIMIT_PER_TF = {"4h": 500, "1h": 300, "30m": 300, "15m": 300, "5m": 100, "1d": 60}
 NEAR_PRICE_PCT = 0.03  # show zones within 3% of current price
 MIN_30M_CANDLES = 200  # backfill if DB has fewer than this for a pair
 
@@ -570,6 +570,180 @@ def _bos_session_quality(latest_break_ts: Optional[int]) -> Optional[dict]:
 
 
 # ---------------------------------------------------------------------------
+# PR2 v2 — Daily Context Memory (PDH/PDL/PWH/PWL + bias chain + today).
+# Pure derivation over candles[1d] already loaded into Snapshot.raw_candles.
+# ICT: closes commit, wicks bait. All "taken/swept/broken" reads use CLOSES.
+# ---------------------------------------------------------------------------
+
+# Doji tolerance — |close-open|/open below this = doji, not bull/bear.
+DAILY_DOJI_TOLERANCE = 0.001
+# Bias chain window — last N daily candles surfaced in brief.
+DAILY_CHAIN_N = 5
+
+
+def _compute_pdh_pdl(daily_candles: list[Candle]) -> Optional[dict]:
+    """ICT PDH / PDL — Previous Day High / Low + today's status vs them.
+
+    Status per level uses CLOSES, not wicks:
+      - "untaken": today_high (so far) has not exceeded the level
+      - "swept": today_high > level but today_close < level (wick liar)
+      - "broken": today_close > level (commitment)
+    Same logic mirrored for PDL with lows / closes below.
+
+    Returns None when <2 daily candles available.
+    """
+    if len(daily_candles) < 2:
+        return None
+    prev = daily_candles[-2]
+    today = daily_candles[-1]
+    pdh = prev.high
+    pdl = prev.low
+
+    if today.high > pdh:
+        if today.close > pdh:
+            pdh_status = "broken"
+        else:
+            pdh_status = "swept"
+    else:
+        pdh_status = "untaken"
+
+    if today.low < pdl:
+        if today.close < pdl:
+            pdl_status = "broken"
+        else:
+            pdl_status = "swept"
+    else:
+        pdl_status = "untaken"
+
+    return {
+        "pdh": pdh, "pdl": pdl,
+        "pdh_status": pdh_status, "pdl_status": pdl_status,
+        "today_open": today.open, "today_close_so_far": today.close,
+        "today_high": today.high, "today_low": today.low,
+    }
+
+
+def _compute_pwh_pwl(daily_candles: list[Candle]) -> Optional[dict]:
+    """ICT PWH / PWL — previous calendar week high / low (Mon 00:00 UTC start).
+
+    Week definition: Monday 00:00 UTC through Sunday 23:59 UTC. ICT also uses
+    Sunday-open (futures convention) but Monday-start is calendar-standard and
+    matches `datetime.weekday()`. Document choice for future change.
+
+    Returns dict with pwh/pwl + today_inside (bool) + today_close vs PWH/PWL.
+    None when <14 daily candles (insufficient for a complete prior week).
+    """
+    if len(daily_candles) < 14:
+        return None
+    import datetime as _dt
+    today = daily_candles[-1]
+    today_dt = _dt.datetime.fromtimestamp(today.timestamp / 1000, tz=_dt.timezone.utc)
+    # Days since Monday for today; weekday() Mon=0 ... Sun=6.
+    days_since_monday = today_dt.weekday()
+    # This week starts at Mon = today - days_since_monday days.
+    # Previous week = that minus 7 days, range [-7d, 0d).
+    this_week_start = today_dt - _dt.timedelta(days=days_since_monday)
+    prev_week_start = this_week_start - _dt.timedelta(days=7)
+    prev_week_end = this_week_start - _dt.timedelta(seconds=1)
+
+    prev_week_start_ms = int(prev_week_start.timestamp() * 1000)
+    prev_week_end_ms = int(prev_week_end.timestamp() * 1000)
+
+    prev_week_candles = [
+        c for c in daily_candles
+        if prev_week_start_ms <= c.timestamp <= prev_week_end_ms
+    ]
+    if not prev_week_candles:
+        return None
+    pwh = max(c.high for c in prev_week_candles)
+    pwl = min(c.low for c in prev_week_candles)
+    inside = pwl <= today.close <= pwh
+    return {
+        "pwh": pwh, "pwl": pwl,
+        "inside": inside,
+        "today_close": today.close,
+        "n_days": len(prev_week_candles),
+    }
+
+
+def _daily_bias_chain(daily_candles: list[Candle], n: int = DAILY_CHAIN_N) -> Optional[dict]:
+    """Classify last N daily candles as bull/bear/doji via close vs open.
+
+    Bias of each day uses CLOSE vs OPEN of that daily candle:
+      - bull: close > open + |close-open|/open > DAILY_DOJI_TOLERANCE
+      - bear: close < open + same threshold
+      - doji: |close-open|/open <= DAILY_DOJI_TOLERANCE
+
+    Returns dict with chain list + summary counts. None when <n candles.
+    """
+    if len(daily_candles) < n:
+        return None
+    chain = []
+    for c in daily_candles[-n:]:
+        if c.open <= 0:
+            chain.append("doji")
+            continue
+        delta = abs(c.close - c.open) / c.open
+        if delta <= DAILY_DOJI_TOLERANCE:
+            chain.append("doji")
+        elif c.close > c.open:
+            chain.append("bull")
+        else:
+            chain.append("bear")
+    bull = chain.count("bull")
+    bear = chain.count("bear")
+    doji = chain.count("doji")
+    if bull > bear:
+        majority = "bull"
+        majority_count = bull
+    elif bear > bull:
+        majority = "bear"
+        majority_count = bear
+    else:
+        majority = "mixed"
+        majority_count = max(bull, bear)
+    return {
+        "chain": chain, "n": n,
+        "bull": bull, "bear": bear, "doji": doji,
+        "majority": majority, "majority_count": majority_count,
+    }
+
+
+def _today_candle_status(daily_candles: list[Candle]) -> Optional[dict]:
+    """Today's daily candle is still forming until UTC midnight.
+
+    Returns {side, forming, close_so_far, open, body_pct}.
+      - side: bull|bear|inside derived from close_so_far vs open
+      - forming: True if today's candle timestamp matches today's UTC date
+    """
+    if not daily_candles:
+        return None
+    import datetime as _dt
+    today = daily_candles[-1]
+    today_dt = _dt.datetime.fromtimestamp(today.timestamp / 1000, tz=_dt.timezone.utc)
+    now_dt = _dt.datetime.now(tz=_dt.timezone.utc)
+    forming = (today_dt.date() == now_dt.date())
+
+    if today.open <= 0:
+        side = "inside"
+        body_pct = 0.0
+    else:
+        delta = (today.close - today.open) / today.open
+        body_pct = round(delta * 100, 2)
+        if abs(delta) <= DAILY_DOJI_TOLERANCE:
+            side = "inside"
+        elif delta > 0:
+            side = "bull"
+        else:
+            side = "bear"
+    return {
+        "side": side, "forming": forming,
+        "open": today.open, "close_so_far": today.close,
+        "body_pct": body_pct,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Brief usage tracking — topdown_brief_renders table (Phase 3 falsification)
 # ---------------------------------------------------------------------------
 
@@ -624,7 +798,7 @@ def _build_snapshot(cur, conn, pair: str) -> Optional[Snapshot]:
         print(f"[{pair}] backfilled {inserted} 30m candles")
 
     candles_by_tf: dict[str, list[Candle]] = {}
-    for tf in CASCADE_TFS + ["5m"]:
+    for tf in CASCADE_TFS + ["5m", "1d"]:
         candles_by_tf[tf] = _load_candles(
             cur, pair, tf, CANDLE_LIMIT_PER_TF.get(tf, 200)
         )
@@ -995,6 +1169,8 @@ TELEGRAM_REQUIRED_SECTIONS = (
     "*BIAS:*", "*ICT STRENGTH:*", "*KEY ZONES:*",
     "*MAGNETS BELOW:*", "*PLAY:*", "*INVALIDATION:*",
 )
+# DAILY CONTEXT is data-dependent (requires ≥2 daily candles); checked via
+# _has_optional_daily_context_section instead.
 
 
 def _render_telegram_markdown(snap: Snapshot) -> str:
@@ -1054,6 +1230,51 @@ def _render_telegram_markdown(snap: Snapshot) -> str:
         f"*BIAS:* {side_emoji} {side.upper()} — _{conf}_{conf_suffix} "
         f"({score}/{total_weight})"
     )
+
+    # DAILY CONTEXT — PR2 v2 (3 lines max: today + chain + weekly)
+    daily_candles = snap.raw_candles.get("1d", []) if hasattr(snap, "raw_candles") else []
+    if daily_candles:
+        lines.append("")
+        lines.append("*DAILY CONTEXT:*")
+
+        # Line 1: today's forming candle + PDH/PDL status
+        today_status = _today_candle_status(daily_candles)
+        pdh_pdl = _compute_pdh_pdl(daily_candles)
+        if today_status and pdh_pdl:
+            t_emoji = {"bull": "🟢", "bear": "🔴",
+                       "inside": "⚪"}.get(today_status["side"], "⚪")
+            forming_tag = "forming" if today_status["forming"] else "closed"
+            pdh_tag = pdh_pdl["pdh_status"]
+            pdl_tag = pdh_pdl["pdl_status"]
+            lines.append(
+                f"Today: {t_emoji} {today_status['side']} {forming_tag} "
+                f"({today_status['body_pct']:+.2f}%) — "
+                f"PDH `{pdh_pdl['pdh']:.6g}` _{pdh_tag}_, "
+                f"PDL `{pdh_pdl['pdl']:.6g}` _{pdl_tag}_"
+            )
+
+        # Line 2: 5-day bias chain
+        chain = _daily_bias_chain(daily_candles)
+        if chain:
+            chain_emoji = {"bull": "🟢", "bear": "🔴",
+                           "doji": "⚪"}.get
+            chain_str = " ".join(chain_emoji(c) or "⚪" for c in chain["chain"])
+            majority_word = chain["majority"]
+            lines.append(
+                f"Chain ({chain['n']}d): {chain_str}  "
+                f"({chain['bull']}b / {chain['bear']}s / {chain['doji']}d "
+                f"→ {majority_word})"
+            )
+
+        # Line 3: weekly inside/broken
+        pwh_pwl = _compute_pwh_pwl(daily_candles)
+        if pwh_pwl:
+            inside_tag = "inside" if pwh_pwl["inside"] else "broken"
+            w_emoji = "⚪" if pwh_pwl["inside"] else "🔴"
+            lines.append(
+                f"Weekly: {w_emoji} _{inside_tag}_ "
+                f"(PWH `{pwh_pwl['pwh']:.6g}`, PWL `{pwh_pwl['pwl']:.6g}`)"
+            )
 
     # ICT STRENGTH section — pure SMC reads
     lines.append("")

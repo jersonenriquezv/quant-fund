@@ -34,8 +34,10 @@ from scripts.topdown_snapshot import (
     _has_required_telegram_sections,
     _pd_bias_conflict, _sweep_distance_pct, _sweep_actionable,
     _trade_triplet, _bos_session_quality,
+    _compute_pdh_pdl, _compute_pwh_pwl, _daily_bias_chain, _today_candle_status,
     DISPLACEMENT_LOOKBACK_N, DISPLACEMENT_BASELINE_N,
     TARGET_MIN_R_MULTIPLE, ICT_KILLZONES, SWEEP_MAX_ACTIONABLE_PCT,
+    DAILY_DOJI_TOLERANCE, DAILY_CHAIN_N,
 )
 
 
@@ -702,3 +704,249 @@ class TestRenderTelegramV2Integration:
         out = _render_telegram_markdown(snap)
         n = len(out.split("\n"))
         assert n <= 35, f"Brief too long: {n} lines\n{out}"
+
+
+# ---------------------------------------------------------------------------
+# PR2 v2 — Daily Context Memory (PDH/PDL/PWH/PWL + chain + today)
+# ---------------------------------------------------------------------------
+
+
+def _make_daily(open_, high, low, close, ts_ms, pair="SOL/USDT"):
+    return Candle(
+        timestamp=ts_ms, open=open_, high=high, low=low, close=close,
+        volume=1000.0, volume_quote=1000.0 * close,
+        pair=pair, timeframe="1d", confirmed=True,
+    )
+
+
+def _series_n_daily(n: int, base_ts_ms: int = 1_700_000_000_000):
+    """Build N daily candles 1 day apart, varying close around 100."""
+    candles = []
+    for i in range(n):
+        # day i: open 100+i, close 100+i+0.5, high 100+i+1, low 100+i-1
+        op = 100.0 + i
+        cl = op + 0.5
+        candles.append(_make_daily(op, op + 1, op - 1, cl,
+                                   ts_ms=base_ts_ms + i * 86_400_000))
+    return candles
+
+
+class TestComputePDHPDL:
+    def test_basic_pdh_pdl(self):
+        # Yesterday: high=105, low=95, close=100. Today: high=104, low=99, close=101
+        candles = [
+            _make_daily(98, 105, 95, 100, ts_ms=1_000_000_000_000),
+            _make_daily(100, 104, 99, 101, ts_ms=1_000_086_400_000),
+        ]
+        r = _compute_pdh_pdl(candles)
+        assert r is not None
+        assert r["pdh"] == 105
+        assert r["pdl"] == 95
+        assert r["pdh_status"] == "untaken"   # today_high 104 < PDH 105
+        assert r["pdl_status"] == "untaken"   # today_low 99 > PDL 95
+
+    def test_pdh_swept_wick_only(self):
+        # PDH = 105. Today_high = 106 (wick above), today_close = 103 (below)
+        candles = [
+            _make_daily(98, 105, 95, 100, ts_ms=1_000_000_000_000),
+            _make_daily(100, 106, 99, 103, ts_ms=1_000_086_400_000),
+        ]
+        r = _compute_pdh_pdl(candles)
+        assert r["pdh_status"] == "swept"
+
+    def test_pdh_broken_close_above(self):
+        candles = [
+            _make_daily(98, 105, 95, 100, ts_ms=1_000_000_000_000),
+            _make_daily(100, 108, 99, 107, ts_ms=1_000_086_400_000),
+        ]
+        r = _compute_pdh_pdl(candles)
+        assert r["pdh_status"] == "broken"
+
+    def test_pdl_broken_close_below(self):
+        candles = [
+            _make_daily(102, 105, 95, 100, ts_ms=1_000_000_000_000),
+            _make_daily(100, 102, 90, 92, ts_ms=1_000_086_400_000),
+        ]
+        r = _compute_pdh_pdl(candles)
+        assert r["pdl_status"] == "broken"
+
+    def test_insufficient_candles_returns_none(self):
+        assert _compute_pdh_pdl([]) is None
+        assert _compute_pdh_pdl([_make_daily(100, 101, 99, 100, ts_ms=0)]) is None
+
+
+class TestComputePWHPWL:
+    def test_returns_none_when_insufficient(self):
+        candles = _series_n_daily(7)
+        assert _compute_pwh_pwl(candles) is None  # need ≥14
+
+    def test_basic_prev_week_aggregation(self):
+        # 20 days of candles ending on a known date
+        # 2026-05-23 = Saturday (weekday=5). Build candles ending today.
+        import datetime as _dt
+        today = _dt.datetime(2026, 5, 23, 0, 0, 0, tzinfo=_dt.timezone.utc)
+        candles = []
+        for i in range(20, 0, -1):
+            d = today - _dt.timedelta(days=i - 1)
+            ts = int(d.timestamp() * 1000)
+            candles.append(_make_daily(100, 110 + i, 90 - i, 100 + (i % 5), ts_ms=ts))
+        r = _compute_pwh_pwl(candles)
+        assert r is not None
+        assert r["n_days"] == 7  # full prior week
+        # Sanity: pwh > 100, pwl < 100
+        assert r["pwh"] > 100
+        assert r["pwl"] < 100
+
+    def test_inside_flag(self):
+        import datetime as _dt
+        today = _dt.datetime(2026, 5, 23, 0, 0, 0, tzinfo=_dt.timezone.utc)
+        candles = []
+        for i in range(20, 0, -1):
+            d = today - _dt.timedelta(days=i - 1)
+            ts = int(d.timestamp() * 1000)
+            # Prev week candles have range [99, 105]; today inside
+            candles.append(_make_daily(100, 105, 99, 102, ts_ms=ts))
+        r = _compute_pwh_pwl(candles)
+        assert r["inside"] is True
+
+
+class TestDailyBiasChain:
+    def test_chain_with_clear_pattern(self):
+        # 5 bear candles: open > close consistently
+        candles = []
+        for i in range(5):
+            candles.append(_make_daily(100, 101, 95, 96, ts_ms=i * 86_400_000))
+        chain = _daily_bias_chain(candles)
+        assert chain["bull"] == 0
+        assert chain["bear"] == 5
+        assert chain["majority"] == "bear"
+
+    def test_chain_mixed(self):
+        # 3 bull, 2 bear
+        candles = [
+            _make_daily(100, 105, 99, 104, ts_ms=0),
+            _make_daily(100, 105, 99, 104, ts_ms=1),
+            _make_daily(100, 101, 95, 96, ts_ms=2),
+            _make_daily(100, 105, 99, 104, ts_ms=3),
+            _make_daily(100, 101, 95, 96, ts_ms=4),
+        ]
+        chain = _daily_bias_chain(candles)
+        assert chain["bull"] == 3
+        assert chain["bear"] == 2
+        assert chain["majority"] == "bull"
+
+    def test_doji_detected(self):
+        # 1 doji + 4 bull
+        candles = [
+            _make_daily(100, 100.05, 99.95, 100.00, ts_ms=0),  # body 0% → doji
+            _make_daily(100, 105, 99, 104, ts_ms=1),
+            _make_daily(100, 105, 99, 104, ts_ms=2),
+            _make_daily(100, 105, 99, 104, ts_ms=3),
+            _make_daily(100, 105, 99, 104, ts_ms=4),
+        ]
+        chain = _daily_bias_chain(candles)
+        assert chain["doji"] == 1
+        assert chain["bull"] == 4
+
+    def test_insufficient_returns_none(self):
+        candles = [_make_daily(100, 101, 99, 100, ts_ms=0)] * 3
+        assert _daily_bias_chain(candles) is None
+
+
+class TestTodayCandleStatus:
+    def test_bull_today(self):
+        import datetime as _dt
+        now_ms = int(_dt.datetime.utcnow().timestamp() * 1000)
+        candles = [_make_daily(100, 105, 99, 103, ts_ms=now_ms)]
+        s = _today_candle_status(candles)
+        assert s["side"] == "bull"
+        assert s["body_pct"] > 0
+        assert s["forming"] is True
+
+    def test_bear_today(self):
+        import datetime as _dt
+        now_ms = int(_dt.datetime.utcnow().timestamp() * 1000)
+        candles = [_make_daily(100, 101, 95, 97, ts_ms=now_ms)]
+        s = _today_candle_status(candles)
+        assert s["side"] == "bear"
+        assert s["body_pct"] < 0
+
+    def test_inside_doji(self):
+        import datetime as _dt
+        now_ms = int(_dt.datetime.utcnow().timestamp() * 1000)
+        candles = [_make_daily(100, 100.05, 99.95, 100.0, ts_ms=now_ms)]
+        s = _today_candle_status(candles)
+        assert s["side"] == "inside"
+
+    def test_returns_none_when_empty(self):
+        assert _today_candle_status([]) is None
+
+
+class TestDailyContextRenderIntegration:
+    def _snap_with_daily(self, daily_candles):
+        latest_break = StructureBreak(
+            timestamp=1_000_000, break_type="bos", direction="bearish",
+            break_price=99.0, broken_level=99.5, candle_index=10,
+        )
+        liq = [
+            LiquidityLevel(price=101.0, level_type="bsl", touch_count=2,
+                           timestamps=[1000], swept=False),
+            LiquidityLevel(price=95.0, level_type="ssl", touch_count=2,
+                           timestamps=[1100], swept=False),
+        ]
+        state = _make_state(trend="bearish", latest_break=latest_break)
+        tfa = TFAnalysis(timeframe="4h", state=state, obs=[], fvgs=[], liquidity=liq)
+        return _make_snapshot(
+            tf_results={"4h": tfa}, current_price=100.0, side="short",
+            conf="medium", invalidation=102.0,
+            raw_candles={
+                "4h": _make_bear_displacement_candles(),
+                "1d": daily_candles,
+            },
+        )
+
+    def test_daily_context_section_renders(self):
+        import datetime as _dt
+        today = _dt.datetime(2026, 5, 23, 0, 0, 0, tzinfo=_dt.timezone.utc)
+        candles = []
+        for i in range(20, 0, -1):
+            d = today - _dt.timedelta(days=i - 1)
+            ts = int(d.timestamp() * 1000)
+            candles.append(_make_daily(100, 102, 98, 99, ts_ms=ts))
+        snap = self._snap_with_daily(candles)
+        out = _render_telegram_markdown(snap)
+        assert "*DAILY CONTEXT:*" in out
+        assert "Today:" in out
+        assert "Chain" in out
+        assert "Weekly:" in out
+        assert "PDH" in out
+        assert "PWH" in out
+
+    def test_daily_context_omitted_when_no_daily_data(self):
+        latest_break = StructureBreak(
+            timestamp=1_000_000, break_type="bos", direction="bearish",
+            break_price=99.0, broken_level=99.5, candle_index=10,
+        )
+        state = _make_state(trend="bearish", latest_break=latest_break)
+        tfa = TFAnalysis(timeframe="4h", state=state, obs=[], fvgs=[], liquidity=[])
+        snap = _make_snapshot(
+            tf_results={"4h": tfa}, current_price=100.0, side="short",
+            conf="medium", invalidation=102.0,
+            raw_candles={"4h": _make_bear_displacement_candles(), "1d": []},
+        )
+        out = _render_telegram_markdown(snap)
+        # Section header must NOT appear when no daily candles
+        assert "*DAILY CONTEXT:*" not in out
+
+    def test_brief_under_40_lines_with_daily_context(self):
+        import datetime as _dt
+        today = _dt.datetime(2026, 5, 23, 0, 0, 0, tzinfo=_dt.timezone.utc)
+        candles = []
+        for i in range(20, 0, -1):
+            d = today - _dt.timedelta(days=i - 1)
+            ts = int(d.timestamp() * 1000)
+            candles.append(_make_daily(100, 102, 98, 99, ts_ms=ts))
+        snap = self._snap_with_daily(candles)
+        out = _render_telegram_markdown(snap)
+        n = len(out.split("\n"))
+        assert n <= 40, f"Brief too long after DAILY CONTEXT: {n}\n{out}"
