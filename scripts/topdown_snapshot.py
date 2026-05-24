@@ -20,6 +20,29 @@ from typing import Optional
 
 import psycopg2
 
+# Backtest time-machine override. When set (via replay_at in
+# scripts/backtest_topdown.py), _now_ms() returns this value and _load_candles
+# filters candles to those with timestamp <= this value. Production path leaves
+# it None — zero behavior change.
+_REPLAY_T_MS: Optional[int] = None
+
+
+def _now_ms() -> int:
+    """Wallclock now in ms, or replay override if backtester set it."""
+    if _REPLAY_T_MS is not None:
+        return _REPLAY_T_MS
+    return int(time.time() * 1000)
+
+
+def _set_replay_time(t_ms: Optional[int]) -> None:
+    """Backtester hook: set wallclock override for replay mode.
+
+    Pass None to restore live behavior. Must be paired (set + restore) by the
+    caller — _build_snapshot is otherwise unaware of replay mode.
+    """
+    global _REPLAY_T_MS
+    _REPLAY_T_MS = t_ms
+
 from config.settings import settings
 from shared.models import Candle
 from strategy_service.market_structure import (
@@ -134,16 +157,31 @@ def _ensure_30m_backfill(cur, conn, pair: str) -> int:
 
 
 def _load_candles(cur, pair: str, tf: str, limit: int) -> list[Candle]:
-    cur.execute(
-        """
-        SELECT timestamp, open, high, low, close, volume, volume_quote
-        FROM candles
-        WHERE pair = %s AND timeframe = %s
-        ORDER BY timestamp DESC
-        LIMIT %s
-        """,
-        (pair, tf, limit),
-    )
+    # In replay mode, hide future candles so snapshot reflects only the state
+    # known at _REPLAY_T_MS. Production path (override is None) keeps the
+    # original "latest N candles" semantics exactly.
+    if _REPLAY_T_MS is not None:
+        cur.execute(
+            """
+            SELECT timestamp, open, high, low, close, volume, volume_quote
+            FROM candles
+            WHERE pair = %s AND timeframe = %s AND timestamp <= %s
+            ORDER BY timestamp DESC
+            LIMIT %s
+            """,
+            (pair, tf, _REPLAY_T_MS, limit),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT timestamp, open, high, low, close, volume, volume_quote
+            FROM candles
+            WHERE pair = %s AND timeframe = %s
+            ORDER BY timestamp DESC
+            LIMIT %s
+            """,
+            (pair, tf, limit),
+        )
     rows = cur.fetchall()
     return [
         Candle(
@@ -523,6 +561,18 @@ def _trade_triplet(snap: Snapshot) -> Optional[dict]:
         return {"valid": False, "reason": "sweep_too_far",
                 "sweep_distance_pct": sweep_pct}
 
+    # Geometry guard: invalidation must be on the protective side of entry.
+    # Long: SL below entry (stop deeper, trade dies if liquidity below sweep
+    # also fails). Short: SL above entry. Otherwise the "stop" sits between
+    # entry and the move direction — the trade self-exits at a profit before
+    # the thesis is truly invalidated. Surfaced by Phase 1 tracer 2026-05-24.
+    if side == "long" and inv >= sweep.price:
+        return {"valid": False, "reason": "sl_wrong_side",
+                "entry": sweep.price, "sl": inv, "side": side}
+    if side == "short" and inv <= sweep.price:
+        return {"valid": False, "reason": "sl_wrong_side",
+                "entry": sweep.price, "sl": inv, "side": side}
+
     # Target picker — reuse 1.5R floor from existing helper
     min_dist = _min_target_distance(sweep.price, inv)
     if side == "short":
@@ -745,7 +795,7 @@ def _today_candle_status(daily_candles: list[Candle]) -> Optional[dict]:
     import datetime as _dt
     today = daily_candles[-1]
     today_dt = _dt.datetime.fromtimestamp(today.timestamp / 1000, tz=_dt.timezone.utc)
-    now_dt = _dt.datetime.now(tz=_dt.timezone.utc)
+    now_dt = _dt.datetime.fromtimestamp(_now_ms() / 1000, tz=_dt.timezone.utc)
     forming = (today_dt.date() == now_dt.date())
 
     if today.open <= 0:
@@ -1510,7 +1560,7 @@ def _render_telegram_markdown(snap: Snapshot) -> str:
     price = snap.current_price
     ts_str = time.strftime("%Y-%m-%d %H:%M UTC",
                            time.gmtime(snap.current_time_ms / 1000))
-    lag_sec = max(0, int(time.time() - snap.current_time_ms / 1000))
+    lag_sec = max(0, int(_now_ms() / 1000 - snap.current_time_ms / 1000))
     lag_min = lag_sec // 60
     lag_flag = (
         "✅" if lag_min <= FRESHNESS_OK_MIN

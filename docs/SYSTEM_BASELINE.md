@@ -394,6 +394,10 @@ Read-only analytical tool for manual Bybit entries (BTC/ETH/XRP/SOL). Swing casc
 
 Read-only analysis script to classify engine1 SL failures into modal types (wrong_direction / sl_too_tight_noise / late_entry / wrong_zone / counter_trend_valid). No detector / setting / ML feature changes. Falls under FREEZE "monitoring/infrastructure" allowance. Plan: `docs/plans/sl-classifier-postmortem.md`. Source grill: `docs/grill/one-step-down-cascade-2026-05-20.md` (verdict KILL on OSD cascade, pivoted to this).
 
+### Side plan — /topdown manual strategy backtest (2026-05-24) — DONE
+
+Offline historical backtest of `/topdown` SMC top-down brief (post-PR4) vs random-entry null with identical SL/TP/timeout. Pure Python rule replay — zero LLM, zero tokens. FREEZE-safe (no `strategy_service/`, no ML version bump). Scope: BTC/ETH/SOL/DOGE on 15m × 150d window (XRP/AVAX/LINK excluded due to 15m coverage gap). Fees: 0.02% RT maker primary + 0.11% RT taker stress. Plan: `docs/plans/backtest-topdown-2026-05-24.md`. Source grill: `docs/grill/backtest-topdown-2026-05-24.md` (verdict BUILD). **Outcome 2026-05-24: NO EDGE** (Δ +2.32pp WR, p=0.0073, below the 10pp practical threshold). Full report: `backtest_results/topdown_20260524_192804_report.md`. Decision: do not port to bot, continue live falsification. See §8 changelog 2026-05-24 entry for findings.
+
 ### Side experiment — Scalp Shadow v1 (2026-05-04)
 
 Independent shadow-only experiment for microstructural scalping signals, separate from the SMC roadmap above. Plan: `docs/plans/scalp_shadow_v1.md`.
@@ -504,6 +508,48 @@ D: net_score <  2
 ---
 
 ## 8. Changelog
+
+### 2026-05-24 — /topdown manual strategy backtest shipped
+
+**Files:** `scripts/backtest_topdown.py` (new, ~1,120 LOC), `scripts/topdown_snapshot.py` (+45 LOC: time-machine `_now_ms`/`_set_replay_time` shim + `_trade_triplet` geometry guard), `tests/test_topdown_snapshot.py` (+2 tests), `backtest_results/topdown_20260524_192804_{trades,random_trades,report}.{csv,csv,md}`, `backtest_results/TRACKER.md` (+1 row), `docs/grill/backtest-topdown-2026-05-24.md` (new), `docs/plans/backtest-topdown-2026-05-24.md` (new).
+
+**What changed:**
+- Offline historical backtest of `/topdown` triplet (post PR1-PR4) vs random-entry null with identical SL/TP/timeout. BTC/ETH/SOL/DOGE × 150d × 15m grid. N = 6,830 emissions / paired 6,830 random.
+- Pure rule replay — zero LLM, zero tokens. FREEZE-safe (no `strategy_service/` touch, no ML version bump).
+- Added time-machine replay (`_now_ms` + `_set_replay_time`) to `topdown_snapshot.py`. Production path zero-impact when override is None.
+- Surfaced + fixed inline a `_trade_triplet` geometry bug: SL on wrong side of entry when 4H invalidation level lies between sweep level and current price. Guard returns `{"valid": False, "reason": "sl_wrong_side"}`. Two new unit tests cover both sides.
+
+**Headline result — Verdict: NO EDGE**
+
+| Metric | /topdown | Random null | Δ |
+|---|---|---|---|
+| WR (resolved) | 22.59% | 20.27% | **+2.32pp** |
+| z-stat / p-value | — | — | 2.683 / 0.0073 |
+| 95% CI on Δ | — | — | [+0.61pp, +4.02pp] |
+| PnL (maker 0.02% RT) | +337 R | +19 R | +319 R |
+| PnL (taker 0.11% RT) | -1,718 R | -2,484 R | +766 R |
+| PF (maker) | 1.09 | 1.0 | — |
+
+Statistically significant Δ, but **far below the 10pp practical-edge threshold** from grill Q3. Effect size too small to justify porting to bot.
+
+**Per-pair (key driver of headline):**
+- BTC +7.65pp, ETH +6.89pp — meaningful but still <10pp threshold
+- SOL +0.64pp (flat)
+- **DOGE −6.75pp (anti-edge)** — drags headline ~2pp down
+
+**Other findings surfaced:**
+- Sweep-distance ≤5% gate is too loose. 0-1% bucket WR 23.6%; 3-5% bucket 0% WR / 17 SLs. Tightening to ≤1% would lift WR but slash emissions ~80%.
+- PR3 adaptive TP `scaled` mode shows 0% WR over 483 trades. Either targets are structurally unreachable OR simulator misses partial-tp1 close. Flag for redesign.
+- 70/30 chronological holdout does NOT show overfit. Train Δ +1.44pp vs holdout Δ +4.14pp — holdout edge is larger. PR1-PR4 tuning is not the cause of the weak edge; the weak edge is structural.
+
+**Decision / impact:**
+- **Do not port `/topdown` triplet logic to bot.** Mechanical rules do not have edge worth committing capital to.
+- Continue live falsification via `topdown_brief_used` journal flag, N=30. Lower priority.
+- Brief value as *human decision-support* (bias chain, PD zone, structure context, killzones) is NOT measured by this offline backtest. The live falsification measures that.
+- Optional follow-up: confluence-tag reliability study (Phase 3.5) to find which individual brief annotations are predictive vs noise.
+- DOGE-specific kill candidate if `/topdown` continues live: DOGE anti-edge persists across 1,581 emissions, hard to explain away as noise.
+
+**Why:** User asked Phase 0 ("does manual /topdown strategy have edge?"). Grill verdict BUILD on 2026-05-24 with NO EDGE / EDGE threshold = Δ 10pp WR vs random by 2026-06-07. Backtest delivered 14 days ahead of deadline.
 
 ### 2026-05-19 — Bybit watcher periodic sync + Rule 10/11 operational clarifications
 **Files:** `data_service/bybit_watcher.py`, `config/settings.py`, `docs/grill/bybit-rules-taxonomy.md`, `docs/grill/discipline-no-manual-exits-2026-05-19.md` (new).

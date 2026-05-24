@@ -576,6 +576,52 @@ class TestTradeTriplet:
         snap = self._snap_with_levels(invalidation=None)
         assert _trade_triplet(snap) is None
 
+    def test_long_sl_above_entry_rejected(self):
+        # Long: SSL sweep at 95 (entry), inv at 98 (between entry and price 100).
+        # SL should be BELOW entry — this geometry says invalidation triggers
+        # ON THE WAY UP from entry, which is not a stop. Phase 1 tracer found
+        # this happening live; guard added 2026-05-24.
+        liq = [
+            LiquidityLevel(price=95.0, level_type="ssl", touch_count=2,
+                           timestamps=[1000], swept=False),
+            LiquidityLevel(price=110.0, level_type="bsl", touch_count=2,
+                           timestamps=[1100], swept=False),
+        ]
+        tfa = TFAnalysis(
+            timeframe="4h", state=_make_state(trend="bullish"),
+            obs=[], fvgs=[], liquidity=liq,
+        )
+        snap = _make_snapshot(
+            tf_results={"4h": tfa}, current_price=100.0,
+            side="long", conf="medium", invalidation=98.0,
+        )
+        t = _trade_triplet(snap)
+        assert t is not None
+        assert t["valid"] is False
+        assert t["reason"] == "sl_wrong_side"
+
+    def test_short_sl_below_entry_rejected(self):
+        # Short: BSL sweep at 105 (entry), inv at 102 (between price 100 and entry).
+        # SL should be ABOVE entry for a short.
+        liq = [
+            LiquidityLevel(price=105.0, level_type="bsl", touch_count=2,
+                           timestamps=[1000], swept=False),
+            LiquidityLevel(price=90.0, level_type="ssl", touch_count=2,
+                           timestamps=[1100], swept=False),
+        ]
+        tfa = TFAnalysis(
+            timeframe="4h", state=_make_state(trend="bearish"),
+            obs=[], fvgs=[], liquidity=liq,
+        )
+        snap = _make_snapshot(
+            tf_results={"4h": tfa}, current_price=100.0,
+            side="short", conf="medium", invalidation=102.0,
+        )
+        t = _trade_triplet(snap)
+        assert t is not None
+        assert t["valid"] is False
+        assert t["reason"] == "sl_wrong_side"
+
 
 class TestBosSessionQuality:
     def _ts_at_hour(self, hour: int, minute: int = 0) -> int:
