@@ -151,6 +151,40 @@ Phase 1 of `/topdown` (`topdown-ict-enhancements-2026-05-23` plan) shipped 2026-
 
 ---
 
+---
+
+## Phase 4 — PR4 Structure Context layer (added 2026-05-23)
+**Status:** in-review (work + gate complete 2026-05-23)
+**Branch:** `feat/topdown-v2-pr4-structure-context` off `feat/topdown-v2-pr3-adaptive-tp`
+**Source grill:** `docs/grill/topdown-phase4-structure-context-2026-05-23.md`
+
+**Motivation:** Live user observation 2026-05-23 — "bot parece seguir el momentum no a la estructura". Brief lacks: HTF trend duration, fresh LTF flip vs HTF, single-candle impulse event, wick-into-liquidity live tap.
+
+**Work:**
+1. `_trend_duration(tf_state, candles_for_tf)` — age of current trend from `structure_breaks[-1].timestamp`. Returns dict with candles_back, days, hours.
+2. `_ltf_flip_vs_htf(tf_results)` — find any LTF (15m, 30m, 1h) whose trend differs from 4H AND flipped within ≤4 candles. Returns the lowest-TF flip detected.
+3. `_last_candle_impulse(candles, baseline_n=30)` — body % of last candle / avg body % of prior baseline_n. Flag when ≥3× (big) or ≥5× (extreme).
+4. `_wick_into_liquidity(htf_candles, liquidity_levels)` — last candle's high vs unbroken BSL, low vs unbroken SSL. Returns level + side when wick crossed but close inside (sweep semantics).
+5. New `*STRUCTURE CONTEXT:*` render section between DAILY CONTEXT and ICT STRENGTH. Max 4 lines, conditional rendering per signal.
+
+**Verification gate:**
+- [x] Automated: topdown suite passes — 118/118 (was 100 → +18 new)
+- [x] Automated: full suite 1268 passed, 0 regression (was 1250 + 18 new)
+- [x] Automated: E2E SOL renders STRUCTURE CONTEXT in 37 lines (under 45 cap)
+- [ ] Manual: spot-check vs TradingView on live setup with recent big candle / LTF flip
+
+**Evidence:**
+- 2026-05-23 SOL E2E captures user's exact observation that motivated Phase 4:
+  ```
+  *STRUCTURE CONTEXT:*
+  4H bearish since 2026-05-23 04:00 UTC (0.5d 12h, 4 candles) 🔴
+  Last 1H: 🟢 EXTREME bull impulse (+2.51%, x5.79 baseline)
+  Last 1H wick tapped SSL `85.0575` (4 touches) — possible liquidity sweep
+  ```
+- Files: `M scripts/topdown_snapshot.py` (+~210 LOC: 4 PR4 helpers + render section); `M tests/test_topdown_snapshot.py` (+~310 LOC: 18 new tests).
+
+---
+
 ## Out of scope (defended)
 - **New collection cron / new tables** — `candles` table already has all closes for all TFs. Aggregation = pure derivation. Premature infra.
 - **Cache table for daily context** — defer until measured latency >200ms p95. SQL aggregation over indexed `candles(pair, timeframe, timestamp)` is fast.

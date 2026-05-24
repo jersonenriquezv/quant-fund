@@ -14,6 +14,7 @@
 | 2026-03-15 | `optuna_best_trial8_30d` | **optuna** | no | A+D_choch | 17 | 58.8% | +$1,683 | **2.65** | 3.92 | 8.2% | **Optuna best (30d train)**. Walk-forward: test PF=3.07, baseline PF=0.88 |
 | 2026-03-30 | `20260330_203441_30d` | default | no | all (pre-diag) | 104 | 36.5% | -$717 | 0.87 | -1.38 | 24.5% | **Pre-diagnostic baseline** — setup_h = 74 trades, -$1,144 |
 | 2026-03-30 | `20260330_204311_30d` | default | no | A+B+D+F+G (post-diag) | 18 | 61.1% | +$885 | **2.63** | 9.30 | 2.1% | **Post-diagnostic** — H disabled, regime gate F&G<20, ATR SL floor 3×, structural confluence only |
+| 2026-05-24 | `topdown_20260524_192804` | /topdown manual | n/a | /topdown triplet (post PR1-PR4) | 6,830 | 22.59% (vs random 20.27%) | +337 R (maker) / -1,718 R (taker) | 1.09 (maker) | — | 482 R | **Verdict NO EDGE** — Δ +2.32pp p=0.0073 statistically significant but practically tiny. BTC +7.65pp ETH +6.89pp DOGE -6.75pp SOL +0.64pp. Scaled-TP mode (PR3 adaptive) 0% WR over 483 trades — flag for redesign. Pair scope: BTC/ETH/SOL/DOGE × 150d × 15m grid. Plan: `docs/plans/backtest-topdown-2026-05-24.md`. Report: `backtest_results/topdown_20260524_192804_report.md` |
 
 ## Optuna Optimization (2026-03-15)
 

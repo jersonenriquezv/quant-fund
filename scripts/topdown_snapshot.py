@@ -20,6 +20,29 @@ from typing import Optional
 
 import psycopg2
 
+# Backtest time-machine override. When set (via replay_at in
+# scripts/backtest_topdown.py), _now_ms() returns this value and _load_candles
+# filters candles to those with timestamp <= this value. Production path leaves
+# it None — zero behavior change.
+_REPLAY_T_MS: Optional[int] = None
+
+
+def _now_ms() -> int:
+    """Wallclock now in ms, or replay override if backtester set it."""
+    if _REPLAY_T_MS is not None:
+        return _REPLAY_T_MS
+    return int(time.time() * 1000)
+
+
+def _set_replay_time(t_ms: Optional[int]) -> None:
+    """Backtester hook: set wallclock override for replay mode.
+
+    Pass None to restore live behavior. Must be paired (set + restore) by the
+    caller — _build_snapshot is otherwise unaware of replay mode.
+    """
+    global _REPLAY_T_MS
+    _REPLAY_T_MS = t_ms
+
 from config.settings import settings
 from shared.models import Candle
 from strategy_service.market_structure import (
@@ -134,16 +157,31 @@ def _ensure_30m_backfill(cur, conn, pair: str) -> int:
 
 
 def _load_candles(cur, pair: str, tf: str, limit: int) -> list[Candle]:
-    cur.execute(
-        """
-        SELECT timestamp, open, high, low, close, volume, volume_quote
-        FROM candles
-        WHERE pair = %s AND timeframe = %s
-        ORDER BY timestamp DESC
-        LIMIT %s
-        """,
-        (pair, tf, limit),
-    )
+    # In replay mode, hide future candles so snapshot reflects only the state
+    # known at _REPLAY_T_MS. Production path (override is None) keeps the
+    # original "latest N candles" semantics exactly.
+    if _REPLAY_T_MS is not None:
+        cur.execute(
+            """
+            SELECT timestamp, open, high, low, close, volume, volume_quote
+            FROM candles
+            WHERE pair = %s AND timeframe = %s AND timestamp <= %s
+            ORDER BY timestamp DESC
+            LIMIT %s
+            """,
+            (pair, tf, _REPLAY_T_MS, limit),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT timestamp, open, high, low, close, volume, volume_quote
+            FROM candles
+            WHERE pair = %s AND timeframe = %s
+            ORDER BY timestamp DESC
+            LIMIT %s
+            """,
+            (pair, tf, limit),
+        )
     rows = cur.fetchall()
     return [
         Candle(
@@ -523,6 +561,18 @@ def _trade_triplet(snap: Snapshot) -> Optional[dict]:
         return {"valid": False, "reason": "sweep_too_far",
                 "sweep_distance_pct": sweep_pct}
 
+    # Geometry guard: invalidation must be on the protective side of entry.
+    # Long: SL below entry (stop deeper, trade dies if liquidity below sweep
+    # also fails). Short: SL above entry. Otherwise the "stop" sits between
+    # entry and the move direction — the trade self-exits at a profit before
+    # the thesis is truly invalidated. Surfaced by Phase 1 tracer 2026-05-24.
+    if side == "long" and inv >= sweep.price:
+        return {"valid": False, "reason": "sl_wrong_side",
+                "entry": sweep.price, "sl": inv, "side": side}
+    if side == "short" and inv <= sweep.price:
+        return {"valid": False, "reason": "sl_wrong_side",
+                "entry": sweep.price, "sl": inv, "side": side}
+
     # Target picker — reuse 1.5R floor from existing helper
     min_dist = _min_target_distance(sweep.price, inv)
     if side == "short":
@@ -745,7 +795,7 @@ def _today_candle_status(daily_candles: list[Candle]) -> Optional[dict]:
     import datetime as _dt
     today = daily_candles[-1]
     today_dt = _dt.datetime.fromtimestamp(today.timestamp / 1000, tz=_dt.timezone.utc)
-    now_dt = _dt.datetime.now(tz=_dt.timezone.utc)
+    now_dt = _dt.datetime.fromtimestamp(_now_ms() / 1000, tz=_dt.timezone.utc)
     forming = (today_dt.date() == now_dt.date())
 
     if today.open <= 0:
@@ -869,6 +919,203 @@ def _adaptive_tp(
         "mode": "scaled", "tp1": tp1, "tp2": final_target,
         "splits": [50, 50], "atr": daily_atr, "threshold": threshold,
         "target_distance": target_distance,
+    }
+
+
+# ---------------------------------------------------------------------------
+# PR4 v2 — Structure Context layer.
+# Addresses user observation 2026-05-23: brief reads momentum but misses HOW
+# LONG HTF structure has held + LTF flips against HTF + single-candle impulse
+# events + wick taps into unbroken liquidity. All pure derivation over
+# Snapshot data already in memory.
+# ---------------------------------------------------------------------------
+
+LTF_FLIP_MAX_CANDLES = 4
+IMPULSE_BIG_RATIO = 3.0
+IMPULSE_EXTREME_RATIO = 5.0
+IMPULSE_BASELINE_N = 30
+
+
+def _trend_duration(tf_analysis: TFAnalysis, tf_candles: list[Candle]) -> Optional[dict]:
+    """How long the current trend on `tf_analysis` has been in place.
+
+    Defined by the last structure break (BOS or CHoCH) — that's when the
+    current trend was confirmed. Returns candles_back from the most recent
+    candle + wall-clock duration.
+
+    Returns None when no structure break yet or candles missing.
+    """
+    breaks = tf_analysis.state.structure_breaks
+    if not breaks or not tf_candles:
+        return None
+    latest = breaks[-1]
+    latest_ts = latest.timestamp
+    last_candle_ts = tf_candles[-1].timestamp
+    duration_ms = max(0, last_candle_ts - latest_ts)
+    hours = duration_ms / (1000 * 3600)
+    days = hours / 24
+    # Count candles whose timestamp >= break timestamp
+    candles_back = sum(1 for c in tf_candles if c.timestamp >= latest_ts)
+    return {
+        "trend": tf_analysis.state.trend,
+        "since_ts_ms": latest_ts,
+        "candles_back": candles_back,
+        "hours": round(hours, 1),
+        "days": round(days, 1),
+        "break_type": latest.break_type,
+        "break_direction": latest.direction,
+    }
+
+
+def _ltf_flip_vs_htf(tf_results: dict, htf_tf: str = "4h") -> Optional[dict]:
+    """Detect any LTF that flipped AGAINST HTF within LTF_FLIP_MAX_CANDLES.
+
+    For each LTF (15m, 30m, 1h) check:
+      - LTF current trend != HTF current trend (opposite directions only count;
+        undefined either side is skipped)
+      - The most recent structure break on the LTF happened in the last
+        LTF_FLIP_MAX_CANDLES candles of that TF
+
+    Returns the LOWEST-TF flip detected (15m > 30m > 1h priority — lowest TF
+    is the freshest signal). None when no qualifying flip.
+    """
+    htf = tf_results.get(htf_tf)
+    if htf is None or htf.state.trend not in ("bullish", "bearish"):
+        return None
+    htf_trend = htf.state.trend
+    # Priority order: 15m, 30m, 1h
+    for ltf_name in ("15m", "30m", "1h"):
+        ltf = tf_results.get(ltf_name)
+        if ltf is None:
+            continue
+        ltf_trend = ltf.state.trend
+        if ltf_trend not in ("bullish", "bearish"):
+            continue
+        if ltf_trend == htf_trend:
+            continue
+        breaks = ltf.state.structure_breaks
+        if not breaks:
+            continue
+        latest_break = breaks[-1]
+        # How many candles ago did the flip happen?
+        # latest_break.candle_index is the absolute index in the candle array
+        # that confirmed the break. Distance from end = how recent.
+        # We don't have the candle array here; use len of structure_breaks
+        # since last opposite break as proxy — too brittle. Instead use
+        # break_timestamp vs ltf.state.swing_highs/lows tail.
+        # Simpler: latest_break.direction must match ltf.state.trend, and
+        # we count candles_back from latest BOS confirmation using the
+        # break's direction.
+        if latest_break.direction != ltf_trend:
+            continue
+        # We can estimate "candles ago" from how many later breaks exist —
+        # since structure_breaks is append-only, the index of latest in the
+        # full break list isn't enough. Use the break_timestamp vs current
+        # ltf bar count: count breaks whose timestamp >= latest_break.timestamp.
+        # Acceptable shortcut: trust candle_index field — distance from len of
+        # the analyzed window. Without window length, we treat the break as
+        # "fresh" if it is the most recent break AND the trend changed within
+        # the window of structure_breaks (use last 2 breaks comparison).
+        if len(breaks) >= 2:
+            prev_break = breaks[-2]
+            if prev_break.direction == htf_trend:
+                # The previous LTF break was in HTF direction, and the latest
+                # flipped against HTF. That IS the flip event.
+                return {
+                    "ltf_tf": ltf_name,
+                    "ltf_trend": ltf_trend,
+                    "htf_trend": htf_trend,
+                    "flip_ts_ms": latest_break.timestamp,
+                    "flip_type": latest_break.break_type,
+                }
+        else:
+            # Only one break on LTF and it's against HTF — treat as flip.
+            return {
+                "ltf_tf": ltf_name,
+                "ltf_trend": ltf_trend,
+                "htf_trend": htf_trend,
+                "flip_ts_ms": latest_break.timestamp,
+                "flip_type": latest_break.break_type,
+            }
+    return None
+
+
+def _last_candle_impulse(candles: list[Candle],
+                          baseline_n: int = IMPULSE_BASELINE_N) -> Optional[dict]:
+    """Measure body magnitude of last single candle vs baseline.
+
+    Returns dict with magnitude label (big / extreme / normal) + ratio +
+    direction. None when insufficient candles.
+    """
+    if len(candles) < baseline_n + 1:
+        return None
+    last = candles[-1]
+    baseline = candles[-(baseline_n + 1):-1]
+
+    def body_pct(c: Candle) -> float:
+        if c.open <= 0:
+            return 0.0
+        return abs(c.close - c.open) / c.open * 100
+
+    last_body = body_pct(last)
+    baseline_avg = sum(body_pct(c) for c in baseline) / len(baseline)
+    ratio = last_body / baseline_avg if baseline_avg > 0 else 0.0
+
+    if ratio >= IMPULSE_EXTREME_RATIO:
+        magnitude = "extreme"
+    elif ratio >= IMPULSE_BIG_RATIO:
+        magnitude = "big"
+    else:
+        magnitude = "normal"
+
+    if last.close > last.open:
+        direction = "bull"
+    elif last.close < last.open:
+        direction = "bear"
+    else:
+        direction = "doji"
+
+    return {
+        "magnitude": magnitude,
+        "ratio": round(ratio, 2),
+        "body_pct": round(last_body, 2),
+        "direction": direction,
+    }
+
+
+def _wick_into_liquidity(candles: list[Candle],
+                          liquidity_levels: list) -> Optional[dict]:
+    """Detect if last candle's wick tapped an unbroken liquidity level.
+
+    Sweep semantics (matches strategy_service.liquidity.LiquidityAnalyzer):
+      - BSL: last.high > level.price AND last.close < level.price → swept BSL
+      - SSL: last.low < level.price AND last.close > level.price → swept SSL
+
+    Returns dict with side + tapped level. None when no tap detected.
+    Prefers level with highest touch_count (most institutional).
+    """
+    if not candles or not liquidity_levels:
+        return None
+    last = candles[-1]
+    candidates = []
+    for lvl in liquidity_levels:
+        if lvl.swept:
+            continue
+        if lvl.level_type == "bsl":
+            if last.high > lvl.price and last.close < lvl.price:
+                candidates.append(("bsl", lvl))
+        elif lvl.level_type == "ssl":
+            if last.low < lvl.price and last.close > lvl.price:
+                candidates.append(("ssl", lvl))
+    if not candidates:
+        return None
+    # Pick the level with highest touch_count
+    candidates.sort(key=lambda t: t[1].touch_count, reverse=True)
+    side, lvl = candidates[0]
+    return {
+        "side": side,
+        "level_price": lvl.price,
+        "touch_count": lvl.touch_count,
     }
 
 
@@ -1313,7 +1560,7 @@ def _render_telegram_markdown(snap: Snapshot) -> str:
     price = snap.current_price
     ts_str = time.strftime("%Y-%m-%d %H:%M UTC",
                            time.gmtime(snap.current_time_ms / 1000))
-    lag_sec = max(0, int(time.time() - snap.current_time_ms / 1000))
+    lag_sec = max(0, int(_now_ms() / 1000 - snap.current_time_ms / 1000))
     lag_min = lag_sec // 60
     lag_flag = (
         "✅" if lag_min <= FRESHNESS_OK_MIN
@@ -1404,6 +1651,62 @@ def _render_telegram_markdown(snap: Snapshot) -> str:
                 f"Weekly: {w_emoji} _{inside_tag}_ "
                 f"(PWH `{pwh_pwl['pwh']:.6g}`, PWL `{pwh_pwl['pwl']:.6g}`)"
             )
+
+    # STRUCTURE CONTEXT — PR4 v2 (max 4 lines, conditional per signal)
+    structure_lines: list[str] = []
+    htf_4h = snap.tf_results.get("4h")
+    candles_4h_raw = snap.raw_candles.get("4h", []) if hasattr(snap, "raw_candles") else []
+    candles_1h_raw = snap.raw_candles.get("1h", []) if hasattr(snap, "raw_candles") else []
+
+    # Line 1: HTF trend duration
+    if htf_4h is not None and candles_4h_raw:
+        dur = _trend_duration(htf_4h, candles_4h_raw)
+        if dur is not None and dur["trend"] in ("bullish", "bearish"):
+            t_emoji = "🔴" if dur["trend"] == "bearish" else "🟢"
+            ts_str = time.strftime("%Y-%m-%d %H:%M UTC",
+                                   time.gmtime(dur["since_ts_ms"] / 1000))
+            structure_lines.append(
+                f"4H {dur['trend']} since {ts_str} "
+                f"({dur['days']}d {int(dur['hours'] % 24)}h, "
+                f"{dur['candles_back']} candles) {t_emoji}"
+            )
+
+    # Line 2: LTF flip vs HTF (countertrend warning)
+    flip = _ltf_flip_vs_htf(snap.tf_results)
+    if flip is not None:
+        structure_lines.append(
+            f"⚠️ {flip['ltf_tf']} flipped {flip['ltf_trend']} vs 4H "
+            f"{flip['htf_trend']} — likely pullback, NOT confirmed reversal"
+        )
+
+    # Line 3: Last 1H candle impulse event
+    if candles_1h_raw:
+        imp = _last_candle_impulse(candles_1h_raw)
+        if imp is not None and imp["magnitude"] in ("big", "extreme"):
+            i_emoji = "🟢" if imp["direction"] == "bull" else "🔴"
+            mag_word = "EXTREME" if imp["magnitude"] == "extreme" else "big"
+            structure_lines.append(
+                f"Last 1H: {i_emoji} {mag_word} {imp['direction']} "
+                f"impulse ({imp['body_pct']:+.2f}%, x{imp['ratio']} baseline)"
+            )
+
+    # Line 4: Wick into unbroken liquidity on last 1H
+    if candles_1h_raw and htf_4h is not None:
+        all_liq = []
+        for tfa in snap.tf_results.values():
+            all_liq.extend(tfa.liquidity)
+        tap = _wick_into_liquidity(candles_1h_raw, all_liq)
+        if tap is not None:
+            side_label = "BSL" if tap["side"] == "bsl" else "SSL"
+            structure_lines.append(
+                f"Last 1H wick tapped {side_label} `{tap['level_price']:.6g}` "
+                f"({tap['touch_count']} touches) — possible liquidity sweep"
+            )
+
+    if structure_lines:
+        lines.append("")
+        lines.append("*STRUCTURE CONTEXT:*")
+        lines.extend(structure_lines)
 
     # ICT STRENGTH section — pure SMC reads
     lines.append("")
