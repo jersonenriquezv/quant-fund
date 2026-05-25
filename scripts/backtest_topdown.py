@@ -1246,6 +1246,10 @@ def main() -> int:
         help="Backtest window in days (default: 150)",
     )
     parser.add_argument(
+        "--pairs", type=str, default=None,
+        help="Comma-separated pair override, e.g. BTC/USDT,ETH/USDT,SOL/USDT (default: all 4)",
+    )
+    parser.add_argument(
         "--timeout-hours", type=int, default=DEFAULT_TIMEOUT_HOURS,
         help="Trade timeout in hours (default: 24)",
     )
@@ -1258,8 +1262,13 @@ def main() -> int:
     if args.tracer_mode:
         return run_tracer_mode()
     if args.simulate:
+        pairs = (
+            [p.strip() for p in args.pairs.split(",") if p.strip()]
+            if args.pairs else PAIRS_4
+        )
         return run_simulator(
-            days=args.days, timeout_hours=args.timeout_hours, random_seed=args.seed,
+            pairs=pairs, days=args.days, timeout_hours=args.timeout_hours,
+            random_seed=args.seed,
         )
     if args.report:
         return run_report(args.report)

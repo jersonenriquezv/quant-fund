@@ -481,7 +481,11 @@ def _killzone_now(timestamp_ms: int) -> dict:
 # ---------------------------------------------------------------------------
 
 # Sweep distance gate — beyond this, brief renders "spectator" instead of play.
-SWEEP_MAX_ACTIONABLE_PCT = 5.0
+# Tightened 2026-05-24 from 5.0 → 1.0 after `backtest_results/topdown_20260524_192804_report.md`
+# §5 showed 3-5% bucket WR = 0% / 17 SLs, 1-2% bucket WR = 15.8%, 0-1% bucket WR = 23.6%.
+# Below 1% is where the brief's edge actually concentrates. Loses ~80% of emissions but
+# raises per-emission quality.
+SWEEP_MAX_ACTIONABLE_PCT = 1.0
 
 
 def _pd_bias_conflict(reconciled_side: str, pd_zone: Optional[str]) -> bool:

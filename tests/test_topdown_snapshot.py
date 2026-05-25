@@ -500,13 +500,15 @@ class TestSweepDistance:
     def test_distance_pct_zero_price(self):
         assert _sweep_distance_pct(0.0, 105.0) is None
 
-    def test_actionable_within_default_5pct(self):
-        assert _sweep_actionable(3.0) is True
-        assert _sweep_actionable(5.0) is True
+    def test_actionable_within_default_1pct(self):
+        # Threshold tightened 2026-05-24 from 5.0 → 1.0 (see SWEEP_MAX_ACTIONABLE_PCT).
         assert _sweep_actionable(0.5) is True
+        assert _sweep_actionable(1.0) is True
+        assert _sweep_actionable(0.1) is True
 
-    def test_not_actionable_beyond_5pct(self):
-        assert _sweep_actionable(5.01) is False
+    def test_not_actionable_beyond_1pct(self):
+        assert _sweep_actionable(1.01) is False
+        assert _sweep_actionable(3.0) is False
         assert _sweep_actionable(15.0) is False
 
     def test_none_distance_not_actionable(self):
@@ -577,12 +579,12 @@ class TestTradeTriplet:
         assert _trade_triplet(snap) is None
 
     def test_long_sl_above_entry_rejected(self):
-        # Long: SSL sweep at 95 (entry), inv at 98 (between entry and price 100).
-        # SL should be BELOW entry — this geometry says invalidation triggers
-        # ON THE WAY UP from entry, which is not a stop. Phase 1 tracer found
-        # this happening live; guard added 2026-05-24.
+        # Long: SSL sweep at 99.5 (entry, 0.5% below price 100 → within the 1%
+        # actionable gate), inv at 99.8 (between entry and price). SL should be
+        # BELOW entry — here invalidation triggers ON THE WAY UP, which is not a
+        # stop. Phase 1 tracer found this happening live; guard added 2026-05-24.
         liq = [
-            LiquidityLevel(price=95.0, level_type="ssl", touch_count=2,
+            LiquidityLevel(price=99.5, level_type="ssl", touch_count=2,
                            timestamps=[1000], swept=False),
             LiquidityLevel(price=110.0, level_type="bsl", touch_count=2,
                            timestamps=[1100], swept=False),
@@ -593,7 +595,7 @@ class TestTradeTriplet:
         )
         snap = _make_snapshot(
             tf_results={"4h": tfa}, current_price=100.0,
-            side="long", conf="medium", invalidation=98.0,
+            side="long", conf="medium", invalidation=99.8,
         )
         t = _trade_triplet(snap)
         assert t is not None
@@ -601,10 +603,11 @@ class TestTradeTriplet:
         assert t["reason"] == "sl_wrong_side"
 
     def test_short_sl_below_entry_rejected(self):
-        # Short: BSL sweep at 105 (entry), inv at 102 (between price 100 and entry).
-        # SL should be ABOVE entry for a short.
+        # Short: BSL sweep at 100.5 (entry, 0.5% above price 100 → within the 1%
+        # actionable gate), inv at 100.2 (between price and entry). SL should be
+        # ABOVE entry for a short.
         liq = [
-            LiquidityLevel(price=105.0, level_type="bsl", touch_count=2,
+            LiquidityLevel(price=100.5, level_type="bsl", touch_count=2,
                            timestamps=[1000], swept=False),
             LiquidityLevel(price=90.0, level_type="ssl", touch_count=2,
                            timestamps=[1100], swept=False),
@@ -615,7 +618,7 @@ class TestTradeTriplet:
         )
         snap = _make_snapshot(
             tf_results={"4h": tfa}, current_price=100.0,
-            side="short", conf="medium", invalidation=102.0,
+            side="short", conf="medium", invalidation=100.2,
         )
         t = _trade_triplet(snap)
         assert t is not None
