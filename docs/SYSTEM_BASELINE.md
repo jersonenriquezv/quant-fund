@@ -509,6 +509,15 @@ D: net_score <  2
 
 ## 8. Changelog
 
+### 2026-05-25 — /topdown edge verdict CORRECTED (BTC/ETH has edge by expectancy)
+**Files:** `docs/audits/topdown-edge-expectancy-2026-05-25.md` (new), `scripts/topdown_edge_hunt.py` (new analysis), backtest run `topdown_20260525_220604` (BTC/ETH 150d confirmation).
+
+**What changed:** The 2026-05-24 "NO EDGE" verdict is **overturned for BTC/ETH**. That verdict used ΔWR ≥ 10pp as the go/no-go gate — the wrong metric for a high-R:R strategy. Measured by net expectancy in R: signal maker **+0.130R** vs random null **−0.220R** = **+0.35R/trade edge**, bootstrap 95% CI [+0.24, +0.51], p(≤0) < 0.0002. Out-of-sample stable (train +0.123R, holdout +0.147R). The original WR framing was diluted by DOGE (−6.75pp anti-edge) + flat SOL; on deep-liquidity BTC/ETH the WR gap is +9.2pp.
+
+**Why it matters:** the binding constraint is **fees, not signal**. Median risk/trade ≈0.5%, so taker RT (0.11% = 0.22R) eats the gross edge → net negative. **Maker (limit) entry** (0.02% = 0.04R) preserves it → net +0.13R, PF 1.18. Strategy is manual (user places limit on Bybit, normally fills); backtest already excludes non-fills as `unfilled_timeout`, so +0.13R is on filled trades only.
+
+**Confirmed levers (NOT yet built into /topdown):** (1) restrict to BTC/ETH, (2) maker-only entry, (3) kill scaled-TP mode (0 TP ever in both runs), (4) optional tighten sweep to ≤0.5% (E +0.36R vs +0.15R at 0.5–1%). **At $300 capital the dollar profit is small** (~$50/5mo selective); edge matters at higher capital/frequency. Caveat: pair+window in-sample-period; forward confirmation still pending. Full analysis: `docs/audits/topdown-edge-expectancy-2026-05-25.md`.
+
 ### 2026-05-25 — Top-down Telegram brief Phase 4 (falsification enabler + push automation)
 **Files:** `data_service/bybit_sync.py` (+1 DDL), `dashboard/api/routes/bybit.py` (+3 lines: model + out + mapper), `dashboard/web/src/lib/api.ts` (+2 fields), `dashboard/web/src/app/annotate/[id]/page.tsx` (+checkbox UI/state), `scripts/topdown_snapshot.py` (+`build_brief_and_state`), `scripts/topdown_push.py` (new), `tests/test_topdown_push.py` (new, 4 tests), `systemd/topdown-push.{service,timer}` + `systemd/topdown-watch.service` (new).
 
