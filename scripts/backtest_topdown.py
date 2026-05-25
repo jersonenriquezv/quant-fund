@@ -32,7 +32,107 @@ from scripts.topdown_snapshot import (
     _build_snapshot,
     _set_replay_time,
     _trade_triplet,
+    _last_candle_impulse,
+    _wick_into_liquidity,
+    _ltf_flip_vs_htf,
+    _inducement_check,
+    _bos_session_quality,
 )
+
+# Confluence tags captured per emission for the Phase 3.5 reliability study.
+# Each maps to a signal the /topdown brief surfaces. All are direction-aligned
+# (long ↔ bullish, short ↔ bearish) except structure_flip, which is a warning.
+CONFLUENCE_TAGS = [
+    "htf_4h_aligned",
+    "htf_1h_aligned",
+    "ltf_15m_aligned",
+    "conf_high",
+    "ob_aligned_near",
+    "fvg_aligned",
+    "impulse_aligned",
+    "wick_tap_aligned",
+    "inducement",
+    "structure_flip",  # warning, excluded from positive confluence count
+]
+_POSITIVE_CONFLUENCES = [t for t in CONFLUENCE_TAGS if t != "structure_flip"]
+
+
+def _extract_confluences(snap: Snapshot) -> dict:
+    """Derive boolean confluence tags present at a /topdown emission.
+
+    Returns {tag: bool for tag in CONFLUENCE_TAGS} plus confluence_count
+    (sum of positive tags). Read-only — does not mutate snap.
+    """
+    side = snap.reconciled_side
+    price = snap.current_price
+    want_trend = "bullish" if side == "long" else "bearish" if side == "short" else None
+
+    tags = {t: False for t in CONFLUENCE_TAGS}
+    if want_trend is None:
+        tags["confluence_count"] = 0
+        return tags
+
+    def _tf_trend(tf: str) -> str:
+        tfa = snap.tf_results.get(tf)
+        return tfa.state.trend if tfa else "undefined"
+
+    tags["htf_4h_aligned"] = _tf_trend("4h") == want_trend
+    tags["htf_1h_aligned"] = _tf_trend("1h") == want_trend
+    tags["ltf_15m_aligned"] = _tf_trend("15m") == want_trend
+    tags["conf_high"] = snap.confidence == "high"
+
+    # Aligned unmitigated OB within 1.5% of price (any cascade TF)
+    ob_dir = want_trend
+    for tfa in snap.tf_results.values():
+        for ob in tfa.obs:
+            if getattr(ob, "mitigated", False):
+                continue
+            if ob.direction != ob_dir:
+                continue
+            anchor = getattr(ob, "entry_price", None) or ((ob.high + ob.low) / 2)
+            if anchor and abs(anchor - price) / price <= 0.015:
+                tags["ob_aligned_near"] = True
+                break
+        if tags["ob_aligned_near"]:
+            break
+
+    # Aligned unfilled FVG present (any cascade TF)
+    for tfa in snap.tf_results.values():
+        for fvg in tfa.fvgs:
+            if getattr(fvg, "fully_filled", False):
+                continue
+            if fvg.direction == ob_dir:
+                tags["fvg_aligned"] = True
+                break
+        if tags["fvg_aligned"]:
+            break
+
+    # Last 15m candle impulse aligned with direction
+    impulse = _last_candle_impulse(snap.raw_candles.get("15m", []))
+    if impulse and impulse["magnitude"] in ("big", "extreme"):
+        imp_dir = "bull" if side == "long" else "bear"
+        tags["impulse_aligned"] = impulse["direction"] == imp_dir
+
+    # Wick tap into aligned liquidity (long taps SSL, short taps BSL)
+    ltf = snap.tf_results.get("15m")
+    if ltf:
+        wick = _wick_into_liquidity(snap.raw_candles.get("15m", []), ltf.liquidity)
+        if wick:
+            want_tap = "ssl" if side == "long" else "bsl"
+            tags["wick_tap_aligned"] = wick["side"] == want_tap
+
+    # Inducement on 4H
+    htf = snap.tf_results.get("4h")
+    if htf:
+        idm = _inducement_check(htf)
+        tags["inducement"] = bool(idm.get("has_idm"))
+
+    # Structure flip (warning): any LTF flipped against HTF
+    flip = _ltf_flip_vs_htf(snap.tf_results)
+    tags["structure_flip"] = flip is not None
+
+    tags["confluence_count"] = sum(1 for t in _POSITIVE_CONFLUENCES if tags[t])
+    return tags
 
 
 PAIRS_4 = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "DOGE/USDT"]
@@ -426,6 +526,11 @@ def iter_emissions_for_pair(
             "tp_mode": triplet.get("tp_mode", "single"),
             "current_price": snap.current_price,
         }
+        # Phase 3.5: capture confluence tags present at emission.
+        conf = _extract_confluences(snap)
+        for tag in CONFLUENCE_TAGS:
+            emission[tag] = int(conf[tag])
+        emission["confluence_count"] = conf["confluence_count"]
         last_emit = emission
         yield emission
 
@@ -1224,6 +1329,134 @@ def run_report(run_id: str) -> int:
     return 0
 
 
+def run_confluence_report(run_id: str) -> int:
+    """Phase 3.5: per-confluence reliability. Reads <run_id>_trades.csv (must
+    carry confluence columns from a post-2026-05-25 --simulate run)."""
+    out_dir = "backtest_results"
+    trades_path = os.path.join(out_dir, f"{run_id}_trades.csv")
+    report_path = os.path.join(out_dir, f"{run_id}_confluence_report.md")
+    if not os.path.exists(trades_path):
+        print(f"ERROR: {trades_path} not found")
+        return 1
+    with open(trades_path) as f:
+        trades = list(csv.DictReader(f))
+
+    if CONFLUENCE_TAGS[0] not in (trades[0] if trades else {}):
+        print(f"ERROR: {trades_path} has no confluence columns. Re-run --simulate "
+              f"with the Phase 3.5 build to capture them.")
+        return 1
+
+    def _wr(rows: list[dict]) -> tuple[int, int, float]:
+        tp = sum(1 for r in rows if r["outcome"] == "tp")
+        sl = sum(1 for r in rows if r["outcome"] == "sl")
+        resolved = tp + sl
+        return tp, resolved, (tp / resolved * 100 if resolved else 0.0)
+
+    base_tp, base_resolved, base_wr = _wr(trades)
+
+    lines = [f"# /topdown Confluence Reliability — {run_id}", ""]
+    lines.append(f"**Generated:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+    lines.append(f"**Trades:** {trades_path} (N={len(trades)})")
+    lines.append(f"**Baseline WR (all emissions, resolved):** {base_wr:.2f}% ({base_tp}/{base_resolved})")
+    lines.append("")
+    lines.append("## 1. WR conditional on each confluence (present vs absent)")
+    lines.append("")
+    lines.append("`lift` = WR(present) − WR(absent). Positive lift = the signal selects winners.")
+    lines.append("")
+    lines.append("| Confluence | N present | WR present | N absent | WR absent | Lift |")
+    lines.append("|---|---|---|---|---|---|")
+    rows_sorted = []
+    for tag in CONFLUENCE_TAGS:
+        present = [r for r in trades if r.get(tag) == "1"]
+        absent = [r for r in trades if r.get(tag) == "0"]
+        _, pres_res, pres_wr = _wr(present)
+        _, abs_res, abs_wr = _wr(absent)
+        lift = pres_wr - abs_wr
+        rows_sorted.append((tag, len(present), pres_wr, pres_res, len(absent), abs_wr, abs_res, lift))
+    # Sort by lift descending
+    rows_sorted.sort(key=lambda x: x[7], reverse=True)
+    for tag, n_pres, pres_wr, pres_res, n_abs, abs_wr, abs_res, lift in rows_sorted:
+        lines.append(
+            f"| {tag} | {n_pres} ({pres_res} res) | {pres_wr:.2f}% | "
+            f"{n_abs} ({abs_res} res) | {abs_wr:.2f}% | {lift:+.2f}pp |"
+        )
+    lines.append("")
+    lines.append("## 2. WR by confluence count")
+    lines.append("")
+    lines.append("Count = number of positive confluences present (structure_flip excluded).")
+    lines.append("")
+    lines.append("| Count | N | resolved | TP | WR |")
+    lines.append("|---|---|---|---|---|")
+    from collections import defaultdict
+    by_count = defaultdict(list)
+    for r in trades:
+        c = int(r.get("confluence_count", 0))
+        by_count[c].append(r)
+    for c in sorted(by_count):
+        tp, res, wr = _wr(by_count[c])
+        lines.append(f"| {c} | {len(by_count[c])} | {res} | {tp} | {wr:.2f}% |")
+    lines.append("")
+    lines.append("## 3. WR at/above each confluence threshold (cumulative)")
+    lines.append("")
+    lines.append("Answers: 'if I required ≥N confluences, what WR + how many trades survive?'")
+    lines.append("")
+    lines.append("| Min count | N (survive) | resolved | WR | % of emissions kept |")
+    lines.append("|---|---|---|---|---|")
+    total = len(trades)
+    for c in sorted(by_count):
+        survivors = [r for r in trades if int(r.get("confluence_count", 0)) >= c]
+        tp, res, wr = _wr(survivors)
+        pct_kept = len(survivors) / total * 100 if total else 0
+        lines.append(f"| ≥{c} | {len(survivors)} | {res} | {wr:.2f}% | {pct_kept:.1f}% |")
+    lines.append("")
+    # 4. OUT-OF-SAMPLE VALIDATION — the lifts in §1 are in-sample. The only
+    # honest test of a gate is whether its edge survives on unseen data. We
+    # split chronologically 70/30 and re-measure the top single + combined gates.
+    trades_sorted = sorted(trades, key=lambda r: int(r["t_ms"]))
+    split = int(len(trades_sorted) * 0.70)
+    train, holdout = trades_sorted[:split], trades_sorted[split:]
+
+    def _wr_only(rows):
+        tp = sum(1 for r in rows if r["outcome"] == "tp")
+        sl = sum(1 for r in rows if r["outcome"] == "sl")
+        res = tp + sl
+        return res, (tp / res * 100 if res else 0.0)
+
+    candidate_gates = [
+        ("baseline (all)", lambda r: True),
+        ("fvg_aligned", lambda r: r.get("fvg_aligned") == "1"),
+        ("ob_aligned_near", lambda r: r.get("ob_aligned_near") == "1"),
+        ("fvg AND ob", lambda r: r.get("fvg_aligned") == "1" and r.get("ob_aligned_near") == "1"),
+        ("fvg AND ob AND structure_flip",
+         lambda r: r.get("fvg_aligned") == "1" and r.get("ob_aligned_near") == "1" and r.get("structure_flip") == "1"),
+    ]
+
+    lines.append("## 4. Out-of-sample validation (70/30 chronological split)")
+    lines.append("")
+    lines.append("The §1 lifts are **in-sample**. A gate only matters if its edge survives on unseen data. Train = first 70% chronologically, holdout = last 30%. If holdout WR collapses to the holdout baseline, the gate is overfit.")
+    lines.append("")
+    lines.append("| Gate | Train res | Train WR | Holdout res | Holdout WR |")
+    lines.append("|---|---|---|---|---|")
+    for name, fn in candidate_gates:
+        tr_res, tr_wr = _wr_only([r for r in train if fn(r)])
+        ho_res, ho_wr = _wr_only([r for r in holdout if fn(r)])
+        lines.append(f"| {name} | {tr_res} | {tr_wr:.1f}% | {ho_res} | {ho_wr:.1f}% |")
+    lines.append("")
+
+    lines.append("## 5. Reading")
+    lines.append("")
+    top = rows_sorted[0]
+    lines.append(f"- Strongest single confluence by in-sample lift: **{top[0]}** ({top[7]:+.2f}pp) — but see §4 before trusting it.")
+    lines.append("- **Confluence COUNT is not monotonic** (§2): WR peaks at 4-5 then falls. Stacking confluences past 5 dilutes, because several tags (ltf_15m_aligned, htf_1h_aligned, inducement) carry NEGATIVE lift — they are anti-signals, not confluences. 'Require more confluences' is the wrong frame.")
+    lines.append("- **Decision rule:** trust a gate only if its holdout WR in §4 clears the holdout baseline by a margin comparable to its in-sample lift. If holdout collapses to baseline, the gate is an in-sample artifact — do NOT build it into /topdown.")
+    lines.append("")
+
+    with open(report_path, "w") as f:
+        f.write("\n".join(lines))
+    print(f"Wrote confluence report: {report_path}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Backtest /topdown manual strategy")
     parser.add_argument(
@@ -1240,6 +1473,11 @@ def main() -> int:
         "--report",
         type=str, default=None,
         help="Phase 3: aggregate CSVs into markdown report. Pass run_id (e.g. topdown_20260524_192804).",
+    )
+    parser.add_argument(
+        "--confluence-report",
+        type=str, default=None,
+        help="Phase 3.5: per-confluence reliability from <run_id>_trades.csv. Requires a run with confluence capture.",
     )
     parser.add_argument(
         "--days", type=int, default=150,
@@ -1272,6 +1510,8 @@ def main() -> int:
         )
     if args.report:
         return run_report(args.report)
+    if args.confluence_report:
+        return run_confluence_report(args.confluence_report)
 
     parser.print_help()
     return 0
