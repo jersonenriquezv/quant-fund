@@ -637,20 +637,18 @@ class StrategyService:
             self._scalp_last_fire[pair] = now
             return setup
 
-        # Cached orderbook — used by vol_cvd (spread chaos gate). Cached
-        # per-pair so the REST call is paid at most once per
-        # SCALP_ORDERBOOK_CACHE_TTL_SECONDS.
-        orderbook = self._get_cached_orderbook(pair, now)
         # scalp_sweep_choch_v1 killed 2026-05-07: WR 7.7% under v3-clean
         # (1 TP / 12 SL / 3 BE / 14 TS, N=30) vs 30% random baseline.
         # v2 fade-pattern filters did not rescue. Detector retained for
         # historical replay; not invoked in live shadow path.
-        setup = self._scalp_setups.evaluate_vol_cvd_divergence(
-            pair, candles, market_snapshot, orderbook=orderbook,
-        )
-        if setup is not None:
-            self._scalp_last_fire[pair] = now
-            return setup
+
+        # scalp_vol_cvd_div_v1 killed 2026-05-22: combined v3+v4 N=6 over
+        # 16d (1 TP / 1 SL / 0 BE / 4 TS, ~$1 net) — v4 tune
+        # (z 3.0→2.0 + spread 2bps→5bps, 2026-05-11) failed to revive
+        # emission rate, signal sits below useful N. Orderbook fetch
+        # (`_get_cached_orderbook`) deleted with the call since vol_cvd was
+        # its only consumer. Detector + helper retained in scalp_setups.py
+        # for replay; not invoked in live shadow path.
 
         # scalp_funding_extreme_v1 killed 2026-05-09: 0 emissions in 4 days
         # under scalp_v3_clean_2026_05_06 despite threshold already at p99 of

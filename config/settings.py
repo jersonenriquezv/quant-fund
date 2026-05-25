@@ -911,7 +911,11 @@ class Settings:
         # "scalp_sweep_choch_v1" — killed 2026-05-07: WR 7.7% under
         # scalp_v3_clean_2026_05_06 (N=30) vs 30% random baseline. Detector
         # call removed in strategy_service/service.py.evaluate_scalp.
-        "scalp_vol_cvd_div_v1",
+        # "scalp_vol_cvd_div_v1" — killed 2026-05-22: combined v3+v4 N=6
+        # over 16d (1 TP / 1 SL / 0 BE / 4 TS, ~$1 net); v4 tune
+        # (z 3.0→2.0 + spread 2bps→5bps, 2026-05-11) failed to revive
+        # emission rate. Detector call + orderbook fetch removed in
+        # strategy_service/service.py.evaluate_scalp.
         # "scalp_funding_extreme_v1" — killed 2026-05-09: 0 emissions in 4
         # days under scalp_v3_clean_2026_05_06 despite threshold already at
         # p99 of OKX 30d funding-rate distribution. OKX SWAP funding is
@@ -942,17 +946,20 @@ class Settings:
     SHADOW_PAIR_FILTER: dict = field(default_factory=lambda: {
         "setup_d_choch": ["BTC/USDT", "ETH/USDT"],
         "setup_d_bos": ["BTC/USDT", "ETH/USDT"],
-        # Engine 1 v1c (2026-05-07): pair filter relaxed to all TRADING_PAIRS
-        # via omission. v1b ETH-only isolation collected zero post-fix
-        # outcomes in 55h because ETH did not produce qualifying impulses
-        # while BTC/SOL/LINK/AVAX detected short impulses (HTF=long blocked
-        # them at the dir-vs-HTF gate). Direction filter stays `["short"]`,
-        # so this only opens emission to other pairs *when their HTF flips
-        # bearish*. Long-impulse history was negative across all measured
-        # pairs and is intentionally still excluded. New EXPERIMENT_ID
-        # `engine1_short_multipair_v1c_2026_05_07` segregates v1c rows from
-        # v1b history. Benchmarks (`bench_engine1_*`) co-emit alongside
-        # engine1, so omitting them here keeps pair scope mirrored.
+        # Engine 1 v1d (2026-05-22): quarantine BTC + DOGE — per-pair edge
+        # audit on `engine1_short_multipair_v1c_2026_05_07` (14d, N=641
+        # terminal across 7 pairs) ranked WR(TP/(TP+SL)) as:
+        #     AVAX 28.3% | LINK 27.1% | ETH 24.6% | XRP 15.8%
+        #     SOL  16.2% | DOGE 13.0% | BTC 11.5%
+        # BTC + DOGE are the bottom two and the only two with N≥30 AND
+        # WR <15%. Removing them while keeping 5 pairs preserves enough
+        # emission volume for the 2026-06-08 review point. Direction
+        # filter stays `["short"]`; HTF-bearish gate unchanged.
+        # Benchmarks mirror the same pair scope so paired-comparison
+        # WR/PF remain apples-to-apples.
+        "engine1_trend_pullback":      ["ETH/USDT", "SOL/USDT", "LINK/USDT", "AVAX/USDT", "XRP/USDT"],
+        "bench_engine1_random_direction": ["ETH/USDT", "SOL/USDT", "LINK/USDT", "AVAX/USDT", "XRP/USDT"],
+        "bench_engine1_market_now":       ["ETH/USDT", "SOL/USDT", "LINK/USDT", "AVAX/USDT", "XRP/USDT"],
     })
     # Fictional capital for shadow mode position sizing ($500 USDT).
     # Shadow R:R and position sizes reflect realistic trades you'd take later.
@@ -1100,7 +1107,7 @@ class Settings:
     # Experiment ID — tracks which parameter regime generated a sample.
     # feature_version = what columns mean. experiment_id = what rules generated sample.
     # Same features + different gates = contaminated dataset without this.
-    EXPERIMENT_ID: str = os.getenv("EXPERIMENT_ID", "engine1_short_multipair_v1c_2026_05_07")
+    EXPERIMENT_ID: str = os.getenv("EXPERIMENT_ID", "engine1_short_quarantine_v1d_2026_05_22")
 
     # ========================
     # LIQUIDATION HEATMAP

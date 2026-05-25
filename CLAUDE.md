@@ -6,6 +6,7 @@ A personal automated trading system using Smart Money Concepts (SMC) to detect s
 
 **Current state:** See `docs/SYSTEM_BASELINE.md` for active config, thresholds, setup status, and changelog.
 **Service details:** See `docs/context/` for per-service documentation (Spanish).
+**Operational mode:** Shadow-only since 2026-04-15 (`ENABLED_SETUPS=[]`). All setups route to `ShadowMonitor` for ML data collection. No live OKX orders. Bybit manual trading runs in parallel (see Bybit subsystem below).
 
 ---
 
@@ -26,7 +27,7 @@ ALL dashboard UI changes MUST work on mobile (375px+). The dashboard uses 2 CSS 
 ## Technical Stack
 
 * **Language:** Python 3.12 (entire system, venv at ~/quant-fund/venv)
-* **Exchange:** OKX via ccxt (REST) + native OKX WebSocket
+* **Exchange:** OKX via ccxt (REST) + native OKX WebSocket. Bybit read-only via pybit (manual-trade journal, separate containers `bybit-watcher` + `explain-bot`)
 * **Pairs:** 7 linear perpetuals — BTC, ETH, SOL, DOGE, XRP, LINK, AVAX (/USDT). OKX instrument IDs: `BTC-USDT-SWAP` (hyphens, not slashes)
 * **Analysis:** pandas + numpy
 * **AI Filter:** Claude API (Sonnet) — currently bypassed for all active setups
@@ -55,9 +56,11 @@ quant-fund/
 │   ├── notifier.py          # Telegram push notifications
 │   └── alert_manager.py     # Priority-based Telegram alerts
 ├── data_service/            # Layer 1: OKX WebSocket, REST, whale tracking, Redis/PostgreSQL
+│                            # Also: bybit_watcher.py (annotation daemon) + bybit_sync.py (REST sync)
 ├── strategy_service/        # Layer 2: SMC pattern detection (BOS/CHoCH, OB, FVG, sweeps)
-│   ├── setups.py            # Swing setups A/B/F/G + confluence + OB scoring
-│   └── quick_setups.py      # Quick setups C/D/E/H
+│   ├── setups.py            # Swing setups A/B/F (G code retained, shadow off since 2026-04-16)
+│   ├── quick_setups.py      # D variants (d_bos, d_choch). C/E/H removed 2026-04-13
+│   └── engines/             # Redesign engines (Engine 1 trend-pullback + benchmarks)
 ├── ai_service/              # Layer 3: Claude filter (currently bypassed)
 ├── risk_service/            # Layer 4: Guardrails, position sizing
 ├── execution_service/       # Layer 5: OKX order placement, SL/TP lifecycle, PnL

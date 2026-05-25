@@ -4,12 +4,12 @@
 > Reflects code reality — if code and doc disagree, fix the doc.
 > Documentation rule: this file is the operational source of truth. `README.md` is a portfolio overview; `docs/context/*` explains concepts and history and may intentionally lag unless this baseline links to it.
 
-**Last updated:** 2026-05-06
+**Last updated:** 2026-05-23
 **ML Feature Version:** 18
 **Bot status:** SHADOW-ONLY (OKX_SANDBOX=false, ENABLED_SETUPS=[], ~$86 capital untouched)
-**Active experiment:** `engine1_short_multipair_v1c_2026_05_07` (settings.py default since this commit). Engine 1 v1c relaxes the v1b ETH-only pair filter to all `TRADING_PAIRS` while keeping the short-only direction filter. Triggered by 0 emissions in 55h under v1b: ETH produced no qualifying impulses while BTC/SOL/LINK/AVAX detected short impulses but had HTF=long (rejected at dir-vs-HTF gate). Long-impulse history was negative across measured pairs and is intentionally still excluded.
+**Active experiment:** `engine1_short_quarantine_v1d_2026_05_22` (settings.py default since this commit). Engine 1 v1d narrows the v1c pair scope from all `TRADING_PAIRS` to ETH / SOL / LINK / AVAX / XRP. BTC + DOGE quarantined after 14d v1c per-pair audit ranked them as the bottom two by WR (BTC 11.5% / DOGE 13.0%, both N≥30, both clearly below the next-worst pair). Direction filter unchanged (`["short"]`). Benchmarks (`bench_engine1_random_direction`, `bench_engine1_market_now`) mirror the quarantine list so paired comparisons remain apples-to-apples.
 
-> **Data tag reality (2026-05-07):** All historical engine1 ml_setups rows are tagged `redesign_pre_2026_04_27` (legacy env override active during the v1/v1b collection window). Zero rows under either v1b or v1c yet. Once HTF on any pair flips bearish, v1c emissions begin accumulating under `engine1_short_multipair_v1c_2026_05_07` and `scripts/report_engine1_shadow.py` will start reporting non-zero. Querying under the legacy ID is still the only way to see existing pre-v1c data.
+> **Data tag reality (2026-05-22):** v1c rows under `engine1_short_multipair_v1c_2026_05_07` are queryable for historical analysis but no longer accumulate. New emissions on the 5 surviving pairs land under `engine1_short_quarantine_v1d_2026_05_22`. BTC + DOGE rows stop accruing entirely (pair filter rejects them at the shadow scope check before the row is inserted).
 **Monitoring:** Grafana dashboard `shadow-health` + systemd user timer `shadow-health-alert.timer` (hourly)
 
 ---
@@ -36,7 +36,7 @@
 | F (Pure OB Retest) | **SHADOW** | swing, was live until 04-15 | 50% (1TP/1SL live) |
 | G (Breaker Block) | **DISABLED** | 0/4 WR. Removed 04-16. | 0% |
 | H (Momentum/Impulse) | **DISABLED** | — | 10.7% WR (28 trades). Removed 04-13. |
-| Engine 1 (Trend-Pullback / Impulse Retest) | **SHADOW (all pairs, short only) — v1c live since 2026-05-07** | v1c relaxes v1b ETH-only pair filter to all `TRADING_PAIRS`; direction filter unchanged (`["short"]`). Audit (issue #22) confirmed v1b ran 55h with 0 emissions because ETH produced no impulses while BTC/SOL/LINK/AVAX impulses were rejected by HTF=long. Benchmarks (`bench_engine1_*`) co-emit on the same pair scope. Engine activates per pair when its HTF flips bearish | v1: ETH short only positive slice (+$6.66 / 37 trades); BTC + ETH long historically negative |
+| Engine 1 (Trend-Pullback / Impulse Retest) | **SHADOW (ETH/SOL/LINK/AVAX/XRP, short only) — v1d live since 2026-05-22** | v1d narrows v1c's all-pairs scope by quarantining BTC + DOGE — both ranked bottom-two by WR (11.5% / 13.0%, N≥30) in the 14d v1c audit. Direction filter unchanged (`["short"]`). Benchmarks (`bench_engine1_*`) mirror the pair scope so paired comparisons stay apples-to-apples. v1c rows remain queryable for the per-pair audit | v1: ETH short only positive slice (+$6.66 / 37 trades); BTC + ETH long historically negative |
 
 ### Risk Guardrails
 | Parameter | Value | Notes |
@@ -261,7 +261,7 @@ Reference for VPS sizing when migrating from Nitro 5.
 **Query training data:** `SELECT * FROM ml_setups WHERE feature_version >= 4 AND outcome_type IS NOT NULL AND outcome_type NOT IN ('ai_rejected','data_blocked','filled_orphaned','replaced','risk_rejected','shadow_dedup','shadow_direction_filtered','shadow_pair_filtered','shadow_orphaned','trading_halted','unfilled_timeout')`
 
 Whitelist autoritativa de `outcome_type` en `data_service.data_store.VALID_OUTCOMES`. Labels fuera del set generan WARNING. El filtro non-market se centraliza en `NON_MARKET_OUTCOMES` + helper `ml_market_outcome_filter_sql()` (mismo módulo) — usarlo en scripts/queries nuevas para evitar drift.
-**Experiment tracking:** `experiment_id` column (migration 15). settings.py default: `engine1_short_multipair_v1c_2026_05_07` (v1c, active since 2026-05-07). Prior defaults: `engine1_eth_short_v1b_2026_05_04` (v1b, 2026-05-04 → 2026-05-07; zero rows accrued — replaced before validation), `redesign_pre_2026_04_27` (env override during v1 collection window — all 1510 historical engine1 rows + 109 scalp rows tagged here). When querying engine1 historically, filter on the legacy ID; when querying scalp, see Side experiment §9.
+**Experiment tracking:** `experiment_id` column (migration 15). settings.py default: `engine1_short_quarantine_v1d_2026_05_22` (v1d, active since 2026-05-22). Prior defaults: `engine1_short_multipair_v1c_2026_05_07` (v1c, 2026-05-07 → 2026-05-22; ~641 terminal rows over 7 pairs — surviving slice queryable, BTC + DOGE rows preserved but no longer accruing), `engine1_eth_short_v1b_2026_05_04` (v1b, 2026-05-04 → 2026-05-07; zero rows accrued — replaced before validation), `redesign_pre_2026_04_27` (env override during v1 collection window — all 1510 historical engine1 rows + 109 scalp rows tagged here). When querying engine1 historically, filter on the legacy ID; when querying scalp, see Side experiment §9.
 
 | Version | Date | Changes | Training Status |
 |---------|------|---------|-----------------|
@@ -410,7 +410,7 @@ Independent shadow-only experiment for microstructural scalping signals, separat
   Old rows stay queryable under their experiment_id.
 - **Master switch:** `SCALP_SHADOW_ENABLED` (default `false`)
 - **Timeframe:** `SCALP_TIMEFRAME` (default `5m`; bumps to `1m` once a fetcher commit lands)
-- **Setup types:** `scalp_liq_reclaim_v1`, `scalp_sweep_choch_v1` (killed 2026-05-07), `scalp_vol_cvd_div_v1`, `scalp_funding_extreme_v1` (killed 2026-05-09), `scalp_random_baseline_v1` — all routed through `SHADOW_MODE_SETUPS`, zero live execution. Surviving in pipeline: `liq_reclaim`, `vol_cvd_div`, `random_baseline`.
+- **Setup types:** `scalp_liq_reclaim_v1`, `scalp_sweep_choch_v1` (killed 2026-05-07), `scalp_vol_cvd_div_v1` (killed 2026-05-22), `scalp_funding_extreme_v1` (killed 2026-05-09), `scalp_random_baseline_v1` — all routed through `SHADOW_MODE_SETUPS`, zero live execution. Surviving in pipeline: `liq_reclaim`, `random_baseline`.
 - **`scalp_sweep_choch_v1` v2 filters (added 2026-05-05):**
   - **ADX(14) gate:** ADX on `SCALP_TIMEFRAME` must be `>= SCALP_SWEEP_CHOCH_MIN_ADX` (default `18.0`). When the candle window is too short for ADX warmup the detector also blocks rather than emit blind. Sub-trend regimes dominated v1 SLs.
   - **Book imbalance gate (fade pattern):** when an orderbook snapshot is available, `book_imbalance_ratio = depth_bid_usd / depth_ask_usd`:
@@ -550,6 +550,47 @@ Statistically significant Δ, but **far below the 10pp practical-edge threshold*
 - DOGE-specific kill candidate if `/topdown` continues live: DOGE anti-edge persists across 1,581 emissions, hard to explain away as noise.
 
 **Why:** User asked Phase 0 ("does manual /topdown strategy have edge?"). Grill verdict BUILD on 2026-05-24 with NO EDGE / EDGE threshold = Δ 10pp WR vs random by 2026-06-07. Backtest delivered 14 days ahead of deadline.
+
+### 2026-05-23 — Fix Bybit partial-close PnL aggregation
+**Files:** `data_service/bybit_watcher.py`, `tests/test_bybit_watcher_close_aggregation.py`, `scripts/reconcile_bybit_partial_pnl.py`
+
+**What changed:**
+- `_close_annotation` now SUMs every `bybit_closed_pnl` row emitted between annotation `opened_at` and now (1-min clock-skew buffer), instead of pulling the most recent row within a 5-minute window.
+- Stored values become: `pnl_usd = SUM(closed_pnl)`, `pnl_pct = 100 * pnl_usd / SUM(cum_entry_value)`, `exit_price = qty-weighted avg of avg_exit_price`. Returned dict now exposes `partial_count`.
+- New script `scripts/reconcile_bybit_partial_pnl.py` recomputes pnl_usd / pnl_pct / exit_price for already-closed annotations and updates rows whose stored value drifts from the aggregated value by more than the tolerance (default $0.01). Defaults to dry-run; `--apply` persists.
+
+**Why:** Bybit's v5 closed_pnl endpoint emits one row per reduce-only fill. When a position is scaled out via multiple limit closes (the user's actual workflow), the previous single-row lookup either picked only the final partial (5-minute window catches it) or returned NULL (the entire close happened more than 5 minutes before the position size hit zero). In both cases the annotation undercounted total PnL. The fix walks the full lifecycle so the annotation matches what Bybit's native UI shows as the trade total.
+
+**Tests:** `tests/test_bybit_watcher_close_aggregation.py` covers 4 cases — multi-partial aggregation, single-fill parity with legacy behavior, no closed_pnl rows synced (NULL passthrough), no open annotation found (early return). All existing `tests/test_bybit_watcher_enforcement.py` cases still pass.
+
+**Operator note:** Run `python scripts/reconcile_bybit_partial_pnl.py --days 30` first to see which past annotations are affected. `--apply` writes the corrections.
+
+### 2026-05-22 — Engine 1 v1d: quarantine BTC + DOGE from short-multipair scope
+**Files:** `config/settings.py`, `docs/SYSTEM_BASELINE.md`
+
+**What changed:**
+- `SHADOW_PAIR_FILTER` gains explicit entries for `engine1_trend_pullback`, `bench_engine1_random_direction`, `bench_engine1_market_now` — all pinned to `["ETH/USDT", "SOL/USDT", "LINK/USDT", "AVAX/USDT", "XRP/USDT"]`. BTC + DOGE removed from the engine's emission scope.
+- `EXPERIMENT_ID` default bumped to `engine1_short_quarantine_v1d_2026_05_22` so v1d rows segregate from v1c at insert time.
+
+**Why:** 14d v1c per-pair audit on `engine1_short_multipair_v1c_2026_05_07` (N=641 terminal across 7 pairs) ranked WR(TP/(TP+SL)) as: AVAX 28.3% | LINK 27.1% | ETH 24.6% | XRP 15.8% | SOL 16.2% | DOGE 13.0% | BTC 11.5%. BTC + DOGE are the only two pairs with N≥30 AND WR <15% — clearly worse than the next-worst pair. Per-pair PnL on those two pairs was −$486 of the −$1,368 v1c total. Removing them while keeping 5 pairs preserves enough emission volume for the 2026-06-08 ML v0 re-train and stops bleeding shadow capital on signal slices with no plausible path to positive expectancy. v1c contemporaneous BE-knob audit (`scripts/be_knob_comparison.py`) ruled out "BE is robbing TPs" — the 49% BE pile protects more than it costs, so the loss is structural to the signal, not the management.
+
+**Operator note:** v1c rows remain queryable (`experiment_id='engine1_short_multipair_v1c_2026_05_07'`). The BTC + DOGE slice freezes at the 2026-05-22 cutoff; pair-leakage warnings on the report script should now disappear for these pairs because they fail the SHADOW_PAIR_FILTER gate before insert. `scripts/report_engine1_shadow.py` `EXPECTED_PAIRS` fallback to `settings.TRADING_PAIRS` (added 2026-05-11) is now bypassed for engine1 — the explicit list governs.
+
+**Tests:** Full suite expected green — config change only, no behavior under unit-test reach.
+
+### 2026-05-22 — Kill `scalp_vol_cvd_div_v1` detector
+**Files:** `strategy_service/service.py`, `config/settings.py`, `docs/SYSTEM_BASELINE.md`
+
+**What changed:**
+- `evaluate_scalp` no longer invokes `evaluate_vol_cvd_divergence`. Adjacent orderbook fetch (`self._get_cached_orderbook(pair, now)`) also removed since vol_cvd was the only consumer — helper + `_scalp_ob_cache` attribute + `SCALP_ORDERBOOK_CACHE_TTL_SECONDS` setting retained for now (dead but inert, in case a future scalp signal needs spread data).
+- Detector code retained in `strategy_service/scalp_setups.py` for historical replay.
+- `SHADOW_MODE_SETUPS` entry commented out. `SCALP_SETUP_TYPES` + `SCALP_SIGNAL_PARAMS` entries retained intact for historical queries.
+
+**Why:** Combined N=6 over 16 days across v3 + v4 (`scalp_v3_clean_2026_05_06`: 1 TP / 1 SL / 0 BE / 2 TS, ~−$5; `scalp_v4_tune_2026_05_11`: 1 TP / 1 SL / 0 BE / 1 TS, ~+$5 — net ~$0 over 16d). The v4 tune (z 3.0→2.0 + spread 2bps→5bps, 2026-05-11) was the explicit rescue attempt and failed: 3 emissions in 11 days, statistically indistinguishable from the v3 baseline of 0/5d. Audit thesis (the relax should push toward ≥10 emissions by 2026-06-08) is already empirically dead — pulling the plug 17 days early so the surviving scalp signals (`liq_reclaim`, `random_baseline`) keep collecting under a cleaner pipeline.
+
+**Operator note:** Historical rows queryable via `setup_type='scalp_vol_cvd_div_v1'`. Surviving scalp signals: `liq_reclaim` (review point 2026-06-08 unchanged — kill if <10 emissions by then), `random_baseline` (permanent benchmark). No `SCALP_EXPERIMENT_ID` bump — only `liq_reclaim` + `random_baseline` keep emitting under `scalp_v4_tune_2026_05_11`, signal regime for survivors is unchanged.
+
+**Tests:** Detector + its tests intact in `tests/test_scalp_setups.py` (replay validation). Full suite expected green.
 
 ### 2026-05-19 — Bybit watcher periodic sync + Rule 10/11 operational clarifications
 **Files:** `data_service/bybit_watcher.py`, `config/settings.py`, `docs/grill/bybit-rules-taxonomy.md`, `docs/grill/discipline-no-manual-exits-2026-05-19.md` (new).

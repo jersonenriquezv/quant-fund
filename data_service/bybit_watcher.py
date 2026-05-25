@@ -96,6 +96,20 @@ class BybitWatcher:
             BybitSync().ensure_tables()
         except Exception as exc:
             logger.warning(f"ensure_tables on startup failed: {exc}")
+        # Hydrate in-memory state from DB so restarts don't silence the diff.
+        # Without this, the first post-restart tick sees empty prev state and
+        # treated any existing pending/positions as "bootstrap" (no alert),
+        # dropping notifications for orders placed while the watcher was down.
+        try:
+            self._last_pending = self._load_pending_from_db()
+            self._last_state = self._load_positions_from_db()
+            if self._last_pending or self._last_state:
+                logger.info(
+                    f"bybit_watcher: hydrated from DB — "
+                    f"{len(self._last_state)} position(s), {len(self._last_pending)} pending"
+                )
+        except Exception as exc:
+            logger.warning(f"hydrate_state_from_db failed: {exc}")
 
     def _conn(self):
         return psycopg2.connect(
@@ -165,6 +179,68 @@ class BybitWatcher:
                     position_idx=int(r.get("positionIdx") or 0),
                     placed_at=placed,
                     raw=r,
+                )
+        return out
+
+    def _load_pending_from_db(self) -> dict[str, PendingOrder]:
+        """Reconstruct prior in-memory pending state from DB on startup."""
+        out: dict[str, PendingOrder] = {}
+        with self._conn() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT order_id, order_link_id, symbol, side, order_type,
+                       qty, price, trigger_price, stop_order_type, time_in_force,
+                       reduce_only, position_idx, placed_at
+                FROM bybit_pending_orders
+                WHERE status = 'pending'
+                """
+            )
+            for r in cur.fetchall():
+                oid = r["order_id"]
+                out[oid] = PendingOrder(
+                    order_id=oid,
+                    order_link_id=r.get("order_link_id") or "",
+                    symbol=r.get("symbol") or "",
+                    side=r.get("side") or "",
+                    order_type=r.get("order_type") or "",
+                    qty=float(r.get("qty") or 0),
+                    price=float(r.get("price") or 0),
+                    trigger_price=float(r["trigger_price"]) if r.get("trigger_price") is not None else None,
+                    stop_order_type=r.get("stop_order_type") or "",
+                    time_in_force=r.get("time_in_force") or "",
+                    reduce_only=bool(r.get("reduce_only")),
+                    position_idx=int(r.get("position_idx") or 0),
+                    placed_at=r["placed_at"],
+                    raw={},
+                )
+        return out
+
+    def _load_positions_from_db(self) -> dict[PositionKey, PositionState]:
+        """Reconstruct prior in-memory position state from open annotations."""
+        out: dict[PositionKey, PositionState] = {}
+        with self._conn() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT ON (symbol, side)
+                    symbol, side, opened_at, entry_price, size, leverage
+                FROM bybit_trade_annotations
+                WHERE status = 'open'
+                ORDER BY symbol, side, opened_at DESC
+                """
+            )
+            for r in cur.fetchall():
+                key = PositionKey(
+                    symbol=r.get("symbol") or "",
+                    side=r.get("side") or "",
+                    position_idx=0,  # not stored in annotation; OneWay mode = 0
+                )
+                out[key] = PositionState(
+                    key=key,
+                    size=float(r.get("size") or 0),
+                    entry_price=float(r.get("entry_price") or 0),
+                    leverage=float(r.get("leverage") or 0),
+                    updated_at=r["opened_at"],
+                    raw={},
                 )
         return out
 
@@ -393,12 +469,18 @@ class BybitWatcher:
 
     def _close_annotation(self, key: PositionKey) -> dict | None:
         """Mark most recent open annotation for (symbol, side) as closed.
-        Pulls PnL from latest bybit_closed_pnl row.
+
+        Aggregates PnL across every bybit_closed_pnl row emitted between
+        annotation's opened_at and now. Bybit emits one closed_pnl row per
+        partial reduce (each limit fill that shrinks the position), so a
+        single-row lookup undercounts trades that were scaled out via
+        multiple limit closes. Sum captures the full lifecycle.
         """
         with self._conn() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """
-                SELECT id, entry_price, size, trigger_condition, thesis_invalidation
+                SELECT id, entry_price, size, opened_at,
+                       trigger_condition, thesis_invalidation
                 FROM bybit_trade_annotations
                 WHERE symbol = %s AND side = %s AND status = 'open'
                 ORDER BY opened_at DESC LIMIT 1
@@ -421,22 +503,42 @@ class BybitWatcher:
                     f"missing={missing}"
                 )
 
+            # Sum every closed_pnl row for this symbol since the position opened.
+            # Bybit's closed_pnl.side is the side of the closing order (opposite
+            # to position side), so we filter by symbol + time window only.
+            # Small clock-skew buffer so the first partial doesn't slip through.
             cur.execute(
                 """
-                SELECT id, closed_pnl, avg_exit_price, updated_time, cum_entry_value, cum_exit_value
+                SELECT
+                    SUM(closed_pnl)                          AS total_pnl,
+                    SUM(cum_entry_value)                     AS total_entry_value,
+                    SUM(cum_exit_value)                      AS total_exit_value,
+                    SUM(qty * avg_exit_price)
+                        / NULLIF(SUM(qty), 0)                AS weighted_exit_price,
+                    MAX(updated_time)                        AS last_updated,
+                    COUNT(*)                                 AS rows_counted,
+                    (array_agg(id ORDER BY updated_time DESC))[1] AS last_id
                 FROM bybit_closed_pnl
-                WHERE symbol = %s AND updated_time >= NOW() - INTERVAL '5 minutes'
-                ORDER BY updated_time DESC LIMIT 1
+                WHERE symbol = %s
+                  AND updated_time >= %s - INTERVAL '1 minute'
                 """,
-                (key.symbol,),
+                (key.symbol, annot["opened_at"]),
             )
             pnl_row = cur.fetchone()
 
-            pnl_usd = float(pnl_row["closed_pnl"]) if pnl_row else None
-            exit_price = float(pnl_row["avg_exit_price"]) if pnl_row else None
+            rows_counted = int(pnl_row["rows_counted"]) if pnl_row else 0
+            pnl_usd = float(pnl_row["total_pnl"]) if rows_counted else None
+            exit_price = float(pnl_row["weighted_exit_price"]) if rows_counted and pnl_row.get("weighted_exit_price") else None
             pnl_pct = None
-            if pnl_row and pnl_row.get("cum_entry_value"):
-                pnl_pct = 100.0 * pnl_usd / float(pnl_row["cum_entry_value"])
+            if rows_counted and pnl_row.get("total_entry_value"):
+                pnl_pct = 100.0 * pnl_usd / float(pnl_row["total_entry_value"])
+            last_id = pnl_row["last_id"] if rows_counted else None
+
+            if rows_counted > 1:
+                logger.info(
+                    f"CLOSE_AGG {key.symbol} {key.side} partials={rows_counted} "
+                    f"total_pnl={pnl_usd}"
+                )
 
             cur.execute(
                 """
@@ -451,8 +553,7 @@ class BybitWatcher:
                 WHERE id = %s
                 RETURNING id, entry_price, size, opened_at
                 """,
-                (exit_price, pnl_usd, pnl_pct,
-                 pnl_row["id"] if pnl_row else None, annot["id"]),
+                (exit_price, pnl_usd, pnl_pct, last_id, annot["id"]),
             )
             updated = cur.fetchone()
             conn.commit()
@@ -462,6 +563,7 @@ class BybitWatcher:
                 "pnl_pct": pnl_pct,
                 "exit_price": exit_price,
                 "entry_price": float(updated["entry_price"]) if updated["entry_price"] else None,
+                "partial_count": rows_counted,
             }
 
     def _fmt_auto_block(self, auto: dict) -> list[str]:
@@ -720,22 +822,6 @@ class BybitWatcher:
         except Exception as exc:
             logger.error(f"fetch_pending failed: {exc}")
             curr_pending = {}
-
-        # Bootstrap: first tick, snapshot without alerts
-        bootstrap = not self._last_state and not self._last_pending
-        if bootstrap and (curr_pos or curr_pending):
-            logger.info(
-                f"bootstrap: {len(curr_pos)} position(s) + {len(curr_pending)} pending order(s), "
-                "snapshotting without alerts"
-            )
-            # Insert existing pending into DB without alerting
-            for p in curr_pending.values():
-                ctx = self._context_snapshot(PositionKey(symbol=p.symbol, side=p.side))
-                auto = self._classify(ctx)
-                self._upsert_pending(p, ctx, auto)
-            self._last_state = curr_pos
-            self._last_pending = curr_pending
-            return
 
         # Rule 6 enforcement runs BEFORE diff so cancel resolves naturally on next tick
         try:
