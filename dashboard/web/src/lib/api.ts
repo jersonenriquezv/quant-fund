@@ -378,6 +378,7 @@ export interface BybitAnnotation {
   emotional_state: string | null;
   grade_self: string | null;
   screenshot_url: string | null;
+  topdown_brief_used: boolean | null;
   context_snapshot: Record<string, unknown> | null;
   auto_setup_type: string | null;
   auto_confluences: string[] | null;
@@ -403,6 +404,7 @@ export interface BybitAnnotationPatch {
   emotional_state?: string | null;
   grade_self?: string | null;
   screenshot_url?: string | null;
+  topdown_brief_used?: boolean | null;
 }
 
 export interface BybitSummary {

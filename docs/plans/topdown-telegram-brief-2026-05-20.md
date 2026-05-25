@@ -194,7 +194,7 @@ Build a read-only analytical tool that ingests existing candles + analyzers, rec
 ---
 
 ## Phase 4a — Falsification enabler: schema + dashboard toggle
-**Status:** pending
+**Status:** done
 **Inputs:**
 - Phase 3 `/topdown` deployed and live
 - `bybit_trade_annotations` schema in `data_service/bybit_sync.py:110`
@@ -220,12 +220,17 @@ Build a read-only analytical tool that ingests existing candles + analyzers, rec
 - [ ] Rollback if: column add breaks bybit_sync startup OR frontend crashes on mobile → drop column + revert form
 
 **Evidence (filled by /phased-implementation):**
-_empty_
+- 2026-05-25 — `topdown_brief_used BOOLEAN` added to `bybit_trade_annotations` ddl in `bybit_sync.py`; `ensure_tables()` applied, `information_schema` confirms one row (`boolean`).
+- Backend `AnnotationUpdate` + `AnnotationOut` + `_row_to_out` carry the field; PATCH whitelists it via the existing dynamic SET builder (no handler change needed).
+- Frontend: api.ts `BybitAnnotation` + `BybitAnnotationPatch` typed; annotate form has state + hydrate + payload + styled checkbox (44px touch target, first editable field). `npm run build` ✓ compiled.
+- Tests: `test_bybit_*` + `test_manual_trading` 33 pass. CSS folded into the page's single `<style jsx>` block (nested styled-jsx tag is a build error).
+- Pending manual: mobile 375px visual + toggle-persist round-trip (needs running dashboard — deploy step).
+- Rollback trigger fired: no.
 
 ---
 
 ## Phase 4b — Automation: scheduled push + on-change watcher
-**Status:** pending
+**Status:** done
 **Inputs:**
 - Phase 4a schema column + toggle live
 - Existing systemd user timer infra (`shadow-health-alert.timer` pattern in MEMORY)
@@ -250,7 +255,12 @@ _empty_
 - [ ] Rollback if: user reports spam OR scheduled push misses >10% expected fires → revert to on-demand only
 
 **Evidence (filled by /phased-implementation):**
-_empty_
+- 2026-05-25 — `scripts/topdown_push.py` new. `push-all` + `watch` (--interval, --state-file, --once, --dry-run). Helper `build_brief_and_state(pair)` added to `topdown_snapshot.py`.
+- `push-all --dry-run` → 4 briefs rendered. `watch --once` on fresh state → seeds 4 pairs, 0 push. Forced BTC side flip → next pass pushes exactly 1 pair with `🔄 BTC bias change` header.
+- 4 automated tests (`tests/test_topdown_push.py`): seed-no-push, no-change-no-push, side-flip-one, confidence-change. Full suite 1276 passed.
+- systemd: `topdown-push.{service,timer}` (4H at HH:01, `OnCalendar=*-*-* 00/4:01:00`) + `topdown-watch.service` (daemon, Restart=on-failure). All 3 pass `systemd-analyze --user verify`.
+- **Deliberately not enabled** — units version-controlled only. Install + `systemctl --user enable --now` is the post-merge operator action (would start live Telegram pushes). Falsification clock starts then.
+- Rollback trigger fired: no.
 
 ---
 

@@ -509,6 +509,19 @@ D: net_score <  2
 
 ## 8. Changelog
 
+### 2026-05-25 — Top-down Telegram brief Phase 4 (falsification enabler + push automation)
+**Files:** `data_service/bybit_sync.py` (+1 DDL), `dashboard/api/routes/bybit.py` (+3 lines: model + out + mapper), `dashboard/web/src/lib/api.ts` (+2 fields), `dashboard/web/src/app/annotate/[id]/page.tsx` (+checkbox UI/state), `scripts/topdown_snapshot.py` (+`build_brief_and_state`), `scripts/topdown_push.py` (new), `tests/test_topdown_push.py` (new, 4 tests), `systemd/topdown-push.{service,timer}` + `systemd/topdown-watch.service` (new).
+
+**What changed:**
+- **Phase 4a (falsification enabler):** new `topdown_brief_used BOOLEAN` column on `bybit_trade_annotations` (idempotent ALTER in `ensure_tables`). Backend `AnnotationUpdate`/`AnnotationOut` + `_row_to_out` carry it; PATCH auto-whitelists via existing `model_dump(exclude_unset=True)` SET builder. Frontend annotate form gets a styled mobile checkbox ("USED /topdown BRIEF BEFORE ENTRY", 44px touch target) as the first editable field. This is the journal flag for the live N=30 WR comparison (brief vs no-brief).
+- **Phase 4b (push automation):** `scripts/topdown_push.py` with two modes — `push-all` (one-shot, renders + sends the brief for all 4 manual pairs) and `watch` (long-lived daemon, polls every 15m, diffs reconciled side/confidence vs `/tmp/topdown_last_state.json`, pushes only changed pairs; first run seeds baseline silently so restarts never spam). New `build_brief_and_state(pair)` helper returns `(text, {side, confidence})` so the watcher diffs without rebuilding the snapshot. systemd: `topdown-push.timer` fires every 4H at HH:01 (candle-close aligned); `topdown-watch.service` runs the daemon with `Restart=on-failure`.
+
+**Why:** Backtest (2026-05-24) ruled NO EDGE for the mechanical /topdown triplet, but brief-as-human-decision-aid is unsettled. Phase 4a is the data hook that lets the live falsification actually measure it. Phase 4b removes the manual `/topdown <pair>` poll — briefs arrive on the 4H boundary + on bias flips.
+
+**Tests:** 4 new (`test_topdown_push.py`) cover seed-no-push, no-change-no-push, side-flip-pushes-one, confidence-change-pushes. Full suite 1276 passed. `push-all --dry-run` renders 4 briefs; `watch --once` seeds then pushes exactly the flipped pair. All 3 systemd units pass `systemd-analyze verify`.
+
+**Operator note (NOT yet enabled):** units are version-controlled but not installed/started — enabling would begin 4H Telegram pushes. To activate post-merge: `cp systemd/topdown-*.{service,timer} ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user enable --now topdown-push.timer` (and optionally `topdown-watch.service`). FREEZE-safe: read-only analytics, no `strategy_service`/ML touch. Falsification clock starts when push is live + first brief-tagged Bybit trade closes.
+
 ### 2026-05-24 — /topdown manual strategy backtest shipped
 
 **Files:** `scripts/backtest_topdown.py` (new, ~1,120 LOC), `scripts/topdown_snapshot.py` (+45 LOC: time-machine `_now_ms`/`_set_replay_time` shim + `_trade_triplet` geometry guard), `tests/test_topdown_snapshot.py` (+2 tests), `backtest_results/topdown_20260524_192804_{trades,random_trades,report}.{csv,csv,md}`, `backtest_results/TRACKER.md` (+1 row), `docs/grill/backtest-topdown-2026-05-24.md` (new), `docs/plans/backtest-topdown-2026-05-24.md` (new).

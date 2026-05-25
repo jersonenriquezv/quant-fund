@@ -2010,6 +2010,27 @@ def build_brief_text(pair: str, mode: str = "telegram") -> Optional[str]:
         conn.close()
 
 
+def build_brief_and_state(pair: str) -> tuple[Optional[str], Optional[dict]]:
+    """Build the telegram brief once and return (text, state).
+
+    state = {"side": reconciled_side, "confidence": confidence} or None when
+    data is insufficient. Used by the on-change watcher so it can diff the
+    reconciled side/confidence between polls without rebuilding the snapshot.
+    """
+    conn = _connect()
+    cur = conn.cursor()
+    try:
+        snap = _build_snapshot(cur, conn, pair)
+        if snap is None:
+            return None, None
+        text = _render_telegram_markdown(snap)
+        state = {"side": snap.reconciled_side, "confidence": snap.confidence}
+        return text, state
+    finally:
+        cur.close()
+        conn.close()
+
+
 def cmd_snapshot(args) -> int:
     conn = _connect()
     cur = conn.cursor()
