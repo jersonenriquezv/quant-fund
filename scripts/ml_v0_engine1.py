@@ -48,7 +48,7 @@ SETUP_TYPE = "engine1_trend_pullback"
 MIN_FEATURE_VERSION = 4
 RANDOM_STATE = 42
 HOLDOUT_FRAC = 0.20
-REPORT_PATH = Path(__file__).resolve().parent.parent / "docs" / "audits" / "ml-v0-engine1-2026-05-11.md"
+REPORT_PATH = Path(__file__).resolve().parent.parent / "docs" / "audits" / "ml-v0-engine1-2026-05-25.md"
 
 # Columns to drop before training. Three categories:
 # 1. Identity / metadata — would leak setup_type membership or be high-cardinality nonsense.
