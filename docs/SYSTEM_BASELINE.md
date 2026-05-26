@@ -509,6 +509,20 @@ D: net_score <  2
 
 ## 8. Changelog
 
+### 2026-05-26 — signal_scanner engine replaced: classifier → /topdown edge-triplet
+**Files:** `scripts/signal_scanner.py` (engine swap), `scripts/topdown_snapshot.py` (+`build_edge_signal` helper), `tests/test_signal_scanner_edge.py` (new, 12 tests), `docs/plans/signal-scanner-topdown-edge-2026-05-25.md` (Phases 1–3 done).
+
+**What changed:** The scanner's live `scan()` no longer runs the auto-classifier (grade A/B — proven no out-of-sample edge). It now runs the `/topdown` edge-triplet engine, which measured **+0.13R maker (+0.20R deduped)** on BTC/ETH (`docs/audits/topdown-edge-expectancy-2026-05-25.md`).
+- New additive helper `build_edge_signal(pair)` in `topdown_snapshot.py` exposes the existing `_build_snapshot` → `_trade_triplet` as a flat signal dict. **`/topdown` brief output is byte-identical** (additive only — 124 topdown tests pass).
+- `scan()` iterates `SCANNER_PAIRS = [BTC/USDT, ETH/USDT]` (not `TRADING_PAIRS`), applies the gate (`_edge_candidate`: sweep ≤0.5%, SL on protective side, rr>0, single TP = triplet final target), dedups 6h per pair+direction, and sends a **LIMIT (maker) alert** via `_format_telegram_edge` ("orden límite" explicit). The old classifier engine is retained dead as `scan_classifier()` for replay; `classify` import moved local to it (0 classifier refs in the live path).
+- `signal_scanner_alerts` rows tag `auto_setup_type='topdown_edge'` and persist `sweep_distance_pct`/`risk_pct`/`bias_confidence` in promoted columns (idempotent ALTER; pre-edge rows NULL) for later WR reconciliation against Bybit closes.
+
+**Why:** the classifier grade had no edge; the triplet does (BTC/ETH, maker entry, single-TP, sweep ≤0.5%). Reuses the validated levers from the 2026-05-25 expectancy audit. ~3 alerts/day expected, WR ~33%.
+
+**Tests:** 12 new (`test_signal_scanner_edge.py`) cover gate (sweep cap, geometry guard, rr>0, single-TP passthrough, pair scope) + formatter (LIMIT wording, entry price, maker instruction). Full suite 1288 passed, 1 xfailed. `--dry-run` emits the LIMIT format. systemd `signal-scanner.service` runs flagless → edge engine is now the default path, no unit change.
+
+**Falsification (armed):** after N≥30 closed Bybit trades taken from these alerts, require live WR ≥30% AND realized maker expectancy >0, else revert/kill. FREEZE-safe: read-only analytics, no `strategy_service`/ML touch, no bot execution.
+
 ### 2026-05-25 — /topdown edge verdict CORRECTED (BTC/ETH has edge by expectancy)
 **Files:** `docs/audits/topdown-edge-expectancy-2026-05-25.md` (new), `scripts/topdown_edge_hunt.py` (new analysis), backtest run `topdown_20260525_220604` (BTC/ETH 150d confirmation).
 

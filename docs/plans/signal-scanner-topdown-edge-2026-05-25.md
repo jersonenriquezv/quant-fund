@@ -2,7 +2,7 @@
 **Slug:** signal-scanner-topdown-edge-2026-05-25
 **Source grill:** docs/grill/signal-scanner-topdown-edge-2026-05-25.md
 **Created:** 2026-05-25
-**Status:** pending
+**Status:** done (all 3 phases, 2026-05-26)
 **Tracer bullet:** Phase 1 proves a dry-run of the new engine emits valid edge-triplets on BTC/ETH (limit price = sweep level, SL correct side, sweep ≤0.5%) at roughly the expected ~3/day under 6h dedup.
 
 ## Context summary
@@ -18,7 +18,7 @@ The classifier-graded `signal_scanner` (grade A/B from `trade_classifier`) emits
 ---
 
 ## Phase 1 — Edge-signal helper + dry-run engine (tracer)
-**Status:** pending
+**Status:** done (2026-05-26)
 **Inputs:**
 - `scripts/topdown_snapshot.py`: `_build_snapshot(cur, conn, pair)`, `_trade_triplet(snap)` (returns valid/entry/sl/tp/rr/sweep_distance_pct/tp_mode), `_connect()`.
 - `scripts/signal_scanner.py`: existing `scan()` loop, `_recently_alerted`, dedup table.
@@ -38,12 +38,16 @@ The classifier-graded `signal_scanner` (grade A/B from `trade_classifier`) emits
 - [ ] Manual: printed candidates look like the backtested triplets (sane levels on BTC/ETH).
 - [ ] Rollback if: helper changes any `/topdown` brief output (must be byte-identical) → revert, expose triplet via a copy instead.
 
-**Evidence:** _empty_
+**Evidence:** (2026-05-26)
+- `build_edge_signal('BTC/USDT')` → dict (short, entry 76531.4, sl 77876.5, tp 73602.5, rr 2.18, sweep 0.17%, bias medium). `build_edge_signal('ETH/USDT')` → None. No exception.
+- `python scripts/signal_scanner.py --edge` exits 0; emits one candidate: `LIMIT SHORT BTC/USDT @ 76531.4 | SL 77876.5 | TP 73602.5 | R:R 2.18 | sweep 0.17% | bias medium`. ETH correctly produced no candidate.
+- Gate assertion harness: all candidates satisfy `sweep ≤0.5`, SL on protective side (short sl>entry), rr>0. PASS.
+- `/topdown` regression: additive-only (new public `build_edge_signal` + new `scan_edge`/`--edge`; no existing function touched → byte-identical by construction). `pytest tests/test_topdown_snapshot.py tests/test_topdown_push.py` → 124 passed.
 
 ---
 
 ## Phase 2 — Wire engine into scanner shell + alert format
-**Status:** pending
+**Status:** done (2026-05-26)
 **Inputs:** Phase 1 `build_edge_signal` + `scan_edge`. Existing `_format_telegram`, `_recently_alerted`, `_record_alert`, `TelegramNotifier`.
 
 **Outputs:**
@@ -62,12 +66,17 @@ The classifier-graded `signal_scanner` (grade A/B from `trade_classifier`) emits
 - [ ] Manual: format readable on mobile (375px not relevant — Telegram, but no line overflow / monospace columns align).
 - [ ] Rollback if: alert omits limit price OR emits market-entry wording → fix before any live send.
 
-**Evidence:** _empty_
+**Evidence:** (2026-05-26)
+- `scan()` rewritten as the edge engine (SCANNER_PAIRS, `build_edge_signal` → `_edge_candidate` gate → 6h dedup → `_format_telegram_edge` + `_record_alert_edge`). Old classifier engine renamed `scan_classifier()` (dead, replay-only); `classify` import moved local to it. Top-level classifier import removed.
+- `python scripts/signal_scanner.py --dry-run` exits 0; prints LIMIT alert (`LIMIT SHORT @ 76531.4`, single TP, "orden límite (maker)" wording). ETH → no candidate.
+- Classifier-token scan of live `scan()` source: NONE (`classify`, `_compute_geometry`, `_format_telegram(`, `Geometry`, `auto_grade`, `GRADE_RANK` all absent).
+- Dedup roundtrip (throwaway TEST/USDT, cleaned after): before False → after `_record_alert_edge` True; opposite direction unaffected. Insert tags `auto_setup_type='topdown_edge'`.
+- No code/timer references the removed Phase-1 `--edge`/`scan_edge`. systemd `signal-scanner.service` runs the script flagless → edge engine is now the default path. No unit change.
 
 ---
 
 ## Phase 3 — Falsification hook + tests + deploy
-**Status:** pending
+**Status:** done (2026-05-26)
 **Inputs:** Phase 2 live engine. `signal_scanner_alerts` table. Existing systemd `signal-scanner.timer`.
 
 **Outputs:**
@@ -86,7 +95,13 @@ The classifier-graded `signal_scanner` (grade A/B from `trade_classifier`) emits
 - [ ] Falsification armed: after N≥30 closed Bybit trades taken from these alerts, live WR ≥30% AND realized maker expectancy >0, else revert/kill (per grill).
 - [ ] Rollback if: scan throws on real data OR floods (>10/day sustained) → disable timer, revert engine.
 
-**Evidence:** _empty_
+**Evidence:** (2026-05-26)
+- `signal_scanner_alerts` gained idempotent columns `sweep_distance_pct`/`risk_pct`/`bias_confidence` (ALTER … ADD COLUMN IF NOT EXISTS in `_ensure_alert_table`). `_record_alert_edge` writes them + `auto_setup_type='topdown_edge'`. Roundtrip confirmed: inserted row reads back all columns populated (snapshot JSONB kept as redundant copy).
+- `tests/test_signal_scanner_edge.py` — 12 tests: sweep cap (≤MAX accepted, >0.5 rejected, None rejected), geometry guard (long/short wrong-side rejected, valid accepted), rr≤0 rejected, single-TP passthrough (no tp1/tp2 surface), pair scope = BTC/ETH only, formatter (LIMIT + price + "orden límite" + "Not executed"). All green.
+- Full suite: `pytest tests/` → 1288 passed, 1 xfailed.
+- No new systemd unit — existing `signal-scanner.service` runs the script flagless; edge engine is the default path.
+
+**Falsification armed:** after N≥30 closed Bybit trades from these alerts, require live WR ≥30% AND realized maker expectancy >0, else revert/kill. Reconcile `signal_scanner_alerts` (source=`topdown_edge`) against `bybit_trade_annotations` manually for the first N≥30.
 
 ---
 

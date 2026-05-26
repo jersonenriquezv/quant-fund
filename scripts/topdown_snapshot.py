@@ -1217,6 +1217,43 @@ def _build_snapshot(cur, conn, pair: str) -> Optional[Snapshot]:
     )
 
 
+def build_edge_signal(pair: str) -> Optional[dict]:
+    """Public edge-triplet helper consumed by the signal scanner.
+
+    Builds a Snapshot for `pair` and returns the /topdown trade triplet as a
+    flat signal dict when the play is valid, else None. Behavior-preserving:
+    reuses `_build_snapshot` + `_trade_triplet` verbatim and alters no /topdown
+    brief path. The scanner consumes this; /topdown output stays byte-identical.
+
+    Returns None when no snapshot can be built, the reconciled side is
+    undefined, or the triplet is not `valid` (sweep too far, SL wrong side,
+    no target). Callers apply their own tighter gates (e.g. sweep ≤0.5%).
+    """
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            snap = _build_snapshot(cur, conn, pair)
+    finally:
+        conn.close()
+    if snap is None:
+        return None
+    triplet = _trade_triplet(snap)
+    if not triplet or not triplet.get("valid"):
+        return None
+    return {
+        "pair": pair,
+        "side": snap.reconciled_side,
+        "entry": triplet["entry"],
+        "sl": triplet["sl"],
+        "tp": triplet["tp"],
+        "rr": triplet["rr"],
+        "sweep_distance_pct": triplet["sweep_distance_pct"],
+        "risk_pct": triplet["risk_pct"],
+        "bias_confidence": snap.confidence,
+        "current_price": snap.current_price,
+    }
+
+
 def _format_zone_distance(price: float, current: float) -> str:
     pct = 100.0 * (price - current) / current
     return f"{pct:+.2f}%"
