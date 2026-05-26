@@ -39,8 +39,12 @@ _UNSILENCEABLE = {"trade_lifecycle", "emergency"}
 class AlertManager:
     """Routes alerts through silencing, rate limiting, batching, and escalation."""
 
-    def __init__(self, notifier: TelegramNotifier) -> None:
+    def __init__(self, notifier: TelegramNotifier, enabled: bool = True) -> None:
         self._notifier = notifier
+        # Master mute. When False, only CRITICAL (trade lifecycle) and
+        # EMERGENCY routes reach Telegram; all routine INFO/WARNING noise is
+        # suppressed. See settings.BOT_TELEGRAM_ALERTS_ENABLED.
+        self._enabled = enabled
 
         # Silencing: category -> silence_until (unix timestamp)
         self._silenced: dict[str, float] = {}
@@ -75,6 +79,14 @@ class AlertManager:
         # EMERGENCY: never silenced, never rate limited — escalation with retry
         if priority == AlertPriority.EMERGENCY:
             return await self._send_with_escalation(message)
+
+        # Master mute: when disabled, suppress everything except CRITICAL
+        # (live trade lifecycle / real-time errors). Whale buffering is reached
+        # only after this gate, so muted whale alerts never start a digest.
+        if not self._enabled and priority != AlertPriority.CRITICAL:
+            self._suppressed_count += 1
+            logger.debug(f"Alert muted (bot alerts disabled): {category}")
+            return False
 
         # Silencing check (skip for unsilenceable categories)
         if category not in _UNSILENCEABLE:

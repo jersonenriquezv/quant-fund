@@ -92,6 +92,47 @@ class TestBasicRouting:
 
 
 # ================================================================
+# Master mute (BOT_TELEGRAM_ALERTS_ENABLED)
+# ================================================================
+
+class TestMasterMute:
+    def test_muted_suppresses_info(self):
+        notifier = MockNotifier()
+        mgr = AlertManager(notifier, enabled=False)
+        result = _run(mgr.alert(AlertPriority.INFO, "ob_summary", "noise"))
+        assert result is False
+        assert notifier.messages == []
+
+    def test_muted_suppresses_warning(self):
+        notifier = MockNotifier()
+        mgr = AlertManager(notifier, enabled=False)
+        result = _run(mgr.alert(AlertPriority.WARNING, "ai_decision", "noise"))
+        assert result is False
+        assert notifier.messages == []
+
+    def test_muted_still_sends_critical(self):
+        notifier = MockNotifier()
+        mgr = AlertManager(notifier, enabled=False)
+        result = _run(mgr.alert(AlertPriority.CRITICAL, "trade_lifecycle", "trade"))
+        assert result is True
+        assert notifier.messages == ["trade"]
+
+    def test_muted_still_sends_emergency(self):
+        notifier = MockNotifier()
+        mgr = AlertManager(notifier, enabled=False)
+        result = _run(mgr.alert(AlertPriority.EMERGENCY, "emergency", "boom"))
+        assert result is True
+        assert notifier.messages == ["boom"]
+
+    def test_enabled_default_sends_info(self):
+        notifier = MockNotifier()
+        mgr = AlertManager(notifier)  # default enabled=True
+        result = _run(mgr.alert(AlertPriority.INFO, "ob_summary", "ok"))
+        assert result is True
+        assert notifier.messages == ["ok"]
+
+
+# ================================================================
 # Silencing
 # ================================================================
 
