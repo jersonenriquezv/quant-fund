@@ -27,6 +27,7 @@ class AnnotationUpdate(BaseModel):
     emotional_state: str | None = None
     grade_self: str | None = Field(default=None, pattern=r"^[ABCDF]$")
     screenshot_url: str | None = None
+    topdown_brief_used: bool | None = None
 
 
 class AnnotationOut(BaseModel):
@@ -48,6 +49,7 @@ class AnnotationOut(BaseModel):
     emotional_state: str | None
     grade_self: str | None
     screenshot_url: str | None
+    topdown_brief_used: bool | None
     context_snapshot: dict[str, Any] | None
     auto_setup_type: str | None
     auto_confluences: list[str] | None
@@ -95,6 +97,7 @@ def _row_to_out(r: dict) -> AnnotationOut:
         emotional_state=r.get("emotional_state"),
         grade_self=r.get("grade_self"),
         screenshot_url=r.get("screenshot_url"),
+        topdown_brief_used=r.get("topdown_brief_used"),
         context_snapshot=context,
         auto_setup_type=r.get("auto_setup_type"),
         auto_confluences=auto_conflu,

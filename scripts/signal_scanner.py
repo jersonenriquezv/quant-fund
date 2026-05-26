@@ -32,7 +32,6 @@ from config.settings import settings
 from data_service.context_service import build_context_snapshot
 from shared.logger import setup_logger
 from shared.notifier import TelegramNotifier
-from strategy_service.trade_classifier import classify
 
 logger = setup_logger("signal_scanner")
 
@@ -43,6 +42,13 @@ MIN_RR = 1.5
 ATR_SL_MULT = 1.2     # SL = OB extreme or current price - 1.2 * ATR_1h
 TP_RR_TARGET = 2.0    # TP placed at 2R initially; structural fallback if available
 DEDUP_HOURS = 6       # don't re-alert the same pair/direction within this window
+
+# --- Edge engine (topdown triplet) -----------------------------------------
+# The classifier path above (grade A/B) has no out-of-sample edge. The edge
+# engine swaps in the /topdown triplet logic, which measured +0.20R maker
+# (deduped) on BTC/ETH. See docs/plans/signal-scanner-topdown-edge-2026-05-25.md.
+SCANNER_PAIRS = ["BTC/USDT", "ETH/USDT"]  # edge confirmed only here, not TRADING_PAIRS
+MAX_SWEEP_PCT = 0.5   # actionable sweep gate — tighter than topdown's 1.0% spectator cap
 
 
 def _pair_to_bybit(pair: str) -> str:
@@ -70,6 +76,14 @@ def _ensure_alert_table() -> None:
     );
     CREATE INDEX IF NOT EXISTS idx_signal_scanner_pair_dir_time
         ON signal_scanner_alerts(pair, direction, scanned_at DESC);
+    -- Edge-engine geometry promoted out of snapshot JSONB for WR reconciliation
+    -- against Bybit closes (idempotent; pre-edge rows leave these NULL).
+    ALTER TABLE signal_scanner_alerts
+        ADD COLUMN IF NOT EXISTS sweep_distance_pct DOUBLE PRECISION;
+    ALTER TABLE signal_scanner_alerts
+        ADD COLUMN IF NOT EXISTS risk_pct DOUBLE PRECISION;
+    ALTER TABLE signal_scanner_alerts
+        ADD COLUMN IF NOT EXISTS bias_confidence VARCHAR(10);
     """
     with _conn() as c, c.cursor() as cur:
         cur.execute(sql)
@@ -275,8 +289,16 @@ def _format_telegram(
     )
 
 
-async def scan(dry_run: bool = False) -> list[dict[str, Any]]:
-    """Scan all pairs × directions. Returns list of alerts produced."""
+async def scan_classifier(dry_run: bool = False) -> list[dict[str, Any]]:
+    """DEAD PATH (retained for replay) — the original classifier engine.
+
+    Scanned TRADING_PAIRS × {long, short}, alerted on grade A/B. Proven to
+    carry no out-of-sample edge; replaced by the edge engine in `scan()` on
+    2026-05-26 (docs/plans/signal-scanner-topdown-edge-2026-05-25.md). Not on
+    any live path. `classify` imported locally so the live path stays clean.
+    """
+    from strategy_service.trade_classifier import classify
+
     _ensure_alert_table()
     notifier = TelegramNotifier(settings.TELEGRAM_BOT_TOKEN, settings.TELEGRAM_CHAT_ID)
 
@@ -341,6 +363,156 @@ async def scan(dry_run: bool = False) -> list[dict[str, Any]]:
                 })
             except Exception as exc:
                 logger.error(f"{pair} {direction}: scan failed: {exc}", exc_info=True)
+    return out
+
+
+def _edge_candidate(pair: str, signal: dict[str, Any]) -> dict[str, Any] | None:
+    """Apply the scanner gate to a raw edge signal. Returns a normalized
+    candidate dict or None when the signal fails the gate.
+
+    Gate: sweep ≤ MAX_SWEEP_PCT, geometry SL on the protective side
+    (long sl<entry, short sl>entry), rr>0, single TP = triplet final target.
+    """
+    side = signal["side"]
+    entry = signal["entry"]
+    sl = signal["sl"]
+    tp = signal["tp"]
+    rr = signal["rr"]
+    sweep_pct = signal["sweep_distance_pct"]
+
+    if sweep_pct is None or sweep_pct > MAX_SWEEP_PCT:
+        return None
+    if side == "long" and not sl < entry:
+        return None
+    if side == "short" and not sl > entry:
+        return None
+    if rr is None or rr <= 0:
+        return None
+
+    return {
+        "pair": pair,
+        "direction": side,
+        "entry": entry,
+        "sl": sl,
+        "tp": tp,                      # single TP — triplet final target
+        "rr": rr,
+        "sweep_distance_pct": sweep_pct,
+        "risk_pct": signal.get("risk_pct"),
+        "bias_confidence": signal.get("bias_confidence"),
+        "current_price": signal.get("current_price"),
+    }
+
+
+def _format_telegram_edge(cand: dict[str, Any]) -> str:
+    """Mobile-friendly LIMIT alert for an edge candidate.
+
+    Leads with the limit price (maker entry), then SL, single TP, R:R, bias
+    confidence, and sweep distance. States "orden límite" explicitly so the
+    user never market-fills. Short lines only — no wide monospace columns.
+    """
+    direction = cand["direction"]
+    arrow = "🟢 LONG" if direction == "long" else "🔴 SHORT"
+    bias = cand.get("bias_confidence") or "?"
+    risk_pct = cand.get("risk_pct")
+    risk_str = f"{risk_pct:.2f}%" if isinstance(risk_pct, (int, float)) else "?"
+    return (
+        f"📡 <b>EDGE · {cand['pair']} · {arrow}</b>\n"
+        f"<i>orden límite (maker)</i>\n"
+        f"\n"
+        f"<b>LIMIT {direction.upper()} @ {cand['entry']:.6g}</b>\n"
+        f"<b>SL</b>  {cand['sl']:.6g}\n"
+        f"<b>TP</b>  {cand['tp']:.6g}\n"
+        f"<b>R:R</b> {cand['rr']:.2f}\n"
+        f"\n"
+        f"bias {bias} · sweep {cand['sweep_distance_pct']:.2f}% · risk {risk_str}\n"
+        f"\n"
+        f"<i>Edge engine (topdown triplet). Not executed. "
+        f"Coloca una orden límite en Bybit.</i>"
+    )
+
+
+def _record_alert_edge(cand: dict[str, Any]) -> None:
+    """Persist an edge alert, tagged auto_setup_type='topdown_edge'.
+
+    Stores entry/sl/tp/rr in their columns; sweep/risk/bias/price go in the
+    snapshot JSONB until Phase 3 promotes them to dedicated columns.
+    """
+    import json
+    snap = {
+        "sweep_distance_pct": cand.get("sweep_distance_pct"),
+        "risk_pct": cand.get("risk_pct"),
+        "bias_confidence": cand.get("bias_confidence"),
+        "current_price": cand.get("current_price"),
+    }
+    with _conn() as c, c.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO signal_scanner_alerts
+                (pair, direction, auto_setup_type, auto_grade, net_score,
+                 entry, sl, tp, rr, sweep_distance_pct, risk_pct,
+                 bias_confidence, confluences, detractors, snapshot)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                cand["pair"], cand["direction"], "topdown_edge", None, None,
+                cand["entry"], cand["sl"], cand["tp"], cand["rr"],
+                cand.get("sweep_distance_pct"), cand.get("risk_pct"),
+                cand.get("bias_confidence"),
+                None, None, json.dumps(snap, default=str),
+            ),
+        )
+        c.commit()
+
+
+async def scan(dry_run: bool = False) -> list[dict[str, Any]]:
+    """Edge engine — the live scanner path.
+
+    Iterates SCANNER_PAIRS (BTC/ETH), builds the /topdown triplet via
+    `build_edge_signal`, applies the scanner gate (`_edge_candidate`), dedups
+    6h per pair+direction, and emits a LIMIT (maker) alert. Returns the
+    candidates produced. The classifier engine is retained dead in
+    `scan_classifier()` for replay only.
+    """
+    from scripts.topdown_snapshot import build_edge_signal
+
+    _ensure_alert_table()
+    notifier = TelegramNotifier(settings.TELEGRAM_BOT_TOKEN, settings.TELEGRAM_CHAT_ID)
+
+    out: list[dict[str, Any]] = []
+    for pair in SCANNER_PAIRS:
+        try:
+            signal = build_edge_signal(pair)
+            if signal is None:
+                logger.info(f"{pair}: no valid edge triplet")
+                continue
+            cand = _edge_candidate(pair, signal)
+            if cand is None:
+                logger.info(
+                    f"{pair}: triplet rejected by gate "
+                    f"(sweep={signal['sweep_distance_pct']}, side={signal['side']})"
+                )
+                continue
+
+            direction = cand["direction"]
+            if not dry_run and _recently_alerted(pair, direction):
+                logger.info(f"{pair} {direction}: dedup — alerted within {DEDUP_HOURS}h")
+                continue
+
+            msg = _format_telegram_edge(cand)
+            logger.info(
+                f"EDGE {pair} {direction} entry={cand['entry']:.6g} "
+                f"sl={cand['sl']:.6g} tp={cand['tp']:.6g} rr={cand['rr']:.2f} "
+                f"sweep={cand['sweep_distance_pct']:.2f}%"
+            )
+            if dry_run:
+                print(msg)
+                print("---")
+            else:
+                await notifier.send(msg)
+                _record_alert_edge(cand)
+            out.append(cand)
+        except Exception as exc:
+            logger.error(f"{pair}: edge scan failed: {exc}", exc_info=True)
     return out
 
 

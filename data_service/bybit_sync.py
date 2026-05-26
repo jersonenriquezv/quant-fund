@@ -159,6 +159,7 @@ class BybitSync:
         ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS auto_classifier_version SMALLINT;
         ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS trigger_condition TEXT;
         ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS thesis_invalidation TEXT;
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS topdown_brief_used BOOLEAN;
         """
         ddl_pending = """
         CREATE TABLE IF NOT EXISTS bybit_pending_orders (

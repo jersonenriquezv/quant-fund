@@ -1,0 +1,13 @@
+[Unit]
+Description=Quant Fund — fire top-down brief push every 4H (candle-close aligned)
+Documentation=file:///home/jer/quant-fund/docs/SYSTEM_BASELINE.md
+
+[Timer]
+# 4H candles close at 00/04/08/12/16/20. Fire 1 min after close so the latest
+# candle is committed before the brief reconciles. Wall-clock (systemd local).
+OnCalendar=*-*-* 00/4:01:00
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

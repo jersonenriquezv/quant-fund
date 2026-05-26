@@ -38,6 +38,7 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
   const [lesson, setLesson] = useState("");
   const [emotional, setEmotional] = useState("");
   const [screenshot, setScreenshot] = useState("");
+  const [topdownUsed, setTopdownUsed] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -51,6 +52,7 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
       setLesson(a.lesson_post || "");
       setEmotional(a.emotional_state || "");
       setScreenshot(a.screenshot_url || "");
+      setTopdownUsed(a.topdown_brief_used ?? false);
       if (a.auto_grade) {
         try {
           const ex = await fetchApi<BybitGradeExplain>(`/bybit/grade-explain/${annotationId}`);
@@ -80,6 +82,7 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
         lesson_post: lesson || null,
         emotional_state: emotional || null,
         screenshot_url: screenshot || null,
+        topdown_brief_used: topdownUsed,
       };
       const updated = await patchApi<BybitAnnotation>(
         `/bybit/annotations/${annotationId}`,
@@ -385,6 +388,16 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
             ))}
           </div>
         </Field>
+
+        <label className="topdown-check">
+          <input
+            type="checkbox"
+            checked={topdownUsed}
+            onChange={(e) => setTopdownUsed(e.target.checked)}
+          />
+          <span className="tc-box" aria-hidden="true" />
+          <span className="tc-text">USED /topdown BRIEF BEFORE ENTRY</span>
+        </label>
 
         <Field label="TRIGGER · WHAT FIRED THE ENTRY (RULE 1)">
           <textarea
@@ -813,6 +826,55 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
         @keyframes fade {
           from { opacity: 0; transform: translateY(6px); }
           to { opacity: 1; transform: translateY(0); }
+        }
+        .topdown-check {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          min-height: 44px;
+          margin-bottom: 24px;
+          cursor: pointer;
+          user-select: none;
+        }
+        .topdown-check input {
+          position: absolute;
+          opacity: 0;
+          width: 0;
+          height: 0;
+        }
+        .tc-box {
+          flex: 0 0 auto;
+          width: 22px;
+          height: 22px;
+          border: 1px solid rgba(255, 255, 255, 0.25);
+          border-radius: 4px;
+          background: rgba(255, 255, 255, 0.03);
+          position: relative;
+          transition: all 0.15s ease;
+        }
+        .topdown-check input:checked + .tc-box {
+          background: #0a84ff;
+          border-color: #0a84ff;
+        }
+        .topdown-check input:checked + .tc-box::after {
+          content: "";
+          position: absolute;
+          left: 7px;
+          top: 3px;
+          width: 5px;
+          height: 10px;
+          border: solid #fff;
+          border-width: 0 2px 2px 0;
+          transform: rotate(45deg);
+        }
+        .topdown-check input:focus-visible + .tc-box {
+          box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.4);
+        }
+        .tc-text {
+          font-size: 9px;
+          letter-spacing: 0.22em;
+          color: rgba(255, 255, 255, 0.7);
+          font-weight: 700;
         }
         @media (max-width: 640px) {
           .a-head { padding: 24px 16px 16px; }

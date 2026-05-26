@@ -509,6 +509,42 @@ D: net_score <  2
 
 ## 8. Changelog
 
+### 2026-05-26 — signal_scanner engine replaced: classifier → /topdown edge-triplet
+**Files:** `scripts/signal_scanner.py` (engine swap), `scripts/topdown_snapshot.py` (+`build_edge_signal` helper), `tests/test_signal_scanner_edge.py` (new, 12 tests), `docs/plans/signal-scanner-topdown-edge-2026-05-25.md` (Phases 1–3 done).
+
+**What changed:** The scanner's live `scan()` no longer runs the auto-classifier (grade A/B — proven no out-of-sample edge). It now runs the `/topdown` edge-triplet engine, which measured **+0.13R maker (+0.20R deduped)** on BTC/ETH (`docs/audits/topdown-edge-expectancy-2026-05-25.md`).
+- New additive helper `build_edge_signal(pair)` in `topdown_snapshot.py` exposes the existing `_build_snapshot` → `_trade_triplet` as a flat signal dict. **`/topdown` brief output is byte-identical** (additive only — 124 topdown tests pass).
+- `scan()` iterates `SCANNER_PAIRS = [BTC/USDT, ETH/USDT]` (not `TRADING_PAIRS`), applies the gate (`_edge_candidate`: sweep ≤0.5%, SL on protective side, rr>0, single TP = triplet final target), dedups 6h per pair+direction, and sends a **LIMIT (maker) alert** via `_format_telegram_edge` ("orden límite" explicit). The old classifier engine is retained dead as `scan_classifier()` for replay; `classify` import moved local to it (0 classifier refs in the live path).
+- `signal_scanner_alerts` rows tag `auto_setup_type='topdown_edge'` and persist `sweep_distance_pct`/`risk_pct`/`bias_confidence` in promoted columns (idempotent ALTER; pre-edge rows NULL) for later WR reconciliation against Bybit closes.
+
+**Why:** the classifier grade had no edge; the triplet does (BTC/ETH, maker entry, single-TP, sweep ≤0.5%). Reuses the validated levers from the 2026-05-25 expectancy audit. ~3 alerts/day expected, WR ~33%.
+
+**Tests:** 12 new (`test_signal_scanner_edge.py`) cover gate (sweep cap, geometry guard, rr>0, single-TP passthrough, pair scope) + formatter (LIMIT wording, entry price, maker instruction). Full suite 1288 passed, 1 xfailed. `--dry-run` emits the LIMIT format. systemd `signal-scanner.service` runs flagless → edge engine is now the default path, no unit change.
+
+**Falsification (armed):** after N≥30 closed Bybit trades taken from these alerts, require live WR ≥30% AND realized maker expectancy >0, else revert/kill. FREEZE-safe: read-only analytics, no `strategy_service`/ML touch, no bot execution.
+
+### 2026-05-25 — /topdown edge verdict CORRECTED (BTC/ETH has edge by expectancy)
+**Files:** `docs/audits/topdown-edge-expectancy-2026-05-25.md` (new), `scripts/topdown_edge_hunt.py` (new analysis), backtest run `topdown_20260525_220604` (BTC/ETH 150d confirmation).
+
+**What changed:** The 2026-05-24 "NO EDGE" verdict is **overturned for BTC/ETH**. That verdict used ΔWR ≥ 10pp as the go/no-go gate — the wrong metric for a high-R:R strategy. Measured by net expectancy in R: signal maker **+0.130R** vs random null **−0.220R** = **+0.35R/trade edge**, bootstrap 95% CI [+0.24, +0.51], p(≤0) < 0.0002. Out-of-sample stable (train +0.123R, holdout +0.147R). The original WR framing was diluted by DOGE (−6.75pp anti-edge) + flat SOL; on deep-liquidity BTC/ETH the WR gap is +9.2pp.
+
+**Why it matters:** the binding constraint is **fees, not signal**. Median risk/trade ≈0.5%, so taker RT (0.11% = 0.22R) eats the gross edge → net negative. **Maker (limit) entry** (0.02% = 0.04R) preserves it → net +0.13R, PF 1.18. Strategy is manual (user places limit on Bybit, normally fills); backtest already excludes non-fills as `unfilled_timeout`, so +0.13R is on filled trades only.
+
+**Confirmed levers (NOT yet built into /topdown):** (1) restrict to BTC/ETH, (2) maker-only entry, (3) kill scaled-TP mode (0 TP ever in both runs), (4) optional tighten sweep to ≤0.5% (E +0.36R vs +0.15R at 0.5–1%). **At $300 capital the dollar profit is small** (~$50/5mo selective); edge matters at higher capital/frequency. Caveat: pair+window in-sample-period; forward confirmation still pending. Full analysis: `docs/audits/topdown-edge-expectancy-2026-05-25.md`.
+
+### 2026-05-25 — Top-down Telegram brief Phase 4 (falsification enabler + push automation)
+**Files:** `data_service/bybit_sync.py` (+1 DDL), `dashboard/api/routes/bybit.py` (+3 lines: model + out + mapper), `dashboard/web/src/lib/api.ts` (+2 fields), `dashboard/web/src/app/annotate/[id]/page.tsx` (+checkbox UI/state), `scripts/topdown_snapshot.py` (+`build_brief_and_state`), `scripts/topdown_push.py` (new), `tests/test_topdown_push.py` (new, 4 tests), `systemd/topdown-push.{service,timer}` + `systemd/topdown-watch.service` (new).
+
+**What changed:**
+- **Phase 4a (falsification enabler):** new `topdown_brief_used BOOLEAN` column on `bybit_trade_annotations` (idempotent ALTER in `ensure_tables`). Backend `AnnotationUpdate`/`AnnotationOut` + `_row_to_out` carry it; PATCH auto-whitelists via existing `model_dump(exclude_unset=True)` SET builder. Frontend annotate form gets a styled mobile checkbox ("USED /topdown BRIEF BEFORE ENTRY", 44px touch target) as the first editable field. This is the journal flag for the live N=30 WR comparison (brief vs no-brief).
+- **Phase 4b (push automation):** `scripts/topdown_push.py` with two modes — `push-all` (one-shot, renders + sends the brief for all 4 manual pairs) and `watch` (long-lived daemon, polls every 15m, diffs reconciled side/confidence vs `/tmp/topdown_last_state.json`, pushes only changed pairs; first run seeds baseline silently so restarts never spam). New `build_brief_and_state(pair)` helper returns `(text, {side, confidence})` so the watcher diffs without rebuilding the snapshot. systemd: `topdown-push.timer` fires every 4H at HH:01 (candle-close aligned); `topdown-watch.service` runs the daemon with `Restart=on-failure`.
+
+**Why:** Backtest (2026-05-24) ruled NO EDGE for the mechanical /topdown triplet, but brief-as-human-decision-aid is unsettled. Phase 4a is the data hook that lets the live falsification actually measure it. Phase 4b removes the manual `/topdown <pair>` poll — briefs arrive on the 4H boundary + on bias flips.
+
+**Tests:** 4 new (`test_topdown_push.py`) cover seed-no-push, no-change-no-push, side-flip-pushes-one, confidence-change-pushes. Full suite 1276 passed. `push-all --dry-run` renders 4 briefs; `watch --once` seeds then pushes exactly the flipped pair. All 3 systemd units pass `systemd-analyze verify`.
+
+**Operator note (NOT yet enabled):** units are version-controlled but not installed/started — enabling would begin 4H Telegram pushes. To activate post-merge: `cp systemd/topdown-*.{service,timer} ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user enable --now topdown-push.timer` (and optionally `topdown-watch.service`). FREEZE-safe: read-only analytics, no `strategy_service`/ML touch. Falsification clock starts when push is live + first brief-tagged Bybit trade closes.
+
 ### 2026-05-24 — /topdown manual strategy backtest shipped
 
 **Files:** `scripts/backtest_topdown.py` (new, ~1,120 LOC), `scripts/topdown_snapshot.py` (+45 LOC: time-machine `_now_ms`/`_set_replay_time` shim + `_trade_triplet` geometry guard), `tests/test_topdown_snapshot.py` (+2 tests), `backtest_results/topdown_20260524_192804_{trades,random_trades,report}.{csv,csv,md}`, `backtest_results/TRACKER.md` (+1 row), `docs/grill/backtest-topdown-2026-05-24.md` (new), `docs/plans/backtest-topdown-2026-05-24.md` (new).

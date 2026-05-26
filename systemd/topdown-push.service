@@ -1,0 +1,15 @@
+[Unit]
+Description=Quant Fund — top-down brief scheduled push (4H, all manual pairs)
+Documentation=file:///home/jer/quant-fund/docs/SYSTEM_BASELINE.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/jer/quant-fund
+EnvironmentFile=/home/jer/quant-fund/config/.env
+Environment=PYTHONPATH=/home/jer/quant-fund
+ExecStart=/home/jer/quant-fund/venv/bin/python /home/jer/quant-fund/scripts/topdown_push.py push-all
+StandardOutput=journal
+StandardError=journal
+Nice=10
