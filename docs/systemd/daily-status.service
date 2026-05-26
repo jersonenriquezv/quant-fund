@@ -1,0 +1,14 @@
+[Unit]
+Description=Quant Fund — daily status digest (single Telegram summary)
+Documentation=file:///home/jer/quant-fund/docs/SYSTEM_BASELINE.md
+After=network-online.target postgresql.service docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/jer/quant-fund
+EnvironmentFile=/home/jer/quant-fund/config/.env
+ExecStart=/home/jer/quant-fund/venv/bin/python /home/jer/quant-fund/scripts/daily_status.py
+StandardOutput=journal
+StandardError=journal
+Nice=10

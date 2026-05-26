@@ -1,0 +1,13 @@
+[Unit]
+Description=Quant Fund — daily status digest at 12:00 UTC
+Documentation=file:///home/jer/quant-fund/docs/SYSTEM_BASELINE.md
+
+[Timer]
+# One digest per day at 12:00 UTC (~07:00 US Central). Replaces the firehose
+# of per-event bot alerts (muted via BOT_TELEGRAM_ALERTS_ENABLED=false).
+OnCalendar=*-*-* 12:00:00 UTC
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

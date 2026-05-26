@@ -1199,7 +1199,14 @@ async def main() -> None:
 
     # Create Telegram notifier + AlertManager wrapper
     _notifier = TelegramNotifier(settings.TELEGRAM_BOT_TOKEN, settings.TELEGRAM_CHAT_ID)
-    _alert_manager = AlertManager(_notifier)
+    _alert_manager = AlertManager(_notifier, enabled=settings.BOT_TELEGRAM_ALERTS_ENABLED)
+    if not settings.BOT_TELEGRAM_ALERTS_ENABLED:
+        logger.info(
+            "Bot Telegram alerts MUTED (BOT_TELEGRAM_ALERTS_ENABLED=false): "
+            "only crash/error + live trade lifecycle reach Telegram. "
+            "Routine shadow/session/market noise suppressed. Daily digest via "
+            "scripts/daily_status.py."
+        )
 
     # Create DataService with pipeline callback + alert manager for whale alerts
     _data_service = DataService(on_candle_confirmed=on_candle_confirmed, alert_manager=_alert_manager)
@@ -1240,9 +1247,12 @@ async def main() -> None:
     )
     await _execution_service.start()
 
-    # Create ShadowMonitor for theoretical outcome tracking
+    # Create ShadowMonitor for theoretical outcome tracking. When bot alerts
+    # are muted, pass no notifier so shadow tracking/fill/resolution stays
+    # silent — outcome tracking (ML data) continues unchanged either way.
     if settings.SHADOW_MODE_SETUPS:
-        _shadow_monitor = ShadowMonitor(_data_service, notifier=_notifier)
+        _shadow_notifier = _notifier if settings.BOT_TELEGRAM_ALERTS_ENABLED else None
+        _shadow_monitor = ShadowMonitor(_data_service, notifier=_shadow_notifier)
         logger.info(
             f"Shadow Monitor initialized: {settings.SHADOW_MODE_SETUPS} "
             f"(${settings.effective_shadow_capital} virtual, basis={settings.SHADOW_CAPITAL_BASIS})"
@@ -1335,5 +1345,32 @@ async def main() -> None:
     logger.info("=" * 60)
 
 
+def _send_crash_alert(exc: BaseException) -> None:
+    """Real-time Telegram alert on unhandled crash. Bypasses the AlertManager
+    mute (own notifier, direct send) so a process-down event always reaches the
+    phone even when routine alerts are disabled."""
+    try:
+        import traceback
+        notifier = TelegramNotifier(settings.TELEGRAM_BOT_TOKEN, settings.TELEGRAM_CHAT_ID)
+        tail = traceback.format_exc().strip().splitlines()[-1][:300]
+        msg = (
+            f"\U0001f6a8 <b>BOT CRASHED</b>\n"
+            f"<code>{type(exc).__name__}: {str(exc)[:300]}</code>\n"
+            f"{tail}\n"
+            f"Process is down — Docker will attempt restart. Check "
+            f"<code>docker compose logs bot --tail=80</code>."
+        )
+        asyncio.run(notifier.send(msg))
+    except Exception:
+        logger.critical("crash alert failed to send", exc_info=True)
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
+    except Exception as exc:
+        logger.critical(f"BOT CRASHED (unhandled): {exc}", exc_info=True)
+        _send_crash_alert(exc)
+        raise

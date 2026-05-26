@@ -64,6 +64,14 @@ class Settings:
     TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_EXPLAIN_BOT_TOKEN: str = os.getenv("TELEGRAM_EXPLAIN_BOT_TOKEN", "")
     TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
+    # Master mute for the bot process's routine Telegram alerts (shadow
+    # tracking/fill/resolution, session, dry-spell, volatility/funding/liq,
+    # whale, daily summary). When false, AlertManager suppresses all
+    # non-CRITICAL/EMERGENCY routes and ShadowMonitor gets no notifier — so
+    # real-time crash/error alerts and live trade lifecycle still fire, but the
+    # shadow-mode noise goes quiet. signal_scanner edge alerts run in a separate
+    # process and are unaffected. Daily digest is scripts/daily_status.py.
+    BOT_TELEGRAM_ALERTS_ENABLED: bool = os.getenv("BOT_TELEGRAM_ALERTS_ENABLED", "true").lower() == "true"
 
     # ========================
     # BASE DE DATOS

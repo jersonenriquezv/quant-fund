@@ -509,6 +509,20 @@ D: net_score <  2
 
 ## 8. Changelog
 
+### 2026-05-26 — Telegram quiet mode + daily status digest
+**Files:** `config/settings.py` (+`BOT_TELEGRAM_ALERTS_ENABLED`), `shared/alert_manager.py` (+`enabled` mute), `main.py` (wiring + crash handler), `scripts/daily_status.py` (new), `docs/systemd/daily-status.{service,timer}` (new), `config/.env.example` (+Telegram block), `tests/test_alert_manager.py` (+5 mute tests).
+
+**What changed:** the shadow-only bot was flooding Telegram with per-event alerts (shadow tracking/fill/resolution, session, dry-spell, volatility/funding/liquidation, whale). Until the 2026-06-08 review there is nothing to act on in real time, so the firehose was pure noise.
+- **Mute switch:** `BOT_TELEGRAM_ALERTS_ENABLED` (env, default `true` for back-compat; set `false` on the server). `AlertManager(enabled=False)` suppresses every route except CRITICAL (live trade lifecycle) and EMERGENCY. `ShadowMonitor` gets `notifier=None` when muted — outcome tracking (ML data) is unchanged, only the Telegram pings stop.
+- **Real-time crash alert:** top-level handler in `main.py` sends a `🚨 BOT CRASHED` message (own notifier, bypasses the mute) on any unhandled exception before re-raising, so a process-down event always reaches the phone.
+- **Daily digest:** `scripts/daily_status.py` sends ONE message at 12:00 UTC (systemd `daily-status.timer`) with four sections — shadow activity (new today / resolved TP·SL·BE·timeout / 7d WR), edge alerts sent today, review progress (terminal N vs 30, days to 2026-06-08), system health (bot up, data freshness, 24h error count + dominant source). Benchmarks excluded from performance numbers; error count surfaces the top module so benign recurring timeouts (e.g. `btc_whale_client` mempool) read as benign.
+
+**Why:** keep Telegram actionable — edge alerts (signal_scanner, separate process) + one daily status + real-time crash only. No behavior change to detection/sizing/execution (FREEZE-safe; notification gating only).
+
+**Tests:** 5 new mute tests (`test_alert_manager.py`, 31 total). Full suite 1293 passed, 1 xfailed. `daily_status.py --dry-run` renders all 4 sections.
+
+**Operator note (deploy):** activation needs `BOT_TELEGRAM_ALERTS_ENABLED=false` in `config/.env` + `docker compose up -d --build bot` (mute + crash handler), and installing the digest timer: `cp docs/systemd/daily-status.{service,timer} ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user enable --now daily-status.timer`.
+
 ### 2026-05-26 — signal_scanner engine replaced: classifier → /topdown edge-triplet
 **Files:** `scripts/signal_scanner.py` (engine swap), `scripts/topdown_snapshot.py` (+`build_edge_signal` helper), `tests/test_signal_scanner_edge.py` (new, 12 tests), `docs/plans/signal-scanner-topdown-edge-2026-05-25.md` (Phases 1–3 done).
 
