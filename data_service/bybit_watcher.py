@@ -28,7 +28,7 @@ from typing import Any
 
 import httpx
 import psycopg2
-from psycopg2.extras import Json, RealDictCursor
+from psycopg2.extras import Json, RealDictCursor, execute_batch
 from pybit.unified_trading import HTTP
 
 from config.settings import settings
@@ -435,21 +435,32 @@ class BybitWatcher:
 
     def _insert_annotation(self, st: PositionState, context: dict, auto: dict) -> int:
         notional = st.size * st.entry_price
+        # Journal v2 data sources: actual protective SL (R-unit denominator) and
+        # account equity (risk_pct / sizing-consistency denominator), captured at
+        # open. SL may still be NULL here if attached seconds later — _refresh_sl
+        # syncs it on the next tick.
+        sl_raw = st.raw.get("stopLoss")
+        sl_price = float(sl_raw) if sl_raw not in (None, "", "0") else None
+        equity = self._get_equity()
         sql = """
         INSERT INTO bybit_trade_annotations (
             symbol, side, opened_at, entry_price, size, leverage,
             notional_value, context_snapshot,
             auto_setup_type, auto_confluences, auto_detractors,
             auto_grade, auto_classifier_version,
+            position_sl_price, account_equity_at_open, journal_schema_version,
             status
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'open')
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'open')
         ON CONFLICT (symbol, side, opened_at) DO UPDATE
             SET context_snapshot = EXCLUDED.context_snapshot,
                 auto_setup_type = EXCLUDED.auto_setup_type,
                 auto_confluences = EXCLUDED.auto_confluences,
                 auto_detractors = EXCLUDED.auto_detractors,
                 auto_grade = EXCLUDED.auto_grade,
-                auto_classifier_version = EXCLUDED.auto_classifier_version
+                auto_classifier_version = EXCLUDED.auto_classifier_version,
+                position_sl_price = COALESCE(EXCLUDED.position_sl_price, bybit_trade_annotations.position_sl_price),
+                account_equity_at_open = COALESCE(EXCLUDED.account_equity_at_open, bybit_trade_annotations.account_equity_at_open),
+                journal_schema_version = EXCLUDED.journal_schema_version
         RETURNING id
         """
         with self._conn() as conn, conn.cursor() as cur:
@@ -462,10 +473,106 @@ class BybitWatcher:
                 Json(auto.get("auto_detractors")) if auto.get("auto_detractors") is not None else None,
                 auto.get("auto_grade"),
                 auto.get("auto_classifier_version"),
+                sl_price, equity, 2,
             ))
             row = cur.fetchone()
             conn.commit()
             return row[0]
+
+    def _get_equity(self) -> float | None:
+        """UNIFIED account total equity (USD) at trade-open time.
+
+        Denominator for risk_pct / sizing-consistency analysis. Best-effort:
+        returns None on any API failure so an open is never blocked by it.
+        """
+        try:
+            resp = self.client.get_wallet_balance(accountType="UNIFIED")
+            rows = (resp.get("result") or {}).get("list", []) or []
+            if not rows:
+                return None
+            total = rows[0].get("totalEquity")
+            return float(total) if total not in (None, "") else None
+        except Exception as exc:
+            logger.warning(f"get_wallet_balance failed (equity not captured): {exc}")
+            return None
+
+    def _refresh_sl(self, st: PositionState) -> None:
+        """Sync position_sl_price on the open annotation when the live SL changes.
+
+        Bybit users routinely open first and attach/trail the stop seconds later,
+        so capturing only at open stores NULL/stale SLs and breaks the R unit.
+        """
+        sl_raw = st.raw.get("stopLoss")
+        sl_price = float(sl_raw) if sl_raw not in (None, "", "0") else None
+        if sl_price is None:
+            return
+        try:
+            with self._conn() as conn, conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE bybit_trade_annotations
+                    SET position_sl_price = %s, updated_at = NOW()
+                    WHERE symbol = %s AND side = %s AND status = 'open'
+                      AND position_sl_price IS DISTINCT FROM %s
+                    """,
+                    (sl_price, st.key.symbol, st.key.side, sl_price),
+                )
+                conn.commit()
+        except Exception as exc:
+            logger.warning(f"refresh_sl failed for {st.key.symbol} {st.key.side}: {exc}")
+
+    def _backfill_daily_candles(self) -> None:
+        """REST-fetch recent 1D candles for the manual-bias symbols into `candles`.
+
+        The trading bot's WebSocket only stores 5m/15m/1h/4h, so the Daily anchor
+        of the manual top-down chain has no source otherwise. 1D candles move
+        slowly, so a periodic REST refresh is sufficient. Idempotent via
+        ON CONFLICT; best-effort (never blocks the poll loop).
+
+        Bybit kline rows: [startMs, open, high, low, close, volume(base), turnover(quote)].
+        """
+        from data_service.context_service import bybit_symbol_to_pair
+        symbols = getattr(settings, "BYBIT_DAILY_BIAS_SYMBOLS", []) or []
+        rows: list[tuple] = []
+        for symbol in symbols:
+            try:
+                resp = self.client.get_kline(
+                    category="linear", symbol=symbol, interval="D", limit=40
+                )
+                klines = (resp.get("result") or {}).get("list", []) or []
+            except Exception as exc:
+                logger.warning(f"daily kline fetch failed for {symbol}: {exc}")
+                continue
+            pair = bybit_symbol_to_pair(symbol)
+            if not pair:
+                continue
+            for k in klines:
+                try:
+                    rows.append((
+                        pair, "1d", int(k[0]),
+                        float(k[1]), float(k[2]), float(k[3]), float(k[4]),
+                        float(k[5]), float(k[6]),
+                    ))
+                except (TypeError, ValueError, IndexError):
+                    continue
+        if not rows:
+            return
+        try:
+            with self._conn() as conn, conn.cursor() as cur:
+                execute_batch(
+                    cur,
+                    """
+                    INSERT INTO candles
+                      (pair, timeframe, timestamp, open, high, low, close, volume, volume_quote)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (pair, timeframe, timestamp) DO NOTHING
+                    """,
+                    rows,
+                )
+                conn.commit()
+            logger.info(f"bybit daily bias: upserted {len(rows)} 1D candles for {len(symbols)} symbols")
+        except Exception as exc:
+            logger.warning(f"daily candle upsert failed: {exc}")
 
     def _close_annotation(self, key: PositionKey) -> dict | None:
         """Mark most recent open annotation for (symbol, side) as closed.
@@ -756,6 +863,12 @@ class BybitWatcher:
             direction = "ADD" if delta > 0 else "REDUCE"
             logger.info(f"{direction} {k.symbol} {k.side} delta={delta:+.4f} new_size={curr[k].size}")
 
+        # SL attach/trail sync — size-unchanged stopLoss edits are missed by the
+        # `modified` (size-delta) branch, so check every still-open position.
+        for k in curr:
+            if k in prev and curr[k].raw.get("stopLoss") != prev[k].raw.get("stopLoss"):
+                self._refresh_sl(curr[k])
+
     async def _enforce_journal_deadline(self, curr_pending: dict[str, PendingOrder]) -> None:
         """Rule 6 enforcement — cancel pending limit orders that have no thesis_pre filled past deadline.
 
@@ -864,8 +977,14 @@ class BybitWatcher:
     async def run_forever(self, interval: int = POLL_INTERVAL_SEC) -> None:
         logger.info(f"bybit_watcher: started (interval={interval}s)")
         asyncio.create_task(self._periodic_sync_loop())
+        self._backfill_daily_candles()
+        refresh_every = max(1, 3600 // max(1, interval))
+        poll_count = 0
         while True:
             await self.tick()
+            poll_count += 1
+            if poll_count % refresh_every == 0:
+                self._backfill_daily_candles()
             await asyncio.sleep(interval)
 
 

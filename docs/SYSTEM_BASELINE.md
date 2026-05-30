@@ -509,6 +509,20 @@ D: net_score <  2
 
 ## 8. Changelog
 
+### 2026-05-30 — Bybit journal v2 Phase 2: data sources (SL, equity, 1D bias)
+**Files:** `data_service/bybit_watcher.py`, `data_service/context_service.py`, `config/settings.py`, `tests/test_bybit_journal_v2_datasources.py` (new).
+
+**What changed:** wires the three real data sources the v2 schema (Phase 0+1) added but nothing fed yet. Watcher writes `journal_schema_version=2` on every open.
+- **Position SL (C1 fix):** `_insert_annotation` persists `position_sl_price` from the live position `stopLoss`. New `_refresh_sl` updates it whenever the stop is attached/trailed after open (detected in `_emit_diff` by comparing `raw.stopLoss` across ticks — the size-delta `modified` branch misses SL-only edits). Bybit users routinely open then set the stop seconds later, so capturing only at open stored NULLs. Without a real SL the R unit `|entry - SL|` has no source — this unblocks the entire expectancy layer.
+- **Account equity:** new `_get_equity()` (`get_wallet_balance(accountType="UNIFIED")` -> `totalEquity`) fills `account_equity_at_open`, the denominator for `risk_pct` / sizing-consistency. Best-effort: None on any API error so an open is never blocked by a balance call.
+- **Daily (1D) bias:** new `_backfill_daily_candles()` REST-fetches 1D klines (`get_kline interval="D" limit=40`) for `BYBIT_DAILY_BIAS_SYMBOLS` (new setting, default BTC/ETH/SOL/XRP USDT) and upserts into `candles` (`timeframe='1d'`, `ON CONFLICT DO NOTHING`); runs on startup + ~hourly inside `run_forever`. `context_service._htf_bias` extended to compute `bias_daily` alongside 4h/1h. Chose self-contained REST over enabling the bot's `candle1D` WS subscription — the latter adds a warmup/continuity gating dimension to the RUNNING state during FREEZE. REST is FREEZE-safe (zero trading-pipeline touch).
+
+**Why:** the manual top-down chain is 1D->4H->1H->15->5; Daily is the structural anchor and had no source. SL + equity are the load-bearing inputs for R-based expectancy. All three captured at/after open with zero impact on bot detection/sizing/execution.
+
+**Verified:** live — `_backfill_daily_candles` upserted 160 1D candles (40x4 symbols, confirmed in DB); `_htf_bias` resolves `bias_daily` (all 4 bearish at run time); `_get_equity` returns account equity ($4787). Tests: `pytest -k bybit` 23 passed (8 new in `test_bybit_journal_v2_datasources.py`). docs-truth green.
+
+**Next:** Phase 3 (auto-classifier pre-fills the v2 chain incl. `bias_daily`/undefined->range mapping). Plan: `docs/plans/bybit-journal-v2-2026-05-30.md`.
+
 ### 2026-05-30 — Bybit journal v2 schema (redesign, additive — Phase 0+1)
 **Files:** `data_service/bybit_sync.py` (v2 DDL on `bybit_trade_annotations` + `bybit_pending_orders`).
 

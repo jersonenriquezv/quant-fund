@@ -69,7 +69,7 @@ def _htf_bias(pair: str) -> dict[str, Any]:
     """
     out: dict[str, Any] = {}
     with _conn() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
-        for tf, key in [("4h", "bias_4h"), ("1h", "bias_1h")]:
+        for tf, key in [("1d", "bias_daily"), ("4h", "bias_4h"), ("1h", "bias_1h")]:
             cur.execute(
                 """
                 SELECT close FROM candles

@@ -49,6 +49,12 @@ class Settings:
     BYBIT_PERIODIC_SYNC_ENABLED: bool = os.getenv("BYBIT_PERIODIC_SYNC_ENABLED", "true").lower() == "true"
     BYBIT_PERIODIC_SYNC_SEC: int = int(os.getenv("BYBIT_PERIODIC_SYNC_SEC", "1800"))
     BYBIT_PERIODIC_SYNC_DAYS: int = int(os.getenv("BYBIT_PERIODIC_SYNC_DAYS", "2"))
+    # Journal v2: symbols the watcher REST-backfills as 1D candles into the
+    # candles table so context_service._htf_bias can resolve a Daily anchor for
+    # the manual top-down chain. Self-contained; no trading-pipeline touch.
+    BYBIT_DAILY_BIAS_SYMBOLS: List[str] = field(
+        default_factory=lambda: ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
+    )
 
     # ========================
     # APIs EXTERNAS
