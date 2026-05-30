@@ -160,6 +160,73 @@ class BybitSync:
         ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS trigger_condition TEXT;
         ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS thesis_invalidation TEXT;
         ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS topdown_brief_used BOOLEAN;
+
+        -- ============================================================
+        -- Journal v2 (redesign 2026-05-30) — additive, never drops v1.
+        -- v1 rows keep journal_schema_version=1 (frozen, excluded from
+        -- new edge math). v2 writers set 2. See SYSTEM_BASELINE §Bybit.
+        -- ============================================================
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS journal_schema_version SMALLINT DEFAULT 1;
+
+        -- PLAN: top-down chain (closed vocab; human label, may disagree with auto_*).
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS htf_bias_daily VARCHAR(10);       -- bullish/bearish/range
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS htf_bias_4h VARCHAR(10);          -- bullish/bearish/range
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS htf_structure_reason VARCHAR(15); -- HH_HL/LH_LL/range_bound/unclear
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS location_pd VARCHAR(12);          -- premium/equilibrium/discount
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS location_quality VARCHAR(12);     -- key_level/no_mans_land
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS mtf_1h VARCHAR(12);               -- confirms/contradicts/neutral
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS ltf_trigger VARCHAR(15);          -- sweep_reclaim/bos/choch/fvg/order_block/simple_break
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS structure_type VARCHAR(12);       -- continuation/reversal/range
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS entry_type VARCHAR(20);           -- at_level_limit/confirmation_shift
+
+        -- PLAN: 5 independent confluence factors (booleans) -> derived count.
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS conf_htf BOOLEAN;
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS conf_location BOOLEAN;
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS conf_mtf BOOLEAN;
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS conf_trigger BOOLEAN;
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS conf_noconflict BOOLEAN;
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS tf_aligned_count SMALLINT
+            GENERATED ALWAYS AS (
+                COALESCE(conf_htf::int,0) + COALESCE(conf_location::int,0) + COALESCE(conf_mtf::int,0)
+                + COALESCE(conf_trigger::int,0) + COALESCE(conf_noconflict::int,0)
+            ) STORED;
+
+        -- PLAN: intended levels (R unit = |planned_entry - planned_sl| * size).
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS planned_entry_price DOUBLE PRECISION;
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS planned_sl_price DOUBLE PRECISION;
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS planned_tp_price DOUBLE PRECISION;
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS risk_pct DOUBLE PRECISION;
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS account_equity_at_open DOUBLE PRECISION;
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS position_sl_price DOUBLE PRECISION;  -- actual SL from get_positions
+
+        -- REVIEW: process diagnosis (the ML clean-sample label).
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS followed_process BOOLEAN;  -- NULL = not reviewed
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS technical_error JSONB;     -- array of tags; '[]' = reviewed, none
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS behavioral_error JSONB;    -- array of tags; '[]' = reviewed, none
+
+        -- REVIEW: excursion + R metrics (filled by scripts/compute_bybit_mae_mfe.py).
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS mae_r DOUBLE PRECISION;            -- worst adverse excursion in R (<=0)
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS mfe_r DOUBLE PRECISION;            -- best favorable excursion in R (>=0)
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS realized_r DOUBLE PRECISION;       -- closed_pnl / R_usd
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS exit_efficiency DOUBLE PRECISION;  -- realized_r / mfe_r (NULL if mfe_r<=0)
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS entry_slippage_bps DOUBLE PRECISION;
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS mae_mfe_tf VARCHAR(5);             -- candle granularity used (1m/5m)
+
+        -- REVIEW: derived labels.
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS clean_sample BOOLEAN
+            GENERATED ALWAYS AS (followed_process IS TRUE AND behavioral_error = '[]'::jsonb) STORED;
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS trade_quality VARCHAR(10)
+            GENERATED ALWAYS AS (
+                CASE
+                    WHEN followed_process IS NULL OR realized_r IS NULL THEN NULL
+                    WHEN followed_process AND realized_r > 0 THEN 'good_win'
+                    WHEN followed_process AND realized_r <= 0 THEN 'good_loss'
+                    WHEN realized_r > 0 THEN 'bad_win'
+                    ELSE 'bad_loss'
+                END
+            ) STORED;
+        CREATE INDEX IF NOT EXISTS idx_bybit_annot_jsv ON bybit_trade_annotations(journal_schema_version);
+        CREATE INDEX IF NOT EXISTS idx_bybit_annot_clean ON bybit_trade_annotations(clean_sample);
         """
         ddl_pending = """
         CREATE TABLE IF NOT EXISTS bybit_pending_orders (
@@ -211,6 +278,36 @@ class BybitSync:
         ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS auto_grade CHAR(1);
         ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS auto_classifier_version SMALLINT;
         ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS enforcement_cancelled_at TIMESTAMPTZ;
+
+        -- ============================================================
+        -- Journal v2 (redesign 2026-05-30) — PLAN layer on pending orders.
+        -- Chain captured BEFORE fill; migrates to annotation on fill.
+        -- ============================================================
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS journal_schema_version SMALLINT DEFAULT 1;
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS htf_bias_daily VARCHAR(10);
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS htf_bias_4h VARCHAR(10);
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS htf_structure_reason VARCHAR(15);
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS location_pd VARCHAR(12);
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS location_quality VARCHAR(12);
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS mtf_1h VARCHAR(12);
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS ltf_trigger VARCHAR(15);
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS structure_type VARCHAR(12);
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS entry_type VARCHAR(20);
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS conf_htf BOOLEAN;
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS conf_location BOOLEAN;
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS conf_mtf BOOLEAN;
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS conf_trigger BOOLEAN;
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS conf_noconflict BOOLEAN;
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS tf_aligned_count SMALLINT
+            GENERATED ALWAYS AS (
+                COALESCE(conf_htf::int,0) + COALESCE(conf_location::int,0) + COALESCE(conf_mtf::int,0)
+                + COALESCE(conf_trigger::int,0) + COALESCE(conf_noconflict::int,0)
+            ) STORED;
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS planned_entry_price DOUBLE PRECISION;
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS planned_sl_price DOUBLE PRECISION;
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS planned_tp_price DOUBLE PRECISION;
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS risk_pct DOUBLE PRECISION;
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS account_equity_at_open DOUBLE PRECISION;
         """
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(ddl_executions)

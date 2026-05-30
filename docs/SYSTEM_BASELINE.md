@@ -295,12 +295,12 @@ Three storages hold trade-like rows. Only ONE is authoritative for ML training /
 |-------|--------|------|-------------|
 | `ml_setups` | Bot detector (strategy_service) | **Authoritative** — features at detection + triple-barrier outcome. One row per setup, shadow or live. | **YES** — always filter by `feature_version >= 4` + `NOT IN NON_MARKET_OUTCOMES`. |
 | `trades` | Bot executor (execution_service) | Operational — real live fills, capital_at_trade, exit_reason. | NO for ML training. YES for P&L / dashboard. Filter `orphaned_restart` for DD / stats. |
-| `bybit_executions` + `bybit_closed_pnl` + `bybit_trade_annotations` | Bybit manual trades (sync + watcher) | Journal of manual decisions. Separate venue, separate capital, different execution characteristics. | **NO** — never cross with `ml_setups`. The annotation thesis is user-written prose, not ML-graded. |
+| `bybit_executions` + `bybit_closed_pnl` + `bybit_trade_annotations` | Bybit manual trades (sync + watcher) | Journal of manual decisions. Separate venue, separate capital, different execution characteristics. | **Separate dataset** — never cross with `ml_setups`. As of journal v2 (2026-05-30) manual trades carry closed-vocab top-down features + a clean-sample label for a *manual-strategy* dataset; train only on `journal_schema_version=2 AND clean_sample`, walled off from bot-edge analysis. |
 
 **Rules:**
 - `ml_setups` is the *only* ground truth for training queries, feature-importance runs, meta-label experiments, edge-audits.
 - `trades` is appropriate for realized P&L, DD reconcile, dashboard recent-trades — but NOT for feature → outcome modeling (lacks features).
-- Manual Bybit trades live in their own schema and must not leak into bot-edge analysis. Cross-venue comparison is fine for journaling, never for training.
+- Manual Bybit trades live in their own schema and must not leak into bot-edge analysis. Journal v2 makes them ML-grade *for the manual strategy only* (`journal_schema_version=2 AND clean_sample`); cross-venue comparison is fine, but never mix Bybit rows into `ml_setups` training.
 - If an analysis script needs both features and realized cash, join `ml_setups` → `trades` on `setup_id`, but still filter training labels from `ml_setups.outcome_type`.
 
 ### 7.1 ML Activation Gate
@@ -508,6 +508,21 @@ D: net_score <  2
 ---
 
 ## 8. Changelog
+
+### 2026-05-30 — Bybit journal v2 schema (redesign, additive — Phase 0+1)
+**Files:** `data_service/bybit_sync.py` (v2 DDL on `bybit_trade_annotations` + `bybit_pending_orders`).
+
+**What changed:** first phase of the Bybit manual-trade journaling **redesign**. Goal: ML-grade journaling that separates the trading edge from behavioral noise. Additive migration only — idempotent `ALTER ADD COLUMN IF NOT EXISTS`, no drops, no behavior change yet (writers/form/readers land in later phases).
+- **Versioning:** `journal_schema_version` (default 1) freezes existing rows as v1 (25 annotations + 13 pending — queryable, excluded from new edge math). v2 writers set 2. Old unannotated trades stay raw-PnL only (no SL/chain to recover); clean slate from v2.
+- **PLAN — closed-vocab top-down chain** (human label, stored beside `auto_*`; disagreement = misread signal): `htf_bias_daily/4h`, `htf_structure_reason` (HH_HL/LH_LL/range_bound/unclear), `location_pd` (premium/equilibrium/discount), `location_quality` (key_level/no_mans_land), `mtf_1h` (confirms/contradicts/neutral), `ltf_trigger` (sweep_reclaim/bos/choch/fvg/order_block/simple_break), `structure_type` (continuation/reversal/range), `entry_type` (at_level_limit/confirmation_shift). 5 **independent** confluence booleans (`conf_htf/location/mtf/trigger/noconflict`) → generated `tf_aligned_count`. Planned levels `planned_entry/sl/tp_price`, `risk_pct`, `account_equity_at_open`, `position_sl_price`. R unit = `|planned_entry − planned_sl| × size`.
+- **REVIEW — process diagnosis + R metrics:** `followed_process` (NULL=unreviewed), `technical_error`/`behavioral_error` (JSONB tag arrays; `[]`=reviewed-clean), `mae_r`/`mfe_r`/`realized_r`/`exit_efficiency`/`entry_slippage_bps`/`mae_mfe_tf`. Generated `clean_sample` (= `followed_process AND behavioral_error='[]'` — the ML filter) + `trade_quality` quadrant (good_win/good_loss/bad_win/bad_loss).
+- **Confluence rule (form, Phase 5):** min 3 of 5, HTF + trigger mandatory; range trades get a branch (sweep at edge + location, not HTF-dir).
+
+**Why:** the v1 free-text journal isn't learnable — rule-break trades mixed with clean ones poison any dataset. v2 makes the top-down chain a closed vocabulary and adds an explicit clean-sample label so ML learns the real edge, not the tilt. Stays walled off from `ml_setups` (§7.0).
+
+**Verified:** `ensure_tables()` against live DB — all v2 columns present on both tables, existing rows frozen at v1, idempotent re-run clean, generated columns compute (3 conf → `tf_aligned_count=3`; followed+`[]`+win → `clean_sample=true`, `trade_quality=good_win`). Tests: `pytest -k bybit` 15 passed.
+
+**Remaining phases (separate PRs):** P2 data sources (position SL via `get_positions`, equity via `get_wallet_balance`, 1D bias), P3 auto-classifier v2 pre-fill, P4 `scripts/compute_bybit_mae_mfe.py` (1m REST backfill), P5 mobile form rewrite, P6 switch readers + expectancy/PF queries, P7 ML filter finalization.
 
 ### 2026-05-26 — Telegram quiet mode + daily status digest
 **Files:** `config/settings.py` (+`BOT_TELEGRAM_ALERTS_ENABLED`), `shared/alert_manager.py` (+`enabled` mute), `main.py` (wiring + crash handler), `scripts/daily_status.py` (new), `docs/systemd/daily-status.{service,timer}` (new), `config/.env.example` (+Telegram block), `tests/test_alert_manager.py` (+5 mute tests).
