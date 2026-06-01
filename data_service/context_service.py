@@ -38,7 +38,7 @@ from strategy_service.volume_profile import VolumeProfileAnalyzer
 
 logger = setup_logger("context_service")
 
-CONTEXT_CLASSIFIER_VERSION = 1
+CONTEXT_CLASSIFIER_VERSION = 2
 
 
 def bybit_symbol_to_pair(symbol: str) -> str | None:

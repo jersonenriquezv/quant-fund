@@ -431,7 +431,10 @@ Independent shadow-only experiment for microstructural scalping signals, separat
 
 > Purpose: deterministic **decision-quality** score for every manual Bybit trade. Measures whether confluences were present at entry; does **not** measure PnL. `bybit_watcher` calls `strategy_service.trade_classifier.classify()` on every position open and stores `auto_setup_type`, `auto_confluences`, `auto_detractors`, `auto_grade` on `bybit_trade_annotations`.
 
-**Implementation:** `strategy_service/trade_classifier.py` (`CLASSIFIER_VERSION = 1`).
+**Implementation:** `strategy_service/trade_classifier.py` (`CLASSIFIER_VERSION = 2`).
+
+### Journal v2 top-down chain (Phase 3, 2026-06-01)
+`classify()` also emits a closed-vocab top-down chain that **pre-fills** the v2 form: `auto_htf_bias_daily`, `auto_htf_bias_4h`, `auto_htf_structure_reason`, `auto_location_pd` (volume-profile zone proxy), `auto_location_quality`, `auto_mtf_1h`, `auto_ltf_trigger` (precedence `sweep_reclaim > choch > bos > fvg > order_block`), `auto_structure_type`, and 5 `auto_conf_*` booleans (HTF/location/MTF/trigger/no-conflict). The watcher writes these immutable `auto_*` cols **and** pre-fills the human-editable chain cols (`htf_bias_daily` … `conf_noconflict`); on a re-tick the human cols are `COALESCE`'d so a dashboard correction is never clobbered. A human/machine disagreement IS the misread signal — both are kept. Bias `undefined` → `range` in the v2 taxonomy. The grade rubric below (net_score A/B/C/D) is unchanged.
 
 ### Grade thresholds
 ```
@@ -519,6 +522,28 @@ D: net_score <  2
 - **Mobile:** chain/confluence/levels grids collapse to 2-col at ≤639px; controls are 44px-min, width-100% box-sizing. Verified at 375px via Playwright (full form renders, no overflow). `npm run build` clean.
 
 **Why:** the form is where the closed-vocab chain + clean-sample label actually get captured. Pre-filling from the auto-classifier means the user confirms/corrects rather than fills blank, and the kept machine-vs-human divergence is the misread signal. Auto-pre-fill populates once the Phase 3 watcher (#49) is deployed; until then dropdowns open blank. Phase 6 (switch readers + stats) is next.
+
+### 2026-06-01 — Bybit journal v2 Phase 4: MAE/MFE + R-metric backfill
+**Files:** `scripts/compute_bybit_mae_mfe.py` (new), `tests/test_bybit_mae_mfe.py` (new).
+
+**What changed:** batch script that fills the excursion + R columns the v2 schema (Phase 0+1) added but nothing computed yet — `mae_r`, `mfe_r`, `realized_r`, `exit_efficiency`, `entry_slippage_bps`, `mae_mfe_tf`.
+- **1m candles on demand:** the bot only stores 5m/15m/1h/4h, so 1m klines for each trade window (`opened_at`→`closed_at`, ±1m pad) are fetched via Bybit REST (`get_kline interval="1"`, paginated, max 1000/req) and discarded — nothing persisted. `mae_mfe_tf='1m'`.
+- **Direction-aware excursions, clamped:** `mfe_r ≥ 0`, `mae_r ≤ 0` (worst adverse, sign per schema). R anchor = `|entry − sl|`, preferring `planned_entry_price`/`planned_sl_price`, falling back to actual `entry_price` + `position_sl_price` (Phase 2 capture) so rows resolve even before the Phase 5 form supplies planned levels.
+- **R metrics:** `R_usd = R_price × size`; `realized_r = pnl_usd / R_usd` (pnl_usd already net of fees — not re-deducted, memory `feedback_pnl_already_net_of_fees`); `exit_efficiency = realized_r / mfe_r` (NULL when `mfe_r ≤ 0`); `entry_slippage_bps` = direction-aware adverse fill vs planned entry (NULL without a planned entry).
+- **Idempotent + nightly-friendly:** processes only `status='closed' AND journal_schema_version=2 AND mae_r IS NULL` unless `--force`; `--dry-run` prints without writing. 0 closed v2 rows live today (v2 since 2026-05-30) — populates as manual trades close.
+
+**Why:** without excursions there is no cut-winner/held-loser detector and no expectancy-in-R. This makes the mechanical half of the journal computable from price alone, independent of the human review. Phase 5 (mobile form) is next.
+
+### 2026-06-01 — Bybit journal v2 Phase 3: auto-classifier chain pre-fill
+**Files:** `strategy_service/trade_classifier.py`, `data_service/context_service.py`, `data_service/bybit_sync.py`, `data_service/bybit_watcher.py`, `tests/test_trade_classifier_v2_chain.py` (new).
+
+**What changed:** the auto-classifier now emits the journal v2 top-down chain so the annotation form opens pre-filled instead of blank.
+- **`trade_classifier`:** new `_v2_chain()` derives the closed-vocab chain from the existing `context_snapshot` — daily/4h bias (mapped `undefined → range`), `htf_structure_reason`, `location_pd` (volume-profile zone proxy: above_va→premium / inside→equilibrium / below→discount), `location_quality` (key_level when at OB/FVG/sweep/HVN), `mtf_1h` (1H vs trade dir), `ltf_trigger` (precedence `sweep_reclaim > choch > bos > fvg > order_block`), `structure_type`, and the 5 `auto_conf_*` booleans (HTF + trigger mandatory; range branch swaps HTF-dir for sweep+location per locked decision). `CLASSIFIER_VERSION` 1 → 2.
+- **Schema (`bybit_sync.ensure_tables`):** additive idempotent `auto_*` chain cols on `bybit_trade_annotations` + `bybit_pending_orders` (mirrors the human chain cols added in Phase 0+1).
+- **Watcher:** `_insert_annotation` + `_upsert_pending` write the immutable `auto_*` cols AND pre-fill the human-editable chain cols. On conflict, `auto_*` is refreshed but human cols are `COALESCE`'d (existing value wins) — a dashboard correction survives a re-tick. Open-alert Telegram block gains a one-line chain summary.
+- **`context_service`:** `CONTEXT_CLASSIFIER_VERSION` 1 → 2 (snapshots from here drive the v2 chain).
+
+**Why:** blank forms get filled lazily or wrong. Pre-filling from deterministic snapshot facts means the user only confirms/corrects — and the kept `auto_*` vs human divergence becomes the misread-structure signal for the clean-sample dataset. Phase 4 (MAE/MFE backfill) is next.
 
 ### 2026-05-30 — Bybit journal v2 Phase 2: data sources (SL, equity, 1D bias)
 **Files:** `data_service/bybit_watcher.py`, `data_service/context_service.py`, `config/settings.py`, `tests/test_bybit_journal_v2_datasources.py` (new).

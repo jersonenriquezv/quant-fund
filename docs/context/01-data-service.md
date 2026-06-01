@@ -228,6 +228,9 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 - Estimates long/short liquidation clusters from recent 5m candles, current OI, leverage-tier weights, and pair-specific price bins.
 - Used by Telegram liquidation alerts and dashboard heatmap support.
 - Approximation only — not exchange-provided liquidation data.
+- **Liquidation move formula** (2026-06-01 fix): `move_pct = (1/leverage) - MAINTENANCE_MARGIN`. MMR is a fraction of notional, not of margin — the prior `(1/leverage)*(1 - MMR)` placed zones too far from price (negligible at 5x, ~66% relative error at 100x where total distance ~1%). Long liq = `close*(1-move_pct)`, short = `close*(1+move_pct)`.
+- **Binning**: bins keyed by integer index `round(price/bin_size)`, multiplied back to price only on output — avoids float drift splitting one logical bin across near-equal float keys.
+- **Known heuristic limits (not yet addressed)**: (1) forced long/short symmetry — each USD allocation lands once on a long bin and once on a short bin, so aggregate long USD == short USD by construction (no positioning asymmetry; candidate fix = funding-rate side bias); (2) static snapshot — OI spread over historical closes with no purge of levels price already swept, so dead liquidity is plotted as live. Treat output as relative probable-zone weights, not measured liquidations.
 
 ### `data_service/data_integrity.py` — Data Integrity Module (NEW)
 Central hub for data quality types and gating logic:

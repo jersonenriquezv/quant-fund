@@ -191,6 +191,23 @@ class BybitSync:
                 + COALESCE(conf_trigger::int,0) + COALESCE(conf_noconflict::int,0)
             ) STORED;
 
+        -- Phase 3 (2026-06-01): auto-classifier v2 chain pre-fill. Immutable machine
+        -- prediction stored alongside the human cols above; human/machine disagreement
+        -- IS the misread signal — never overwrite. trade_classifier.CLASSIFIER_VERSION=2.
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS auto_htf_bias_daily VARCHAR(10);
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS auto_htf_bias_4h VARCHAR(10);
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS auto_htf_structure_reason VARCHAR(15);
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS auto_location_pd VARCHAR(12);
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS auto_location_quality VARCHAR(12);
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS auto_mtf_1h VARCHAR(12);
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS auto_ltf_trigger VARCHAR(15);
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS auto_structure_type VARCHAR(12);
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS auto_conf_htf BOOLEAN;
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS auto_conf_location BOOLEAN;
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS auto_conf_mtf BOOLEAN;
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS auto_conf_trigger BOOLEAN;
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS auto_conf_noconflict BOOLEAN;
+
         -- PLAN: intended levels (R unit = |planned_entry - planned_sl| * size).
         ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS planned_entry_price DOUBLE PRECISION;
         ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS planned_sl_price DOUBLE PRECISION;
@@ -308,6 +325,21 @@ class BybitSync:
         ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS planned_tp_price DOUBLE PRECISION;
         ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS risk_pct DOUBLE PRECISION;
         ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS account_equity_at_open DOUBLE PRECISION;
+
+        -- Phase 3 (2026-06-01): auto-classifier v2 chain pre-fill (mirrors annotations).
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS auto_htf_bias_daily VARCHAR(10);
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS auto_htf_bias_4h VARCHAR(10);
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS auto_htf_structure_reason VARCHAR(15);
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS auto_location_pd VARCHAR(12);
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS auto_location_quality VARCHAR(12);
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS auto_mtf_1h VARCHAR(12);
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS auto_ltf_trigger VARCHAR(15);
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS auto_structure_type VARCHAR(12);
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS auto_conf_htf BOOLEAN;
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS auto_conf_location BOOLEAN;
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS auto_conf_mtf BOOLEAN;
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS auto_conf_trigger BOOLEAN;
+        ALTER TABLE bybit_pending_orders ADD COLUMN IF NOT EXISTS auto_conf_noconflict BOOLEAN;
         """
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(ddl_executions)
