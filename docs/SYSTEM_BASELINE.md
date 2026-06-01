@@ -528,6 +528,13 @@ D: net_score <  2
 
 ## 8. Changelog
 
+### 2026-06-01 — Chart replay Phase A1+A4: /chart route on klinecharts
+**Files:** `dashboard/web/package.json`, `dashboard/web/src/app/chart/page.tsx` (new), `dashboard/web/src/lib/chartDatafeed.ts` (new), `dashboard/web/src/app/globals.css`, `dashboard/CLAUDE.md`, `docs/context/06-dashboard.md`.
+
+**What changed:** frontend half of the chart-replay tool. **Library switched from TradingView Charting Library to `klinecharts` 9.8.12** — TV access is gated behind a private GitHub repo (never granted); klinecharts is MIT/npm with no gate and native overlay primitives (easier OB/FVG overlay). Trade-off: bar-replay + position-tool are not native and are built by hand in follow-ups. Added `/chart` route (BTC/ETH × 5m/15m/1h/4h switchers, VOL pane, Apple-dark, mobile-verified at 375px) + `chartDatafeed.ts` mapping the existing `/api/chart/*` UDF endpoints to klinecharts. Lazy-loaded on `/chart` only (bundle 52.4 kB; sparklines stay SVG — `dashboard/CLAUDE.md` "Never" note updated to record the exception). Verified in-browser + both backend endpoints return real BTC data.
+
+**Pending (follow-ups):** A5 replay control, A6 long/short position tool, C2 detection overlay (wired to `/api/chart/detections`), C3 fidelity gate. Plan: `docs/plans/chart-replay-2026-06-01.md`.
+
 ### 2026-06-01 — Chart replay Phase C1: detector-replay overlay endpoint
 **Files:** `dashboard/api/routes/chart.py`, `tests/test_chart_detections.py`, `docs/context/06-dashboard.md`.
 
