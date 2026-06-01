@@ -32,6 +32,7 @@ Si el dashboard crashea, el bot sigue operando normalmente.
 | `GET /api/chart/symbols?symbol=` | Static | resolveSymbol — LibrarySymbolInfo (solo BTC/USDT, ETH/USDT) |
 | `GET /api/chart/search?query=` | Static | searchSymbols — restringido al allowlist BTC/ETH |
 | `GET /api/chart/history?symbol=&resolution=&from=&to=` | PG candles | getBars — OHLCV por rango (from/to en segundos UDF), cap 5000 bars |
+| `GET /api/chart/detections?symbol=&resolution=&to=` | PG candles + detectores OB/FVG (in-memory, read-only) | Overlay de detecciones del bot: zonas OB/FVG activas as-of `to`. Replay incremental, expiración por `current_time_ms`=ts de la barra (sin reloj wall-clock); window 600 barras, corre off event-loop |
 | `POST /api/manual/calculate` | Pure math | Position sizing & R:R calculator (linear + inverse) |
 | `POST /api/manual/trades` | PG manual_trades | Create manual trade (planned) |
 | `GET /api/manual/trades` | PG manual_trades | List trades (filter by status/pair) |
@@ -46,6 +47,12 @@ Si el dashboard crashea, el bot sigue operando normalmente.
 | `GET /manual` | HTML file | Manual trading UI (standalone page, no /api prefix) |
 
 ## Frontend — Layout
+
+### Ruta `/chart` — klinecharts (replay + overlay)
+Página dedicada (`src/app/chart/page.tsx`, libs `src/lib/chartDatafeed.ts` + `src/lib/detectionOverlay.ts`). Usa **klinecharts 9.8.12** (lazy en esta ruta; bundle ~54 kB; sparklines siguen SVG). Switchers BTC/ETH + 5m/15m/1h/4h, panel VOL aparte, tema Apple-dark. `chartDatafeed.ts` mapea las respuestas UDF de `/api/chart/*` (segundos) a klines (ms). Datos via `/api/chart/history` (confirmed-bar; sin ticks intra-vela).
+- **Bar replay (A5):** toggle "Replay" → barra con play/pause/step + slider + velocidad (1/2/4/8×) + label as-of. Revela historia avanzando un puntero visible-to (avance de 1 vela = `updateData`; saltos = `applyNewData`).
+- **Overlay de detecciones (C2):** toggle "Detections" consulta `/api/chart/detections` as-of la vela actual y dibuja zonas OB/FVG como rects de color (overlay custom de klinecharts en `detectionOverlay.ts`). En replay re-consulta as-of el puntero → las zonas aparecen/mitigan en el tiempo (loop de validación del detector).
+- **Pendiente:** long/short position tool (A6), gate de fidelidad C3 (overlay vs setup grabado en `ml_setups`/`trades`).
 
 ```
 HEADER: Status dot + "QF" + LIVE/DEMO pill + F&G pill (colored) + UTC clock (time only)

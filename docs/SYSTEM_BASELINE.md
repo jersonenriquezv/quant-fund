@@ -528,6 +528,27 @@ D: net_score <  2
 
 ## 8. Changelog
 
+### 2026-06-01 — Chart replay Phase A5+C2: bar replay + bot-detection overlay
+**Files:** `dashboard/web/src/app/chart/page.tsx`, `dashboard/web/src/lib/chartDatafeed.ts`, `dashboard/web/src/lib/detectionOverlay.ts` (new), `dashboard/web/src/app/globals.css`, `docs/context/06-dashboard.md`.
+
+**What changed:** completed the interactive half of the `/chart` tool. **A5 bar replay** — play/pause/step + slider + speed (1/2/4/8×) + as-of label; reveals history by advancing a visible-to pointer (single-bar advance via `updateData`, jumps via `applyNewData`). **C2 detection overlay** — "Detections" toggle fetches `/api/chart/detections` as-of the current bar and draws OB/FVG zones as colored rects via a custom klinecharts overlay (`detectionOverlay.ts`); in replay it re-queries as-of the pointer, so zones appear/mitigate through time (the detector-validation loop — grill Q2). Also fixed VOL to render in its own sub-pane (was stacked on candles, squashing the price scale). Verified in-browser against the real DB: BTC 1h candles, 3 live zones (1 OB + 2 FVG) matching the endpoint, replay slice + as-of overlay re-query. Cosmetic nit: klinecharts draws default anchor dots on overlays.
+
+**Pending:** A6 long/short position tool, C3 fidelity gate (overlay vs a recorded `ml_setups`/`trades` setup). Plan: `docs/plans/chart-replay-2026-06-01.md`.
+
+### 2026-06-01 — Chart replay Phase A1+A4: /chart route on klinecharts
+**Files:** `dashboard/web/package.json`, `dashboard/web/src/app/chart/page.tsx` (new), `dashboard/web/src/lib/chartDatafeed.ts` (new), `dashboard/web/src/app/globals.css`, `dashboard/CLAUDE.md`, `docs/context/06-dashboard.md`.
+
+**What changed:** frontend half of the chart-replay tool. **Library switched from TradingView Charting Library to `klinecharts` 9.8.12** — TV access is gated behind a private GitHub repo (never granted); klinecharts is MIT/npm with no gate and native overlay primitives (easier OB/FVG overlay). Trade-off: bar-replay + position-tool are not native and are built by hand in follow-ups. Added `/chart` route (BTC/ETH × 5m/15m/1h/4h switchers, VOL pane, Apple-dark, mobile-verified at 375px) + `chartDatafeed.ts` mapping the existing `/api/chart/*` UDF endpoints to klinecharts. Lazy-loaded on `/chart` only (bundle 52.4 kB; sparklines stay SVG — `dashboard/CLAUDE.md` "Never" note updated to record the exception). Verified in-browser + both backend endpoints return real BTC data.
+
+**Pending (follow-ups):** A5 replay control, A6 long/short position tool, C2 detection overlay (wired to `/api/chart/detections`), C3 fidelity gate. Plan: `docs/plans/chart-replay-2026-06-01.md`.
+
+### 2026-06-01 — Chart replay Phase C1: detector-replay overlay endpoint
+**Files:** `dashboard/api/routes/chart.py`, `tests/test_chart_detections.py`, `docs/context/06-dashboard.md`.
+
+**What changed:** backend for the bot-detection overlay (grill Q2 — the detector-validation tool). New `GET /api/chart/detections?symbol=&resolution=&to=` replays the bot's OB/FVG detectors over the window of bars ending at `to` and returns the zones active as-of that bar, with full geometry. Fidelity: detectors are driven **incrementally** (OB/FVG mitigation/retest/fill depend on call order); expiration is keyed off each bar's own timestamp via the `current_time_ms` **parameter** — `order_blocks.py`/`fvg.py` never read wall-clock `time.time()` (only `service.py` does), so no `SimulatedClock`/monkeypatch is needed, simpler than the plan assumed. CPU-bound replay runs off the event loop (`asyncio.to_thread`), window capped at 600 bars. Read-only: SELECTs candles + runs detectors in-memory; no bot tables/Redis writes. 6 unit tests cover the replay-harness contract + endpoint shape.
+
+**Not included:** C2 frontend overlay + C3 fidelity gate (overlay vs a recorded `ml_setups`/`trades` setup) — need the TradingView frontend (blocked on Charting Library private-repo access) and a live DB.
+
 ### 2026-06-01 — Chart replay Phase A2: TradingView Datafeed backend
 **Files:** `dashboard/api/routes/chart.py` (new), `dashboard/api/queries.py`, `dashboard/api/main.py`, `tests/test_chart_datafeed.py`, `docs/context/06-dashboard.md`, plan `docs/plans/chart-replay-2026-06-01.md`, grill `docs/grill/chart-replay.md`.
 

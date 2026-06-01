@@ -31,7 +31,7 @@ dashboard/
 │   │   └── schema.sql       # manual_trades, manual_partial_closes, manual_balances
 │   └── templates/manual.html # Standalone manual trading UI (no /api prefix)
 └── web/
-    ├── src/app/             # Next.js app router (/ = bot, /manual = manual trading)
+    ├── src/app/             # Next.js app router (/ = bot, /manual = manual trading, /chart = klinecharts replay+overlay)
     ├── src/components/      # 13 bot + 5 manual (manual/ subdir)
     └── src/lib/             # API client, hooks, types
 ```
@@ -82,7 +82,7 @@ Dashboard reads from these keys. **Never write to `qf:bot:*` from the dashboard*
 - Add inline styles for responsive layout. Use CSS classes.
 - Skip Pair format validation on Redis-bound endpoints.
 - Expose write endpoints without Bearer auth.
-- Add a charting library (TradingView etc.) without checking bundle size impact. Sparklines stay SVG.
+- Add a charting library without checking bundle size impact. Sparklines stay SVG. (Exception: `klinecharts` is allowed but ONLY lazy-loaded on the `/chart` route — bundle checked at 52.4 kB, isolated to that route. Do not import it into the dashboard home or sparklines.)
 
 ## Verify after changes
 ```bash
