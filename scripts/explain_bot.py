@@ -171,13 +171,42 @@ class ExplainBot:
         total = (closed or 0) + (opened or 0)
         wr = (wins / closed * 100) if closed else 0
         sign = "✅" if pnl >= 0 else "❌"
+        lines = [
+            f"*Bybit stats — last {days}d*",
+            f"Trades: {total} ({opened} open, {closed} closed)",
+            f"Wins / Losses: {wins} / {losses}",
+            f"Win rate: `{wr:.1f}%`",
+            f"Net PnL: {sign} `${pnl:+.2f}`",
+            f"Annotated: {annotated}/{total}",
+        ]
+        lines.append(self._v2_block(days))
+        return "\n".join(filter(None, lines))
+
+    def _v2_block(self, days: int) -> str:
+        """Journal v2 discipline + edge slice (closed v2 rows only). Empty until reviewed."""
+        with _conn() as c, c.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    COUNT(*) FILTER (WHERE journal_schema_version=2 AND status='closed') v2_closed,
+                    COUNT(*) FILTER (WHERE journal_schema_version=2 AND clean_sample) v2_clean,
+                    COUNT(*) FILTER (WHERE journal_schema_version=2 AND status='closed'
+                                     AND followed_process IS NULL) v2_unreviewed,
+                    ROUND(AVG(realized_r) FILTER (WHERE journal_schema_version=2 AND clean_sample)::numeric, 2) clean_exp_r
+                FROM bybit_trade_annotations
+                WHERE opened_at >= NOW() - (%s * INTERVAL '1 day')
+                """,
+                (days,),
+            )
+            r = cur.fetchone()
+        if not r or not r[0]:
+            return ""
+        v2_closed, v2_clean, v2_unreviewed, clean_exp_r = r
+        exp = f"`{float(clean_exp_r):+.2f}R`" if clean_exp_r is not None else "—"
         return (
-            f"*Bybit stats — last {days}d*\n"
-            f"Trades: {total} ({opened} open, {closed} closed)\n"
-            f"Wins / Losses: {wins} / {losses}\n"
-            f"Win rate: `{wr:.1f}%`\n"
-            f"Net PnL: {sign} `${pnl:+.2f}`\n"
-            f"Annotated: {annotated}/{total}"
+            f"\n*v2 journal*\n"
+            f"Clean: {v2_clean}/{v2_closed} · unreviewed: {v2_unreviewed}\n"
+            f"Clean expectancy: {exp}"
         )
 
     async def _handle(self, client: httpx.AsyncClient, msg: dict) -> None:

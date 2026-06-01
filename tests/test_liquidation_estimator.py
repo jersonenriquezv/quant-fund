@@ -2,6 +2,7 @@
 
 import pytest
 
+from config.settings import settings
 from data_service.liquidation_estimator import (
     estimate_liquidation_levels,
     LEVERAGE_TIERS,
@@ -90,8 +91,8 @@ class TestEstimateLiquidationLevels:
         result = estimate_liquidation_levels(candles, 1_000_000, "BTC/USDT")
 
         # Sum total long liq near 50k candle's high-leverage zone vs 90k candle's
-        # At 100x: liq_long = close * (1 - 0.01 * 0.996) ≈ close * 0.99
-        # 50k -> 49500, 90k -> 89100. No overlap.
+        # At 100x: liq_long = close * (1 - (0.01 - 0.004)) = close * 0.994
+        # 50k -> 49700, 90k -> 89460. No overlap.
         long_near_50k = sum(
             b.liq_long_usd for b in result
             if 49000 < b.price < 50000
@@ -154,12 +155,15 @@ class TestEstimateLiquidationLevels:
         candles = [make_candle(close=price, volume_quote=1000.0, pair="BTC/USDT")]
         result = estimate_liquidation_levels(candles, 1_000_000, "BTC/USDT")
 
-        # 5x leverage: liq_long ~ 100000 * (1 - 0.2 * 0.996) = ~80080
-        # 100x leverage: liq_long ~ 100000 * (1 - 0.01 * 0.996) = ~99004
-        # So we should see liquidation bins spread from ~80k to ~99k (longs)
+        # move_pct = (1/L) - MMR, MMR = 0.004
+        # 5x leverage:   liq_long = 100000 * (1 - (0.2  - 0.004)) = 80400
+        # 100x leverage: liq_long = 100000 * (1 - (0.01 - 0.004)) = 99400
+        # So we should see liquidation bins spread from ~80.4k to ~99.4k (longs)
         long_prices = [b.price for b in result if b.liq_long_usd > 0]
-        assert min(long_prices) < 81000
-        assert max(long_prices) > 98000
+        bin_size = settings.LIQ_BIN_SIZE_BTC
+        # Farthest (5x) and nearest (100x) long zones pinned to corrected formula
+        assert min(long_prices) == round(80400 / bin_size) * bin_size
+        assert max(long_prices) == round(99400 / bin_size) * bin_size
 
     def test_many_candles_performance(self):
         """200 candles should complete quickly without issues."""

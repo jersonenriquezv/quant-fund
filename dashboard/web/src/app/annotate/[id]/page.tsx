@@ -14,6 +14,34 @@ const GRADE_COLORS: Record<string, string> = {
   D: "#ff4d4d",
 };
 
+// Journal v2 closed-vocab enums — keep in sync with bybit.py validators + schema.
+const BIAS_OPTS = ["bullish", "bearish", "range"];
+const STRUCT_REASON_OPTS = ["HH_HL", "LH_LL", "range_bound", "unclear"];
+const LOCATION_PD_OPTS = ["premium", "equilibrium", "discount"];
+const LOCATION_QUALITY_OPTS = ["key_level", "no_mans_land"];
+const MTF_OPTS = ["confirms", "contradicts", "neutral"];
+const LTF_TRIGGER_OPTS = ["sweep_reclaim", "bos", "choch", "fvg", "order_block", "simple_break"];
+const STRUCTURE_TYPE_OPTS = ["continuation", "reversal", "range"];
+const ENTRY_TYPE_OPTS = ["at_level_limit", "confirmation_shift"];
+
+const TECHNICAL_ERRORS = [
+  "misread_structure", "sl_bad_placement", "entered_against_htf",
+  "early_no_confirmation", "wrong_invalidation", "chased_extended",
+];
+const BEHAVIORAL_ERRORS = [
+  "outcome_bias", "inconsistent_sizing", "revenge_overtrade",
+  "not_in_plan", "widened_sl", "cut_winner_early", "held_loser",
+];
+
+// The 5 confluence factors. HTF + trigger mandatory (range branch swaps HTF→location).
+const CONF_FACTORS = [
+  { key: "conf_htf", label: "HTF", hint: "4H/1D bias aligned with trade" },
+  { key: "conf_location", label: "LOCATION", hint: "premium/discount + key level" },
+  { key: "conf_mtf", label: "MTF 1H", hint: "1H confirms the trade" },
+  { key: "conf_trigger", label: "TRIGGER", hint: "LTF entry trigger present" },
+  { key: "conf_noconflict", label: "NO CONFLICT", hint: "funding/CVD/session not fighting" },
+] as const;
+
 function fmt(n: number | null | undefined, d: number = 2): string {
   if (n == null || Number.isNaN(n)) return "—";
   return n.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
@@ -40,6 +68,25 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
   const [screenshot, setScreenshot] = useState("");
   const [topdownUsed, setTopdownUsed] = useState(false);
 
+  // v2 top-down chain (selects). Empty string = unset.
+  const [chain, setChain] = useState<Record<string, string>>({});
+  // v2 confluence booleans
+  const [conf, setConf] = useState<Record<string, boolean>>({});
+  // v2 planned levels
+  const [plannedEntry, setPlannedEntry] = useState("");
+  const [plannedSl, setPlannedSl] = useState("");
+  const [plannedTp, setPlannedTp] = useState("");
+  const [riskPct, setRiskPct] = useState("");
+  // v2 review
+  const [followedProcess, setFollowedProcess] = useState<boolean | null>(null);
+  const [techErrors, setTechErrors] = useState<string[]>([]);
+  const [behavErrors, setBehavErrors] = useState<string[]>([]);
+
+  const setChainField = (k: string, v: string) => setChain((c) => ({ ...c, [k]: v }));
+  const toggleConf = (k: string) => setConf((c) => ({ ...c, [k]: !c[k] }));
+  const toggleTag = (arr: string[], set: (v: string[]) => void, tag: string) =>
+    set(arr.includes(tag) ? arr.filter((t) => t !== tag) : [...arr, tag]);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
@@ -53,6 +100,37 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
       setEmotional(a.emotional_state || "");
       setScreenshot(a.screenshot_url || "");
       setTopdownUsed(a.topdown_brief_used ?? false);
+
+      // Chain: human value if set, else machine guess (auto_*), else blank.
+      const pick = (human: unknown, auto: unknown) =>
+        (human as string) || (auto as string) || "";
+      setChain({
+        htf_bias_daily: pick(a.htf_bias_daily, a.auto_htf_bias_daily),
+        htf_bias_4h: pick(a.htf_bias_4h, a.auto_htf_bias_4h),
+        htf_structure_reason: pick(a.htf_structure_reason, a.auto_htf_structure_reason),
+        location_pd: pick(a.location_pd, a.auto_location_pd),
+        location_quality: pick(a.location_quality, a.auto_location_quality),
+        mtf_1h: pick(a.mtf_1h, a.auto_mtf_1h),
+        ltf_trigger: pick(a.ltf_trigger, a.auto_ltf_trigger),
+        structure_type: pick(a.structure_type, a.auto_structure_type),
+        entry_type: a.entry_type || "",
+      });
+      const pickBool = (human: unknown, auto: unknown) =>
+        human != null ? Boolean(human) : Boolean(auto);
+      setConf({
+        conf_htf: pickBool(a.conf_htf, a.auto_conf_htf),
+        conf_location: pickBool(a.conf_location, a.auto_conf_location),
+        conf_mtf: pickBool(a.conf_mtf, a.auto_conf_mtf),
+        conf_trigger: pickBool(a.conf_trigger, a.auto_conf_trigger),
+        conf_noconflict: pickBool(a.conf_noconflict, a.auto_conf_noconflict),
+      });
+      setPlannedEntry(a.planned_entry_price != null ? String(a.planned_entry_price) : "");
+      setPlannedSl(a.planned_sl_price != null ? String(a.planned_sl_price) : "");
+      setPlannedTp(a.planned_tp_price != null ? String(a.planned_tp_price) : "");
+      setRiskPct(a.risk_pct != null ? String(a.risk_pct) : "");
+      setFollowedProcess(a.followed_process ?? null);
+      setTechErrors(a.technical_error || []);
+      setBehavErrors(a.behavioral_error || []);
       if (a.auto_grade) {
         try {
           const ex = await fetchApi<BybitGradeExplain>(`/bybit/grade-explain/${annotationId}`);
@@ -75,6 +153,7 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
     setSaved(false);
     setError("");
     try {
+      const num = (s: string) => (s.trim() === "" ? null : Number(s));
       const payload: BybitAnnotationPatch = {
         thesis_pre: thesis || null,
         trigger_condition: trigger || null,
@@ -83,6 +162,29 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
         emotional_state: emotional || null,
         screenshot_url: screenshot || null,
         topdown_brief_used: topdownUsed,
+        // v2 chain (empty select -> null)
+        htf_bias_daily: chain.htf_bias_daily || null,
+        htf_bias_4h: chain.htf_bias_4h || null,
+        htf_structure_reason: chain.htf_structure_reason || null,
+        location_pd: chain.location_pd || null,
+        location_quality: chain.location_quality || null,
+        mtf_1h: chain.mtf_1h || null,
+        ltf_trigger: chain.ltf_trigger || null,
+        structure_type: chain.structure_type || null,
+        entry_type: chain.entry_type || null,
+        conf_htf: !!conf.conf_htf,
+        conf_location: !!conf.conf_location,
+        conf_mtf: !!conf.conf_mtf,
+        conf_trigger: !!conf.conf_trigger,
+        conf_noconflict: !!conf.conf_noconflict,
+        planned_entry_price: num(plannedEntry),
+        planned_sl_price: num(plannedSl),
+        planned_tp_price: num(plannedTp),
+        risk_pct: num(riskPct),
+        // v2 review — only send process verdict once chosen (blank-default honesty layer)
+        ...(followedProcess != null ? { followed_process: followedProcess } : {}),
+        technical_error: techErrors,
+        behavioral_error: behavErrors,
       };
       const updated = await patchApi<BybitAnnotation>(
         `/bybit/annotations/${annotationId}`,
@@ -123,6 +225,16 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
   const isLong = annot.side === "Buy";
   const isClosed = annot.status === "closed";
   const pnl = annot.pnl_usd ?? 0;
+
+  // 3-of-5 confluence gate. Range branch: when HTF bias is range there is no
+  // direction, so the mandatory pair becomes trigger + location instead of HTF.
+  const confCount = CONF_FACTORS.reduce((n, f) => n + (conf[f.key] ? 1 : 0), 0);
+  const isRange = chain.htf_bias_4h === "range" || chain.htf_bias_daily === "range";
+  const mandatoryOk = isRange
+    ? !!conf.conf_trigger && !!conf.conf_location
+    : !!conf.conf_htf && !!conf.conf_trigger;
+  const gatePass = confCount >= 3 && mandatoryOk;
+  const mandatoryLabel = isRange ? "trigger + location (range)" : "HTF + trigger";
 
   return (
     <div className="annot-root">
@@ -367,6 +479,67 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
       )}
 
       <main className="form">
+        <div className="sec-eyebrow">PLAN · TOP-DOWN CHAIN</div>
+        <p className="sec-note">
+          Pre-filled from the auto-classifier — tap to confirm or correct. Your label is
+          kept separately from the machine guess; a disagreement is the signal.
+        </p>
+
+        <div className="chain-grid">
+          <Select label="DAILY BIAS" value={chain.htf_bias_daily || ""} opts={BIAS_OPTS}
+            onChange={(v) => setChainField("htf_bias_daily", v)} auto={annot.auto_htf_bias_daily} />
+          <Select label="4H BIAS" value={chain.htf_bias_4h || ""} opts={BIAS_OPTS}
+            onChange={(v) => setChainField("htf_bias_4h", v)} auto={annot.auto_htf_bias_4h} />
+          <Select label="HTF STRUCTURE" value={chain.htf_structure_reason || ""} opts={STRUCT_REASON_OPTS}
+            onChange={(v) => setChainField("htf_structure_reason", v)} auto={annot.auto_htf_structure_reason} />
+          <Select label="1H (MTF)" value={chain.mtf_1h || ""} opts={MTF_OPTS}
+            onChange={(v) => setChainField("mtf_1h", v)} auto={annot.auto_mtf_1h} />
+          <Select label="LOCATION · PD" value={chain.location_pd || ""} opts={LOCATION_PD_OPTS}
+            onChange={(v) => setChainField("location_pd", v)} auto={annot.auto_location_pd} />
+          <Select label="LOCATION · QUALITY" value={chain.location_quality || ""} opts={LOCATION_QUALITY_OPTS}
+            onChange={(v) => setChainField("location_quality", v)} auto={annot.auto_location_quality} />
+          <Select label="LTF TRIGGER" value={chain.ltf_trigger || ""} opts={LTF_TRIGGER_OPTS}
+            onChange={(v) => setChainField("ltf_trigger", v)} auto={annot.auto_ltf_trigger} />
+          <Select label="STRUCTURE TYPE" value={chain.structure_type || ""} opts={STRUCTURE_TYPE_OPTS}
+            onChange={(v) => setChainField("structure_type", v)} auto={annot.auto_structure_type} />
+          <Select label="ENTRY TYPE" value={chain.entry_type || ""} opts={ENTRY_TYPE_OPTS}
+            onChange={(v) => setChainField("entry_type", v)} auto={null} />
+        </div>
+
+        <div className="sec-eyebrow mt">PLAN · CONFLUENCE CHECKLIST</div>
+        <div className="conf-grid">
+          {CONF_FACTORS.map((f) => (
+            <button
+              type="button"
+              key={f.key}
+              className={`conf-box ${conf[f.key] ? "on" : ""}`}
+              onClick={() => toggleConf(f.key)}
+              aria-pressed={!!conf[f.key]}
+            >
+              <span className="conf-check" aria-hidden="true" />
+              <span className="conf-label">{f.label}</span>
+              <span className="conf-hint">{f.hint}</span>
+            </button>
+          ))}
+        </div>
+        <div className={`gate ${gatePass ? "pass" : "fail"}`}>
+          <span className="gate-count">{confCount}/5</span>
+          <span className="gate-text">
+            {gatePass ? "✓ meets 3-of-5 floor" : "below floor"} · mandatory: {mandatoryLabel}
+          </span>
+        </div>
+
+        <div className="sec-eyebrow mt">PLAN · INTENDED LEVELS</div>
+        <p className="sec-note">Defines the R unit (|entry − SL| × size). Fills realized-R + exit efficiency.</p>
+        <div className="lvl-grid">
+          <NumField label="ENTRY" value={plannedEntry} onChange={setPlannedEntry} placeholder="79250" />
+          <NumField label="STOP LOSS" value={plannedSl} onChange={setPlannedSl} placeholder="78400" />
+          <NumField label="TAKE PROFIT" value={plannedTp} onChange={setPlannedTp} placeholder="81500" />
+          <NumField label="RISK %" value={riskPct} onChange={setRiskPct} placeholder="1.0" />
+        </div>
+
+        <div className="sec-eyebrow mt">JOURNAL · NOTES</div>
+
         <Field label="EMOTIONAL STATE (OPTIONAL)">
           <div className="chips">
             <button
@@ -427,14 +600,71 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
         </Field>
 
         {isClosed && (
-          <Field label="LESSON / WHAT I'D DO DIFFERENT">
-            <textarea
-              rows={4}
-              value={lesson}
-              onChange={(e) => setLesson(e.target.value)}
-              placeholder="post-mortem honesto…"
-            />
-          </Field>
+          <>
+            <div className="sec-eyebrow mt">REVIEW · PROCESS</div>
+            <p className="sec-note">
+              Blank by default — only mark once you&apos;ve honestly reviewed. Drives the
+              ML clean-sample label; rule-break trades are excluded from edge math.
+            </p>
+            <div className="proc-row">
+              <span className="proc-q">Followed your process?</span>
+              <div className="proc-toggle">
+                <button
+                  type="button"
+                  className={`pt yes ${followedProcess === true ? "on" : ""}`}
+                  onClick={() => setFollowedProcess(followedProcess === true ? null : true)}
+                >
+                  YES
+                </button>
+                <button
+                  type="button"
+                  className={`pt no ${followedProcess === false ? "on" : ""}`}
+                  onClick={() => setFollowedProcess(followedProcess === false ? null : false)}
+                >
+                  NO
+                </button>
+              </div>
+            </div>
+
+            <Field label="TECHNICAL ERRORS (IF ANY)">
+              <div className="chips">
+                {TECHNICAL_ERRORS.map((t) => (
+                  <button
+                    type="button"
+                    key={t}
+                    className={`chip ${techErrors.includes(t) ? "on" : ""}`}
+                    onClick={() => toggleTag(techErrors, setTechErrors, t)}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+            </Field>
+
+            <Field label="BEHAVIORAL ERRORS (IF ANY)">
+              <div className="chips">
+                {BEHAVIORAL_ERRORS.map((t) => (
+                  <button
+                    type="button"
+                    key={t}
+                    className={`chip warn ${behavErrors.includes(t) ? "on" : ""}`}
+                    onClick={() => toggleTag(behavErrors, setBehavErrors, t)}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+            </Field>
+
+            <Field label="LESSON / WHAT I'D DO DIFFERENT">
+              <textarea
+                rows={4}
+                value={lesson}
+                onChange={(e) => setLesson(e.target.value)}
+                placeholder="post-mortem honesto…"
+              />
+            </Field>
+          </>
         )}
 
         <Field label="SCREENSHOT URL (OPTIONAL)">
@@ -798,6 +1028,114 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
           padding: 10px 24px 80px 24px;
           animation: fade 0.8s 0.15s ease both;
         }
+        .sec-eyebrow {
+          font-size: 9px;
+          letter-spacing: 0.24em;
+          color: #b2fd02;
+          font-weight: 700;
+          margin-bottom: 8px;
+        }
+        .sec-eyebrow.mt { margin-top: 34px; }
+        .sec-note {
+          margin: 0 0 16px 0;
+          font-family: "Fraunces", Georgia, serif;
+          font-style: italic;
+          font-weight: 300;
+          font-size: 13px;
+          line-height: 1.5;
+          color: rgba(255,255,255,0.55);
+        }
+        .chain-grid {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 14px;
+        }
+        .conf-grid {
+          display: grid;
+          grid-template-columns: repeat(5, 1fr);
+          gap: 8px;
+        }
+        .conf-box {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          padding: 12px 10px;
+          background: rgba(255,255,255,0.03);
+          border: 1px solid rgba(255,255,255,0.12);
+          border-radius: 2px;
+          cursor: pointer;
+          text-align: left;
+          min-height: 44px;
+          transition: all 0.15s;
+        }
+        .conf-box:hover { border-color: rgba(255,255,255,0.3); }
+        .conf-box.on { background: rgba(178,253,2,0.06); border-color: rgba(178,253,2,0.5); }
+        .conf-check {
+          width: 16px; height: 16px;
+          border: 1px solid rgba(255,255,255,0.3);
+          border-radius: 3px;
+          position: relative;
+        }
+        .conf-box.on .conf-check { background: #b2fd02; border-color: #b2fd02; }
+        .conf-box.on .conf-check::after {
+          content: ""; position: absolute; left: 5px; top: 1px;
+          width: 4px; height: 9px; border: solid #000; border-width: 0 2px 2px 0;
+          transform: rotate(45deg);
+        }
+        .conf-label {
+          font-family: "JetBrains Mono", monospace;
+          font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
+          color: #f5f5f7;
+        }
+        .conf-hint { font-size: 9px; line-height: 1.35; color: rgba(255,255,255,0.4); }
+        .gate {
+          display: flex; align-items: center; gap: 12px;
+          margin-top: 12px;
+          padding: 10px 14px;
+          border-radius: 2px;
+          border: 1px solid;
+          font-family: "JetBrains Mono", monospace;
+        }
+        .gate.pass { background: rgba(178,253,2,0.06); border-color: rgba(178,253,2,0.4); }
+        .gate.fail { background: rgba(245,158,11,0.06); border-color: rgba(245,158,11,0.35); }
+        .gate-count { font-size: 16px; font-weight: 700; }
+        .gate.pass .gate-count { color: #b2fd02; }
+        .gate.fail .gate-count { color: #f59e0b; }
+        .gate-text { font-size: 10px; letter-spacing: 0.06em; color: rgba(255,255,255,0.7); }
+        .lvl-grid {
+          display: grid;
+          grid-template-columns: repeat(4, 1fr);
+          gap: 14px;
+        }
+        .proc-row {
+          display: flex; align-items: center; justify-content: space-between;
+          gap: 16px; flex-wrap: wrap;
+          margin-bottom: 24px;
+        }
+        .proc-q {
+          font-family: "Fraunces", Georgia, serif;
+          font-size: 16px; color: rgba(255,255,255,0.85);
+        }
+        .proc-toggle { display: flex; gap: 8px; }
+        .pt {
+          padding: 10px 22px;
+          background: transparent;
+          border: 1px solid rgba(255,255,255,0.16);
+          color: rgba(255,255,255,0.55);
+          font-family: "JetBrains Mono", monospace;
+          font-size: 12px; font-weight: 700; letter-spacing: 0.1em;
+          border-radius: 2px; cursor: pointer; min-height: 44px;
+          transition: all 0.15s;
+        }
+        .pt.yes.on { background: #b2fd02; color: #000; border-color: #b2fd02; }
+        .pt.no.on { background: #ff4d4d; color: #000; border-color: #ff4d4d; }
+
+        @media (max-width: 639px) {
+          .chain-grid { grid-template-columns: repeat(2, 1fr); }
+          .conf-grid { grid-template-columns: repeat(2, 1fr); }
+          .lvl-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+
         .save-row { margin-top: 28px; }
         .save {
           width: 100%;
@@ -913,6 +1251,99 @@ function TickerItem({ label, value, className }: { label: string; value: string;
   );
 }
 
+function Select({
+  label, value, opts, onChange, auto,
+}: {
+  label: string;
+  value: string;
+  opts: string[];
+  onChange: (v: string) => void;
+  auto?: string | null;
+}) {
+  const diverged = !!auto && !!value && value !== auto;
+  return (
+    <label className="sel">
+      <span className="sel-l">{label}</span>
+      <select value={value} onChange={(e) => onChange(e.target.value)}>
+        <option value="">—</option>
+        {opts.map((o) => (
+          <option key={o} value={o}>{o}</option>
+        ))}
+      </select>
+      {auto && !value && <span className="sel-auto">auto: {auto}</span>}
+      {diverged && <span className="sel-auto diverge">≠ auto: {auto}</span>}
+      <style jsx>{`
+        .sel { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+        .sel-l {
+          font-size: 9px; letter-spacing: 0.18em; color: rgba(255,255,255,0.45);
+          font-weight: 700;
+        }
+        .sel select {
+          width: 100%;
+          box-sizing: border-box;
+          background: rgba(255,255,255,0.03);
+          color: #f5f5f7;
+          border: 1px solid rgba(255,255,255,0.12);
+          border-radius: 2px;
+          padding: 11px 12px;
+          font-family: "JetBrains Mono", monospace;
+          font-size: 13px;
+          min-height: 44px;
+          appearance: none;
+          -webkit-appearance: none;
+          background-image: linear-gradient(45deg, transparent 50%, rgba(255,255,255,0.4) 50%), linear-gradient(135deg, rgba(255,255,255,0.4) 50%, transparent 50%);
+          background-position: calc(100% - 16px) center, calc(100% - 11px) center;
+          background-size: 5px 5px, 5px 5px;
+          background-repeat: no-repeat;
+        }
+        .sel select:focus { outline: none; border-color: #b2fd02; background-color: rgba(178,253,2,0.03); }
+        .sel-auto { font-size: 9px; letter-spacing: 0.06em; color: rgba(255,255,255,0.35); }
+        .sel-auto.diverge { color: #f59e0b; }
+      `}</style>
+    </label>
+  );
+}
+
+function NumField({
+  label, value, onChange, placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+}) {
+  return (
+    <label className="nf">
+      <span className="nf-l">{label}</span>
+      <input
+        type="number"
+        inputMode="decimal"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+      />
+      <style jsx>{`
+        .nf { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+        .nf-l { font-size: 9px; letter-spacing: 0.18em; color: rgba(255,255,255,0.45); font-weight: 700; }
+        .nf input {
+          width: 100%;
+          box-sizing: border-box;
+          background: rgba(255,255,255,0.03);
+          color: #f5f5f7;
+          border: 1px solid rgba(255,255,255,0.12);
+          border-radius: 2px;
+          padding: 11px 12px;
+          font-family: "JetBrains Mono", monospace;
+          font-size: 13px;
+          min-height: 44px;
+        }
+        .nf input:focus { outline: none; border-color: #b2fd02; background: rgba(178,253,2,0.03); }
+        .nf input::placeholder { color: rgba(255,255,255,0.22); }
+      `}</style>
+    </label>
+  );
+}
+
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="field">
@@ -993,6 +1424,11 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
           color: rgba(245, 158, 11, 0.6);
         }
         .field :global(.chip.star.on) {
+          background: #f59e0b;
+          color: #000;
+          border-color: #f59e0b;
+        }
+        .field :global(.chip.warn.on) {
           background: #f59e0b;
           color: #000;
           border-color: #f59e0b;

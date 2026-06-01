@@ -6,17 +6,50 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from dashboard.api import database as db
 
 router = APIRouter(prefix="/bybit", tags=["bybit"])
 
 
+def _jsonify_row(r: Any) -> dict[str, Any]:
+    """asyncpg Record -> JSON-safe dict (Decimal -> float)."""
+    out: dict[str, Any] = {}
+    for k, v in dict(r).items():
+        out[k] = float(v) if isinstance(v, Decimal) else v
+    return out
+
+
+# Journal v2 closed-vocab enums (frozen — keep in sync with the schema comments in
+# data_service/bybit_sync.py and the taxonomy table in the plan doc).
+_BIAS = r"^(bullish|bearish|range)$"
+_STRUCT_REASON = r"^(HH_HL|LH_LL|range_bound|unclear)$"
+_LOCATION_PD = r"^(premium|equilibrium|discount)$"
+_LOCATION_QUALITY = r"^(key_level|no_mans_land)$"
+_MTF = r"^(confirms|contradicts|neutral)$"
+_LTF_TRIGGER = r"^(sweep_reclaim|bos|choch|fvg|order_block|simple_break)$"
+_STRUCTURE_TYPE = r"^(continuation|reversal|range)$"
+_ENTRY_TYPE = r"^(at_level_limit|confirmation_shift)$"
+TECHNICAL_ERROR_TAGS = {
+    "misread_structure", "sl_bad_placement", "entered_against_htf",
+    "early_no_confirmation", "wrong_invalidation", "chased_extended",
+}
+BEHAVIORAL_ERROR_TAGS = {
+    "outcome_bias", "inconsistent_sizing", "revenge_overtrade",
+    "not_in_plan", "widened_sl", "cut_winner_early", "held_loser",
+}
+
+# JSONB array columns — dumped to JSON on write, parsed on read.
+_JSONB_COLS = {"confluences", "technical_error", "behavioral_error"}
+
+
 class AnnotationUpdate(BaseModel):
+    # legacy free-text + demoted-but-kept fields
     setup_type: str | None = None
     confluences: list[str] | None = None
     confidence: int | None = Field(default=None, ge=1, le=5)
@@ -28,6 +61,49 @@ class AnnotationUpdate(BaseModel):
     grade_self: str | None = Field(default=None, pattern=r"^[ABCDF]$")
     screenshot_url: str | None = None
     topdown_brief_used: bool | None = None
+    # v2 PLAN: top-down chain (human label; closed vocab)
+    htf_bias_daily: str | None = Field(default=None, pattern=_BIAS)
+    htf_bias_4h: str | None = Field(default=None, pattern=_BIAS)
+    htf_structure_reason: str | None = Field(default=None, pattern=_STRUCT_REASON)
+    location_pd: str | None = Field(default=None, pattern=_LOCATION_PD)
+    location_quality: str | None = Field(default=None, pattern=_LOCATION_QUALITY)
+    mtf_1h: str | None = Field(default=None, pattern=_MTF)
+    ltf_trigger: str | None = Field(default=None, pattern=_LTF_TRIGGER)
+    structure_type: str | None = Field(default=None, pattern=_STRUCTURE_TYPE)
+    entry_type: str | None = Field(default=None, pattern=_ENTRY_TYPE)
+    # v2 PLAN: 5 confluence factors (booleans; tf_aligned_count is generated)
+    conf_htf: bool | None = None
+    conf_location: bool | None = None
+    conf_mtf: bool | None = None
+    conf_trigger: bool | None = None
+    conf_noconflict: bool | None = None
+    # v2 PLAN: intended levels (R unit source)
+    planned_entry_price: float | None = None
+    planned_sl_price: float | None = None
+    planned_tp_price: float | None = None
+    risk_pct: float | None = Field(default=None, ge=0, le=100)
+    # v2 REVIEW: process diagnosis (the clean-sample label; blank-default honesty layer)
+    followed_process: bool | None = None
+    technical_error: list[str] | None = None
+    behavioral_error: list[str] | None = None
+
+    @field_validator("technical_error")
+    @classmethod
+    def _check_technical(cls, v: list[str] | None) -> list[str] | None:
+        if v is not None:
+            bad = set(v) - TECHNICAL_ERROR_TAGS
+            if bad:
+                raise ValueError(f"unknown technical_error tags: {sorted(bad)}")
+        return v
+
+    @field_validator("behavioral_error")
+    @classmethod
+    def _check_behavioral(cls, v: list[str] | None) -> list[str] | None:
+        if v is not None:
+            bad = set(v) - BEHAVIORAL_ERROR_TAGS
+            if bad:
+                raise ValueError(f"unknown behavioral_error tags: {sorted(bad)}")
+        return v
 
 
 class AnnotationOut(BaseModel):
@@ -62,6 +138,57 @@ class AnnotationOut(BaseModel):
     pnl_pct: float | None
     status: str
     annotated_at: datetime | None
+    # v2 journal — present once the v2 watcher / Phase 3 classifier columns exist.
+    journal_schema_version: int | None = None
+    # human top-down chain
+    htf_bias_daily: str | None = None
+    htf_bias_4h: str | None = None
+    htf_structure_reason: str | None = None
+    location_pd: str | None = None
+    location_quality: str | None = None
+    mtf_1h: str | None = None
+    ltf_trigger: str | None = None
+    structure_type: str | None = None
+    entry_type: str | None = None
+    conf_htf: bool | None = None
+    conf_location: bool | None = None
+    conf_mtf: bool | None = None
+    conf_trigger: bool | None = None
+    conf_noconflict: bool | None = None
+    tf_aligned_count: int | None = None
+    planned_entry_price: float | None = None
+    planned_sl_price: float | None = None
+    planned_tp_price: float | None = None
+    risk_pct: float | None = None
+    account_equity_at_open: float | None = None
+    position_sl_price: float | None = None
+    # machine top-down chain (Phase 3 auto_* — pre-fill source; may diverge from human)
+    auto_htf_bias_daily: str | None = None
+    auto_htf_bias_4h: str | None = None
+    auto_htf_structure_reason: str | None = None
+    auto_location_pd: str | None = None
+    auto_location_quality: str | None = None
+    auto_mtf_1h: str | None = None
+    auto_ltf_trigger: str | None = None
+    auto_structure_type: str | None = None
+    auto_conf_htf: bool | None = None
+    auto_conf_location: bool | None = None
+    auto_conf_mtf: bool | None = None
+    auto_conf_trigger: bool | None = None
+    auto_conf_noconflict: bool | None = None
+    # REVIEW
+    followed_process: bool | None = None
+    technical_error: list[str] | None = None
+    behavioral_error: list[str] | None = None
+    clean_sample: bool | None = None
+    trade_quality: str | None = None
+    # excursion + R metrics (Phase 4 backfill)
+    mae_r: float | None = None
+    mfe_r: float | None = None
+    realized_r: float | None = None
+    exit_efficiency: float | None = None
+    entry_slippage_bps: float | None = None
+    mae_mfe_tf: str | None = None
 
 
 def _maybe_json(val: Any) -> Any:
@@ -110,6 +237,52 @@ def _row_to_out(r: dict) -> AnnotationOut:
         pnl_pct=r.get("pnl_pct"),
         status=r.get("status") or "open",
         annotated_at=r.get("annotated_at"),
+        journal_schema_version=r.get("journal_schema_version"),
+        htf_bias_daily=r.get("htf_bias_daily"),
+        htf_bias_4h=r.get("htf_bias_4h"),
+        htf_structure_reason=r.get("htf_structure_reason"),
+        location_pd=r.get("location_pd"),
+        location_quality=r.get("location_quality"),
+        mtf_1h=r.get("mtf_1h"),
+        ltf_trigger=r.get("ltf_trigger"),
+        structure_type=r.get("structure_type"),
+        entry_type=r.get("entry_type"),
+        conf_htf=r.get("conf_htf"),
+        conf_location=r.get("conf_location"),
+        conf_mtf=r.get("conf_mtf"),
+        conf_trigger=r.get("conf_trigger"),
+        conf_noconflict=r.get("conf_noconflict"),
+        tf_aligned_count=r.get("tf_aligned_count"),
+        planned_entry_price=r.get("planned_entry_price"),
+        planned_sl_price=r.get("planned_sl_price"),
+        planned_tp_price=r.get("planned_tp_price"),
+        risk_pct=r.get("risk_pct"),
+        account_equity_at_open=r.get("account_equity_at_open"),
+        position_sl_price=r.get("position_sl_price"),
+        auto_htf_bias_daily=r.get("auto_htf_bias_daily"),
+        auto_htf_bias_4h=r.get("auto_htf_bias_4h"),
+        auto_htf_structure_reason=r.get("auto_htf_structure_reason"),
+        auto_location_pd=r.get("auto_location_pd"),
+        auto_location_quality=r.get("auto_location_quality"),
+        auto_mtf_1h=r.get("auto_mtf_1h"),
+        auto_ltf_trigger=r.get("auto_ltf_trigger"),
+        auto_structure_type=r.get("auto_structure_type"),
+        auto_conf_htf=r.get("auto_conf_htf"),
+        auto_conf_location=r.get("auto_conf_location"),
+        auto_conf_mtf=r.get("auto_conf_mtf"),
+        auto_conf_trigger=r.get("auto_conf_trigger"),
+        auto_conf_noconflict=r.get("auto_conf_noconflict"),
+        followed_process=r.get("followed_process"),
+        technical_error=_maybe_json(r.get("technical_error")),
+        behavioral_error=_maybe_json(r.get("behavioral_error")),
+        clean_sample=r.get("clean_sample"),
+        trade_quality=r.get("trade_quality"),
+        mae_r=r.get("mae_r"),
+        mfe_r=r.get("mfe_r"),
+        realized_r=r.get("realized_r"),
+        exit_efficiency=r.get("exit_efficiency"),
+        entry_slippage_bps=r.get("entry_slippage_bps"),
+        mae_mfe_tf=r.get("mae_mfe_tf"),
     )
 
 
@@ -163,7 +336,7 @@ async def update_annotation(annotation_id: int, payload: AnnotationUpdate):
         sets: list[str] = []
         vals: list[Any] = []
         for k, v in fields.items():
-            vals.append(json.dumps(v) if k == "confluences" and v is not None else v)
+            vals.append(json.dumps(v) if k in _JSONB_COLS and v is not None else v)
             sets.append(f"{k} = ${len(vals)}")
         vals.append(annotation_id)
         set_clause = ", ".join(sets)
@@ -511,3 +684,100 @@ async def equity_curve(days: int = Query(30, ge=1, le=365)):
         cum += float(r["pnl_usd"] or 0)
         points.append({"t": r["closed_at"].isoformat(), "cumulative_pnl": round(cum, 2), "trade_pnl": float(r["pnl_usd"])})
     return {"points": points, "final_pnl": round(cum, 2), "trades": len(points)}
+
+
+# Journal v2 base predicate — closed v2 rows in the window. Shared by every v2-stats
+# query so legacy v1 rows (frozen, journal_schema_version=1) never contaminate edge math.
+_V2_BASE = (
+    "FROM bybit_trade_annotations "
+    "WHERE journal_schema_version = 2 AND status = 'closed' "
+    "AND closed_at >= NOW() - ($1 * INTERVAL '1 day')"
+)
+
+
+@router.get("/v2-stats")
+async def v2_stats(days: int = Query(180, ge=1, le=730)):
+    """Journal v2 edge + discipline aggregates. Closed v2 rows only.
+
+    `n` is always the first metric. Edge math (expectancy / PF / exit-efficiency)
+    filters on `clean_sample` so rule-break trades don't poison the signal;
+    `clean_vs_dirty` deliberately compares both to price the cost of breaking rules.
+    Empty arrays are normal until v2 trades close + get reviewed.
+    """
+    async with db.pg_pool.acquire() as conn:
+        # A. Expectancy + PF per setup (clean samples only), n first.
+        by_setup = await conn.fetch(
+            f"""
+            SELECT COALESCE(ltf_trigger, '?') AS ltf_trigger,
+                   COALESCE(structure_type, '?') AS structure_type,
+                   COUNT(*) AS n,
+                   ROUND(AVG(realized_r)::numeric, 3) AS expectancy_r,
+                   ROUND((100.0 * AVG((realized_r > 0)::int))::numeric, 1) AS win_rate_pct,
+                   ROUND((SUM(CASE WHEN realized_r > 0 THEN realized_r ELSE 0 END) /
+                          NULLIF(ABS(SUM(CASE WHEN realized_r < 0 THEN realized_r ELSE 0 END)), 0))::numeric, 2)
+                       AS profit_factor
+            {_V2_BASE} AND clean_sample AND realized_r IS NOT NULL
+            GROUP BY ltf_trigger, structure_type
+            ORDER BY n DESC
+            """,
+            days,
+        )
+        # B. Cost of breaking rules — clean vs dirty (NOT clean_sample-filtered, on purpose).
+        clean_dirty = await conn.fetch(
+            f"""
+            SELECT clean_sample,
+                   COUNT(*) AS n,
+                   ROUND(AVG(realized_r)::numeric, 3) AS expectancy_r,
+                   ROUND(SUM(pnl_usd)::numeric, 2) AS net_usd
+            {_V2_BASE}
+            GROUP BY clean_sample
+            ORDER BY clean_sample NULLS LAST
+            """,
+            days,
+        )
+        # C. Behavioral leak ranked (unnest multi-tag), most negative first.
+        leaks = await conn.fetch(
+            """
+            SELECT tag, COUNT(*) AS n, ROUND(SUM(pnl_usd)::numeric, 2) AS net_usd
+            FROM bybit_trade_annotations, jsonb_array_elements_text(behavioral_error) tag
+            WHERE journal_schema_version = 2 AND status = 'closed'
+              AND closed_at >= NOW() - ($1 * INTERVAL '1 day')
+            GROUP BY tag
+            ORDER BY net_usd ASC
+            """,
+            days,
+        )
+        # E. Exit efficiency (cut winners / held losers) per trigger.
+        exit_eff = await conn.fetch(
+            f"""
+            SELECT COALESCE(ltf_trigger, '?') AS ltf_trigger,
+                   COUNT(*) AS n,
+                   ROUND(AVG(mfe_r)::numeric, 2) AS avg_mfe,
+                   ROUND(AVG(mae_r)::numeric, 2) AS avg_mae,
+                   ROUND(AVG(realized_r / NULLIF(mfe_r, 0))::numeric, 2) AS exit_eff
+            {_V2_BASE} AND clean_sample AND mfe_r > 0
+            GROUP BY ltf_trigger
+            ORDER BY n DESC
+            """,
+            days,
+        )
+        totals = await conn.fetchrow(
+            f"""
+            SELECT COUNT(*) AS n_closed,
+                   COUNT(*) FILTER (WHERE clean_sample) AS n_clean,
+                   COUNT(*) FILTER (WHERE followed_process IS NULL) AS n_unreviewed,
+                   COUNT(*) FILTER (WHERE realized_r IS NOT NULL) AS n_with_r,
+                   ROUND(AVG(realized_r) FILTER (WHERE clean_sample)::numeric, 3)
+                       AS clean_expectancy_r
+            {_V2_BASE}
+            """,
+            days,
+        )
+    return {
+        "days": days,
+        "totals": _jsonify_row(totals) if totals else {},
+        "expectancy_by_setup": [_jsonify_row(r) for r in by_setup],
+        "clean_vs_dirty": [_jsonify_row(r) for r in clean_dirty],
+        "behavioral_leak": [_jsonify_row(r) for r in leaks],
+        "exit_efficiency": [_jsonify_row(r) for r in exit_eff],
+    }

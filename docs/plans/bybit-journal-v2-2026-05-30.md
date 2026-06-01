@@ -3,7 +3,7 @@
 **Started:** 2026-05-30
 **Goal:** ML-grade manual-trade journaling that separates the *trading edge* from *behavioral noise*. Replaces the v1 free-text annotation system (unlearnable — rule-break trades mixed with clean ones poison any dataset).
 
-**Status:** COMPLETE. Phase 0+1 DONE (#46), P2 (#48), P3 (PR #49), P4 (PR #50), P5 (PR #51), P6 (PR #52), P7 (this branch). All 7 phases shipped.
+**Status:** COMPLETE. Phase 0+1 DONE (#46), P2 (#48), P3 (#49), P4 (#50), P5 (#51), P6 (#52), P7 (#53). All 7 phases shipped.
 
 ---
 
@@ -67,28 +67,34 @@ Without SL, R unit has no data source → entire stats layer is decorative.
 - Set `journal_schema_version=2` on rows written by v2-aware watcher path.
 - Tests: watcher captures SL + equity; `_htf_bias` returns daily key.
 
-### ⏳ Phase 3 — auto-classifier v2 chain pre-fill
-- Extend `strategy_service/trade_classifier.py` to emit the v2 top-down chain from `context_snapshot`: daily/4h/1h bias, VA-zone → PD proxy (`volume_profile.zone` ≈ premium/discount, rough — user corrects), `ltf_trigger` from `recent_breaks`/`recent_sweeps`, `structure_type`, 5 conf booleans.
-- Bump `CONTEXT_CLASSIFIER_VERSION` (`context_service.py`).
-- Writes `auto_*` AND pre-fills the human cols (user confirms in form). Keep both — disagreement (human bullish, machine bearish) IS the misread signal; never overwrite.
+### ✅ Phase 3 — auto-classifier v2 chain pre-fill (DONE)
+- `strategy_service/trade_classifier.py` `_v2_chain()` emits the v2 top-down chain from `context_snapshot`: daily/4h bias (`undefined → range`), `htf_structure_reason`, VA-zone → PD proxy, `location_quality`, `mtf_1h`, `ltf_trigger` (precedence `sweep_reclaim > choch > bos > fvg > order_block`), `structure_type`, 5 `auto_conf_*` booleans. `CLASSIFIER_VERSION` 1→2.
+- `CONTEXT_CLASSIFIER_VERSION` 1→2 (`context_service.py`).
+- Schema: additive `auto_*` chain cols on both tables (`bybit_sync.ensure_tables`).
+- Watcher writes `auto_*` AND pre-fills the human cols (`_V2_CHAIN_MAP`). On conflict `auto_*` refresh, human cols `COALESCE` (correction never clobbered). Open-alert gains a chain line.
+- Tests: `tests/test_trade_classifier_v2_chain.py` (chain logic + watcher write path). `pytest -k "bybit or classifier or watcher"` 30 pass.
 
-### ⏳ Phase 4 — MAE/MFE batch backfill script
-- `scripts/compute_bybit_mae_mfe.py` (mirror `scripts/classify_sl_failures.py`).
-- Targeted **1m REST** fetch per trade `opened_at`→`closed_at` window (Bybit or OKX REST). Store `mae_mfe_tf='1m'`.
-- Direction-aware excursions (flip sign for shorts). `R_usd = |planned_entry − planned_sl| × size`. `realized_r = closed_pnl / R_usd`. `exit_efficiency = realized_r / mfe_r` (NULL when `mfe_r<=0`). `entry_slippage_bps` = actual avg_entry vs planned.
-- Re-runnable + idempotent; nightly-friendly. Symbol→pair via `context_service.bybit_symbol_to_pair()`.
+### ✅ Phase 4 — MAE/MFE batch backfill script (DONE)
+- `scripts/compute_bybit_mae_mfe.py` (mirrors `scripts/classify_sl_failures.py`). Args `--days/--limit/--force/--dry-run`.
+- 1m candles fetched on demand via Bybit REST (`get_kline interval="1"`, paginated, ±1m window pad) and discarded — not stored (`mae_mfe_tf='1m'`).
+- Direction-aware excursions clamped (`mfe_r≥0`, `mae_r≤0`). Entry/SL anchor prefers `planned_*`, falls back to actual `entry_price` + `position_sl_price` so rows resolve before the form exists. `R_usd = R_price × size`; `realized_r = pnl_usd / R_usd` (pnl already net — no re-deduct); `exit_efficiency = realized_r / mfe_r` (NULL when `mfe_r≤0`); `entry_slippage_bps` direction-aware adverse (NULL without planned entry).
+- Re-runnable + idempotent (only `mae_r IS NULL` unless `--force`); nightly-friendly.
+- Tests: `tests/test_bybit_mae_mfe.py` (excursion math, planned-vs-actual anchor, slippage sign, pagination). 0 closed v2 rows live yet → populates as v2 trades close.
 
-### ⏳ Phase 5 — mobile form rewrite (375px responsive)
-- `dashboard/web/src/app/annotate/[id]/page.tsx` + backend `dashboard/api/routes/bybit.py` `AnnotationUpdate` model.
-- **PLAN:** chain dropdowns pre-filled from auto-classifier; 5-box confluence checklist w/ live count + **3-of-5 gate (HTF+trigger mandatory, range branch)**.
-- **REVIEW:** `followed_process` toggle + multi-select error chips (blank by default), lesson.
-- Demote `grade_self` / `confidence` (keep optional). Mobile: nothing overflows at 375px.
+### ✅ Phase 5 — mobile form rewrite (375px responsive) (DONE)
+- Backend `dashboard/api/routes/bybit.py`: `AnnotationUpdate` accepts v2 chain (enum-validated), 5 conf booleans, planned levels, `followed_process` + `technical_error`/`behavioral_error` (tag-whitelist validators); `AnnotationOut` exposes all v2 cols incl. `auto_*` (read via `.get()`, tolerant of pre-merge DBs) + generated `tf_aligned_count`/`clean_sample`/`trade_quality` + R metrics; PATCH JSONB dump generalized to `_JSONB_COLS`.
+- Frontend `annotate/[id]/page.tsx`: **PLAN** chain selects pre-filled `human ?? auto` (shows `auto:`/`≠auto:` divergence hint), 5-box confluence checklist with live count + **3-of-5 gate (HTF+trigger mandatory; range branch → trigger+location)**, intended-levels inputs. **REVIEW** (closed) `followed_process` YES/NO (blank-default), technical/behavioral error chips, lesson. `grade_self`/`confidence` left demoted (not rendered).
+- Mobile: chain/conf/levels grids collapse to 2-col at ≤639px; selects/inputs 44px min, width-100% box-sizing. Verified at 375px via Playwright (full form renders, no overflow, pre-fill + gate live). `npm run build` clean.
+- Tests: `tests/test_bybit_annotation_fields.py` extended (enum reject, tag whitelist, v2 row mapping, JSONB set).
+- **Note:** auto-pre-fill data only lands once #49 (Phase 3 watcher) is deployed; form degrades to blank dropdowns until then.
 
-### ⏳ Phase 6 — switch readers + queries/dashboard
-- Migrate `scripts/weekly_review_bybit.py` + `scripts/explain_bot.py` to v2 cols.
-- Add queries (n always col 1, `clean_sample` filter on edge math, `unnest` JSONB tags): expectancy + PF per setup; clean-vs-dirty cost; behavioral-leak ranked; R distribution; exit efficiency.
-- Surface as stats endpoint + Grafana panel.
-- **THEN** stop writing `confluences` / `grade_self` (demote, keep cols). Readers switch LAST so the watcher daemon never crashes mid-flight.
+### ✅ Phase 6 — switch readers + queries/dashboard (DONE)
+- `scripts/weekly_review_bybit.py`: `build_user_prompt` now feeds Claude the v2 chain + R metrics + `clean_sample`/`followed_process`/error tags per trade and a v2 discipline slice in the summary; dropped legacy `confluences`/`grade_self`/`confidence` from the row. System prompt teaches the v2 fields.
+- `scripts/explain_bot.py`: `_stats` gains a `_v2_block` (clean/closed, unreviewed, clean expectancy R) appended when v2 closed rows exist.
+- `dashboard/api/routes/bybit.py`: `GET /bybit/v2-stats` — expectancy+PF per setup (clean only), clean-vs-dirty cost, behavioral-leak ranked (unnest), exit efficiency, totals. `n` first; edge math `clean_sample`-filtered; all walled to `journal_schema_version=2` via `_V2_BASE`. `_jsonify_row` Decimal→float.
+- `monitoring/dashboards/bybit-journal-v2.json`: 4 stat tiles + 4 table panels (same queries), auto-provisioned. All 8 SQL validated vs live DB.
+- Legacy `confluences`/`grade_self` cols retained but no reader consumes them. Watcher write path untouched (readers switched, daemon safe).
+- Tests: `tests/test_bybit_v2_readers.py` (jsonifier, route+filter, prompt v2 shape). Full suite 1305 pass.
 
 ### ✅ Phase 7 — docs + ML training filter (DONE)
 - SYSTEM_BASELINE §7.0 froze the canonical manual-strategy training filter: `WHERE journal_schema_version = 2 AND status = 'closed' AND clean_sample AND realized_r IS NOT NULL`, plus feature/label split (chain enums = features, `realized_r` = label; MAE/MFE = management diagnostics) and the C3 discipline-first reality check.

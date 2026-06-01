@@ -1,0 +1,463 @@
+{
+  "uid": "bybit-journal-v2",
+  "title": "Bybit Journal v2",
+  "tags": [
+    "bybit",
+    "journal",
+    "manual"
+  ],
+  "timezone": "browser",
+  "refresh": "5m",
+  "time": {
+    "from": "now-180d",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "v2 Closed",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT COUNT(*) AS value FROM bybit_trade_annotations WHERE journal_schema_version = 2 AND status = 'closed' AND closed_at >= NOW() - INTERVAL '180 days'",
+          "format": "table",
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Clean Samples",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT COUNT(*) FILTER (WHERE clean_sample) AS value FROM bybit_trade_annotations WHERE journal_schema_version = 2 AND status = 'closed' AND closed_at >= NOW() - INTERVAL '180 days'",
+          "format": "table",
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Unreviewed",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT COUNT(*) FILTER (WHERE followed_process IS NULL) AS value FROM bybit_trade_annotations WHERE journal_schema_version = 2 AND status = 'closed' AND closed_at >= NOW() - INTERVAL '180 days'",
+          "format": "table",
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Clean Expectancy (R)",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT ROUND(AVG(realized_r) FILTER (WHERE clean_sample)::numeric,3) AS value FROM bybit_trade_annotations WHERE journal_schema_version = 2 AND status = 'closed' AND closed_at >= NOW() - INTERVAL '180 days'",
+          "format": "table",
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Expectancy + PF per Setup (clean only)",
+      "type": "table",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 4
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "options": {
+        "showHeader": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT COALESCE(ltf_trigger,'?') AS \"Trigger\", COALESCE(structure_type,'?') AS \"Structure\", COUNT(*) AS \"n\", ROUND(AVG(realized_r)::numeric,3) AS \"Expectancy R\", ROUND((100.0*AVG((realized_r>0)::int))::numeric,1) AS \"Win %\", ROUND((SUM(CASE WHEN realized_r>0 THEN realized_r ELSE 0 END)/NULLIF(ABS(SUM(CASE WHEN realized_r<0 THEN realized_r ELSE 0 END)),0))::numeric,2) AS \"PF\" FROM bybit_trade_annotations WHERE journal_schema_version = 2 AND status = 'closed' AND closed_at >= NOW() - INTERVAL '180 days' AND clean_sample AND realized_r IS NOT NULL GROUP BY ltf_trigger, structure_type ORDER BY \"n\" DESC",
+          "format": "table",
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 100
+          }
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Cost of Breaking Rules (clean vs dirty)",
+      "type": "table",
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 12
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "options": {
+        "showHeader": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT clean_sample AS \"Clean\", COUNT(*) AS \"n\", ROUND(AVG(realized_r)::numeric,3) AS \"Expectancy R\", ROUND(SUM(pnl_usd)::numeric,2) AS \"Net $\" FROM bybit_trade_annotations WHERE journal_schema_version = 2 AND status = 'closed' AND closed_at >= NOW() - INTERVAL '180 days' GROUP BY clean_sample ORDER BY clean_sample NULLS LAST",
+          "format": "table",
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 100
+          }
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Behavioral Leak Ranked",
+      "type": "table",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 18
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "options": {
+        "showHeader": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT tag AS \"Tag\", COUNT(*) AS \"n\", ROUND(SUM(pnl_usd)::numeric,2) AS \"Net $\" FROM bybit_trade_annotations, jsonb_array_elements_text(behavioral_error) tag WHERE journal_schema_version=2 AND status='closed' AND closed_at >= NOW() - INTERVAL '180 days' GROUP BY tag ORDER BY \"Net $\" ASC",
+          "format": "table",
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 100
+          }
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Exit Efficiency (cut winners / held losers)",
+      "type": "table",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 26
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "options": {
+        "showHeader": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT COALESCE(ltf_trigger,'?') AS \"Trigger\", COUNT(*) AS \"n\", ROUND(AVG(mfe_r)::numeric,2) AS \"Avg MFE R\", ROUND(AVG(mae_r)::numeric,2) AS \"Avg MAE R\", ROUND(AVG(realized_r/NULLIF(mfe_r,0))::numeric,2) AS \"Exit Eff\" FROM bybit_trade_annotations WHERE journal_schema_version = 2 AND status = 'closed' AND closed_at >= NOW() - INTERVAL '180 days' AND clean_sample AND mfe_r > 0 GROUP BY ltf_trigger ORDER BY \"n\" DESC",
+          "format": "table",
+          "refId": "A",
+          "editorMode": "code",
+          "rawQuery": true,
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 100
+          }
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "version": 1
+}
