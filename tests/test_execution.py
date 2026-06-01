@@ -659,6 +659,7 @@ class TestTimeoutClose:
         monitor.register(pos)
 
         executor.cancel_order = AsyncMock(return_value=True)
+        executor.fetch_ticker = AsyncMock(return_value={"bid": 1999.0, "ask": 2000.0})
         executor.close_position_market = AsyncMock(return_value=make_order("ord-mkt"))
 
         asyncio.run(monitor._check_all_positions())
@@ -683,6 +684,7 @@ class TestTimeoutClose:
         monitor.register(pos)
 
         executor.cancel_order = AsyncMock(return_value=True)
+        executor.fetch_ticker = AsyncMock(return_value={"bid": 1999.0, "ask": 2000.0})
         executor.close_position_market = AsyncMock(
             return_value={"id": "ord-mkt", "average": 2020.0}
         )

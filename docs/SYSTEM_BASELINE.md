@@ -303,6 +303,22 @@ Three storages hold trade-like rows. Only ONE is authoritative for ML training /
 - Manual Bybit trades live in their own schema and must not leak into bot-edge analysis. Journal v2 makes them ML-grade *for the manual strategy only* (`journal_schema_version=2 AND clean_sample`); cross-venue comparison is fine, but never mix Bybit rows into `ml_setups` training.
 - If an analysis script needs both features and realized cash, join `ml_setups` → `trades` on `setup_id`, but still filter training labels from `ml_setups.outcome_type`.
 
+**Bybit manual-strategy training filter (journal v2 — canonical, frozen Phase 7 2026-06-01).**
+The manual dataset is its own ground truth, never crossed with `ml_setups`. Train the manual-strategy model only on closed, v2, *clean* rows that have a computed R outcome:
+
+```sql
+SELECT *
+FROM bybit_trade_annotations
+WHERE journal_schema_version = 2     -- v1 frozen, excluded (free-text era, unlearnable)
+  AND status = 'closed'
+  AND clean_sample                   -- generated: followed_process IS TRUE AND behavioral_error = '[]'
+  AND realized_r IS NOT NULL;        -- Phase 4 MAE/MFE backfill populated the R unit
+```
+
+- `clean_sample` excludes rule-break trades (the whole point — dirty samples poison the edge). `clean_vs_dirty` analysis deliberately drops the filter to *price* indiscipline, but model training keeps it.
+- Features = the closed-vocab chain (`htf_bias_daily`/`htf_bias_4h`/`htf_structure_reason`/`location_pd`/`location_quality`/`mtf_1h`/`ltf_trigger`/`structure_type` + 5 `conf_*` booleans / `tf_aligned_count`). Label = `realized_r` (regression) or `realized_r > 0` (meta-label). `mfe_r`/`mae_r`/`exit_efficiency` are management diagnostics, not entry features.
+- Same C3 reality check as the bot: manual is few trades/week, per-`ltf_trigger` `n` stays <15 for months. This is a **discipline + clean-data-collection** system first; do not fit a model before `n` has power. Track readiness via `GET /bybit/v2-stats` (`totals.n_clean`) or the **Bybit Journal v2** Grafana dashboard.
+
 ### 7.1 ML Activation Gate
 
 **Current state (2026-04-23):** Pipeline is rule-based SMC + ML **logger** (not ML-driven). AI filter is bypassed for all active setups (`AI_BYPASS_SETUP_TYPES`). `BET_SIZING_ENABLED` effectively inert because synthetic `AIDecision(confidence=1.0)` never triggers it. Do not market this as an AFML/ML system in its current form — it is a feature collector.
@@ -511,6 +527,21 @@ D: net_score <  2
 ---
 
 ## 8. Changelog
+
+### 2026-06-01 — Bybit journal v2 Phase 7: docs sync + ML training filter (redesign COMPLETE)
+**Files:** `docs/SYSTEM_BASELINE.md`, `docs/plans/bybit-journal-v2-2026-05-30.md`, memory `project_bybit_journal_v2.md`.
+
+**What changed:** froze the canonical manual-strategy training filter in §7.0 (`journal_schema_version = 2 AND status = 'closed' AND clean_sample AND realized_r IS NOT NULL`) with the feature/label split (chain enums = features, `realized_r` = label; MAE/MFE = management diagnostics) and the C3 reality check (discipline-first; don't fit before `n` has power; track readiness via `/bybit/v2-stats` or the Grafana dashboard). Marks the 7-phase redesign complete.
+
+**The full v2 pipeline (where each piece lives):**
+- **Schema** — `data_service/bybit_sync.py ensure_tables()` (additive, idempotent; v1 frozen at `journal_schema_version=1`).
+- **Data capture** — `bybit_watcher.py`: `position_sl_price` + `account_equity_at_open` + 1D bias backfill (P2); `auto_*` chain + human-col pre-fill via `_V2_CHAIN_MAP` (P3).
+- **Auto-classifier** — `strategy_service/trade_classifier.py` `_v2_chain()` (`CLASSIFIER_VERSION=2`).
+- **R metrics** — `scripts/compute_bybit_mae_mfe.py` (1m REST excursions, idempotent backfill — P4).
+- **Form** — `dashboard/web/src/app/annotate/[id]/page.tsx` + `dashboard/api/routes/bybit.py` (P5).
+- **Stats** — `GET /bybit/v2-stats` + readers (`weekly_review_bybit.py`, `explain_bot.py`) + `monitoring/dashboards/bybit-journal-v2.json` (P6).
+
+**Why:** locking the training filter prevents future drift (someone training on v1 free-text rows or dirty samples). The journal is now end-to-end: watcher captures → classifier pre-fills → form confirms/corrects → backfill computes R → stats/Grafana surface edge + discipline → ML reads the frozen clean slice. See §7.0 and the plan doc.
 
 ### 2026-06-01 — Bybit journal v2 Phase 6: switch readers + stats + Grafana
 **Files:** `scripts/weekly_review_bybit.py`, `scripts/explain_bot.py`, `dashboard/api/routes/bybit.py`, `monitoring/dashboards/bybit-journal-v2.json` (new), `tests/test_bybit_v2_readers.py` (new).

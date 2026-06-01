@@ -25,6 +25,7 @@ logs/
 
 # pytest
 .pytest_cache/
+.hypothesis/
 
 # OS
 .DS_Store

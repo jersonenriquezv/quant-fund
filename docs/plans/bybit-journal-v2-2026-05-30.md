@@ -3,7 +3,7 @@
 **Started:** 2026-05-30
 **Goal:** ML-grade manual-trade journaling that separates the *trading edge* from *behavioral noise*. Replaces the v1 free-text annotation system (unlearnable — rule-break trades mixed with clean ones poison any dataset).
 
-**Status:** Phase 0+1 DONE (#46), Phase 2 DONE (#48), Phase 3 DONE (#49), Phase 4 DONE (#50), Phase 5 DONE (#51), Phase 6 DONE (PR #52). Phase 7 pending.
+**Status:** COMPLETE. Phase 0+1 DONE (#46), P2 (#48), P3 (#49), P4 (#50), P5 (#51), P6 (#52), P7 (#53). All 7 phases shipped.
 
 ---
 
@@ -96,9 +96,10 @@ Without SL, R unit has no data source → entire stats layer is decorative.
 - Legacy `confluences`/`grade_self` cols retained but no reader consumes them. Watcher write path untouched (readers switched, daemon safe).
 - Tests: `tests/test_bybit_v2_readers.py` (jsonifier, route+filter, prompt v2 shape). Full suite 1305 pass.
 
-### ⏳ Phase 7 — docs + ML training filter
-- SYSTEM_BASELINE final sync, memory update.
-- ML training query: `WHERE journal_schema_version = 2 AND clean_sample`.
+### ✅ Phase 7 — docs + ML training filter (DONE)
+- SYSTEM_BASELINE §7.0 froze the canonical manual-strategy training filter: `WHERE journal_schema_version = 2 AND status = 'closed' AND clean_sample AND realized_r IS NOT NULL`, plus feature/label split (chain enums = features, `realized_r` = label; MAE/MFE = management diagnostics) and the C3 discipline-first reality check.
+- §8 changelog "redesign COMPLETE" entry maps every piece to its file. Memory `project_bybit_journal_v2.md` updated.
+- Redesign closed end-to-end: watcher captures → classifier pre-fills → form confirms → backfill computes R → stats/Grafana surface → ML reads the frozen clean slice.
 
 ---
 
