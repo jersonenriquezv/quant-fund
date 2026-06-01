@@ -391,6 +391,53 @@ export interface BybitAnnotation {
   pnl_pct: number | null;
   status: string;
   annotated_at: string | null;
+  // journal v2
+  journal_schema_version?: number | null;
+  htf_bias_daily?: string | null;
+  htf_bias_4h?: string | null;
+  htf_structure_reason?: string | null;
+  location_pd?: string | null;
+  location_quality?: string | null;
+  mtf_1h?: string | null;
+  ltf_trigger?: string | null;
+  structure_type?: string | null;
+  entry_type?: string | null;
+  conf_htf?: boolean | null;
+  conf_location?: boolean | null;
+  conf_mtf?: boolean | null;
+  conf_trigger?: boolean | null;
+  conf_noconflict?: boolean | null;
+  tf_aligned_count?: number | null;
+  planned_entry_price?: number | null;
+  planned_sl_price?: number | null;
+  planned_tp_price?: number | null;
+  risk_pct?: number | null;
+  account_equity_at_open?: number | null;
+  position_sl_price?: number | null;
+  auto_htf_bias_daily?: string | null;
+  auto_htf_bias_4h?: string | null;
+  auto_htf_structure_reason?: string | null;
+  auto_location_pd?: string | null;
+  auto_location_quality?: string | null;
+  auto_mtf_1h?: string | null;
+  auto_ltf_trigger?: string | null;
+  auto_structure_type?: string | null;
+  auto_conf_htf?: boolean | null;
+  auto_conf_location?: boolean | null;
+  auto_conf_mtf?: boolean | null;
+  auto_conf_trigger?: boolean | null;
+  auto_conf_noconflict?: boolean | null;
+  followed_process?: boolean | null;
+  technical_error?: string[] | null;
+  behavioral_error?: string[] | null;
+  clean_sample?: boolean | null;
+  trade_quality?: string | null;
+  mae_r?: number | null;
+  mfe_r?: number | null;
+  realized_r?: number | null;
+  exit_efficiency?: number | null;
+  entry_slippage_bps?: number | null;
+  mae_mfe_tf?: string | null;
 }
 
 export interface BybitAnnotationPatch {
@@ -405,6 +452,29 @@ export interface BybitAnnotationPatch {
   grade_self?: string | null;
   screenshot_url?: string | null;
   topdown_brief_used?: boolean | null;
+  // journal v2 PLAN
+  htf_bias_daily?: string | null;
+  htf_bias_4h?: string | null;
+  htf_structure_reason?: string | null;
+  location_pd?: string | null;
+  location_quality?: string | null;
+  mtf_1h?: string | null;
+  ltf_trigger?: string | null;
+  structure_type?: string | null;
+  entry_type?: string | null;
+  conf_htf?: boolean | null;
+  conf_location?: boolean | null;
+  conf_mtf?: boolean | null;
+  conf_trigger?: boolean | null;
+  conf_noconflict?: boolean | null;
+  planned_entry_price?: number | null;
+  planned_sl_price?: number | null;
+  planned_tp_price?: number | null;
+  risk_pct?: number | null;
+  // journal v2 REVIEW
+  followed_process?: boolean | null;
+  technical_error?: string[] | null;
+  behavioral_error?: string[] | null;
 }
 
 export interface BybitSummary {

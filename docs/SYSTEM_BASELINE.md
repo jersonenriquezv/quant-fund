@@ -509,6 +509,17 @@ D: net_score <  2
 
 ## 8. Changelog
 
+### 2026-06-01 — Bybit journal v2 Phase 5: mobile annotation form rewrite
+**Files:** `dashboard/api/routes/bybit.py`, `dashboard/web/src/app/annotate/[id]/page.tsx`, `dashboard/web/src/lib/api.ts`, `tests/test_bybit_annotation_fields.py`.
+
+**What changed:** the annotation form captures the v2 journal instead of free text only.
+- **Backend:** `AnnotationUpdate` now accepts the v2 top-down chain (enum-pattern validated), the 5 confluence booleans, planned entry/SL/TP + risk_pct, and the REVIEW fields `followed_process` + `technical_error`/`behavioral_error` (validated against tag whitelists). `AnnotationOut` exposes every v2 column including the Phase 3 `auto_*` chain, generated `tf_aligned_count`/`clean_sample`/`trade_quality`, and the Phase 4 R metrics. Reads use `.get()` so the route is tolerant of DBs where the newer columns don't exist yet; PATCH JSONB-dumps all of `_JSONB_COLS`.
+- **Frontend (PLAN):** chain dropdowns pre-fill `human ?? auto` and flag `auto:`/`≠auto:` divergence; a 5-box confluence checklist shows a live count and the **3-of-5 gate** (HTF+trigger mandatory, range branch swaps HTF→location); intended-levels number inputs feed the R unit.
+- **Frontend (REVIEW, closed only):** `followed_process` YES/NO toggle (blank by default — the honesty layer), multi-select technical + behavioral error chips, lesson. `grade_self`/`confidence` stay demoted (not rendered).
+- **Mobile:** chain/confluence/levels grids collapse to 2-col at ≤639px; controls are 44px-min, width-100% box-sizing. Verified at 375px via Playwright (full form renders, no overflow). `npm run build` clean.
+
+**Why:** the form is where the closed-vocab chain + clean-sample label actually get captured. Pre-filling from the auto-classifier means the user confirms/corrects rather than fills blank, and the kept machine-vs-human divergence is the misread signal. Auto-pre-fill populates once the Phase 3 watcher (#49) is deployed; until then dropdowns open blank. Phase 6 (switch readers + stats) is next.
+
 ### 2026-05-30 — Bybit journal v2 Phase 2: data sources (SL, equity, 1D bias)
 **Files:** `data_service/bybit_watcher.py`, `data_service/context_service.py`, `config/settings.py`, `tests/test_bybit_journal_v2_datasources.py` (new).
 

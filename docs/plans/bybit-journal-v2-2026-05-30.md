@@ -3,7 +3,7 @@
 **Started:** 2026-05-30
 **Goal:** ML-grade manual-trade journaling that separates the *trading edge* from *behavioral noise*. Replaces the v1 free-text annotation system (unlearnable — rule-break trades mixed with clean ones poison any dataset).
 
-**Status:** Phase 0+1 DONE (merged PR #46, main `e462112`). Phases 2–7 pending.
+**Status:** Phase 0+1 DONE (#46), Phase 2 DONE (#48), Phase 3 DONE (PR #49), Phase 4 DONE (PR #50), Phase 5 DONE (this branch). Phases 6–7 pending.
 
 ---
 
@@ -78,11 +78,12 @@ Without SL, R unit has no data source → entire stats layer is decorative.
 - Direction-aware excursions (flip sign for shorts). `R_usd = |planned_entry − planned_sl| × size`. `realized_r = closed_pnl / R_usd`. `exit_efficiency = realized_r / mfe_r` (NULL when `mfe_r<=0`). `entry_slippage_bps` = actual avg_entry vs planned.
 - Re-runnable + idempotent; nightly-friendly. Symbol→pair via `context_service.bybit_symbol_to_pair()`.
 
-### ⏳ Phase 5 — mobile form rewrite (375px responsive)
-- `dashboard/web/src/app/annotate/[id]/page.tsx` + backend `dashboard/api/routes/bybit.py` `AnnotationUpdate` model.
-- **PLAN:** chain dropdowns pre-filled from auto-classifier; 5-box confluence checklist w/ live count + **3-of-5 gate (HTF+trigger mandatory, range branch)**.
-- **REVIEW:** `followed_process` toggle + multi-select error chips (blank by default), lesson.
-- Demote `grade_self` / `confidence` (keep optional). Mobile: nothing overflows at 375px.
+### ✅ Phase 5 — mobile form rewrite (375px responsive) (DONE)
+- Backend `dashboard/api/routes/bybit.py`: `AnnotationUpdate` accepts v2 chain (enum-validated), 5 conf booleans, planned levels, `followed_process` + `technical_error`/`behavioral_error` (tag-whitelist validators); `AnnotationOut` exposes all v2 cols incl. `auto_*` (read via `.get()`, tolerant of pre-merge DBs) + generated `tf_aligned_count`/`clean_sample`/`trade_quality` + R metrics; PATCH JSONB dump generalized to `_JSONB_COLS`.
+- Frontend `annotate/[id]/page.tsx`: **PLAN** chain selects pre-filled `human ?? auto` (shows `auto:`/`≠auto:` divergence hint), 5-box confluence checklist with live count + **3-of-5 gate (HTF+trigger mandatory; range branch → trigger+location)**, intended-levels inputs. **REVIEW** (closed) `followed_process` YES/NO (blank-default), technical/behavioral error chips, lesson. `grade_self`/`confidence` left demoted (not rendered).
+- Mobile: chain/conf/levels grids collapse to 2-col at ≤639px; selects/inputs 44px min, width-100% box-sizing. Verified at 375px via Playwright (full form renders, no overflow, pre-fill + gate live). `npm run build` clean.
+- Tests: `tests/test_bybit_annotation_fields.py` extended (enum reject, tag whitelist, v2 row mapping, JSONB set).
+- **Note:** auto-pre-fill data only lands once #49 (Phase 3 watcher) is deployed; form degrades to blank dropdowns until then.
 
 ### ⏳ Phase 6 — switch readers + queries/dashboard
 - Migrate `scripts/weekly_review_bybit.py` + `scripts/explain_bot.py` to v2 cols.
