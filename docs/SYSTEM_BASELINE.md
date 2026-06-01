@@ -512,6 +512,18 @@ D: net_score <  2
 
 ## 8. Changelog
 
+### 2026-06-01 — Bybit journal v2 Phase 6: switch readers + stats + Grafana
+**Files:** `scripts/weekly_review_bybit.py`, `scripts/explain_bot.py`, `dashboard/api/routes/bybit.py`, `monitoring/dashboards/bybit-journal-v2.json` (new), `tests/test_bybit_v2_readers.py` (new).
+
+**What changed:** the readers now consume the v2 columns, and the v2 edge/discipline math is surfaced.
+- **`GET /bybit/v2-stats`** (closed v2 rows only, via shared `_V2_BASE` predicate): expectancy + profit factor per `(ltf_trigger, structure_type)` (clean samples only), cost-of-breaking-rules (clean vs dirty), behavioral-leak ranked (`jsonb_array_elements_text(behavioral_error)`), exit efficiency, and totals (clean/closed, unreviewed, clean expectancy). `n` is always the first metric; `_jsonify_row` casts `Decimal→float`. `ROUND(...)` ratios cast to `::numeric` (Postgres has no `round(double, int)`).
+- **`weekly_review_bybit.build_user_prompt`** feeds Claude the v2 chain + R metrics + `clean_sample`/`followed_process`/error tags per trade and a v2 slice in the summary; legacy `confluences`/`grade_self`/`confidence` dropped from the row. System prompt updated to use the v2 signal.
+- **`explain_bot._stats`** appends a v2 block (clean/closed, unreviewed, clean expectancy R) when v2 closed rows exist.
+- **Grafana** `bybit-journal-v2.json` (auto-provisioned from `monitoring/dashboards/`): 4 stat tiles + 4 table panels mirroring the endpoint queries. All 8 SQL validated against the live DB.
+- Legacy `confluences`/`grade_self` columns retained but no longer read by any reader. Watcher write path untouched — readers switched last so the daemon never breaks mid-flight (plan ordering).
+
+**Why:** the journal is only useful once the chain + clean-sample + R columns are actually queried. Edge math is `clean_sample`-filtered (rule-break trades excluded); the clean-vs-dirty view prices indiscipline directly. Aggregates read empty until v2 trades close and get reviewed. Phase 7 (final docs + ML training filter `WHERE journal_schema_version=2 AND clean_sample`) is the last step.
+
 ### 2026-06-01 — Bybit journal v2 Phase 5: mobile annotation form rewrite
 **Files:** `dashboard/api/routes/bybit.py`, `dashboard/web/src/app/annotate/[id]/page.tsx`, `dashboard/web/src/lib/api.ts`, `tests/test_bybit_annotation_fields.py`.
 

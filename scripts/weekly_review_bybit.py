@@ -34,6 +34,11 @@ Core principles:
 - Leverage should match confidence. x20 only for A+ setups.
 - Risk 2% per trade; circuit breakers: -5% day, -10% week.
 
+Journal v2 fields (when present — `journal_schema_version=2`):
+- `clean_sample` = followed_process AND no behavioral_error. Edge claims should rest on clean samples; quote dirty-vs-clean expectancy to price indiscipline.
+- `realized_r` / `mfe_r` / `mae_r` / `exit_efficiency` measure how price actually moved in R. Low exit_efficiency with high mfe_r = cutting winners; behavioral_error `held_loser` = the opposite.
+- `behavioral_error` tags ARE the leaks — rank them by cost. `chain` (htf/location/mtf/trigger/structure) is the closed-vocab read; cite it instead of free text when diagnosing setup quality.
+
 Output format (markdown):
 
 # Week Review — <date range>
@@ -110,6 +115,12 @@ def build_user_prompt(trades: list[dict], days: int) -> str:
     wins = sum(1 for t in closed if (t.get("pnl_usd") or 0) > 0)
     wr = (wins / len(closed) * 100) if closed else 0
 
+    # v2 discipline slice — clean_sample + realized_r only meaningful on v2 rows.
+    v2_closed = [t for t in closed if t.get("journal_schema_version") == 2]
+    v2_clean = [t for t in v2_closed if t.get("clean_sample") is True]
+    v2_reviewed = [t for t in v2_closed if t.get("followed_process") is not None]
+    clean_rs = [float(t["realized_r"]) for t in v2_clean if t.get("realized_r") is not None]
+
     summary = {
         "period_days": days,
         "total_trades": len(trades),
@@ -117,6 +128,10 @@ def build_user_prompt(trades: list[dict], days: int) -> str:
         "open": len(trades) - len(closed),
         "net_pnl_usd": round(total_pnl, 2),
         "win_rate_pct": round(wr, 1),
+        "v2_closed": len(v2_closed),
+        "v2_reviewed": len(v2_reviewed),
+        "v2_clean": len(v2_clean),
+        "v2_clean_expectancy_r": round(sum(clean_rs) / len(clean_rs), 3) if clean_rs else None,
     }
 
     trade_rows: list[dict] = []
@@ -141,12 +156,28 @@ def build_user_prompt(trades: list[dict], days: int) -> str:
             "pnl_usd": t.get("pnl_usd"),
             "pnl_pct": t.get("pnl_pct"),
             "setup_type": t.get("setup_type"),
-            "confluences": t.get("confluences"),
-            "confidence": t.get("confidence"),
             "thesis_pre": t.get("thesis_pre"),
             "lesson_post": t.get("lesson_post"),
             "emotional_state": t.get("emotional_state"),
-            "grade_self": t.get("grade_self"),
+            # v2 closed-vocab chain + R metrics + process review (the learnable signal).
+            "chain": {
+                "htf_bias_daily": t.get("htf_bias_daily"),
+                "htf_bias_4h": t.get("htf_bias_4h"),
+                "location_pd": t.get("location_pd"),
+                "location_quality": t.get("location_quality"),
+                "mtf_1h": t.get("mtf_1h"),
+                "ltf_trigger": t.get("ltf_trigger"),
+                "structure_type": t.get("structure_type"),
+                "tf_aligned_count": t.get("tf_aligned_count"),
+            },
+            "followed_process": t.get("followed_process"),
+            "clean_sample": t.get("clean_sample"),
+            "technical_error": t.get("technical_error"),
+            "behavioral_error": t.get("behavioral_error"),
+            "realized_r": t.get("realized_r"),
+            "mfe_r": t.get("mfe_r"),
+            "mae_r": t.get("mae_r"),
+            "exit_efficiency": t.get("exit_efficiency"),
             "context": {
                 "htf_aligned": htf.get("aligned_with_trade"),
                 "bias_4h": htf.get("bias_4h"),
