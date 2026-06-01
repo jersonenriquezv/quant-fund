@@ -9,11 +9,21 @@ on bot data — this router only SELECTs candles; it never writes bot tables or
 Redis. See docs/plans/chart-replay-2026-06-01.md.
 """
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Query
 
 from dashboard.api import queries
+from shared.models import Candle
+from strategy_service.market_structure import MarketStructureAnalyzer
+from strategy_service.order_blocks import OrderBlockDetector
+from strategy_service.fvg import FVGDetector
 
 router = APIRouter()
+
+# Detector-replay window: how many bars before `to` to drive the detectors.
+# Caps the O(window^2) structure recompute; well above any zone's max age in bars.
+DETECTION_WINDOW_BARS = 600
 
 # --- Scope --------------------------------------------------------------
 # Locked to the two pairs with clean, deep candle history (grill decision).
@@ -155,3 +165,118 @@ async def chart_history(
         "c": [float(r["close"]) for r in rows],
         "v": [float(r["volume"]) for r in rows],
     }
+
+
+# --- detections (bot-detection overlay) --------------------------------
+
+def _rows_to_candles(rows: list[dict], pair: str, timeframe: str) -> list[Candle]:
+    return [
+        Candle(
+            timestamp=r["timestamp"],
+            open=float(r["open"]),
+            high=float(r["high"]),
+            low=float(r["low"]),
+            close=float(r["close"]),
+            volume=float(r["volume"]),
+            volume_quote=float(r["volume_quote"]),
+            pair=pair,
+            timeframe=timeframe,
+            confirmed=True,
+        )
+        for r in rows
+    ]
+
+
+def _replay_detections(candles: list[Candle], pair: str, timeframe: str) -> dict:
+    """Drive OB/FVG detectors bar-by-bar up to the last candle (as-of `to`).
+
+    Fidelity notes (see docs/plans/chart-replay-2026-06-01.md, grill Q2):
+    - OB/FVG state (mitigation, retest, fill) depends on call ORDER, so we feed
+      candles incrementally instead of one-shotting the whole window.
+    - Expiration is driven by the `current_time_ms` PARAMETER (= the bar's own
+      timestamp), NOT wall-clock `time.time()`. The detectors never read the
+      clock directly, so no monkeypatch is needed — passing bar.timestamp makes
+      a zone expire exactly as it would have when the live bot saw that bar.
+    - MarketStructureAnalyzer.analyze() is stateless (recomputes per call); only
+      OB/FVG carry state, so a single analyzer/OB/FVG instance is reused.
+
+    Returns the zones active as of the final bar.
+    """
+    structure = MarketStructureAnalyzer()
+    ob_detector = OrderBlockDetector()
+    fvg_detector = FVGDetector()
+
+    active_obs: list = []
+    active_fvgs: list = []
+
+    for i in range(len(candles)):
+        visible = candles[: i + 1]
+        now_ms = visible[-1].timestamp
+        state = structure.analyze(visible, pair, timeframe)
+        active_obs = ob_detector.update(
+            visible, state.structure_breaks, pair, timeframe, now_ms
+        )
+        active_fvgs = fvg_detector.update(visible, pair, timeframe, now_ms)
+
+    obs = [
+        {
+            "type": "order_block",
+            "direction": ob.direction,
+            "timestamp": ob.timestamp,
+            "high": ob.high,
+            "low": ob.low,
+            "body_high": ob.body_high,
+            "body_low": ob.body_low,
+            "entry_price": ob.entry_price,
+            "mitigated": ob.mitigated,
+            "impulse_score": ob.impulse_score,
+            "retest_count": ob.retest_count,
+        }
+        for ob in active_obs
+    ]
+    fvgs = [
+        {
+            "type": "fvg",
+            "direction": fvg.direction,
+            "timestamp": fvg.timestamp,
+            "high": fvg.high,
+            "low": fvg.low,
+            "size_pct": fvg.size_pct,
+            "filled_pct": fvg.filled_pct,
+            "fully_filled": fvg.fully_filled,
+        }
+        for fvg in active_fvgs
+    ]
+    return {"order_blocks": obs, "fvgs": fvgs}
+
+
+@router.get("/chart/detections")
+async def chart_detections(
+    symbol: str = Query(...),
+    resolution: str = Query(...),
+    to: int = Query(..., description="As-of time, Unix seconds (UDF convention)"),
+) -> dict:
+    """Bot-detection overlay: OB/FVG zones active as of bar `to`.
+
+    Replays the bot's own detectors over the window of bars ending at `to`,
+    so the overlay matches what the live bot would have recorded at that time
+    (the detector-validation tool). CPU-bound replay runs off the event loop.
+    """
+    _validate_chart_pair(symbol)
+    timeframe = _resolve_timeframe(resolution)
+    to_ms = to * 1000
+
+    # Window = the last DETECTION_WINDOW_BARS bars at or before `to`.
+    rows = await queries.get_candles_range(
+        symbol, timeframe, 0, to_ms, limit=DETECTION_WINDOW_BARS
+    )
+    if not rows:
+        return {"order_blocks": [], "fvgs": [], "as_of": to, "bars": 0}
+
+    candles = _rows_to_candles(rows, symbol, timeframe)
+    result = await asyncio.to_thread(
+        _replay_detections, candles, symbol, timeframe
+    )
+    result["as_of"] = to
+    result["bars"] = len(candles)
+    return result
