@@ -31,9 +31,11 @@ from scripts.report_engine1_shadow import (
     DRIFT_TOLERANCE_ROWS,
     ENGINE1_PRIMARY,
     JITTER_GAP_TOLERANCE_ROWS,
+    N_TARGET,
     ORPHAN_EXPLODE_ROWS,
     ORPHAN_TOLERANCE_ROWS,
     PAIRING_WINDOW_SECONDS,
+    PENDING_STALE_HOURS,
     Row,
     aggregate,
     aggregate_paired,
@@ -97,6 +99,23 @@ def test_cluster_passes_splits_when_gap_exceeds_window():
     ]
     passes = cluster_passes(rows)
     assert len(passes) == 2
+
+
+def test_cluster_passes_groups_at_exact_window_boundary():
+    """created_at exactly PAIRING_WINDOW_SECONDS apart stays in ONE cluster.
+
+    The clustering comparison is `<=` (report:231), so a row landing on
+    the boundary belongs to the current pass. Pins the off-by-one: the
+    split test uses +0.5 (above the window); this pins the inclusive edge.
+    """
+    rows = [
+        _row(ENGINE1_PRIMARY, "BTC/USDT", 1000, "shadow_tp", T0),
+        _row(BENCH_RANDOM, "BTC/USDT", 1000, "shadow_tp",
+             T0 + timedelta(seconds=PAIRING_WINDOW_SECONDS)),
+    ]
+    passes = cluster_passes(rows)
+    assert len(passes) == 1
+    assert len(passes[0]) == 2
 
 
 def test_cluster_passes_separates_pairs():
@@ -267,6 +286,9 @@ def test_verdict_orphan_drift_only_does_not_trigger_roto():
     assert exit_code == 1
     assert not roto
     assert any("orphan" in r for r in sospechoso)
+    # Negative assertion: orphan is the ONLY reason — no spurious dedup /
+    # jitter reason leaked in (agg has zero dedup, gaps all zero).
+    assert len(sospechoso) == 1
 
 
 def test_verdict_orphan_within_tolerance_yields_sano():
@@ -380,7 +402,9 @@ def test_verdict_jitter_gaps_within_tolerance_keep_sano():
     agg = _agg_with(e1_emis=10, e1_resolved=60)
     paired_drift = {BENCH_RANDOM: 0, BENCH_MARKET: -2}
     drift_effective = {BENCH_RANDOM: 0, BENCH_MARKET: 0}
-    gaps = {BENCH_RANDOM: 0, BENCH_MARKET: 2}  # at tolerance, not exceeding
+    # at tolerance, not exceeding — reference the constant so the boundary
+    # tracks JITTER_GAP_TOLERANCE_ROWS if it ever changes.
+    gaps = {BENCH_RANDOM: 0, BENCH_MARKET: JITTER_GAP_TOLERANCE_ROWS}
     orphans = {BENCH_RANDOM: 0, BENCH_MARKET: 0}
 
     status, exit_code, roto, sospechoso = compute_verdict(
@@ -437,3 +461,130 @@ def test_verdict_sample_starved_with_no_other_issues():
     )
     assert status == "SAMPLE-STARVED"
     assert exit_code == 0
+
+
+# ============================================================
+# Leak + pending ROTO arms — previously zero coverage. Every other
+# verdict test passes leaks=[] and pending_max_age_h=None, so these two
+# arms (report:392, :408) were never exercised: a bug in either would
+# leave the whole suite green while the report emits a false SANO.
+# ============================================================
+
+_ZERO = {BENCH_RANDOM: 0, BENCH_MARKET: 0}
+
+
+def test_verdict_pair_leakage_triggers_roto():
+    """A non-empty leak group drives ROTO (rows outside expected pairs that
+    are not shadow_pair_filtered = quarantine breach)."""
+    agg = _agg_with(e1_emis=10, e1_resolved=60)  # not sample-starved
+    leaks = [(ENGINE1_PRIMARY, "DOGE/USDT", "shadow_tp", 3)]
+
+    status, exit_code, roto, sospechoso = compute_verdict(
+        agg=agg, drift_paired=_ZERO, drift_effective=_ZERO,
+        gaps=_ZERO, orphans=_ZERO, leaks=leaks, pending_max_age_h=None,
+    )
+    assert status == "ROTO"
+    assert exit_code == 2
+    assert any("leakage" in r for r in roto)
+    assert not sospechoso  # leak is the only reason
+
+
+def test_verdict_stale_pending_triggers_roto():
+    """Oldest pending row beyond PENDING_STALE_HOURS drives ROTO."""
+    agg = _agg_with(e1_emis=10, e1_resolved=60)
+
+    status, exit_code, roto, _ = compute_verdict(
+        agg=agg, drift_paired=_ZERO, drift_effective=_ZERO,
+        gaps=_ZERO, orphans=_ZERO, leaks=[],
+        pending_max_age_h=PENDING_STALE_HOURS + 1,
+    )
+    assert status == "ROTO"
+    assert exit_code == 2
+    assert any("stale pending" in r for r in roto)
+
+
+def test_verdict_pending_at_stale_boundary_no_roto():
+    """Pending age exactly at PENDING_STALE_HOURS does NOT trip ROTO (`>`).
+
+    Pins the inclusive edge of the stale-pending arm so a `>`-to-`>=`
+    refactor would fail loudly.
+    """
+    agg = _agg_with(e1_emis=10, e1_resolved=60)
+
+    status, exit_code, roto, sospechoso = compute_verdict(
+        agg=agg, drift_paired=_ZERO, drift_effective=_ZERO,
+        gaps=_ZERO, orphans=_ZERO, leaks=[],
+        pending_max_age_h=float(PENDING_STALE_HOURS),
+    )
+    assert status == "SANO"
+    assert not roto and not sospechoso
+
+
+# ============================================================
+# Precedence + bucket-assignment guards. The verdict is built by
+# accumulating into roto_reasons / sospechoso_reasons, then returning on
+# the first non-empty bucket in the order ROTO > SOSPECHOSO >
+# SAMPLE-STARVED > SANO (report:428). Two distinct things must hold and
+# each needs its own test:
+#   (a) ORDER  — a ROTO-level signal wins over a lower-severity state.
+#   (b) BUCKET — a ROTO-level signal actually lands in roto_reasons, not
+#       sospechoso_reasons. Testing order alone would let a refactor that
+#       misfiles a leak into sospechoso pass silently.
+# ============================================================
+
+def test_verdict_orphan_explode_beats_sample_starved():
+    """ORDER guard: a sample-starved run with orphan-explode reports ROTO,
+    never SAMPLE-STARVED. Starvation can never mask a structural break
+    because roto_reasons is evaluated before sample_starved."""
+    agg = _agg_with(e1_emis=5, e1_resolved=10)  # starved (< N_TARGET)
+    orphans = {BENCH_RANDOM: ORPHAN_EXPLODE_ROWS + 1, BENCH_MARKET: 0}
+
+    status, exit_code, roto, _ = compute_verdict(
+        agg=agg, drift_paired=_ZERO, drift_effective=_ZERO,
+        gaps=_ZERO, orphans=orphans, leaks=[], pending_max_age_h=None,
+    )
+    assert status == "ROTO"
+    assert exit_code == 2
+    assert any("explode" in r for r in roto)
+    assert agg[ENGINE1_PRIMARY]["resolved"] < N_TARGET  # genuinely starved
+
+
+def test_verdict_leak_lands_in_roto_bucket_not_sospechoso():
+    """BUCKET guard: pair leakage must populate roto_reasons, not
+    sospechoso_reasons. Co-fire a sospechoso-level orphan count so BOTH
+    buckets are non-empty — verifies the leak drives ROTO by bucket
+    placement, not merely by evaluation order. A refactor moving leak
+    detection into the sospechoso bucket would still satisfy an
+    order-only test, so this asserts the leak reason is absent from
+    sospechoso and present in roto."""
+    agg = _agg_with(e1_emis=10, e1_resolved=60)
+    orphans = {BENCH_RANDOM: ORPHAN_TOLERANCE_ROWS + 1, BENCH_MARKET: 0}  # sospechoso-level
+    leaks = [(ENGINE1_PRIMARY, "DOGE/USDT", "shadow_tp", 1)]
+
+    status, exit_code, roto, sospechoso = compute_verdict(
+        agg=agg, drift_paired=_ZERO, drift_effective=_ZERO,
+        gaps=_ZERO, orphans=orphans, leaks=leaks, pending_max_age_h=None,
+    )
+    assert status == "ROTO"
+    assert exit_code == 2
+    assert any("leakage" in r for r in roto)          # leak in ROTO bucket
+    assert not any("leakage" in r for r in sospechoso)  # not misfiled
+    assert any("orphan" in r for r in sospechoso)     # sospechoso still recorded
+
+
+def test_verdict_paired_drift_and_orphan_both_fire_reports_roto():
+    """COMBINED guard: effective drift (ROTO) + orphan-tolerance
+    (SOSPECHOSO) firing together reports ROTO and records both reasons in
+    their respective buckets."""
+    agg = _agg_with(e1_emis=10, e1_resolved=60)
+    drift_effective = {BENCH_RANDOM: DRIFT_TOLERANCE_ROWS + 1, BENCH_MARKET: 0}
+    orphans = {BENCH_RANDOM: 0, BENCH_MARKET: ORPHAN_TOLERANCE_ROWS + 1}
+
+    status, exit_code, roto, sospechoso = compute_verdict(
+        agg=agg, drift_paired=drift_effective, drift_effective=drift_effective,
+        gaps=_ZERO, orphans=orphans, leaks=[], pending_max_age_h=None,
+    )
+    assert status == "ROTO"
+    assert exit_code == 2
+    assert any("effective drift" in r for r in roto)
+    assert any("orphan" in r for r in sospechoso)
