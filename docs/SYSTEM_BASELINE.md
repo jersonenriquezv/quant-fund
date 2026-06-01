@@ -528,6 +528,13 @@ D: net_score <  2
 
 ## 8. Changelog
 
+### 2026-06-01 — Chart replay Phase A2: TradingView Datafeed backend
+**Files:** `dashboard/api/routes/chart.py` (new), `dashboard/api/queries.py`, `dashboard/api/main.py`, `tests/test_chart_datafeed.py`, `docs/context/06-dashboard.md`, plan `docs/plans/chart-replay-2026-06-01.md`, grill `docs/grill/chart-replay.md`.
+
+**What changed:** backend half of the dashboard chart-replay tool (grill verdict BUILD). Added UDF Datafeed endpoints `/api/chart/{config,symbols,search,history}` consumed by the upcoming `/chart` route. `queries.get_candles_range()` is a new range query by `from`/`to` ms (cap 5000, keeps bars nearest `to`). Scope locked to BTC/ETH allowlist; resolution map 5/15/60/240 → 5m/15m/1h/4h; UDF seconds↔ms conversion + `no_data`/`nextTime` paging. Read-only on bot data (SELECTs candles only). 10 unit tests, no live DB.
+
+**Not included (blocked / later):** Phase A frontend (A3 live `subscribeBars`, A4 `/chart` route, A5 mobile) needs the TradingView Charting Library — self-hosted, gated behind private-repo access. Phase C (detector-replay overlay via `SimulatedClock`) is TV-independent and pending.
+
 ### 2026-06-01 — Bybit journal v2 Phase 7: docs sync + ML training filter (redesign COMPLETE)
 **Files:** `docs/SYSTEM_BASELINE.md`, `docs/plans/bybit-journal-v2-2026-05-30.md`, memory `project_bybit_journal_v2.md`.
 

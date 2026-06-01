@@ -28,6 +28,10 @@ Si el dashboard crashea, el bot sigue operando normalmente.
 | `GET /api/headlines` | Redis (`qf:bot:news:headlines:{BTC,ETH}`) | Recent news headlines (CryptoCompare) |
 | `POST /api/trades/{pair}/cancel` | Redis write (`qf:cancel_request:{pair}`) | Solicita cancelación de posición (TTL 60s) |
 | `GET /api/liquidation/heatmap/{pair}` | PG candles + Redis OI + cache | Estimated liquidation levels (bins con long/short USD) |
+| `GET /api/chart/config` | Static | TradingView UDF Datafeed config (resoluciones soportadas: 5/15/60/240) |
+| `GET /api/chart/symbols?symbol=` | Static | resolveSymbol — LibrarySymbolInfo (solo BTC/USDT, ETH/USDT) |
+| `GET /api/chart/search?query=` | Static | searchSymbols — restringido al allowlist BTC/ETH |
+| `GET /api/chart/history?symbol=&resolution=&from=&to=` | PG candles | getBars — OHLCV por rango (from/to en segundos UDF), cap 5000 bars |
 | `POST /api/manual/calculate` | Pure math | Position sizing & R:R calculator (linear + inverse) |
 | `POST /api/manual/trades` | PG manual_trades | Create manual trade (planned) |
 | `GET /api/manual/trades` | PG manual_trades | List trades (filter by status/pair) |
@@ -119,6 +123,7 @@ dashboard/
 │   │   ├── strategy.py     # GET /api/strategy/order-blocks, /api/strategy/htf-bias
 │   │   ├── sentiment.py    # GET /api/sentiment
 │   │   ├── liquidation.py  # GET /api/liquidation/heatmap/{pair}
+│   │   ├── chart.py        # GET /api/chart/{config,symbols,search,history} (TradingView UDF Datafeed)
 │   │   └── manual_routes.py # Manual trading API + HTML page
 │   ├── manual/
 │   │   ├── calculator.py  # Position sizing math (linear + inverse), no external deps
