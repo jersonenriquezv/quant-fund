@@ -528,6 +528,13 @@ D: net_score <  2
 
 ## 8. Changelog
 
+### 2026-06-01 — Chart replay Phase C1: detector-replay overlay endpoint
+**Files:** `dashboard/api/routes/chart.py`, `tests/test_chart_detections.py`, `docs/context/06-dashboard.md`.
+
+**What changed:** backend for the bot-detection overlay (grill Q2 — the detector-validation tool). New `GET /api/chart/detections?symbol=&resolution=&to=` replays the bot's OB/FVG detectors over the window of bars ending at `to` and returns the zones active as-of that bar, with full geometry. Fidelity: detectors are driven **incrementally** (OB/FVG mitigation/retest/fill depend on call order); expiration is keyed off each bar's own timestamp via the `current_time_ms` **parameter** — `order_blocks.py`/`fvg.py` never read wall-clock `time.time()` (only `service.py` does), so no `SimulatedClock`/monkeypatch is needed, simpler than the plan assumed. CPU-bound replay runs off the event loop (`asyncio.to_thread`), window capped at 600 bars. Read-only: SELECTs candles + runs detectors in-memory; no bot tables/Redis writes. 6 unit tests cover the replay-harness contract + endpoint shape.
+
+**Not included:** C2 frontend overlay + C3 fidelity gate (overlay vs a recorded `ml_setups`/`trades` setup) — need the TradingView frontend (blocked on Charting Library private-repo access) and a live DB.
+
 ### 2026-06-01 — Chart replay Phase A2: TradingView Datafeed backend
 **Files:** `dashboard/api/routes/chart.py` (new), `dashboard/api/queries.py`, `dashboard/api/main.py`, `tests/test_chart_datafeed.py`, `docs/context/06-dashboard.md`, plan `docs/plans/chart-replay-2026-06-01.md`, grill `docs/grill/chart-replay.md`.
 
