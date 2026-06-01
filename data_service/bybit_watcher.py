@@ -39,6 +39,27 @@ logger = setup_logger("bybit_watcher")
 POLL_INTERVAL_SEC = 60
 TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
 
+# Journal v2 Phase 3 — auto-classifier chain. Each tuple maps the immutable machine
+# column (auto_*) to its human-editable counterpart. Both are written at open: auto_*
+# stays fixed (the machine's guess), the human col is pre-filled so the form opens
+# populated and the user confirms/corrects. On re-tick the human col is COALESCE'd so a
+# dashboard correction is never clobbered. trade_classifier emits the auto_* keys.
+_V2_CHAIN_MAP = [
+    ("auto_htf_bias_daily", "htf_bias_daily"),
+    ("auto_htf_bias_4h", "htf_bias_4h"),
+    ("auto_htf_structure_reason", "htf_structure_reason"),
+    ("auto_location_pd", "location_pd"),
+    ("auto_location_quality", "location_quality"),
+    ("auto_mtf_1h", "mtf_1h"),
+    ("auto_ltf_trigger", "ltf_trigger"),
+    ("auto_structure_type", "structure_type"),
+    ("auto_conf_htf", "conf_htf"),
+    ("auto_conf_location", "conf_location"),
+    ("auto_conf_mtf", "conf_mtf"),
+    ("auto_conf_trigger", "conf_trigger"),
+    ("auto_conf_noconflict", "conf_noconflict"),
+]
+
 
 @dataclass(frozen=True)
 class PositionKey:
@@ -283,15 +304,24 @@ class BybitWatcher:
             return {}
 
     def _upsert_pending(self, p: PendingOrder, context: dict, auto: dict) -> int:
-        sql = """
-        INSERT INTO bybit_pending_orders (
-            order_id, order_link_id, symbol, side, order_type,
-            qty, price, trigger_price, stop_order_type, time_in_force,
-            reduce_only, position_idx, placed_at, context_snapshot,
-            auto_setup_type, auto_confluences, auto_detractors,
-            auto_grade, auto_classifier_version,
-            status, last_seen_at, updated_at
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'pending',NOW(),NOW())
+        auto_cols = [a for a, _ in _V2_CHAIN_MAP]
+        human_cols = [h for _, h in _V2_CHAIN_MAP]
+        chain_vals = [auto.get(a) for a in auto_cols]
+
+        base_cols = [
+            "order_id", "order_link_id", "symbol", "side", "order_type",
+            "qty", "price", "trigger_price", "stop_order_type", "time_in_force",
+            "reduce_only", "position_idx", "placed_at", "context_snapshot",
+            "auto_setup_type", "auto_confluences", "auto_detractors",
+            "auto_grade", "auto_classifier_version",
+        ] + auto_cols + human_cols
+        # status, last_seen_at, updated_at are literals appended after the placeholders.
+        placeholders = ",".join(["%s"] * len(base_cols)) + ",'pending',NOW(),NOW()"
+        cols = base_cols + ["status", "last_seen_at", "updated_at"]
+
+        sql = f"""
+        INSERT INTO bybit_pending_orders ({", ".join(cols)})
+        VALUES ({placeholders})
         ON CONFLICT (order_id) DO UPDATE SET
             qty = EXCLUDED.qty,
             price = EXCLUDED.price,
@@ -300,17 +330,18 @@ class BybitWatcher:
             updated_at = NOW()
         RETURNING id
         """
+        params = [
+            p.order_id, p.order_link_id, p.symbol, p.side, p.order_type,
+            p.qty, p.price, p.trigger_price, p.stop_order_type, p.time_in_force,
+            p.reduce_only, p.position_idx, p.placed_at, Json(context),
+            auto.get("auto_setup_type"),
+            Json(auto.get("auto_confluences")) if auto.get("auto_confluences") is not None else None,
+            Json(auto.get("auto_detractors")) if auto.get("auto_detractors") is not None else None,
+            auto.get("auto_grade"),
+            auto.get("auto_classifier_version"),
+        ] + chain_vals + chain_vals
         with self._conn() as conn, conn.cursor() as cur:
-            cur.execute(sql, (
-                p.order_id, p.order_link_id, p.symbol, p.side, p.order_type,
-                p.qty, p.price, p.trigger_price, p.stop_order_type, p.time_in_force,
-                p.reduce_only, p.position_idx, p.placed_at, Json(context),
-                auto.get("auto_setup_type"),
-                Json(auto.get("auto_confluences")) if auto.get("auto_confluences") is not None else None,
-                Json(auto.get("auto_detractors")) if auto.get("auto_detractors") is not None else None,
-                auto.get("auto_grade"),
-                auto.get("auto_classifier_version"),
-            ))
+            cur.execute(sql, params)
             row = cur.fetchone()
             conn.commit()
             return row[0]
@@ -442,39 +473,56 @@ class BybitWatcher:
         sl_raw = st.raw.get("stopLoss")
         sl_price = float(sl_raw) if sl_raw not in (None, "", "0") else None
         equity = self._get_equity()
-        sql = """
-        INSERT INTO bybit_trade_annotations (
-            symbol, side, opened_at, entry_price, size, leverage,
-            notional_value, context_snapshot,
-            auto_setup_type, auto_confluences, auto_detractors,
-            auto_grade, auto_classifier_version,
-            position_sl_price, account_equity_at_open, journal_schema_version,
-            status
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'open')
+
+        auto_cols = [a for a, _ in _V2_CHAIN_MAP]
+        human_cols = [h for _, h in _V2_CHAIN_MAP]
+        chain_vals = [auto.get(a) for a in auto_cols]  # machine guess; pre-fills human cols too
+
+        cols = [
+            "symbol", "side", "opened_at", "entry_price", "size", "leverage",
+            "notional_value", "context_snapshot",
+            "auto_setup_type", "auto_confluences", "auto_detractors",
+            "auto_grade", "auto_classifier_version",
+            "position_sl_price", "account_equity_at_open", "journal_schema_version",
+        ] + auto_cols + human_cols + ["status"]
+        placeholders = ",".join(["%s"] * len(cols))
+
+        set_clauses = [
+            "context_snapshot = EXCLUDED.context_snapshot",
+            "auto_setup_type = EXCLUDED.auto_setup_type",
+            "auto_confluences = EXCLUDED.auto_confluences",
+            "auto_detractors = EXCLUDED.auto_detractors",
+            "auto_grade = EXCLUDED.auto_grade",
+            "auto_classifier_version = EXCLUDED.auto_classifier_version",
+            "position_sl_price = COALESCE(EXCLUDED.position_sl_price, bybit_trade_annotations.position_sl_price)",
+            "account_equity_at_open = COALESCE(EXCLUDED.account_equity_at_open, bybit_trade_annotations.account_equity_at_open)",
+            "journal_schema_version = EXCLUDED.journal_schema_version",
+        ]
+        # auto_* always refreshed (immutable machine view); human cols only filled when
+        # still NULL, so a user correction via the dashboard survives a watcher re-tick.
+        set_clauses += [f"{a} = EXCLUDED.{a}" for a in auto_cols]
+        set_clauses += [f"{h} = COALESCE(bybit_trade_annotations.{h}, EXCLUDED.{h})" for h in human_cols]
+
+        sql = f"""
+        INSERT INTO bybit_trade_annotations ({", ".join(cols)})
+        VALUES ({placeholders})
         ON CONFLICT (symbol, side, opened_at) DO UPDATE
-            SET context_snapshot = EXCLUDED.context_snapshot,
-                auto_setup_type = EXCLUDED.auto_setup_type,
-                auto_confluences = EXCLUDED.auto_confluences,
-                auto_detractors = EXCLUDED.auto_detractors,
-                auto_grade = EXCLUDED.auto_grade,
-                auto_classifier_version = EXCLUDED.auto_classifier_version,
-                position_sl_price = COALESCE(EXCLUDED.position_sl_price, bybit_trade_annotations.position_sl_price),
-                account_equity_at_open = COALESCE(EXCLUDED.account_equity_at_open, bybit_trade_annotations.account_equity_at_open),
-                journal_schema_version = EXCLUDED.journal_schema_version
+            SET {", ".join(set_clauses)}
         RETURNING id
         """
+        params = [
+            st.key.symbol, st.key.side, st.updated_at,
+            st.entry_price, st.size, st.leverage,
+            notional, Json(context),
+            auto.get("auto_setup_type"),
+            Json(auto.get("auto_confluences")) if auto.get("auto_confluences") is not None else None,
+            Json(auto.get("auto_detractors")) if auto.get("auto_detractors") is not None else None,
+            auto.get("auto_grade"),
+            auto.get("auto_classifier_version"),
+            sl_price, equity, 2,
+        ] + chain_vals + chain_vals + ["open"]
         with self._conn() as conn, conn.cursor() as cur:
-            cur.execute(sql, (
-                st.key.symbol, st.key.side, st.updated_at,
-                st.entry_price, st.size, st.leverage,
-                notional, Json(context),
-                auto.get("auto_setup_type"),
-                Json(auto.get("auto_confluences")) if auto.get("auto_confluences") is not None else None,
-                Json(auto.get("auto_detractors")) if auto.get("auto_detractors") is not None else None,
-                auto.get("auto_grade"),
-                auto.get("auto_classifier_version"),
-                sl_price, equity, 2,
-            ))
+            cur.execute(sql, params)
             row = cur.fetchone()
             conn.commit()
             return row[0]
@@ -684,6 +732,14 @@ class BybitWatcher:
         lines = [
             f"🧠 <b>{setup}</b> · grade <b>{grade}</b> · +{len(conflu)} / -{len(detr)}",
         ]
+        # Journal v2 chain pre-fill (machine guess; confirm/correct in the form).
+        chain_count = sum(1 for a, _ in _V2_CHAIN_MAP if a.startswith("auto_conf_") and auto.get(a) is True)
+        trig = auto.get("auto_ltf_trigger")
+        if auto.get("auto_structure_type") or trig:
+            lines.append(
+                f"🔗 D <b>{auto.get('auto_htf_bias_daily', '?')}</b>/4H <b>{auto.get('auto_htf_bias_4h', '?')}</b> · "
+                f"{auto.get('auto_structure_type', '?')} · trig <b>{trig or '—'}</b> · conf <b>{chain_count}/5</b>"
+            )
         if conflu:
             lines.append("✅ " + ", ".join(conflu[:6]) + ("…" if len(conflu) > 6 else ""))
         if detr:
