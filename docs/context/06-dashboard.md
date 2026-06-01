@@ -32,6 +32,7 @@ Si el dashboard crashea, el bot sigue operando normalmente.
 | `GET /api/chart/symbols?symbol=` | Static | resolveSymbol — LibrarySymbolInfo (solo BTC/USDT, ETH/USDT) |
 | `GET /api/chart/search?query=` | Static | searchSymbols — restringido al allowlist BTC/ETH |
 | `GET /api/chart/history?symbol=&resolution=&from=&to=` | PG candles | getBars — OHLCV por rango (from/to en segundos UDF), cap 5000 bars |
+| `GET /api/chart/detections?symbol=&resolution=&to=` | PG candles + detectores OB/FVG (in-memory, read-only) | Overlay de detecciones del bot: zonas OB/FVG activas as-of `to`. Replay incremental, expiración por `current_time_ms`=ts de la barra (sin reloj wall-clock); window 600 barras, corre off event-loop |
 | `POST /api/manual/calculate` | Pure math | Position sizing & R:R calculator (linear + inverse) |
 | `POST /api/manual/trades` | PG manual_trades | Create manual trade (planned) |
 | `GET /api/manual/trades` | PG manual_trades | List trades (filter by status/pair) |
