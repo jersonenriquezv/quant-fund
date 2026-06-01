@@ -1350,3 +1350,80 @@ select.manual-input {
     display: none;
   }
 }
+
+/* ===== Chart (/chart) — klinecharts replay + overlay ===== */
+.chart-page {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  background: var(--bg-primary);
+}
+.chart-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.chart-back {
+  color: #9ca3af;
+  text-decoration: none;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.chart-back:hover { color: #fff; }
+.chart-controls {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.chart-seg {
+  display: inline-flex;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 100px;
+  padding: 2px;
+}
+.chart-seg-btn {
+  background: transparent;
+  border: none;
+  color: #9ca3af;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 14px;
+  border-radius: 100px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.chart-seg-btn.active {
+  background: var(--long, #b2fd02);
+  color: #000;
+}
+.chart-status {
+  margin-left: auto;
+  font-size: 12px;
+  color: #9ca3af;
+  font-variant-numeric: tabular-nums;
+}
+.chart-canvas {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+}
+
+@media (max-width: 639px) {
+  .chart-header {
+    gap: 10px;
+    padding: 10px 12px;
+  }
+  .chart-status {
+    margin-left: 0;
+    width: 100%;
+    order: 3;
+  }
+  .chart-seg-btn {
+    padding: 6px 11px;
+  }
+}

@@ -48,6 +48,9 @@ Si el dashboard crashea, el bot sigue operando normalmente.
 
 ## Frontend — Layout
 
+### Ruta `/chart` — klinecharts (replay + overlay)
+Página dedicada (`src/app/chart/page.tsx`, lib `src/lib/chartDatafeed.ts`). Usa **klinecharts 9.8.12** (lazy en esta ruta; bundle 52.4 kB; sparklines siguen SVG). Switchers BTC/ETH + 5m/15m/1h/4h. `chartDatafeed.ts` mapea las respuestas UDF de `/api/chart/*` (segundos) a klines (ms). Tema Apple-dark. Datos via `/api/chart/history` (confirmed-bar; sin ticks intra-vela). **Pendiente:** replay control (A5), position tool (A6), overlay de detecciones OB/FVG via `/api/chart/detections` (C2).
+
 ```
 HEADER: Status dot + "QF" + LIVE/DEMO pill + F&G pill (colored) + UTC clock (time only)
 ├── BTC/USDT panel (gradient bg, HTF bias badge) | ETH/USDT panel (gradient bg) | Risk gauges (arcos con glow)
