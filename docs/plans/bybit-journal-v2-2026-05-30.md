@@ -3,7 +3,7 @@
 **Started:** 2026-05-30
 **Goal:** ML-grade manual-trade journaling that separates the *trading edge* from *behavioral noise*. Replaces the v1 free-text annotation system (unlearnable — rule-break trades mixed with clean ones poison any dataset).
 
-**Status:** Phase 0+1 DONE (merged PR #46, main `e462112`). Phases 2–7 pending.
+**Status:** Phase 0+1 DONE (#46), Phase 2 DONE (#48), Phase 3 DONE (PR #49), Phase 4 DONE (PR #50), Phase 5 DONE (PR #51), Phase 6 DONE (this branch). Phase 7 pending.
 
 ---
 
@@ -84,11 +84,13 @@ Without SL, R unit has no data source → entire stats layer is decorative.
 - **REVIEW:** `followed_process` toggle + multi-select error chips (blank by default), lesson.
 - Demote `grade_self` / `confidence` (keep optional). Mobile: nothing overflows at 375px.
 
-### ⏳ Phase 6 — switch readers + queries/dashboard
-- Migrate `scripts/weekly_review_bybit.py` + `scripts/explain_bot.py` to v2 cols.
-- Add queries (n always col 1, `clean_sample` filter on edge math, `unnest` JSONB tags): expectancy + PF per setup; clean-vs-dirty cost; behavioral-leak ranked; R distribution; exit efficiency.
-- Surface as stats endpoint + Grafana panel.
-- **THEN** stop writing `confluences` / `grade_self` (demote, keep cols). Readers switch LAST so the watcher daemon never crashes mid-flight.
+### ✅ Phase 6 — switch readers + queries/dashboard (DONE)
+- `scripts/weekly_review_bybit.py`: `build_user_prompt` now feeds Claude the v2 chain + R metrics + `clean_sample`/`followed_process`/error tags per trade and a v2 discipline slice in the summary; dropped legacy `confluences`/`grade_self`/`confidence` from the row. System prompt teaches the v2 fields.
+- `scripts/explain_bot.py`: `_stats` gains a `_v2_block` (clean/closed, unreviewed, clean expectancy R) appended when v2 closed rows exist.
+- `dashboard/api/routes/bybit.py`: `GET /bybit/v2-stats` — expectancy+PF per setup (clean only), clean-vs-dirty cost, behavioral-leak ranked (unnest), exit efficiency, totals. `n` first; edge math `clean_sample`-filtered; all walled to `journal_schema_version=2` via `_V2_BASE`. `_jsonify_row` Decimal→float.
+- `monitoring/dashboards/bybit-journal-v2.json`: 4 stat tiles + 4 table panels (same queries), auto-provisioned. All 8 SQL validated vs live DB.
+- Legacy `confluences`/`grade_self` cols retained but no reader consumes them. Watcher write path untouched (readers switched, daemon safe).
+- Tests: `tests/test_bybit_v2_readers.py` (jsonifier, route+filter, prompt v2 shape). Full suite 1305 pass.
 
 ### ⏳ Phase 7 — docs + ML training filter
 - SYSTEM_BASELINE final sync, memory update.

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
@@ -14,6 +15,14 @@ from pydantic import BaseModel, Field
 from dashboard.api import database as db
 
 router = APIRouter(prefix="/bybit", tags=["bybit"])
+
+
+def _jsonify_row(r: Any) -> dict[str, Any]:
+    """asyncpg Record -> JSON-safe dict (Decimal -> float)."""
+    out: dict[str, Any] = {}
+    for k, v in dict(r).items():
+        out[k] = float(v) if isinstance(v, Decimal) else v
+    return out
 
 
 class AnnotationUpdate(BaseModel):
@@ -511,3 +520,100 @@ async def equity_curve(days: int = Query(30, ge=1, le=365)):
         cum += float(r["pnl_usd"] or 0)
         points.append({"t": r["closed_at"].isoformat(), "cumulative_pnl": round(cum, 2), "trade_pnl": float(r["pnl_usd"])})
     return {"points": points, "final_pnl": round(cum, 2), "trades": len(points)}
+
+
+# Journal v2 base predicate — closed v2 rows in the window. Shared by every v2-stats
+# query so legacy v1 rows (frozen, journal_schema_version=1) never contaminate edge math.
+_V2_BASE = (
+    "FROM bybit_trade_annotations "
+    "WHERE journal_schema_version = 2 AND status = 'closed' "
+    "AND closed_at >= NOW() - ($1 * INTERVAL '1 day')"
+)
+
+
+@router.get("/v2-stats")
+async def v2_stats(days: int = Query(180, ge=1, le=730)):
+    """Journal v2 edge + discipline aggregates. Closed v2 rows only.
+
+    `n` is always the first metric. Edge math (expectancy / PF / exit-efficiency)
+    filters on `clean_sample` so rule-break trades don't poison the signal;
+    `clean_vs_dirty` deliberately compares both to price the cost of breaking rules.
+    Empty arrays are normal until v2 trades close + get reviewed.
+    """
+    async with db.pg_pool.acquire() as conn:
+        # A. Expectancy + PF per setup (clean samples only), n first.
+        by_setup = await conn.fetch(
+            f"""
+            SELECT COALESCE(ltf_trigger, '?') AS ltf_trigger,
+                   COALESCE(structure_type, '?') AS structure_type,
+                   COUNT(*) AS n,
+                   ROUND(AVG(realized_r)::numeric, 3) AS expectancy_r,
+                   ROUND((100.0 * AVG((realized_r > 0)::int))::numeric, 1) AS win_rate_pct,
+                   ROUND((SUM(CASE WHEN realized_r > 0 THEN realized_r ELSE 0 END) /
+                          NULLIF(ABS(SUM(CASE WHEN realized_r < 0 THEN realized_r ELSE 0 END)), 0))::numeric, 2)
+                       AS profit_factor
+            {_V2_BASE} AND clean_sample AND realized_r IS NOT NULL
+            GROUP BY ltf_trigger, structure_type
+            ORDER BY n DESC
+            """,
+            days,
+        )
+        # B. Cost of breaking rules — clean vs dirty (NOT clean_sample-filtered, on purpose).
+        clean_dirty = await conn.fetch(
+            f"""
+            SELECT clean_sample,
+                   COUNT(*) AS n,
+                   ROUND(AVG(realized_r)::numeric, 3) AS expectancy_r,
+                   ROUND(SUM(pnl_usd)::numeric, 2) AS net_usd
+            {_V2_BASE}
+            GROUP BY clean_sample
+            ORDER BY clean_sample NULLS LAST
+            """,
+            days,
+        )
+        # C. Behavioral leak ranked (unnest multi-tag), most negative first.
+        leaks = await conn.fetch(
+            """
+            SELECT tag, COUNT(*) AS n, ROUND(SUM(pnl_usd)::numeric, 2) AS net_usd
+            FROM bybit_trade_annotations, jsonb_array_elements_text(behavioral_error) tag
+            WHERE journal_schema_version = 2 AND status = 'closed'
+              AND closed_at >= NOW() - ($1 * INTERVAL '1 day')
+            GROUP BY tag
+            ORDER BY net_usd ASC
+            """,
+            days,
+        )
+        # E. Exit efficiency (cut winners / held losers) per trigger.
+        exit_eff = await conn.fetch(
+            f"""
+            SELECT COALESCE(ltf_trigger, '?') AS ltf_trigger,
+                   COUNT(*) AS n,
+                   ROUND(AVG(mfe_r)::numeric, 2) AS avg_mfe,
+                   ROUND(AVG(mae_r)::numeric, 2) AS avg_mae,
+                   ROUND(AVG(realized_r / NULLIF(mfe_r, 0))::numeric, 2) AS exit_eff
+            {_V2_BASE} AND clean_sample AND mfe_r > 0
+            GROUP BY ltf_trigger
+            ORDER BY n DESC
+            """,
+            days,
+        )
+        totals = await conn.fetchrow(
+            f"""
+            SELECT COUNT(*) AS n_closed,
+                   COUNT(*) FILTER (WHERE clean_sample) AS n_clean,
+                   COUNT(*) FILTER (WHERE followed_process IS NULL) AS n_unreviewed,
+                   COUNT(*) FILTER (WHERE realized_r IS NOT NULL) AS n_with_r,
+                   ROUND(AVG(realized_r) FILTER (WHERE clean_sample)::numeric, 3)
+                       AS clean_expectancy_r
+            {_V2_BASE}
+            """,
+            days,
+        )
+    return {
+        "days": days,
+        "totals": _jsonify_row(totals) if totals else {},
+        "expectancy_by_setup": [_jsonify_row(r) for r in by_setup],
+        "clean_vs_dirty": [_jsonify_row(r) for r in clean_dirty],
+        "behavioral_leak": [_jsonify_row(r) for r in leaks],
+        "exit_efficiency": [_jsonify_row(r) for r in exit_eff],
+    }
