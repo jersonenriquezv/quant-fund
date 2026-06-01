@@ -70,6 +70,27 @@ async def get_candles(pair: str, timeframe: str, count: int = 100) -> list[dict]
     return [dict(r) for r in reversed(rows)]
 
 
+async def get_candles_range(
+    pair: str, timeframe: str, from_ms: int, to_ms: int, limit: int = 5000
+) -> list[dict]:
+    """Range query for the TradingView Charting Library Datafeed getBars.
+
+    Returns candles in [from_ms, to_ms] ascending. Capped at `limit` rows;
+    when the window holds more, the OLDEST are dropped (keep the bars nearest
+    `to_ms`, matching how a chart pages backward via countback).
+    """
+    async with db.pg_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT timestamp, open, high, low, close, volume, volume_quote
+               FROM candles
+               WHERE pair = $1 AND timeframe = $2
+                 AND timestamp >= $3 AND timestamp <= $4
+               ORDER BY timestamp DESC LIMIT $5""",
+            pair, timeframe, from_ms, to_ms, limit,
+        )
+    return [dict(r) for r in reversed(rows)]
+
+
 async def get_trade_stats() -> dict:
     async with db.pg_pool.acquire() as conn:
         row = await conn.fetchrow("""
