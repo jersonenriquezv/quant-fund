@@ -3,7 +3,7 @@
 **Started:** 2026-05-30
 **Goal:** ML-grade manual-trade journaling that separates the *trading edge* from *behavioral noise*. Replaces the v1 free-text annotation system (unlearnable — rule-break trades mixed with clean ones poison any dataset).
 
-**Status:** Phase 0+1 DONE (merged PR #46, main `e462112`). Phases 2–7 pending.
+**Status:** COMPLETE. Phase 0+1 DONE (#46), P2 (#48), P3 (PR #49), P4 (PR #50), P5 (PR #51), P6 (PR #52), P7 (this branch). All 7 phases shipped.
 
 ---
 
@@ -90,9 +90,10 @@ Without SL, R unit has no data source → entire stats layer is decorative.
 - Surface as stats endpoint + Grafana panel.
 - **THEN** stop writing `confluences` / `grade_self` (demote, keep cols). Readers switch LAST so the watcher daemon never crashes mid-flight.
 
-### ⏳ Phase 7 — docs + ML training filter
-- SYSTEM_BASELINE final sync, memory update.
-- ML training query: `WHERE journal_schema_version = 2 AND clean_sample`.
+### ✅ Phase 7 — docs + ML training filter (DONE)
+- SYSTEM_BASELINE §7.0 froze the canonical manual-strategy training filter: `WHERE journal_schema_version = 2 AND status = 'closed' AND clean_sample AND realized_r IS NOT NULL`, plus feature/label split (chain enums = features, `realized_r` = label; MAE/MFE = management diagnostics) and the C3 discipline-first reality check.
+- §8 changelog "redesign COMPLETE" entry maps every piece to its file. Memory `project_bybit_journal_v2.md` updated.
+- Redesign closed end-to-end: watcher captures → classifier pre-fills → form confirms → backfill computes R → stats/Grafana surface → ML reads the frozen clean slice.
 
 ---
 
