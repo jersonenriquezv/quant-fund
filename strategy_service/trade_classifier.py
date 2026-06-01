@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-CLASSIFIER_VERSION = 1
+CLASSIFIER_VERSION = 2
 
 
 def _confluences(snap: dict[str, Any], direction: str) -> list[str]:
@@ -216,21 +216,139 @@ def _grade(confluences: list[str], detractors: list[str]) -> str:
     return "D"
 
 
+def _map_bias(b: str | None) -> str | None:
+    """Snapshot bias (bullish/bearish/undefined) -> v2 taxonomy (bullish/bearish/range)."""
+    if b in ("bullish", "bearish"):
+        return b
+    if b == "undefined":
+        return "range"
+    return None
+
+
+def _v2_chain(snap: dict[str, Any], direction: str, detractors: list[str]) -> dict[str, Any]:
+    """Emit the journal v2 top-down chain pre-fill from the context snapshot.
+
+    Closed-vocab best-effort guess that pre-fills the form; the human confirms or
+    corrects. A human/machine disagreement IS the misread signal — these auto_*
+    values are stored alongside (never instead of) the human columns. See
+    docs/plans/bybit-journal-v2-2026-05-30.md Phase 3.
+    """
+    out: dict[str, Any] = {}
+    htf = snap.get("htf_bias") or {}
+    trade_bias = "bullish" if direction == "long" else "bearish"
+
+    bias_daily = _map_bias(htf.get("bias_daily"))
+    bias_4h = _map_bias(htf.get("bias_4h"))
+    bias_1h_raw = htf.get("bias_1h")
+    aligned_4h = htf.get("aligned_with_trade") is True
+
+    out["auto_htf_bias_daily"] = bias_daily
+    out["auto_htf_bias_4h"] = bias_4h
+    out["auto_htf_structure_reason"] = (
+        "HH_HL" if bias_4h == "bullish"
+        else "LH_LL" if bias_4h == "bearish"
+        else "range_bound" if bias_4h == "range"
+        else "unclear"
+    )
+
+    # 1H multi-timeframe alignment vs trade direction.
+    if bias_1h_raw == trade_bias:
+        out["auto_mtf_1h"] = "confirms"
+    elif bias_1h_raw in ("bullish", "bearish"):
+        out["auto_mtf_1h"] = "contradicts"
+    else:
+        out["auto_mtf_1h"] = "neutral"
+
+    # Premium/discount proxy from volume-profile zone (rough — user corrects).
+    vp = snap.get("volume_profile") or {}
+    pd = {"above_va": "premium", "inside_va": "equilibrium", "below_va": "discount"}.get(vp.get("zone"))
+    out["auto_location_pd"] = pd
+
+    # Location quality: at a meaningful level (OB / FVG / sweep / HVN) vs no-man's-land.
+    smc = snap.get("smc") or {}
+    obs = smc.get("obs_nearest") or {}
+    fvgs = smc.get("fvgs_nearest") or {}
+    sweeps = smc.get("recent_sweeps") or []
+    breaks = smc.get("recent_breaks") or []
+    at_ob = any(
+        isinstance(o, dict) and (o.get("in_zone") or abs(o.get("distance_pct") or 999) <= 0.5)
+        for o in obs.values()
+    )
+    at_fvg = any(
+        isinstance(f, dict) and (f.get("in_zone") or abs(f.get("distance_pct") or 999) <= 0.5)
+        for f in fvgs.values()
+    )
+    near_hvn = vp.get("near_hvn") or {}
+    at_hvn = bool(near_hvn) and abs(near_hvn.get("distance_pct") or 999) < 0.5
+    at_key = at_ob or at_fvg or bool(sweeps) or at_hvn
+    out["auto_location_quality"] = "key_level" if at_key else "no_mans_land"
+
+    # LTF trigger precedence: sweep_reclaim > choch > bos > fvg > order_block.
+    has_choch = any(b.get("type") == "choch" for b in breaks)
+    has_bos = any(b.get("type") == "bos" for b in breaks)
+    if sweeps:
+        trigger = "sweep_reclaim"
+    elif has_choch:
+        trigger = "choch"
+    elif has_bos:
+        trigger = "bos"
+    elif at_fvg:
+        trigger = "fvg"
+    elif at_ob:
+        trigger = "order_block"
+    else:
+        trigger = None
+    out["auto_ltf_trigger"] = trigger
+
+    # Structure type: range > reversal (choch / counter-trend sweep) > continuation.
+    if bias_4h == "range":
+        structure = "range"
+    elif has_choch or (sweeps and not aligned_4h):
+        structure = "reversal"
+    else:
+        structure = "continuation"
+    out["auto_structure_type"] = structure
+
+    # 5 independent confluence factors (HTF + trigger mandatory; range branch swaps
+    # HTF-dir for sweep_reclaim + location per locked decision).
+    pd_ok = (
+        pd is None
+        or (direction == "long" and pd in ("discount", "equilibrium"))
+        or (direction == "short" and pd in ("premium", "equilibrium"))
+    )
+    detr = set(detractors)
+    out["auto_conf_htf"] = aligned_4h
+    out["auto_conf_location"] = at_key and pd_ok
+    out["auto_conf_mtf"] = out["auto_mtf_1h"] == "confirms"
+    out["auto_conf_trigger"] = trigger is not None
+    out["auto_conf_noconflict"] = not (
+        "cvd_1h_against" in detr
+        or "funding_extreme_against_long" in detr
+        or "funding_extreme_against_short" in detr
+    )
+    return out
+
+
 def classify(snapshot: dict[str, Any]) -> dict[str, Any]:
     """Classify a snapshot built by context_service.build_context_snapshot.
 
-    Returns dict with keys: auto_setup_type, auto_confluences,
-    auto_detractors, auto_grade, auto_classifier_version.
+    Returns dict with keys: auto_setup_type, auto_confluences, auto_detractors,
+    auto_grade, auto_classifier_version, plus the journal v2 top-down chain
+    pre-fill (auto_htf_bias_daily, auto_htf_bias_4h, auto_htf_structure_reason,
+    auto_location_pd, auto_location_quality, auto_mtf_1h, auto_ltf_trigger,
+    auto_structure_type, and the 5 auto_conf_* booleans).
     """
     direction = snapshot.get("direction") or "long"
     conflu = _confluences(snapshot, direction)
     detr = _detractors(snapshot, direction)
     setup = _setup_type(snapshot, direction, conflu)
     grade = _grade(conflu, detr)
-    return {
+    result = {
         "auto_setup_type": setup,
         "auto_confluences": conflu,
         "auto_detractors": detr,
         "auto_grade": grade,
         "auto_classifier_version": CLASSIFIER_VERSION,
     }
+    result.update(_v2_chain(snapshot, direction, detr))
+    return result
