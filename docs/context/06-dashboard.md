@@ -49,7 +49,10 @@ Si el dashboard crashea, el bot sigue operando normalmente.
 ## Frontend — Layout
 
 ### Ruta `/chart` — klinecharts (replay + overlay)
-Página dedicada (`src/app/chart/page.tsx`, lib `src/lib/chartDatafeed.ts`). Usa **klinecharts 9.8.12** (lazy en esta ruta; bundle 52.4 kB; sparklines siguen SVG). Switchers BTC/ETH + 5m/15m/1h/4h. `chartDatafeed.ts` mapea las respuestas UDF de `/api/chart/*` (segundos) a klines (ms). Tema Apple-dark. Datos via `/api/chart/history` (confirmed-bar; sin ticks intra-vela). **Pendiente:** replay control (A5), position tool (A6), overlay de detecciones OB/FVG via `/api/chart/detections` (C2).
+Página dedicada (`src/app/chart/page.tsx`, libs `src/lib/chartDatafeed.ts` + `src/lib/detectionOverlay.ts`). Usa **klinecharts 9.8.12** (lazy en esta ruta; bundle ~54 kB; sparklines siguen SVG). Switchers BTC/ETH + 5m/15m/1h/4h, panel VOL aparte, tema Apple-dark. `chartDatafeed.ts` mapea las respuestas UDF de `/api/chart/*` (segundos) a klines (ms). Datos via `/api/chart/history` (confirmed-bar; sin ticks intra-vela).
+- **Bar replay (A5):** toggle "Replay" → barra con play/pause/step + slider + velocidad (1/2/4/8×) + label as-of. Revela historia avanzando un puntero visible-to (avance de 1 vela = `updateData`; saltos = `applyNewData`).
+- **Overlay de detecciones (C2):** toggle "Detections" consulta `/api/chart/detections` as-of la vela actual y dibuja zonas OB/FVG como rects de color (overlay custom de klinecharts en `detectionOverlay.ts`). En replay re-consulta as-of el puntero → las zonas aparecen/mitigan en el tiempo (loop de validación del detector).
+- **Pendiente:** long/short position tool (A6), gate de fidelidad C3 (overlay vs setup grabado en `ml_setups`/`trades`).
 
 ```
 HEADER: Status dot + "QF" + LIVE/DEMO pill + F&G pill (colored) + UTC clock (time only)
