@@ -512,6 +512,17 @@ D: net_score <  2
 
 ## 8. Changelog
 
+### 2026-06-01 — Bybit journal v2 Phase 4: MAE/MFE + R-metric backfill
+**Files:** `scripts/compute_bybit_mae_mfe.py` (new), `tests/test_bybit_mae_mfe.py` (new).
+
+**What changed:** batch script that fills the excursion + R columns the v2 schema (Phase 0+1) added but nothing computed yet — `mae_r`, `mfe_r`, `realized_r`, `exit_efficiency`, `entry_slippage_bps`, `mae_mfe_tf`.
+- **1m candles on demand:** the bot only stores 5m/15m/1h/4h, so 1m klines for each trade window (`opened_at`→`closed_at`, ±1m pad) are fetched via Bybit REST (`get_kline interval="1"`, paginated, max 1000/req) and discarded — nothing persisted. `mae_mfe_tf='1m'`.
+- **Direction-aware excursions, clamped:** `mfe_r ≥ 0`, `mae_r ≤ 0` (worst adverse, sign per schema). R anchor = `|entry − sl|`, preferring `planned_entry_price`/`planned_sl_price`, falling back to actual `entry_price` + `position_sl_price` (Phase 2 capture) so rows resolve even before the Phase 5 form supplies planned levels.
+- **R metrics:** `R_usd = R_price × size`; `realized_r = pnl_usd / R_usd` (pnl_usd already net of fees — not re-deducted, memory `feedback_pnl_already_net_of_fees`); `exit_efficiency = realized_r / mfe_r` (NULL when `mfe_r ≤ 0`); `entry_slippage_bps` = direction-aware adverse fill vs planned entry (NULL without a planned entry).
+- **Idempotent + nightly-friendly:** processes only `status='closed' AND journal_schema_version=2 AND mae_r IS NULL` unless `--force`; `--dry-run` prints without writing. 0 closed v2 rows live today (v2 since 2026-05-30) — populates as manual trades close.
+
+**Why:** without excursions there is no cut-winner/held-loser detector and no expectancy-in-R. This makes the mechanical half of the journal computable from price alone, independent of the human review. Phase 5 (mobile form) is next.
+
 ### 2026-06-01 — Bybit journal v2 Phase 3: auto-classifier chain pre-fill
 **Files:** `strategy_service/trade_classifier.py`, `data_service/context_service.py`, `data_service/bybit_sync.py`, `data_service/bybit_watcher.py`, `tests/test_trade_classifier_v2_chain.py` (new).
 

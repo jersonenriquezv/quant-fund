@@ -3,7 +3,7 @@
 **Started:** 2026-05-30
 **Goal:** ML-grade manual-trade journaling that separates the *trading edge* from *behavioral noise*. Replaces the v1 free-text annotation system (unlearnable — rule-break trades mixed with clean ones poison any dataset).
 
-**Status:** Phase 0+1 DONE (PR #46, `e462112`). Phase 2 DONE (PR #48, `5e20a16`). Phase 3 DONE (branch `feat/bybit-journal-v2-phase3-auto-chain`). Phases 4–7 pending.
+**Status:** Phase 0+1 DONE (#46), Phase 2 DONE (#48), Phase 3 DONE (#49), Phase 4 DONE (PR #50). Phases 5–7 pending.
 
 ---
 
@@ -74,11 +74,12 @@ Without SL, R unit has no data source → entire stats layer is decorative.
 - Watcher writes `auto_*` AND pre-fills the human cols (`_V2_CHAIN_MAP`). On conflict `auto_*` refresh, human cols `COALESCE` (correction never clobbered). Open-alert gains a chain line.
 - Tests: `tests/test_trade_classifier_v2_chain.py` (chain logic + watcher write path). `pytest -k "bybit or classifier or watcher"` 30 pass.
 
-### ⏳ Phase 4 — MAE/MFE batch backfill script
-- `scripts/compute_bybit_mae_mfe.py` (mirror `scripts/classify_sl_failures.py`).
-- Targeted **1m REST** fetch per trade `opened_at`→`closed_at` window (Bybit or OKX REST). Store `mae_mfe_tf='1m'`.
-- Direction-aware excursions (flip sign for shorts). `R_usd = |planned_entry − planned_sl| × size`. `realized_r = closed_pnl / R_usd`. `exit_efficiency = realized_r / mfe_r` (NULL when `mfe_r<=0`). `entry_slippage_bps` = actual avg_entry vs planned.
-- Re-runnable + idempotent; nightly-friendly. Symbol→pair via `context_service.bybit_symbol_to_pair()`.
+### ✅ Phase 4 — MAE/MFE batch backfill script (DONE)
+- `scripts/compute_bybit_mae_mfe.py` (mirrors `scripts/classify_sl_failures.py`). Args `--days/--limit/--force/--dry-run`.
+- 1m candles fetched on demand via Bybit REST (`get_kline interval="1"`, paginated, ±1m window pad) and discarded — not stored (`mae_mfe_tf='1m'`).
+- Direction-aware excursions clamped (`mfe_r≥0`, `mae_r≤0`). Entry/SL anchor prefers `planned_*`, falls back to actual `entry_price` + `position_sl_price` so rows resolve before the form exists. `R_usd = R_price × size`; `realized_r = pnl_usd / R_usd` (pnl already net — no re-deduct); `exit_efficiency = realized_r / mfe_r` (NULL when `mfe_r≤0`); `entry_slippage_bps` direction-aware adverse (NULL without planned entry).
+- Re-runnable + idempotent (only `mae_r IS NULL` unless `--force`); nightly-friendly.
+- Tests: `tests/test_bybit_mae_mfe.py` (excursion math, planned-vs-actual anchor, slippage sign, pagination). 0 closed v2 rows live yet → populates as v2 trades close.
 
 ### ⏳ Phase 5 — mobile form rewrite (375px responsive)
 - `dashboard/web/src/app/annotate/[id]/page.tsx` + backend `dashboard/api/routes/bybit.py` `AnnotationUpdate` model.
