@@ -528,6 +528,13 @@ D: net_score <  2
 
 ## 8. Changelog
 
+### 2026-06-01 — Chart replay Phase A5+C2: bar replay + bot-detection overlay
+**Files:** `dashboard/web/src/app/chart/page.tsx`, `dashboard/web/src/lib/chartDatafeed.ts`, `dashboard/web/src/lib/detectionOverlay.ts` (new), `dashboard/web/src/app/globals.css`, `docs/context/06-dashboard.md`.
+
+**What changed:** completed the interactive half of the `/chart` tool. **A5 bar replay** — play/pause/step + slider + speed (1/2/4/8×) + as-of label; reveals history by advancing a visible-to pointer (single-bar advance via `updateData`, jumps via `applyNewData`). **C2 detection overlay** — "Detections" toggle fetches `/api/chart/detections` as-of the current bar and draws OB/FVG zones as colored rects via a custom klinecharts overlay (`detectionOverlay.ts`); in replay it re-queries as-of the pointer, so zones appear/mitigate through time (the detector-validation loop — grill Q2). Also fixed VOL to render in its own sub-pane (was stacked on candles, squashing the price scale). Verified in-browser against the real DB: BTC 1h candles, 3 live zones (1 OB + 2 FVG) matching the endpoint, replay slice + as-of overlay re-query. Cosmetic nit: klinecharts draws default anchor dots on overlays.
+
+**Pending:** A6 long/short position tool, C3 fidelity gate (overlay vs a recorded `ml_setups`/`trades` setup). Plan: `docs/plans/chart-replay-2026-06-01.md`.
+
 ### 2026-06-01 — Chart replay Phase A1+A4: /chart route on klinecharts
 **Files:** `dashboard/web/package.json`, `dashboard/web/src/app/chart/page.tsx` (new), `dashboard/web/src/lib/chartDatafeed.ts` (new), `dashboard/web/src/app/globals.css`, `dashboard/CLAUDE.md`, `docs/context/06-dashboard.md`.
 

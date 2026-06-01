@@ -1407,10 +1407,63 @@ select.manual-input {
   color: #9ca3af;
   font-variant-numeric: tabular-nums;
 }
+.chart-toggle {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  color: #9ca3af;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 14px;
+  border-radius: 100px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.chart-toggle.on {
+  background: var(--long, #b2fd02);
+  color: #000;
+  border-color: transparent;
+}
 .chart-canvas {
   flex: 1;
   min-height: 0;
   width: 100%;
+}
+
+/* Replay control bar */
+.chart-replay-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.02);
+  flex-wrap: wrap;
+}
+.chart-replay-btn {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  color: #fff;
+  width: 34px;
+  height: 30px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.chart-replay-btn.play { background: var(--long, #b2fd02); color: #000; border-color: transparent; }
+.chart-replay-btn:disabled { opacity: 0.3; cursor: default; }
+.chart-replay-slider {
+  flex: 1;
+  min-width: 120px;
+  accent-color: var(--long, #b2fd02);
+  cursor: pointer;
+}
+.chart-speed { padding: 2px; }
+.chart-asof {
+  font-size: 11px;
+  color: #9ca3af;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 @media (max-width: 639px) {
@@ -1425,5 +1478,12 @@ select.manual-input {
   }
   .chart-seg-btn {
     padding: 6px 11px;
+  }
+  .chart-toggle {
+    padding: 6px 11px;
+  }
+  .chart-asof {
+    width: 100%;
+    order: 5;
   }
 }

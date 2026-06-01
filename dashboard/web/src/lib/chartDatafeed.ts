@@ -58,3 +58,45 @@ export async function fetchHistory(
     volume: data.v![i],
   }));
 }
+
+// --- bot-detection overlay (C2) ---------------------------------------
+
+export interface DetectionZone {
+  type: "order_block" | "fvg";
+  direction: "bullish" | "bearish";
+  timestamp: number; // ms (zone origin candle)
+  high: number;
+  low: number;
+  // OB-only
+  mitigated?: boolean;
+  entry_price?: number;
+  impulse_score?: number;
+  retest_count?: number;
+  // FVG-only
+  size_pct?: number;
+  filled_pct?: number;
+  fully_filled?: boolean;
+}
+
+export interface Detections {
+  order_blocks: DetectionZone[];
+  fvgs: DetectionZone[];
+  as_of: number; // seconds
+  bars: number;
+}
+
+// Zones the bot's detectors hold active as-of bar `toMs` (the replay pointer).
+export async function fetchDetections(
+  symbol: string,
+  resolution: string,
+  toMs: number,
+): Promise<Detections> {
+  const params = new URLSearchParams({
+    symbol,
+    resolution,
+    to: String(Math.floor(toMs / 1000)),
+  });
+  const d = await fetchApi<Detections>(`/chart/detections?${params.toString()}`);
+  // Normalize ms on each zone (backend already returns ms timestamps).
+  return d;
+}
