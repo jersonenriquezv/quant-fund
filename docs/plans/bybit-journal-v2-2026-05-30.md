@@ -3,7 +3,7 @@
 **Started:** 2026-05-30
 **Goal:** ML-grade manual-trade journaling that separates the *trading edge* from *behavioral noise*. Replaces the v1 free-text annotation system (unlearnable — rule-break trades mixed with clean ones poison any dataset).
 
-**Status:** Phase 0+1 DONE (merged PR #46, main `e462112`). Phases 2–7 pending.
+**Status:** Phase 0+1 DONE (PR #46, `e462112`). Phase 2 DONE (PR #48, `5e20a16`). Phase 3 DONE (branch `feat/bybit-journal-v2-phase3-auto-chain`). Phases 4–7 pending.
 
 ---
 
@@ -67,10 +67,12 @@ Without SL, R unit has no data source → entire stats layer is decorative.
 - Set `journal_schema_version=2` on rows written by v2-aware watcher path.
 - Tests: watcher captures SL + equity; `_htf_bias` returns daily key.
 
-### ⏳ Phase 3 — auto-classifier v2 chain pre-fill
-- Extend `strategy_service/trade_classifier.py` to emit the v2 top-down chain from `context_snapshot`: daily/4h/1h bias, VA-zone → PD proxy (`volume_profile.zone` ≈ premium/discount, rough — user corrects), `ltf_trigger` from `recent_breaks`/`recent_sweeps`, `structure_type`, 5 conf booleans.
-- Bump `CONTEXT_CLASSIFIER_VERSION` (`context_service.py`).
-- Writes `auto_*` AND pre-fills the human cols (user confirms in form). Keep both — disagreement (human bullish, machine bearish) IS the misread signal; never overwrite.
+### ✅ Phase 3 — auto-classifier v2 chain pre-fill (DONE)
+- `strategy_service/trade_classifier.py` `_v2_chain()` emits the v2 top-down chain from `context_snapshot`: daily/4h bias (`undefined → range`), `htf_structure_reason`, VA-zone → PD proxy, `location_quality`, `mtf_1h`, `ltf_trigger` (precedence `sweep_reclaim > choch > bos > fvg > order_block`), `structure_type`, 5 `auto_conf_*` booleans. `CLASSIFIER_VERSION` 1→2.
+- `CONTEXT_CLASSIFIER_VERSION` 1→2 (`context_service.py`).
+- Schema: additive `auto_*` chain cols on both tables (`bybit_sync.ensure_tables`).
+- Watcher writes `auto_*` AND pre-fills the human cols (`_V2_CHAIN_MAP`). On conflict `auto_*` refresh, human cols `COALESCE` (correction never clobbered). Open-alert gains a chain line.
+- Tests: `tests/test_trade_classifier_v2_chain.py` (chain logic + watcher write path). `pytest -k "bybit or classifier or watcher"` 30 pass.
 
 ### ⏳ Phase 4 — MAE/MFE batch backfill script
 - `scripts/compute_bybit_mae_mfe.py` (mirror `scripts/classify_sl_failures.py`).

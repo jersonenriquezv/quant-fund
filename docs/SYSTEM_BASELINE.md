@@ -431,7 +431,10 @@ Independent shadow-only experiment for microstructural scalping signals, separat
 
 > Purpose: deterministic **decision-quality** score for every manual Bybit trade. Measures whether confluences were present at entry; does **not** measure PnL. `bybit_watcher` calls `strategy_service.trade_classifier.classify()` on every position open and stores `auto_setup_type`, `auto_confluences`, `auto_detractors`, `auto_grade` on `bybit_trade_annotations`.
 
-**Implementation:** `strategy_service/trade_classifier.py` (`CLASSIFIER_VERSION = 1`).
+**Implementation:** `strategy_service/trade_classifier.py` (`CLASSIFIER_VERSION = 2`).
+
+### Journal v2 top-down chain (Phase 3, 2026-06-01)
+`classify()` also emits a closed-vocab top-down chain that **pre-fills** the v2 form: `auto_htf_bias_daily`, `auto_htf_bias_4h`, `auto_htf_structure_reason`, `auto_location_pd` (volume-profile zone proxy), `auto_location_quality`, `auto_mtf_1h`, `auto_ltf_trigger` (precedence `sweep_reclaim > choch > bos > fvg > order_block`), `auto_structure_type`, and 5 `auto_conf_*` booleans (HTF/location/MTF/trigger/no-conflict). The watcher writes these immutable `auto_*` cols **and** pre-fills the human-editable chain cols (`htf_bias_daily` … `conf_noconflict`); on a re-tick the human cols are `COALESCE`'d so a dashboard correction is never clobbered. A human/machine disagreement IS the misread signal — both are kept. Bias `undefined` → `range` in the v2 taxonomy. The grade rubric below (net_score A/B/C/D) is unchanged.
 
 ### Grade thresholds
 ```
@@ -508,6 +511,17 @@ D: net_score <  2
 ---
 
 ## 8. Changelog
+
+### 2026-06-01 — Bybit journal v2 Phase 3: auto-classifier chain pre-fill
+**Files:** `strategy_service/trade_classifier.py`, `data_service/context_service.py`, `data_service/bybit_sync.py`, `data_service/bybit_watcher.py`, `tests/test_trade_classifier_v2_chain.py` (new).
+
+**What changed:** the auto-classifier now emits the journal v2 top-down chain so the annotation form opens pre-filled instead of blank.
+- **`trade_classifier`:** new `_v2_chain()` derives the closed-vocab chain from the existing `context_snapshot` — daily/4h bias (mapped `undefined → range`), `htf_structure_reason`, `location_pd` (volume-profile zone proxy: above_va→premium / inside→equilibrium / below→discount), `location_quality` (key_level when at OB/FVG/sweep/HVN), `mtf_1h` (1H vs trade dir), `ltf_trigger` (precedence `sweep_reclaim > choch > bos > fvg > order_block`), `structure_type`, and the 5 `auto_conf_*` booleans (HTF + trigger mandatory; range branch swaps HTF-dir for sweep+location per locked decision). `CLASSIFIER_VERSION` 1 → 2.
+- **Schema (`bybit_sync.ensure_tables`):** additive idempotent `auto_*` chain cols on `bybit_trade_annotations` + `bybit_pending_orders` (mirrors the human chain cols added in Phase 0+1).
+- **Watcher:** `_insert_annotation` + `_upsert_pending` write the immutable `auto_*` cols AND pre-fill the human-editable chain cols. On conflict, `auto_*` is refreshed but human cols are `COALESCE`'d (existing value wins) — a dashboard correction survives a re-tick. Open-alert Telegram block gains a one-line chain summary.
+- **`context_service`:** `CONTEXT_CLASSIFIER_VERSION` 1 → 2 (snapshots from here drive the v2 chain).
+
+**Why:** blank forms get filled lazily or wrong. Pre-filling from deterministic snapshot facts means the user only confirms/corrects — and the kept `auto_*` vs human divergence becomes the misread-structure signal for the clean-sample dataset. Phase 4 (MAE/MFE backfill) is next.
 
 ### 2026-05-30 — Bybit journal v2 Phase 2: data sources (SL, equity, 1D bias)
 **Files:** `data_service/bybit_watcher.py`, `data_service/context_service.py`, `config/settings.py`, `tests/test_bybit_journal_v2_datasources.py` (new).
