@@ -13,6 +13,12 @@ COPY dashboard/api/ ./dashboard/api/
 COPY config/__init__.py ./config/__init__.py
 COPY config/settings.py ./config/settings.py
 
+# Copy shared models + the pure SMC detector modules used by the chart
+# detector-replay endpoint (/api/chart/detections). strategy_service/__init__.py
+# is lazy, so this does NOT pull in service.py's heavy deps (anthropic/ccxt).
+COPY shared/ ./shared/
+COPY strategy_service/ ./strategy_service/
+
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" || exit 1
 
