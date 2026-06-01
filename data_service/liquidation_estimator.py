@@ -82,8 +82,10 @@ def estimate_liquidation_levels(
         volume_weights = [c.volume_quote / total_volume for c in candles]
 
     # Accumulate liquidation USD into bins
-    # Key: bin_center_price -> [liq_long_usd, liq_short_usd]
-    bins: dict[float, list[float]] = {}
+    # Key: integer bin index (price / bin_size) -> [liq_long_usd, liq_short_usd].
+    # Keying by int index avoids float drift from `index * bin_size` splitting
+    # one logical bin across near-equal float keys. Multiply back only on output.
+    bins: dict[int, list[float]] = {}
 
     for candle, vol_weight in zip(candles, volume_weights):
         close = candle.close
@@ -91,10 +93,10 @@ def estimate_liquidation_levels(
             continue
 
         for leverage, lev_weight in zip(LEVERAGE_TIERS, LEVERAGE_WEIGHTS):
-            # Liquidation price formulas:
-            # Long: liq = close * (1 - (1/leverage) * (1 - maintenance_margin))
-            # Short: liq = close * (1 + (1/leverage) * (1 - maintenance_margin))
-            move_pct = (1.0 / leverage) * (1.0 - MAINTENANCE_MARGIN)
+            # Liquidation price formulas (MMR is a fraction of notional, not margin):
+            # Long:  liq = close * (1 - ((1/leverage) - maintenance_margin))
+            # Short: liq = close * (1 + ((1/leverage) - maintenance_margin))
+            move_pct = (1.0 / leverage) - MAINTENANCE_MARGIN
             liq_long_price = close * (1.0 - move_pct)
             liq_short_price = close * (1.0 + move_pct)
 
@@ -102,21 +104,21 @@ def estimate_liquidation_levels(
             usd_alloc = oi_usd * vol_weight * lev_weight
 
             # Bin the long liquidation
-            long_bin = round(liq_long_price / bin_size) * bin_size
-            if long_bin not in bins:
-                bins[long_bin] = [0.0, 0.0]
-            bins[long_bin][0] += usd_alloc
+            long_idx = round(liq_long_price / bin_size)
+            if long_idx not in bins:
+                bins[long_idx] = [0.0, 0.0]
+            bins[long_idx][0] += usd_alloc
 
             # Bin the short liquidation
-            short_bin = round(liq_short_price / bin_size) * bin_size
-            if short_bin not in bins:
-                bins[short_bin] = [0.0, 0.0]
-            bins[short_bin][1] += usd_alloc
+            short_idx = round(liq_short_price / bin_size)
+            if short_idx not in bins:
+                bins[short_idx] = [0.0, 0.0]
+            bins[short_idx][1] += usd_alloc
 
-    # Convert to sorted list
+    # Convert to sorted list (multiply index back to price here)
     result = [
-        LiqBin(price=price, liq_long_usd=vals[0], liq_short_usd=vals[1])
-        for price, vals in sorted(bins.items())
+        LiqBin(price=idx * bin_size, liq_long_usd=vals[0], liq_short_usd=vals[1])
+        for idx, vals in sorted(bins.items())
     ]
 
     return result
