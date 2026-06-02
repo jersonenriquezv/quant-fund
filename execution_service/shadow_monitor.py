@@ -587,35 +587,72 @@ class ShadowMonitor:
             self._emit_metric("shadow_redis_save_error", 1)
 
     def _load_from_redis(self) -> None:
-        """Restore active shadow positions from Redis on startup."""
+        """Restore active shadow positions from Redis on startup.
+
+        Per-record isolation: a single bad record (e.g. schema drift between
+        the snapshot and the current ShadowPosition fields) must NOT abort the
+        whole restore. That was the orphan-leak root cause — one unparseable
+        field dropped EVERY in-flight position, which then aged out as
+        `shadow_orphaned`. Each record is parsed in its own try/except;
+        failures are logged + counted, the rest still restore.
+
+        Instrumentation (snapshot count + restored/expired/failed + metrics)
+        lets the next restart confirm which loss mechanism actually fires.
+        """
         redis = self._get_redis()
         if redis is None:
             return
         try:
             raw = redis.get_bot_state("shadow_positions")
-            if not raw:
-                return
-            data = json.loads(raw)
-            now = time.time()
-            max_age = (
-                settings.SHADOW_ENTRY_TIMEOUT_HOURS
-                + settings.SHADOW_TRADE_TIMEOUT_HOURS
-            ) * 3600
-            for sid, fields in data.items():
-                pos = ShadowPosition(**fields)
-                # Skip positions that have expired since last save
-                if (now - pos.detection_time) > max_age:
-                    continue
-                self._positions[sid] = pos
-            if self._positions:
-                filled = sum(1 for p in self._positions.values() if p.filled)
-                logger.info(
-                    f"Shadow: restored {len(self._positions)} positions from Redis "
-                    f"({filled} filled, {len(self._positions) - filled} waiting)"
-                )
         except Exception as e:
-            logger.warning(f"Failed to load shadow positions from Redis: {e}")
+            logger.warning(f"Failed to read shadow positions from Redis: {e}")
             self._emit_metric("shadow_redis_load_error", 1)
+            return
+        if not raw:
+            return
+        try:
+            data = json.loads(raw)
+        except Exception as e:
+            logger.warning(f"Failed to parse shadow positions snapshot: {e}")
+            self._emit_metric("shadow_redis_load_error", 1)
+            return
+
+        now = time.time()
+        max_age = (
+            settings.SHADOW_ENTRY_TIMEOUT_HOURS
+            + settings.SHADOW_TRADE_TIMEOUT_HOURS
+        ) * 3600
+        raw_count = len(data)
+        restored = skipped_expired = failed = 0
+        for sid, fields in data.items():
+            try:
+                pos = ShadowPosition(**fields)
+            except Exception as e:
+                failed += 1
+                logger.error(
+                    f"Shadow restore: dropping unparseable record {sid}: {e}"
+                )
+                self._emit_metric(
+                    "shadow_redis_load_dropped", 1, labels={"reason": "parse_error"},
+                )
+                continue
+            # Skip positions that have expired since the last save.
+            if (now - pos.detection_time) > max_age:
+                skipped_expired += 1
+                self._emit_metric(
+                    "shadow_redis_load_dropped", 1, labels={"reason": "expired"},
+                )
+                continue
+            self._positions[sid] = pos
+            restored += 1
+
+        if restored:
+            self._emit_metric("shadow_redis_restored", restored)
+        logger.info(
+            f"Shadow restore from Redis: {raw_count} in snapshot -> "
+            f"{restored} restored, {skipped_expired} expired-skipped, "
+            f"{failed} parse-failed"
+        )
 
     def _get_redis(self):
         """Get Redis store, or None if unavailable."""
