@@ -161,6 +161,29 @@ class RedisStore:
         }
         self._client.set(key, json.dumps(data), ex=86400)  # 24h TTL
 
+    def set_live_candle(self, candle: Candle) -> None:
+        """Cache the in-progress (FORMING) candle for the dashboard's live chart.
+
+        Separate key + short TTL from set_latest_candle. Display-only — the trading
+        pipeline still consumes ONLY confirmed candles (see websocket_feeds).
+        """
+        if not self._client:
+            return
+        key = _redis_key("livecandle", candle.pair, candle.timeframe)
+        data = {
+            "timestamp": candle.timestamp,
+            "open": candle.open,
+            "high": candle.high,
+            "low": candle.low,
+            "close": candle.close,
+            "volume": candle.volume,
+            "volume_quote": candle.volume_quote,
+            "pair": candle.pair,
+            "timeframe": candle.timeframe,
+            "confirmed": False,
+        }
+        self._client.set(key, json.dumps(data), ex=30)  # 30s TTL (forming, refreshed ~1-2s)
+
     def get_latest_candle(self, pair: str, timeframe: str) -> Optional[Candle]:
         """Get cached latest candle for a pair/timeframe."""
         if not self._client:

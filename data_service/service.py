@@ -66,6 +66,7 @@ class DataService:
         self._ws_feed = OKXWebSocketFeed(
             on_candle_confirmed=self._on_candle,
             metrics_callback=self._emit_metric,
+            on_candle_tick=self._on_candle_tick,
         )
         self._cvd = CVDCalculator()
         self._oi_proxy = OIFlushDetector()
@@ -525,6 +526,18 @@ class DataService:
     # ================================================================
     # Internal: Candle confirmed callback
     # ================================================================
+
+    def _on_candle_tick(self, candle: Candle) -> None:
+        """Called by OKXWebSocketFeed on each FORMING (in-progress) 5m candle.
+
+        Display-only: caches the forming candle to Redis for the dashboard's live
+        chart. Never touches storage or the pipeline (those use confirmed candles).
+        Must never raise — a failure here cannot affect the feed.
+        """
+        try:
+            self._redis.set_live_candle(candle)
+        except Exception:
+            pass
 
     async def _on_candle(self, candle: Candle) -> None:
         """Called by OKXWebSocketFeed on every confirmed candle.

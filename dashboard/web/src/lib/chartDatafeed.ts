@@ -13,6 +13,15 @@ export interface Kline {
   volume: number;
 }
 
+// Resolution string -> period length in ms (for client-side forming-bar aggregation).
+export const RESOLUTION_MS: Record<string, number> = {
+  "5": 5 * 60_000,
+  "15": 15 * 60_000,
+  "60": 60 * 60_000,
+  "240": 240 * 60_000,
+  "D": 24 * 60 * 60_000,
+};
+
 // klinecharts period -> backend UDF resolution string.
 export const RESOLUTIONS: { label: string; resolution: string }[] = [
   { label: "5m", resolution: "5" },
@@ -58,6 +67,22 @@ export async function fetchHistory(
     close: data.c![i],
     volume: data.v![i],
   }));
+}
+
+// The current FORMING candle (from Redis), for live intra-candle ticks. /history
+// only returns closed bars, so this is what makes the chart actually move. Backend
+// caches a 5m candle; higher TFs are aggregated client-side from its close.
+export async function fetchLiveCandle(
+  symbol: string,
+  resolution: string,
+): Promise<Kline | null> {
+  const params = new URLSearchParams({ symbol, resolution });
+  const d = await fetchApi<{
+    candle: null | { timestamp: number; open: number; high: number; low: number; close: number; volume: number };
+  }>(`/chart/live?${params.toString()}`);
+  const c = d.candle;
+  if (!c || c.timestamp == null || c.close == null) return null;
+  return { timestamp: c.timestamp, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume ?? 0 };
 }
 
 // --- bot-detection overlay (C2) ---------------------------------------

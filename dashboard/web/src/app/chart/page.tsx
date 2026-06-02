@@ -5,9 +5,11 @@ import Link from "next/link";
 import { init, dispose, type Chart } from "klinecharts";
 import {
   fetchHistory,
+  fetchLiveCandle,
   fetchDetectionTimeline,
   zonesAsOf,
   RESOLUTIONS,
+  RESOLUTION_MS,
   SYMBOLS,
   type Kline,
   type ZoneLifecycle,
@@ -198,24 +200,53 @@ export default function ChartPage() {
     setDetCount(zones.length);
   }, [showDetections, significantOnly, asOfIdx, replay, barCount, timelineReady]);
 
-  // A3 — live candle wiring. In live (non-replay) mode, poll the latest bars and
-  // update the forming candle so the chart ticks in real time. Detections gate
-  // on the as-of timestamp, so they only refetch when a new bar actually forms.
+  // A3 — live candle wiring. In live (non-replay) mode, poll the FORMING candle
+  // (Redis, via /chart/live) every 2s and tick it onto the chart. /history only
+  // returns closed bars, so this is what makes the candle actually move intra-bar.
+  // The backend caches a 5m forming candle; higher TFs aggregate it client-side
+  // (open carried from the prior bar's close — perps are continuous).
   useEffect(() => {
     if (replay || !chartReady) return;
+    const pms = RESOLUTION_MS[resolution] ?? 5 * 60_000;
     const id = setInterval(async () => {
       const chart = chartRef.current;
       if (!chart) return;
       try {
-        const bars = await fetchHistory(symbol, resolution);
-        if (!bars.length) return;
-        barsRef.current = bars;
-        setBarCount(bars.length);
-        chart.updateData(bars[bars.length - 1]); // tick the last/forming bar
+        const live = await fetchLiveCandle(symbol, resolution);
+        if (!live) return;
+        const bars = barsRef.current;
+        const last = bars[bars.length - 1];
+        const price = live.close;
+
+        let formed: Kline;
+        if (resolution === "5") {
+          formed = live; // Redis candle IS this 5m bar — use its O/H/L/C directly
+        } else {
+          const barTs = Math.floor(live.timestamp / pms) * pms; // current HTF period
+          if (last && last.timestamp === barTs) {
+            formed = {
+              ...last,
+              high: Math.max(last.high, live.high, price),
+              low: Math.min(last.low, live.low, price),
+              close: price,
+            };
+          } else {
+            const open = last ? last.close : live.open; // continuous open
+            formed = { timestamp: barTs, open, high: Math.max(open, price), low: Math.min(open, price), close: price, volume: 0 };
+          }
+        }
+
+        if (last && last.timestamp === formed.timestamp) {
+          bars[bars.length - 1] = formed; // same bar — update in place
+        } else if (!last || formed.timestamp > last.timestamp) {
+          bars.push(formed); // new period — append (also retriggers detection refetch)
+          setBarCount(bars.length);
+        }
+        chart.updateData(formed);
       } catch {
         /* transient — keep current data */
       }
-    }, 3000);
+    }, 2000);
     return () => clearInterval(id);
   }, [replay, chartReady, symbol, resolution]);
 

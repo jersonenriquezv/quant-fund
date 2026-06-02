@@ -58,19 +58,25 @@ class OKXWebSocketFeed:
     get_latest_candle() and get_candles() — direct function calls.
     """
 
-    def __init__(self, on_candle_confirmed=None, metrics_callback=None):
+    def __init__(self, on_candle_confirmed=None, metrics_callback=None,
+                 on_candle_tick=None):
         """
         Args:
             on_candle_confirmed: Optional async callback called when a new
                 confirmed candle arrives. Signature: async fn(candle: Candle).
                 This is how main.py triggers the pipeline.
             metrics_callback: Optional fn(name, value, pair, labels) for operational metrics.
+            on_candle_tick: Optional SYNC callback fn(candle: Candle) for the
+                in-progress (forming, confirmed=False) candle — display-only
+                (dashboard live chart). NEVER feeds the trading pipeline.
         """
         # Storage: {("BTC/USDT", "5m"): [Candle, Candle, ...]}
         self._candles: dict[tuple[str, str], list[Candle]] = defaultdict(list)
 
         # Callback for pipeline trigger
         self._on_candle_confirmed = on_candle_confirmed
+        # Display-only callback for forming candles (never enters the pipeline)
+        self._on_candle_tick = on_candle_tick
 
         # Metrics callback for Grafana
         self._metrics_cb = metrics_callback
@@ -288,9 +294,28 @@ class OKXWebSocketFeed:
             if len(candle_data) < 9:
                 continue
 
-            # Only process confirmed candles
+            # Only process confirmed candles through the pipeline. The in-progress
+            # (forming) candle is cached for the dashboard's live chart only — it
+            # NEVER enters storage or the strategy pipeline.
             confirm = candle_data[8]
             if confirm != "1":
+                if self._on_candle_tick is not None and timeframe == "5m":
+                    try:
+                        tick = Candle(
+                            timestamp=int(candle_data[0]),
+                            open=float(candle_data[1]),
+                            high=float(candle_data[2]),
+                            low=float(candle_data[3]),
+                            close=float(candle_data[4]),
+                            volume=float(candle_data[6]) if candle_data[6] else float(candle_data[5]),
+                            volume_quote=float(candle_data[7]) if candle_data[7] else 0.0,
+                            pair=pair,
+                            timeframe=timeframe,
+                            confirmed=False,
+                        )
+                        self._on_candle_tick(tick)
+                    except (ValueError, IndexError):
+                        pass
                 continue
 
             try:

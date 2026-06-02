@@ -10,9 +10,11 @@ Redis. See docs/plans/chart-replay-2026-06-01.md.
 """
 
 import asyncio
+import json
 
 from fastapi import APIRouter, HTTPException, Query
 
+from dashboard.api import database as db
 from dashboard.api import queries
 from shared.models import Candle
 from strategy_service.market_structure import MarketStructureAnalyzer
@@ -286,6 +288,41 @@ async def chart_detections(
     result["as_of"] = to
     result["bars"] = len(candles)
     return result
+
+
+@router.get("/chart/live")
+async def chart_live(
+    symbol: str = Query(...),
+    resolution: str = Query(...),
+) -> dict:
+    """The current FORMING candle from Redis (`qf:candle:{pair}:5m`), for live ticks.
+
+    The bot streams OKX into this key every couple seconds; /history only returns
+    CLOSED bars, so polling this is what makes the chart move intra-candle. Only a
+    5m forming candle is cached — the frontend aggregates it onto higher TFs.
+    """
+    _validate_chart_pair(symbol)
+    _resolve_timeframe(resolution)  # validate resolution
+    if db.redis_client is None:
+        return {"candle": None}
+    # Prefer the live forming candle (qf:livecandle:*, refreshed ~1-2s by the WS
+    # feed); fall back to the last confirmed candle if the live key is absent.
+    raw = await db.redis_client.get(f"qf:livecandle:{symbol}:5m")
+    if not raw:
+        raw = await db.redis_client.get(f"qf:candle:{symbol}:5m")
+    if not raw:
+        return {"candle": None}
+    c = json.loads(raw)
+    return {
+        "candle": {
+            "timestamp": c.get("timestamp"),
+            "open": c.get("open"),
+            "high": c.get("high"),
+            "low": c.get("low"),
+            "close": c.get("close"),
+            "volume": c.get("volume", 0),
+        }
+    }
 
 
 def _zone_key(kind: str, direction: str, origin_ts: int, high: float) -> str:

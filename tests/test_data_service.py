@@ -132,6 +132,45 @@ class TestWebSocketCandleParsing:
         feed._handle_candle_data(msg)
         assert feed.get_latest_candle("BTC/USDT", "5m") is None
 
+    def test_forming_candle_fires_tick_but_not_stored(self):
+        """A forming 5m candle (confirm='0') is sent to on_candle_tick for the
+        dashboard live chart, but never stored or pushed to the pipeline."""
+        from data_service.websocket_feeds import OKXWebSocketFeed
+
+        ticks = []
+        feed = OKXWebSocketFeed(on_candle_tick=lambda c: ticks.append(c))
+        msg = {
+            "arg": {"channel": "candle5m", "instId": "BTC-USDT-SWAP"},
+            "data": [[
+                str(int(time.time() * 1000)),
+                "50000.0", "50100.0", "49900.0", "50050.0",
+                "10.5", "525000", "525262.5",
+                "0",  # forming
+            ]],
+        }
+        feed._handle_candle_data(msg)
+        assert len(ticks) == 1
+        assert ticks[0].confirmed is False
+        assert ticks[0].close == 50050.0
+        assert feed.get_latest_candle("BTC/USDT", "5m") is None  # not stored
+
+    def test_forming_candle_tick_only_for_5m(self):
+        """Forming candles on non-5m timeframes are not cached (chart needs 5m only)."""
+        from data_service.websocket_feeds import OKXWebSocketFeed
+
+        ticks = []
+        feed = OKXWebSocketFeed(on_candle_tick=lambda c: ticks.append(c))
+        msg = {
+            "arg": {"channel": "candle1H", "instId": "BTC-USDT-SWAP"},
+            "data": [[
+                str(int(time.time() * 1000)),
+                "50000.0", "50100.0", "49900.0", "50050.0",
+                "10.5", "525000", "525262.5", "0",
+            ]],
+        }
+        feed._handle_candle_data(msg)
+        assert ticks == []
+
     def test_unknown_channel_ignored(self):
         feed = self._make_feed()
         msg = {
