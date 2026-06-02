@@ -28,11 +28,13 @@ Si el dashboard crashea, el bot sigue operando normalmente.
 | `GET /api/headlines` | Redis (`qf:bot:news:headlines:{BTC,ETH}`) | Recent news headlines (CryptoCompare) |
 | `POST /api/trades/{pair}/cancel` | Redis write (`qf:cancel_request:{pair}`) | Solicita cancelación de posición (TTL 60s) |
 | `GET /api/liquidation/heatmap/{pair}` | PG candles + Redis OI + cache | Estimated liquidation levels (bins con long/short USD) |
-| `GET /api/chart/config` | Static | TradingView UDF Datafeed config (resoluciones soportadas: 5/15/60/240) |
+| `GET /api/chart/config` | Static | TradingView UDF Datafeed config (resoluciones soportadas: 5/15/60/240/D) |
 | `GET /api/chart/symbols?symbol=` | Static | resolveSymbol — LibrarySymbolInfo (solo BTC/USDT, ETH/USDT) |
 | `GET /api/chart/search?query=` | Static | searchSymbols — restringido al allowlist BTC/ETH |
 | `GET /api/chart/history?symbol=&resolution=&from=&to=` | PG candles | getBars — OHLCV por rango (from/to en segundos UDF), cap 5000 bars |
-| `GET /api/chart/detections?symbol=&resolution=&to=` | PG candles + detectores OB/FVG (in-memory, read-only) | Overlay de detecciones del bot: zonas OB/FVG activas as-of `to`. Replay incremental, expiración por `current_time_ms`=ts de la barra (sin reloj wall-clock); window 600 barras, corre off event-loop |
+| `GET /api/chart/live?symbol=&resolution=` | Redis | Vela FORMANDO (en progreso) para el tick real-time. Lee `qf:livecandle:{pair}:5m` (la cachea el bot vía WS, ~1-2s; fallback al `qf:candle:` confirmado). El front la pollea cada 2s y agrega a TFs mayores client-side. `/history` solo da velas cerradas, por eso esto es lo que hace mover la vela intra-barra |
+| `GET /api/chart/detections?symbol=&resolution=&to=` | PG candles + detectores OB/FVG (in-memory, read-only) | Overlay de detecciones del bot: zonas OB/FVG activas as-of `to`. Replay incremental, expiración por `current_time_ms`=ts de la barra (sin reloj wall-clock); window 600 barras, corre off event-loop. ~2.5s/call (O(n²)) — uso single-shot |
+| `GET /api/chart/detection_timeline?symbol=&resolution=&to=` | igual que `/detections` | **Perf + MTF**: replay por cada TF (HTF de sesgo `1d`+`4h` SIEMPRE + el TF del chart, deduped, en paralelo vía `asyncio.gather`). Devuelve `{zones, as_of, timeframes}`; cada zona trae lifecycle (`born_ts`/`expire_ts`/`spent_ts`), `significant` (por TF) y `source_tf`. Zonas vivas en la última barra del replay → `expire_ts = ZONE_OPEN_TS` (sentinel ~año 3000) para que una zona HTF se renderice as-of cualquier tiempo en un chart LTF. El front lo pide una vez por símbolo/resolución (+ por nueva vela live) y filtra client-side (`zonesAsOf()`) → cero llamadas por-barra |
 | `POST /api/manual/calculate` | Pure math | Position sizing & R:R calculator (linear + inverse) |
 | `POST /api/manual/trades` | PG manual_trades | Create manual trade (planned) |
 | `GET /api/manual/trades` | PG manual_trades | List trades (filter by status/pair) |
@@ -49,10 +51,12 @@ Si el dashboard crashea, el bot sigue operando normalmente.
 ## Frontend — Layout
 
 ### Ruta `/chart` — klinecharts (replay + overlay)
-Página dedicada (`src/app/chart/page.tsx`, libs `src/lib/chartDatafeed.ts` + `src/lib/detectionOverlay.ts`). Usa **klinecharts 9.8.12** (lazy en esta ruta; bundle ~54 kB; sparklines siguen SVG). Switchers BTC/ETH + 5m/15m/1h/4h, panel VOL aparte, tema Apple-dark. `chartDatafeed.ts` mapea las respuestas UDF de `/api/chart/*` (segundos) a klines (ms). Datos via `/api/chart/history` (confirmed-bar; sin ticks intra-vela).
+Página dedicada (`src/app/chart/page.tsx`, libs `src/lib/chartDatafeed.ts` + `src/lib/detectionOverlay.ts`). Usa **klinecharts 9.8.12** (lazy en esta ruta; bundle ~54 kB; sparklines siguen SVG). Switchers BTC/ETH + 5m/15m/1h/4h/1D (1D usa candles `1d` del DB; 1W no almacenado), panel VOL aparte, tema Apple-dark. `chartDatafeed.ts` mapea las respuestas UDF de `/api/chart/*` (segundos) a klines (ms). Datos via `/api/chart/history`.
+- **Live wiring (A3):** en modo live (no-replay) pollea `/api/chart/live` cada 2s (la vela en formación de Redis) y la `updateData` sobre la barra actual → el chart tickea de verdad intra-vela. En 5m usa la vela 5m directa; en TFs mayores agrega (close=precio, high/low actualizados, open=close de la barra previa). `/history` solo da velas cerradas (por eso antes parecía snapshot). (Orderbook depth viz = idea futura aparte.)
 - **Bar replay (A5):** toggle "Replay" → barra con play/pause/step + slider + velocidad (1/2/4/8×) + label as-of. Revela historia avanzando un puntero visible-to (avance de 1 vela = `updateData`; saltos = `applyNewData`).
-- **Overlay de detecciones (C2):** toggle "Detections" consulta `/api/chart/detections` as-of la vela actual y dibuja zonas OB/FVG como rects de color (overlay custom de klinecharts en `detectionOverlay.ts`). En replay re-consulta as-of el puntero → las zonas aparecen/mitigan en el tiempo (loop de validación del detector).
-- **Pendiente:** long/short position tool (A6), gate de fidelidad C3 (overlay vs setup grabado en `ml_setups`/`trades`).
+- **Overlay de detecciones (C2) — multi-timeframe:** toggle "Detections" pide `/api/chart/detection_timeline` UNA vez (por símbolo/resolución y por nueva vela live) y filtra client-side con `zonesAsOf()` al mover la barra → zonas aparecen/mitigan/expiran sin llamadas por-barra (scrub instantáneo). **Top-down**: siempre se pintan los gaps de sesgo `1D`+`4H` además de los del TF actual (así en 5m ves la estructura HTF, no solo ruido 5m). Rects custom de klinecharts en `detectionOverlay.ts`; labels `OB↑/↓ <TF>` `FVG↑/↓ <TF>` (ej. `FVG↓ 4H`) ancladas al borde as-of; zonas HTF (1D/4H) con borde más grueso; `lock:true`, bg transparente (el text style default de klinecharts pintaba un chip azul).
+- **Toggle "Focus" (curación, ON por defecto, solo chart):** reduce a las pocas zonas accionables. Combina: (1) umbral adaptativo LuxAlgo POR TF (FVG significativo si su barra de desplazamiento `FVG.timestamp`==c2 se movió > `2× la media corrida de |body %|` de ese TF — `significant` precomputado en `detection_timeline`); (2) `curateZones()` client-side: oculta gastadas (OB mitigado / FVG llenado), descarta OBs débiles (`impulse_score < 0.5`), deja solo las que están a ≤`3%` del precio (más la más cercana por TF como ancla de sesgo aunque esté más lejos), y capa a 2 por (TF, tipo). Focus OFF = todo crudo (incl. gastadas atenuadas) para inspección. NADA toca el detector del bot (`fvg.py` sigue con `FVG_MIN_SIZE_PCT` fijo) — filtro puramente visual. Knobs: `OB_MIN_IMPULSE`, `PER_GROUP`, `MAX_DIST_PCT` en `chartDatafeed.ts`. Resultado típico BTC 1h: 11→4 zonas.
+- **Pendiente:** long/short position tool (A6), gate de fidelidad C3 (overlay vs setup grabado en `ml_setups`/`trades`), pase mobile A7.
 
 ```
 HEADER: Status dot + "QF" + LIVE/DEMO pill + F&G pill (colored) + UTC clock (time only)
@@ -106,6 +110,19 @@ web:
   network_mode: host
   depends_on: [api]
 ```
+
+### Acceso a la API desde el navegador (proxy same-origin)
+
+El navegador NUNCA llama al puerto `:8000` directamente. `next.config.ts` define un
+`rewrites()` que reenvía `/api/*` → `http://127.0.0.1:8000` (web corre en
+`network_mode: host`, así que `127.0.0.1:8000` es la api). El cliente (`src/lib/api.ts`,
+`getApiBase()`) usa origen relativo (`""`), por lo que todas las llamadas REST salen al
+mismo origen `:3000`. Esto elimina la dependencia de que `:8000` sea alcanzable desde el
+cliente — clave para acceso por Tailscale/SSH donde sólo `:3000` está expuesto — y evita
+CORS por completo. **WebSocket** (`wsUrl()` / `getWsBase()`) SÍ apunta directo a
+`ws://<hostname>:8000`: los rewrites de Next no proxean upgrades WS de forma fiable, así
+que el ticker de precios en vivo requiere que `:8000` sea alcanzable. El build-arg
+`NEXT_PUBLIC_API_URL` sólo afecta al render del servidor (SSR), no al cliente.
 
 ## Archivos
 

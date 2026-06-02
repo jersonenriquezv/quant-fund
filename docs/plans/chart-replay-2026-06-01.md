@@ -28,14 +28,25 @@ A chart in the dashboard with:
 |---|---|
 | A2 Datafeed backend | ✅ **DONE — PR #55** |
 | C1 detector-replay endpoint | ✅ **DONE — PR #56** (stacked on #55) |
-| A1 install klinecharts | ⏭️ next |
-| A3 live wiring | ⏭️ |
-| A4 `/chart` route | ⏭️ |
-| A5 replay control (custom) | ⏭️ |
+| A1 install klinecharts | ✅ **DONE — PR #57** |
+| A3 live wiring | ✅ **DONE — PR #61** (forming-candle tick via `/chart/live`, 2s) |
+| A4 `/chart` route | ✅ **DONE — PR #57** |
+| A5 replay control (custom) | ✅ **DONE — PR #58** |
 | A6 position tool (custom) | ⏭️ |
 | A7 mobile | ⏭️ |
-| C2 overlay frontend | ⏭️ |
+| C2 overlay frontend | ✅ **DONE — PR #58** |
 | C3 fidelity gate | ⏭️ (manual, needs DB) |
+
+**Post-merge fixes (PR #61):**
+- Nav link to `/chart`; API proxied same-origin through Next (Tailscale reachability).
+- **Detection perf — solved (not just mitigated).** `/chart/detections` is ~2.5s/call (O(n²) 600-bar replay), so per-bar requery during scrub/play piled up and flickered. New endpoint `GET /chart/detection_timeline` does ONE replay over the window and returns each zone's lifecycle (`born_ts`/`expire_ts`/`spent_ts`). Frontend fetches it once per symbol/resolution (and per new live bar), then `zonesAsOf()` filters the cached lifecycles client-side as the bar moves → zero per-bar server calls, instant scrub. Verified: 1 timeline call survives a full replay playthrough; active-as-of-newest count matches the old `/detections` endpoint exactly. Old `/detections` retained (single-shot use).
+- **Overlay cosmetic.** Fixed klinecharts' default text style painting a blue chip behind every label (`backgroundColor`/`borderColor` = blue) — forced transparent. Direction-distinct labels (`OB↑/↓`, `FVG↑/↓`; previously both directions rendered "B"), labels anchored to the as-of (right) edge so they stay visible when the origin scrolls off-screen, overlays `lock: true`.
+- **Zone curation — "Focus" toggle (too many zones to read).** MTF + unfiltered OBs + spent zones shown = clutter ("ni sé a cuál hacerle caso"). `curateZones()` (client-side, on when Focus is ON): hide spent (mitigated OB / filled FVG), drop weak OBs (`impulse_score < 0.5`), keep only zones within `MAX_DIST_PCT` (3%) of price PLUS the nearest per TF (HTF bias anchor stays even if farther), cap `PER_GROUP` (2) per (TF, type). Renamed the toggle Significant→Focus. Off = raw. Verified BTC 1h: 17 active → 11 → **4** clean zones. Knobs in `chartDatafeed.ts`.
+- **Render perf (UI lag fix).** Was one klinecharts overlay PER zone — klinecharts re-runs every overlay's `createPointFigures` on each repaint (every 2s live tick AND every crosshair move), so ~20-26 MTF zones = 20-26 callbacks/frame = monitor jank. Collapsed to a SINGLE overlay with N*2 points (origin + as-of per zone) drawing all rects/labels in one pass → one callback per frame. Plus: the 2s live poll now skips `updateData` (full canvas repaint) when the forming candle's O/H/L/C is unchanged (idle market).
+- **FVG de-noise — "Significant" toggle (chart-only).** Ported LuxAlgo's adaptive Auto-Threshold: an FVG is significant only if its displacement bar (`FVG.timestamp`==c2) moved more than `2× the running mean |body %|`. `detection_timeline` precomputes a `significant` flag per zone; the toggle (ON by default) filters with `zonesAsOf(..., significantOnly)`. Bot detector (`fvg.py`, fixed `FVG_MIN_SIZE_PCT`) is untouched — chart stays a validation tool; this is a visual filter only. Verified BTC 1h live: 10→7 zones; deferred decision to port into the detector as a real strategy change. Threshold multiplier (2×) is the tunable knob if more aggressive de-noising is wanted.
+- **Added 1D timeframe.** `D`→`1d` (635 daily bars in DB since Nov 2024). 1W not added — not stored; would need 1d→weekly aggregation.
+- **A3 real-time tick (fixed properly).** First cut polled `/history` (closed bars only) → looked like snapshots. Root cause: the bot **discards** OKX forming candles (`websocket_feeds` processes only `confirm="1"`), so nothing ticked intra-bar. Fix (bot-side, display-only): forming 5m candles now go through a new `on_candle_tick` callback → `RedisStore.set_live_candle` → `qf:livecandle:{pair}:5m` (30s TTL). New endpoint `GET /chart/live` reads it; the frontend polls every 2s and aggregates onto the forming bar (5m direct; HTF: close=price, open=prior bar's close). **Strategy/ML/pipeline untouched** — still consume only confirmed candles.
+- **Multi-timeframe (MTF) overlay.** `detection_timeline` now replays the HTF bias TFs (1D, 4H) ALWAYS plus the chart's own TF (deduped, parallel via `asyncio.gather`), tagging every zone with `source_tf`. So a 5m chart shows the structural 1D/4H gaps (top-down) instead of dumping every gap of one TF — the user's real ask (LuxAlgo's `fairValueGapsTimeframe` idea, generalized to the strategy ladder). Significance threshold is computed per-TF (each TF vs its own volatility). Labels carry the TF (`FVG↓ 4H`); HTF zones get a heavier border. **Open-expiry fix:** zones still active on a replay's final bar get `expire_ts = ZONE_OPEN_TS` (sentinel) so an HTF zone (whose last HTF bar predates the current LTF bar) still renders as-of now on an LTF chart. Response shape changed `bars`→`timeframes`.
 
 Backend (A2 + C1) is **complete and library-agnostic** — survives the TV→klinecharts switch unchanged.
 

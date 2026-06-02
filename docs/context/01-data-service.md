@@ -201,8 +201,8 @@ Data validation on every candle: price ≤ 0 → ERROR, volume = 0 → WARNING, 
 **Redis (real-time cache):**
 - Key pattern: `qf:{category}:{pair}:{detail}` (e.g., `qf:candle:BTC/USDT:5m`)
 - Stores latest: candle, funding rate, OI, bot state (drawdown, cooldowns)
-- TTLs prevent stale data: candles 24h, funding 9h, OI 10min
-- `set_latest_candle()`, `get_latest_candle()`, `pop_cancel_request()`, etc.
+- TTLs prevent stale data: candles 24h, funding 9h, OI 10min, **livecandle 30s**
+- `set_latest_candle()`, `get_latest_candle()`, `set_live_candle()` (forming 5m, `qf:livecandle:*`, display-only), `pop_cancel_request()`, etc.
 
 **PostgreSQL (historical):**
 - 11 tables: `candles`, `trades`, `ai_decisions`, `risk_events`, `bot_metrics`, `funding_rate_history`, `open_interest_history`, `cvd_history`, `campaigns`, `ml_setups`, `trade_rejections`
@@ -342,3 +342,5 @@ Trades can reach 50-100/sec during volatility. Processing each individually woul
 
 **How does candle confirmation work?**
 OKX sends candle updates with a `confirm` field. `confirm="0"` means the candle is still forming. `confirm="1"` means it's closed. We only store and process candles with `confirm="1"`.
+
+**Forming-candle display cache (display-only):** for 5m, a `confirm="0"` candle is forwarded via the `on_candle_tick` callback to `RedisStore.set_live_candle`, which writes `qf:livecandle:{pair}:5m` (30s TTL). This feeds the dashboard's real-time chart (`/api/chart/live`). It NEVER enters storage or the strategy pipeline — those still consume only `confirm="1"`. The callback is wrapped so a failure can't affect the feed.
