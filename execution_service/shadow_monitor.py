@@ -110,6 +110,25 @@ class ShadowMonitor:
         # Batching flag: inner helpers (_check_tp_sl) set this on TP1
         # transitions so check_candle can persist once at end of tick.
         self._dirty_from_inner_checks: bool = False
+        # Restore is DEFERRED, not run here. ShadowMonitor is constructed in
+        # main.py BEFORE DataService.start() connects Redis, so calling
+        # _load_from_redis() in __init__ always saw redis=None and silently
+        # skipped — every restart lost all in-flight shadows, which then aged
+        # out as `shadow_orphaned` (the orphan-leak root cause, confirmed via
+        # the "Redis unavailable" restore breadcrumb on 2026-06-02). Restore
+        # runs lazily on the first check_candle tick, by which point candles
+        # are flowing => DataService + Redis are up.
+        self._restored: bool = False
+
+    def _ensure_restored(self) -> None:
+        """Run the one-time Redis restore + orphan sweep, once Redis is up.
+
+        Called from check_candle (candles only flow after DataService start),
+        so Redis/Postgres connections are guaranteed ready — unlike __init__.
+        """
+        if self._restored:
+            return
+        self._restored = True
         self._load_from_redis()
         self._cleanup_orphaned_db_rows()
 
@@ -311,6 +330,9 @@ class ShadowMonitor:
         one per event. Avoids up to N (positions × transitions) Redis
         writes per candle when many shadows transition simultaneously.
         """
+        # One-time deferred restore (Redis is connected by the time candles flow).
+        self._ensure_restored()
+
         now = time.time()
 
         # Periodic orphan cleanup — every 6 hours

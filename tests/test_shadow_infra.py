@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import pytest
 
@@ -163,7 +164,14 @@ def shadow_factory():
     data_service = FakeDataService(redis=redis, postgres=postgres)
 
     def make():
-        return ShadowMonitor(data_service=data_service, notifier=None)
+        # Restore is deferred (Redis isn't connected at __init__ in prod —
+        # see ShadowMonitor._ensure_restored). The factory simulates "instance
+        # up and first candle tick processed" by triggering the restore once,
+        # so restore-logic tests stay focused. Deferral itself is covered by
+        # TestShadowRestoreDeferral below.
+        mon = ShadowMonitor(data_service=data_service, notifier=None)
+        mon._ensure_restored()
+        return mon
 
     return redis, postgres, make
 
@@ -293,6 +301,45 @@ class TestShadowRedisPersistence:
             "ShadowMonitor.__init__ must trigger one orphan sweep to clean "
             "rows stranded by the previous crash."
         )
+
+
+class TestShadowRestoreDeferral:
+    """Orphan-leak root cause: ShadowMonitor is constructed BEFORE DataService
+    connects Redis, so restore-in-__init__ always saw redis=None and silently
+    skipped — every restart lost all in-flight shadows. Restore must be
+    deferred until candles flow (Redis guaranteed up).
+    """
+
+    def test_restore_not_run_in_init(self, shadow_factory):
+        from execution_service.shadow_monitor import ShadowMonitor
+        redis, postgres, _make = shadow_factory
+        # Seed redis with a saved position, then construct raw (no restore).
+        seed = ShadowMonitor(data_service=FakeDataService(redis=redis, postgres=postgres),
+                             notifier=None)
+        seed._ensure_restored()
+        seed.add_shadow(_mk_setup(setup_id="deferred", entry=75000.0),
+                        orderbook=None, risk_approval=_FakeApproval())
+        del seed
+
+        postgres.orphan_cleanup_calls = 0
+        data_service = FakeDataService(redis=redis, postgres=postgres)
+        mon = ShadowMonitor(data_service=data_service, notifier=None)
+        # __init__ must NOT have restored or swept.
+        assert mon._restored is False
+        assert mon.active_count == 0
+        assert postgres.orphan_cleanup_calls == 0
+
+        # First candle tick triggers the one-time restore.
+        candle = SimpleNamespace(pair="ETH/USDT", timeframe="5m", timestamp=0,
+                                 open=1.0, high=1.0, low=1.0, close=1.0, volume=1.0)
+        mon.check_candle("ETH/USDT", candle)
+        assert mon._restored is True
+        assert "deferred" in mon._positions, "first tick must restore saved positions"
+        assert postgres.orphan_cleanup_calls == 1, "first tick must sweep orphans once"
+
+        # Subsequent ticks do not re-restore.
+        mon.check_candle("ETH/USDT", candle)
+        assert postgres.orphan_cleanup_calls == 1
 
 
 class TestShadowRestorePerRecordIsolation:
