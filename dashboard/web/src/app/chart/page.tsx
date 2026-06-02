@@ -236,9 +236,16 @@ export default function ChartPage() {
           }
         }
 
+        const isNewBar = !last || formed.timestamp > last.timestamp;
+        // Skip the repaint when nothing actually moved (idle market) — avoids a
+        // pointless full canvas redraw every 2s.
+        if (!isNewBar && last &&
+            last.close === formed.close && last.high === formed.high && last.low === formed.low) {
+          return;
+        }
         if (last && last.timestamp === formed.timestamp) {
           bars[bars.length - 1] = formed; // same bar — update in place
-        } else if (!last || formed.timestamp > last.timestamp) {
+        } else if (isNewBar) {
           bars.push(formed); // new period — append (also retriggers detection refetch)
           setBarCount(bars.length);
         }
