@@ -28,14 +28,16 @@ A chart in the dashboard with:
 |---|---|
 | A2 Datafeed backend | ✅ **DONE — PR #55** |
 | C1 detector-replay endpoint | ✅ **DONE — PR #56** (stacked on #55) |
-| A1 install klinecharts | ⏭️ next |
-| A3 live wiring | ⏭️ |
-| A4 `/chart` route | ⏭️ |
-| A5 replay control (custom) | ⏭️ |
+| A1 install klinecharts | ✅ **DONE — PR #57** |
+| A3 live wiring | ✅ **DONE — PR #61** (3s poll, ticks forming bar) |
+| A4 `/chart` route | ✅ **DONE — PR #57** |
+| A5 replay control (custom) | ✅ **DONE — PR #58** |
 | A6 position tool (custom) | ⏭️ |
 | A7 mobile | ⏭️ |
-| C2 overlay frontend | ⏭️ |
+| C2 overlay frontend | ✅ **DONE — PR #58** |
 | C3 fidelity gate | ⏭️ (manual, needs DB) |
+
+**Post-merge fixes (PR #61):** nav link to `/chart`; API proxied same-origin through Next (Tailscale reachability); detection overlay made non-thrashing — `/chart/detections` is ~2.5s/call (O(n²) 600-bar replay), so the overlay now freezes during playback, refreshes on pause/settle, drops out-of-order responses (seq token), and skips requery when the as-of bar is unchanged. **Still open:** the 2.5s replay cost itself (option 2 — return zone timeline once, filter client-side) is deferred to a follow-up.
 
 Backend (A2 + C1) is **complete and library-agnostic** — survives the TV→klinecharts switch unchanged.
 
