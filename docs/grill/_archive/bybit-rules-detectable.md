@@ -1,6 +1,6 @@
 # Bybit Rules — Detectability Audit (Phase 1 tracer)
 **Date:** 2026-05-13
-**Plan:** docs/plans/bybit-leak-measurement.md
+**Plan:** docs/plans/_archive/bybit-leak-measurement.md
 **Source taxonomy:** docs/grill/bybit-rules-taxonomy.md (**EMPTY at time of audit** — user must populate before Phase 4)
 
 ## Sample

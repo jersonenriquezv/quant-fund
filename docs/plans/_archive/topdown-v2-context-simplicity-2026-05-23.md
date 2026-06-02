@@ -1,6 +1,9 @@
 # Plan: /topdown v2 — Context + Simplicity + Adaptive TP
+
+> **⛔ ABANDONED — NO EDGE.** PRs #37–42 never merged; backtest verdict **NO EDGE** (`backtest_results/TRACKER.md`). Disregard the in-review status below — archived for decision rationale only.
+
 **Slug:** topdown-v2-context-simplicity-2026-05-23
-**Source grill:** docs/grill/topdown-v2-context-simplicity-2026-05-23.md
+**Source grill:** docs/grill/_archive/topdown-v2-context-simplicity-2026-05-23.md
 **Created:** 2026-05-23
 **Status:** in-progress
 **Tracer bullet:** PR1 quick wins — does adding 5 render-layer refinements (PD-bias conflict flag, sweep distance gate, R:R line, entry/SL/TP triplet, BOS session quality) keep the Telegram brief ≤35 lines and pass all existing tests without breaking the deployed `/topdown` command?
@@ -12,7 +15,7 @@ Phase 1 of `/topdown` (`topdown-ict-enhancements-2026-05-23` plan) shipped 2026-
 **Status:** in-review (work + gate complete 2026-05-23, awaiting user manual validation post-deploy)
 **Branch:** `feat/topdown-v2-pr1-quickwins` off `feat/topdown-ict-enhancements-phase1`
 **Inputs:**
-- Grill `docs/grill/topdown-v2-context-simplicity-2026-05-23.md` (BUILD verdict)
+- Grill `docs/grill/_archive/topdown-v2-context-simplicity-2026-05-23.md` (BUILD verdict)
 - Existing Phase 1 helpers in `scripts/topdown_snapshot.py`: `_displacement_read`, `_pd_array_position`, `_inducement_check`, `_killzone_now`, `_render_telegram_markdown`
 - Memory `feedback_brief_output_preferences.md` — simpler > dense, explicit triplet, flag conflicts, sweep gate, session quality
 
@@ -77,8 +80,8 @@ Phase 1 of `/topdown` (`topdown-ict-enhancements-2026-05-23` plan) shipped 2026-
 - Files changed (1 modified, 1 modified test, 2 new docs):
   - `M scripts/topdown_snapshot.py` (+~200 / -~50 LOC — 5 PR1 helpers + renderer wiring)
   - `M tests/test_topdown_snapshot.py` (+~270 LOC — 28 new tests)
-  - `+ docs/grill/topdown-v2-context-simplicity-2026-05-23.md`
-  - `+ docs/plans/topdown-v2-context-simplicity-2026-05-23.md` (this file)
+  - `+ docs/grill/_archive/topdown-v2-context-simplicity-2026-05-23.md`
+  - `+ docs/plans/_archive/topdown-v2-context-simplicity-2026-05-23.md` (this file)
 
 ---
 
@@ -156,7 +159,7 @@ Phase 1 of `/topdown` (`topdown-ict-enhancements-2026-05-23` plan) shipped 2026-
 ## Phase 4 — PR4 Structure Context layer (added 2026-05-23)
 **Status:** in-review (work + gate complete 2026-05-23)
 **Branch:** `feat/topdown-v2-pr4-structure-context` off `feat/topdown-v2-pr3-adaptive-tp`
-**Source grill:** `docs/grill/topdown-phase4-structure-context-2026-05-23.md`
+**Source grill:** `docs/grill/_archive/topdown-phase4-structure-context-2026-05-23.md`
 
 **Motivation:** Live user observation 2026-05-23 — "bot parece seguir el momentum no a la estructura". Brief lacks: HTF trend duration, fresh LTF flip vs HTF, single-candle impulse event, wick-into-liquidity live tap.
 

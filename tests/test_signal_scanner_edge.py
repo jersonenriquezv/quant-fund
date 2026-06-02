@@ -5,7 +5,7 @@ Covers the pure logic only — no DB, no Telegram, no snapshot build:
 - pair scope: SCANNER_PAIRS is BTC/ETH only (edge confirmed nowhere else).
 - `_format_telegram_edge`: LIMIT wording + entry price + maker-limit instruction.
 
-See docs/plans/signal-scanner-topdown-edge-2026-05-25.md (Phase 3).
+See docs/plans/_archive/signal-scanner-topdown-edge-2026-05-25.md (Phase 3).
 """
 from __future__ import annotations
 

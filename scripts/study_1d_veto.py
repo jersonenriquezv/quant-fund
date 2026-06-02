@@ -4,7 +4,7 @@ Read-only. For each engine1 outcome in the window, reconstruct what the 1D
 market structure would have shown at the entry moment, then compare to the
 trade direction. Cross-tab by outcome class.
 
-Decision rule from docs/grill/1d-htf-veto-layer-2026-05-20.md Q1:
+Decision rule from docs/grill/_archive/1d-htf-veto-layer-2026-05-20.md Q1:
 - wrong_direction SLs >60% disagree-1D AND TPs <30% disagree-1D → veto informative
 - Both similar (~40-50%) → 1D adds no signal
 - wrong_direction <60% disagree-1D → weak

@@ -1,4 +1,7 @@
 # Grill: /topdown Phase 4 — Structure Context (HTF duration + LTF flip + big candle + wick-into-liq)
+
+> **⛔ ABANDONED — NO EDGE.** Part of the /topdown v2 stack (PRs #37–42), never merged; backtest verdict **NO EDGE** (`backtest_results/TRACKER.md`). Archived for decision rationale only.
+
 **Date:** 2026-05-23
 **Topic:** Surface STRUCTURE memory in the brief so a recent big LTF candle doesn't mislead user when HTF structure is unchanged. Addresses live user observation 2026-05-23: "bot parece seguir el momentum no a la estructura — venimos de bear y ahora vela gigante bull, pero estructuralmente sigue bear".
 **Verdict:** BUILD — pure derivation over Snapshot already in memory. No new infra. Single PR ~½ day.

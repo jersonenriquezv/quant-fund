@@ -1,7 +1,7 @@
 # Plan: Backtest /topdown manual strategy
 
 **Slug:** backtest-topdown-2026-05-24
-**Source grill:** docs/grill/backtest-topdown-2026-05-24.md
+**Source grill:** docs/grill/_archive/backtest-topdown-2026-05-24.md
 **Created:** 2026-05-24
 **Status:** done
 **Tracer bullet:** `_build_snapshot` + `_trade_triplet` can be re-executed at an arbitrary historical timestamp `t` and return output identical to what would have rendered live at `t`. If false, the whole backtest is impossible without a refactor of `scripts/topdown_snapshot.py`.
@@ -78,7 +78,7 @@ Measure historical edge of the manual `/topdown` SMC top-down strategy against a
   - `scripts/topdown_snapshot.py` — added `_REPLAY_T_MS` module global, `_now_ms()` helper, `_set_replay_time()` setter; routed `_load_candles` SQL through replay filter; replaced `datetime.now()` in `_today_candle_status` and `time.time()` in `lag_sec` with `_now_ms()`. **Geometry guard added in `_trade_triplet`** (sl_wrong_side rejection). Zero behavior change when override is None.
   - `scripts/backtest_topdown.py` — new script. `replay_at(pair, t_ms)`, `--tracer-mode` gate runner.
   - `tests/test_topdown_snapshot.py` — 2 new tests covering long/short SL-wrong-side rejection.
-  - `docs/plans/backtest-topdown-2026-05-24.md` — plan revisions logged inline.
+  - `docs/plans/_archive/backtest-topdown-2026-05-24.md` — plan revisions logged inline.
 - LOC delta: `topdown_snapshot.py` +44 / -3; `backtest_topdown.py` +290 (new file); `test_topdown_snapshot.py` +44 / 0
 
 ### Observations for Phase 3 follow-up
@@ -134,7 +134,7 @@ Measure historical edge of the manual `/topdown` SMC top-down strategy against a
 - Rollback trigger fired: no
 - Files changed:
   - `scripts/backtest_topdown.py` — added `_load_all_candles`, `iter_emissions_for_pair`, `simulate_fill`, `make_random_null`, `_write_trades_csv`, `run_simulator`, `_evaluate_phase2_gate`, `--simulate` flag (+~400 LOC). Print strings updated to match revised gate bands.
-  - `docs/plans/backtest-topdown-2026-05-24.md` — Phase 2 gate revision + evidence.
+  - `docs/plans/_archive/backtest-topdown-2026-05-24.md` — Phase 2 gate revision + evidence.
 - LOC delta: `backtest_topdown.py` +400 (now ~690 LOC total)
 
 ### Phase 3 inputs (carry-forward findings)
@@ -191,7 +191,7 @@ Measure historical edge of the manual `/topdown` SMC top-down strategy against a
   - `scripts/backtest_topdown.py` — added `_trade_pnl_r`, `_fees_r`, `_aggregate`, `_z_test_two_proportions`, `_bucketize_sweep`, `_bucketize_rr`, `_month_label`, `_verdict`, `run_report`, `--report` CLI flag (+~430 LOC, ~1,120 LOC total).
   - `backtest_results/TRACKER.md` — new row.
   - `backtest_results/topdown_20260524_192804_report.md` — full Phase 3 report (~149 lines).
-  - `docs/plans/backtest-topdown-2026-05-24.md` — evidence + revisions.
+  - `docs/plans/_archive/backtest-topdown-2026-05-24.md` — evidence + revisions.
 
 ### Phase 3 plan revisions (logged)
 

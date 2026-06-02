@@ -5,7 +5,7 @@
 
 ## Context loaded
 - Current taxonomy: `docs/grill/bybit-rules-taxonomy.md` (14 rules across 5 blocks)
-- Detectability audit: `docs/grill/bybit-rules-detectable.md`
+- Detectability audit: `docs/grill/_archive/bybit-rules-detectable.md`
 - Phase 1 sample: 37 closed_pnl trades, 91 executions (2026-03-18 → 2026-05-03)
 - Bot viability grill: `docs/grill/bot-viability-2026-05-13.md` (verdict PIVOT, freeze active)
 

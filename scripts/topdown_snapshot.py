@@ -477,7 +477,7 @@ def _killzone_now(timestamp_ms: int) -> dict:
 
 # ---------------------------------------------------------------------------
 # PR1 v2 helpers — quick wins from user testing 2026-05-23.
-# See docs/grill/topdown-v2-context-simplicity-2026-05-23.md.
+# See docs/grill/_archive/topdown-v2-context-simplicity-2026-05-23.md.
 # ---------------------------------------------------------------------------
 
 # Sweep distance gate — beyond this, brief renders "spectator" instead of play.
@@ -1131,7 +1131,7 @@ def _wick_into_liquidity(candles: list[Candle],
 def ensure_topdown_renders_table() -> None:
     """Create the topdown_brief_renders table if missing.
 
-    Phase 3 falsification (docs/plans/topdown-ict-enhancements-2026-05-23.md)
+    Phase 3 falsification (docs/plans/_archive/topdown-ict-enhancements-2026-05-23.md)
     joins this to bybit_trade_annotations on (pair, opened_at within 30 min of
     rendered_at) to bucket trades as brief-informed vs control.
     """

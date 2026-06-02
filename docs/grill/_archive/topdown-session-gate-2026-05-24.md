@@ -14,7 +14,7 @@ Existing partial implementation: `_bos_session_quality` in `scripts/topdown_snap
 
 - `scripts/topdown_snapshot.py` — `_killzone_now` (ICT killzone hours), `_bos_session_quality` (Asian = low, else high). Annotation only, no gating.
 - `backtest_results/topdown_20260524_192804_trades.csv` — 6,830 emissions, 150d, BTC/ETH/SOL/DOGE.
-- Verdict on the related 1D-veto idea: KILL (`docs/grill/1d-htf-veto-layer-2026-05-20.md`).
+- Verdict on the related 1D-veto idea: KILL (`docs/grill/_archive/1d-htf-veto-layer-2026-05-20.md`).
 
 ## Decision tree
 

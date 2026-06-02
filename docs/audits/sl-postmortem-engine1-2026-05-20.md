@@ -2,8 +2,8 @@
 **Date:** 2026-05-20
 **Window:** last 14 days
 **Candle TF for MFE/MAE:** 5m
-**Source plan:** docs/plans/sl-classifier-postmortem.md
-**Source grill:** docs/grill/one-step-down-cascade-2026-05-20.md
+**Source plan:** docs/plans/_archive/sl-classifier-postmortem.md
+**Source grill:** docs/grill/_archive/one-step-down-cascade-2026-05-20.md
 
 ## Methodology
 

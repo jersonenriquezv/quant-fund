@@ -1,7 +1,7 @@
 # Phased Plan: Dashboard Chart + Bar Replay + Bot-Detection Overlay
 
 **Date:** 2026-06-01
-**Source grill:** `docs/grill/chart-replay.md` (verdict: BUILD)
+**Source grill:** `docs/grill/_archive/chart-replay.md` (verdict: BUILD)
 **Scope:** BTC + ETH only. Timeframes 5m/15m/1h/4h (1m dead, skip).
 
 **Library decision (revised 2026-06-01):** **klinecharts** (open-source, MIT, `npm install`), NOT the TradingView Charting Library. TV was the grill's pick but its access is gated behind a private GitHub repo (application form → 1–3 day approval → invite); the account never got access. klinecharts has no gatekeeping, ships native drawing/overlay primitives (so the OB/FVG overlay — the highest-value piece — is *easier* than under TV), and the backend already built is library-agnostic. Trade-off: bar-replay + long/short-position tool are **not native** in klinecharts and are built by hand (we control the datafeed, so replay is a data-slice; the position tool is a custom overlay). ~1 extra day of frontend vs TV's days-of-waiting.

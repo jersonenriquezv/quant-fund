@@ -5,8 +5,8 @@ Maps every element of the `/topdown` Telegram brief to its named ICT (Inner Circ
 **Code location:** `scripts/topdown_snapshot.py`
 **Telegram handler:** `scripts/explain_bot.py` (`/topdown <pair>`)
 **Branch:** `feat/topdown-ict-enhancements-phase1` off `feat/manual-edge-discipline-phase1`
-**Implementation grill:** `docs/grill/topdown-ict-enhancements-2026-05-23.md`
-**Implementation plan:** `docs/plans/topdown-ict-enhancements-2026-05-23.md`
+**Implementation grill:** `docs/grill/_archive/topdown-ict-enhancements-2026-05-23.md`
+**Implementation plan:** `docs/plans/_archive/topdown-ict-enhancements-2026-05-23.md`
 
 ---
 
@@ -68,4 +68,4 @@ Bot internal ML feature collection (`shared/ml_features.py` v13/v15/v16) still i
 - **Phase 2** (blocked ≥2 weeks post-P1) — OB pristine/mitigated full surface, unfilled FVG magnets section, equal-highs/lows engineered liquidity flag
 - **Phase 3** (blocked N≥20 in both falsification buckets) — WR-delta gate via JOIN of `bybit_trade_annotations` to `topdown_brief_renders` within 30-min window. Decision: KEEP / EXTEND / KILL.
 
-See `docs/plans/topdown-ict-enhancements-2026-05-23.md` for full plan + verification gates.
+See `docs/plans/_archive/topdown-ict-enhancements-2026-05-23.md` for full plan + verification gates.

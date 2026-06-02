@@ -15,7 +15,7 @@ Phase 1 produced findings that invalidated the original Phase 2-4 measurement pl
 4. **Bot-of-execution scope was wrong:** the most broken rule (14 — journal) doesn't need an execution bot. It needs an annotation enforcement gate.
 
 **Phases 2-4: ABANDONED.** Replaced with two parallel follow-ups:
-- **Plan D** (engineering): `docs/plans/bybit-journal-enforcement.md` — make annotations mandatory before trade open
+- **Plan D** (engineering): `docs/plans/_archive/bybit-journal-enforcement.md` — make annotations mandatory before trade open
 - **Action C** (research): queued `/grill-me strategy-edge-on-btc-eth` after 30+ new trades with journal filled. NOT a phased plan; it's a single grill session.
 
 Original measurement framework abandoned because the data needed (deposits, full pre-bot history, SL mod log) is either missing or out of scope, and the actionable findings already in hand are larger than what Phase 2-4 would have produced.
@@ -49,7 +49,7 @@ User trades manually on Bybit ($4.6k capital) — primarily ETH-USDT linear perp
 - 30-trade sample from existing `bybit_executions` + `bybit_closed_pnl`
 
 **Outputs:**
-- `docs/grill/bybit-rules-detectable.md` — for each rule in taxonomy, mark `detectable | partial | undetectable` with evidence (which fields are/aren't available)
+- `docs/grill/_archive/bybit-rules-detectable.md` — for each rule in taxonomy, mark `detectable | partial | undetectable` with evidence (which fields are/aren't available)
 - Updated taxonomy keeping only detectable rules as binding for measurement
 
 **Work:**
@@ -71,7 +71,7 @@ User trades manually on Bybit ($4.6k capital) — primarily ETH-USDT linear perp
 - 2026-05-13 — Phase 1 executed
 - **Sample pulled:** 37 closed_pnl + 91 executions + 37 pending_orders + 37 annotations from existing DB (sync coverage: 46 days, linear-only)
 - **User taxonomy file empty** — used 10-rule stub synthesized from prior conversation. User must populate `docs/grill/bybit-rules-taxonomy.md` before Phase 4.
-- **Per-rule detectability written to:** `docs/grill/bybit-rules-detectable.md`
+- **Per-rule detectability written to:** `docs/grill/_archive/bybit-rules-detectable.md`
 - **Score:** 6/10 strictly detectable (60%), 1/10 partial low-value (leverage), 3/10 undetectable
   - Rule 6 (sizing) becomes detectable after Phase 2 capital flow sync
   - Rules 8 (timeout) + 10 (market context) recommended for drop
@@ -81,7 +81,7 @@ User trades manually on Bybit ($4.6k capital) — primarily ETH-USDT linear perp
   - Per-rule field availability documented: ✅
 - **Manual checks pending:** user must (a) accept dropping rules 8+10, (b) populate real taxonomy file, (c) confirm leverage-constant observation
 - **Rollback trigger fired:** no
-- **Files changed:** `docs/grill/bybit-rules-detectable.md` (new), `docs/plans/bybit-leak-measurement.md` (this evidence block)
+- **Files changed:** `docs/grill/_archive/bybit-rules-detectable.md` (new), `docs/plans/_archive/bybit-leak-measurement.md` (this evidence block)
 - **LOC delta:** +90 / -2
 
 **Findings beyond Phase 1 scope (flagged):**
@@ -188,7 +188,7 @@ User trades manually on Bybit ($4.6k capital) — primarily ETH-USDT linear perp
 
 On Phase 4 completion (or Phase 3 KILL), append to `docs/SYSTEM_BASELINE.md` §9:
 
-> `2026-05-XX — Bybit leak measurement (Phase 0) complete. Result: <bps figure> | <kill verdict>. Decision: <build / checklist / pivot / stop>. Plan: docs/plans/bybit-leak-measurement.md`
+> `2026-05-XX — Bybit leak measurement (Phase 0) complete. Result: <bps figure> | <kill verdict>. Decision: <build / checklist / pivot / stop>. Plan: docs/plans/_archive/bybit-leak-measurement.md`
 
 ## Constraints active during this plan
 

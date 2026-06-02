@@ -2,7 +2,7 @@
 Rule 6 enforcement — auto-cancel pending limit orders without thesis_pre.
 
 Validates `BybitWatcher._enforce_journal_deadline` behavior for soft-launch
-forcing function (see docs/plans/bybit-journal-enforcement.md Phase 2).
+forcing function (see docs/plans/_archive/bybit-journal-enforcement.md Phase 2).
 """
 
 from __future__ import annotations
