@@ -601,6 +601,9 @@ class ShadowMonitor:
         """
         redis = self._get_redis()
         if redis is None:
+            # Logged (not silent) so every restart leaves a restore breadcrumb —
+            # an empty/absent snapshot must be distinguishable from "ran fine".
+            logger.info("Shadow restore from Redis: skipped — Redis unavailable")
             return
         try:
             raw = redis.get_bot_state("shadow_positions")
@@ -609,6 +612,7 @@ class ShadowMonitor:
             self._emit_metric("shadow_redis_load_error", 1)
             return
         if not raw:
+            logger.info("Shadow restore from Redis: empty snapshot — 0 positions to restore")
             return
         try:
             data = json.loads(raw)
