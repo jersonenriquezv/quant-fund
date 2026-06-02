@@ -127,6 +127,16 @@ class BacktestDataService:
         visible = [c for c in all_candles if c.timestamp <= self._current_time_ms]
         return visible[-count:]
 
+    def get_orderbook_depth(self, pair: str):
+        """No live orderbook in historical replay.
+
+        Mirrors the live path when the book is unavailable: returns None so
+        `_enrich_with_ob_depth` skips orderbook confirmation (it never blocks a
+        trade — confirmation only). Without this stub the live-only method is
+        missing on the backtest service and setup-A evaluation crashes.
+        """
+        return None
+
     def _find_nearest(self, records: list, time_ms: int):
         """Binary search for the most recent record at or before time_ms."""
         if not records:
@@ -1207,6 +1217,11 @@ class BacktestMetrics:
     profit_factor: float = 0.0
     trades_per_week: float = 0.0
     avg_trade_duration_hours: float = 0.0
+    # Return-distribution stats (for Deflated/Probabilistic Sharpe — AFML Ch.14)
+    sharpe_non_annual: float = 0.0   # per-period (daily) Sharpe, NOT annualized
+    returns_skew: float = 0.0        # skewness of daily returns (γ3)
+    returns_kurtosis: float = 0.0    # raw kurtosis of daily returns (γ4; normal = 3)
+    n_return_periods: int = 0        # number of daily-return observations (T)
     # Breakdown
     by_setup: dict = field(default_factory=dict)
     by_pair: dict = field(default_factory=dict)
@@ -1267,6 +1282,10 @@ def compute_metrics(simulator: TradeSimulator, period_days: float) -> BacktestMe
 
     # Sharpe ratio (daily, annualized)
     m.sharpe_ratio = _compute_sharpe(trades, simulator.initial_capital, period_days)
+    # Per-period Sharpe + return-distribution stats for Deflated Sharpe (AFML Ch.14)
+    m.sharpe_non_annual = m.sharpe_ratio / math.sqrt(365)
+    m.returns_skew, m.returns_kurtosis, m.n_return_periods = _compute_return_stats(
+        trades, simulator.initial_capital)
 
     # Profit factor
     gross_profit = sum(t.pnl_usd for t in trades if t.pnl_usd > 0)
@@ -1323,22 +1342,25 @@ def _compute_max_drawdown(equity_curve: list[tuple[int, float]]) -> float:
     return max_dd * 100
 
 
-def _compute_sharpe(trades: list[SimulatedTrade], initial_capital: float,
-                    period_days: float) -> float:
-    """Compute annualized Sharpe ratio from daily PnL."""
-    if not trades or period_days < 2:
-        return 0.0
-
-    # Bucket PnL by day
+def _daily_returns(trades: list[SimulatedTrade],
+                   initial_capital: float) -> list[float]:
+    """Bucket trade PnL by close day, return daily returns (frac of capital)."""
     daily_pnl: dict[str, float] = defaultdict(float)
     for t in trades:
         day = datetime.fromtimestamp(
             t.close_time_ms / 1000, tz=timezone.utc
         ).strftime("%Y-%m-%d")
         daily_pnl[day] += t.pnl_usd
+    return [pnl / initial_capital for pnl in daily_pnl.values()]
 
-    # Convert to daily returns (as fraction of initial capital)
-    returns = [pnl / initial_capital for pnl in daily_pnl.values()]
+
+def _compute_sharpe(trades: list[SimulatedTrade], initial_capital: float,
+                    period_days: float) -> float:
+    """Compute annualized Sharpe ratio from daily PnL."""
+    if not trades or period_days < 2:
+        return 0.0
+
+    returns = _daily_returns(trades, initial_capital)
     if len(returns) < 2:
         return 0.0
 
@@ -1350,6 +1372,30 @@ def _compute_sharpe(trades: list[SimulatedTrade], initial_capital: float,
         return 0.0
 
     return (mean_r / std_r) * math.sqrt(365)
+
+
+def _compute_return_stats(trades: list[SimulatedTrade],
+                          initial_capital: float) -> tuple[float, float, int]:
+    """Skewness, raw kurtosis, and count of the daily-return series.
+
+    Moment estimators (AFML PSR convention): skew = m3/m2^1.5,
+    kurt = m4/m2^2 (normal distribution = 3.0). Returns (0, 3, n) when the
+    series is too short or degenerate so PSR falls back to the normal case.
+    """
+    returns = _daily_returns(trades, initial_capital)
+    n = len(returns)
+    if n < 2:
+        return 0.0, 3.0, n
+
+    mean_r = sum(returns) / n
+    m2 = sum((r - mean_r) ** 2 for r in returns) / n
+    if m2 <= 0:
+        return 0.0, 3.0, n
+    m3 = sum((r - mean_r) ** 3 for r in returns) / n
+    m4 = sum((r - mean_r) ** 4 for r in returns) / n
+    skew = m3 / (m2 ** 1.5)
+    kurt = m4 / (m2 ** 2)
+    return skew, kurt, n
 
 
 # ================================================================

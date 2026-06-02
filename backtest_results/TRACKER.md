@@ -35,6 +35,27 @@
 
 Walk-forward: test_optimized PF=3.07 vs test_baseline PF=0.88 → **NOT overfitting**.
 
+## Overfitting Defense — Deflated Sharpe Ratio (AFML Ch.14)
+
+Since 2026-06-01 `scripts/optimize.py` reports a **Deflated Sharpe Ratio (DSR)**
+after every run (prints + saved in the `deflated_sharpe` block of the run JSON).
+It is the multiple-testing haircut for the notes' #1 pitfall: *"test thousands of
+combos → one looks great by luck."*
+
+**How it works (Bailey & López de Prado):**
+- Each trial stashes its per-period (daily) Sharpe + return skew/kurtosis as Optuna `user_attr`s — so DSR works regardless of which metric (`profit_factor`, `pnl`, …) the search optimized.
+- `expected_max_sharpe_null` = the Sharpe a skill-less search would hit by chance across **N** trials (grows with N and with the variance of trial Sharpes — AFML eq. 14.4).
+- DSR = Probabilistic Sharpe Ratio of the **selected** config measured *against that null benchmark*, adjusted for non-normal returns (negative skew / fat tails lower it).
+
+**Reading it:**
+- **DSR ≥ 0.95** → best config survives the N-trial haircut. Trustworthy.
+- **DSR < 0.95** → best config is plausibly luck from searching N combos. Do **NOT** promote those params, no matter how good the raw Sharpe/PF looks.
+- More trials (bigger N) raise the bar: a great-looking Sharpe from 200 trials must clear a higher null than the same Sharpe from 20 trials.
+
+Walk-forward and DSR are complementary: walk-forward checks out-of-sample
+stability; DSR checks whether the in-sample pick beat the multiple-testing null.
+Promote params only when **both** pass.
+
 ## AI Calibration History
 
 | Version | Approval Rate | Avg Conf | B Approval | PnL vs Baseline | Key Issue |

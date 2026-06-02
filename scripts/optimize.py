@@ -17,9 +17,11 @@ Optimizes on train period, validates on test period.
 
 import argparse
 import json
+import math
 import os
 import sys
 from datetime import datetime, timezone
+from statistics import NormalDist
 
 # Add project root AND scripts dir to path
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -146,6 +148,13 @@ def make_objective(pairs: list[str] | None, days: int, capital: float,
 
         score = extract_metric(result, metric)
 
+        # Stash Sharpe + return-distribution stats so Deflated Sharpe can be
+        # computed across the trial set regardless of the optimization metric.
+        trial.set_user_attr("sharpe_period", result.sharpe_non_annual)
+        trial.set_user_attr("returns_skew", result.returns_skew)
+        trial.set_user_attr("returns_kurtosis", result.returns_kurtosis)
+        trial.set_user_attr("n_return_periods", result.n_return_periods)
+
         # Log progress
         logger.info(
             f"Trial {trial.number}: {metric}={score:.4f} "
@@ -222,11 +231,89 @@ def walk_forward_validate(best_params: dict, pairs: list[str] | None,
 
 
 # ================================================================
+# Deflated Sharpe Ratio (AFML Ch.14 — Bailey & Lopez de Prado)
+# ================================================================
+
+def _psr(sr: float, sr_benchmark: float, t: int,
+         skew: float, kurt: float) -> float | None:
+    """Probabilistic Sharpe Ratio: P(true SR > sr_benchmark).
+
+    sr / sr_benchmark are per-period (non-annualized). t = number of return
+    observations. skew/kurt = moments of the return series (kurt raw, normal=3).
+    Returns None when the non-normality denominator is non-positive or T<2.
+    """
+    if t < 2:
+        return None
+    denom = 1.0 - skew * sr + ((kurt - 1.0) / 4.0) * (sr ** 2)
+    if denom <= 0:
+        return None
+    z = (sr - sr_benchmark) * math.sqrt(t - 1) / math.sqrt(denom)
+    return NormalDist().cdf(z)
+
+
+def compute_deflated_sharpe(study: optuna.Study) -> dict:
+    """Deflated Sharpe Ratio for the selected (best) trial.
+
+    Deflates the selected strategy's Sharpe by the expected maximum Sharpe a
+    skill-less search would hit across N trials (the multiple-testing haircut),
+    then runs PSR against that benchmark. DSR > 0.95 => the result survives the
+    'I tried thousands of combos, one looked great by luck' overfitting trap
+    the notes flag as pitfall #1.
+    """
+    completed = [t for t in study.trials
+                 if t.value is not None and "sharpe_period" in t.user_attrs]
+    n = len(completed)
+    if n < 2:
+        return {"computable": False,
+                "reason": f"need >=2 completed trials, have {n}", "n_trials": n}
+
+    sr_list = [t.user_attrs["sharpe_period"] for t in completed]
+    mean_sr = sum(sr_list) / n
+    var_sr = sum((s - mean_sr) ** 2 for s in sr_list) / (n - 1)
+    if var_sr <= 0:
+        return {"computable": False,
+                "reason": "zero variance across trial Sharpes", "n_trials": n}
+
+    # Expected maximum Sharpe under the null (no skill) — AFML eq. 14.4
+    gamma = 0.5772156649015329  # Euler-Mascheroni constant
+    nd = NormalDist()
+    expected_max = math.sqrt(var_sr) * (
+        (1.0 - gamma) * nd.inv_cdf(1.0 - 1.0 / n)
+        + gamma * nd.inv_cdf(1.0 - 1.0 / (n * math.e))
+    )
+
+    best = study.best_trial
+    sr_best = best.user_attrs["sharpe_period"]
+    skew = best.user_attrs.get("returns_skew", 0.0)
+    kurt = best.user_attrs.get("returns_kurtosis", 3.0)
+    t_obs = int(best.user_attrs.get("n_return_periods", 0))
+
+    dsr = _psr(sr_best, expected_max, t_obs, skew, kurt)
+    psr0 = _psr(sr_best, 0.0, t_obs, skew, kurt)
+
+    return {
+        "computable": dsr is not None,
+        "reason": None if dsr is not None else "PSR denominator non-positive or T<2",
+        "n_trials": n,
+        "best_sharpe_period": round(sr_best, 5),
+        "best_sharpe_annual": round(sr_best * math.sqrt(365), 4),
+        "var_sharpe_across_trials": round(var_sr, 8),
+        "expected_max_sharpe_null": round(expected_max, 5),
+        "n_return_periods": t_obs,
+        "skew": round(skew, 4),
+        "kurtosis": round(kurt, 4),
+        "psr_vs_zero": round(psr0, 4) if psr0 is not None else None,
+        "deflated_sharpe_ratio": round(dsr, 4) if dsr is not None else None,
+    }
+
+
+# ================================================================
 # Results output
 # ================================================================
 
 def save_results(study: optuna.Study, metric: str, days: int,
-                 walk_forward: dict | None = None) -> str:
+                 walk_forward: dict | None = None,
+                 deflated: dict | None = None) -> str:
     """Save optimization results to JSON."""
     results_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                "backtest_results")
@@ -268,6 +355,9 @@ def save_results(study: optuna.Study, metric: str, days: int,
     if walk_forward:
         result["walk_forward"] = walk_forward
 
+    if deflated:
+        result["deflated_sharpe"] = deflated
+
     with open(filename, "w") as f:
         json.dump(result, f, indent=2)
 
@@ -275,7 +365,8 @@ def save_results(study: optuna.Study, metric: str, days: int,
 
 
 def print_results(study: optuna.Study, metric: str,
-                  walk_forward: dict | None = None) -> None:
+                  walk_forward: dict | None = None,
+                  deflated: dict | None = None) -> None:
     """Print optimization results to console."""
     best = study.best_trial
 
@@ -305,6 +396,28 @@ def print_results(study: optuna.Study, metric: str,
                 print(f"  {name:<35} {imp:.3f}  {bar}")
         except Exception:
             pass
+
+    # Deflated Sharpe Ratio (multiple-testing haircut)
+    if deflated:
+        print(f"\n{'='*70}")
+        print(f"DEFLATED SHARPE RATIO  (AFML Ch.14 — overfitting haircut)")
+        print(f"{'='*70}")
+        if deflated.get("computable"):
+            dsr = deflated["deflated_sharpe_ratio"]
+            print(f"\n  Trials searched (N):       {deflated['n_trials']}")
+            print(f"  Best Sharpe (annualized):  {deflated['best_sharpe_annual']:.3f}")
+            print(f"  Return obs (T):            {deflated['n_return_periods']}")
+            print(f"  Skew / Kurtosis:           {deflated['skew']:.3f} / {deflated['kurtosis']:.3f}")
+            print(f"  Expected max Sharpe (null, per-period): {deflated['expected_max_sharpe_null']:.5f}")
+            print(f"  PSR vs 0:                  {deflated['psr_vs_zero']:.4f}")
+            print(f"  DEFLATED SHARPE RATIO:     {dsr:.4f}")
+            if dsr >= 0.95:
+                print(f"\n  PASS — best config survives the {deflated['n_trials']}-trial multiple-testing haircut (DSR >= 0.95).")
+            else:
+                print(f"\n  FAIL — DSR < 0.95: best config is plausibly luck from searching "
+                      f"{deflated['n_trials']} combos. Do NOT trust these params.")
+        else:
+            print(f"\n  Not computable: {deflated.get('reason')}")
 
     # Walk-forward validation
     if walk_forward:
@@ -392,10 +505,13 @@ def main():
             metric=args.metric, fill_mode=args.fill_mode,
         )
 
+    # Deflated Sharpe Ratio (multiple-testing haircut over all trials)
+    deflated = compute_deflated_sharpe(study)
+
     # Results
-    print_results(study, args.metric, walk_forward=wf_result)
+    print_results(study, args.metric, walk_forward=wf_result, deflated=deflated)
     filename = save_results(study, args.metric, args.days,
-                           walk_forward=wf_result)
+                           walk_forward=wf_result, deflated=deflated)
     print(f"Results saved: {filename}")
 
 
