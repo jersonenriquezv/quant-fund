@@ -12,7 +12,17 @@
 - 90 total: 54 unfilled + **36 filled** (the filled ones had a real outcome that was discarded).
 - All 90 have `shadow_mode=t` + size set → `add_shadow` tracked them; they were genuinely in flight.
 
-## Root cause (3 candidate bugs in `shadow_monitor.py`)
+## CONFIRMED root cause (2026-06-02, post-deploy)
+The instrument-first deploy produced the breadcrumb `Shadow restore from Redis:
+skipped — Redis unavailable`. The real bug was a **4th, simpler one not in the
+list below**: `ShadowMonitor.__init__` (main.py:1255) runs `_load_from_redis()`
+BEFORE `DataService.start()` (main.py:1308) connects Redis → `_get_redis()`
+returns None → restore silently skips on **every** restart. Fix: defer restore
+to the first `check_candle` tick (`_ensure_restored`). The 3 candidates below
+were the pre-instrumentation hypotheses — kept for the record; candidate #1
+(per-record isolation) shipped as defence-in-depth.
+
+## Root cause (3 candidate bugs in `shadow_monitor.py`) — pre-instrumentation hypotheses
 1. **`_load_from_redis` is all-or-nothing** (lines ~594–618): one `try/except` wraps the whole restore loop. If any single `ShadowPosition(**fields)` raises (schema drift between snapshot and code), the entire restore aborts → every in-flight position lost → mass orphan. No per-record guard.
 2. **No resolution on eviction**: when a position falls out of `_positions` (restart didn't restore it), its DB row stays NULL and `_cleanup_orphaned_db_rows` marks it `shadow_orphaned` — discarding a recoverable outcome instead of resolving it.
 3. **Latent**: `del self._positions[sid]` runs after `_resolve` even if the DB write failed (0 errors observed today, but a correctness bug — should drop only on confirmed write).

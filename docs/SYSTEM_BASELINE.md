@@ -528,6 +528,13 @@ D: net_score <  2
 
 ## 8. Changelog
 
+### 2026-06-02 — Shadow orphan-leak fix: defer Redis restore until connected
+**Files:** `execution_service/shadow_monitor.py`, `tests/test_shadow_infra.py`, `docs/grill/shadow-orphan-leak-2026-06-02.md`, `docs/plans/shadow-orphan-leak-fix-2026-06-02.md`.
+
+**What changed:** in-flight shadow positions were lost on every bot restart and aged out as `shadow_orphaned` (90 since 2026-04-15, restart-aligned batches; 54 unfilled + 36 filled-with-real-outcome). **Root cause (confirmed via post-deploy breadcrumb):** `ShadowMonitor.__init__` (main.py:1255) called `_load_from_redis()` BEFORE `DataService.start()` (main.py:1308) connects Redis — `_get_redis()` saw an unconnected client, returned None, and restore silently no-opped on every restart. **Fix:** restore is deferred — `__init__` sets `_restored=False`; a one-time idempotent `_ensure_restored()` runs on the first `check_candle` tick (candles only flow after DataService + Redis are up). Shipped instrument-first (#64 per-record restore isolation + load breadcrumbs, #65 empty/None breadcrumb) to confirm the mechanism before fixing. `shadow_orphaned` is already excluded from training, so no historical corruption — cost was lost samples + false Telegram alerts.
+
+**Falsification:** orphans/24h → 0 across ≥3 restarts. Sentinel: Telegram `SHADOW_ORPHAN_ALERT` (`scripts/shadow_health_alert.py`).
+
 ### 2026-06-01 — Chart replay Phase A5+C2: bar replay + bot-detection overlay
 **Files:** `dashboard/web/src/app/chart/page.tsx`, `dashboard/web/src/lib/chartDatafeed.ts`, `dashboard/web/src/lib/detectionOverlay.ts` (new), `dashboard/web/src/app/globals.css`, `docs/context/06-dashboard.md`.
 

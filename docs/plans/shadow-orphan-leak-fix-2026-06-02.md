@@ -3,7 +3,21 @@
 **Slug:** shadow-orphan-leak-fix-2026-06-02
 **Source grill:** docs/grill/shadow-orphan-leak-2026-06-02.md
 **Created:** 2026-06-02
-**Status:** in-progress
+**Status:** root-cause CONFIRMED 2026-06-02 — fix shipped (see "Confirmed root cause" below)
+
+## Confirmed root cause (2026-06-02, post-deploy breadcrumb)
+The instrument-first deploy (#64/#65) produced the breadcrumb
+`Shadow restore from Redis: skipped — Redis unavailable` on restart. The real
+bug is **initialization ordering**, NOT corrupt records or max_age:
+- `main.py:1212` constructs `DataService` (builds `RedisStore()` but does **not** connect).
+- `main.py:1255` constructs `ShadowMonitor`, whose `__init__` called `_load_from_redis()` → `_get_redis()` saw an unconnected client → returned None → **restore silently skipped**.
+- `main.py:1308` later runs `DataService.start()` which calls `self._redis.connect()` (`data_service/service.py:436`) — too late.
+Result: restore no-opped on **every** restart → all in-flight shadows lost → aged out as `shadow_orphaned`. Consistent with 0 resolve-errors + 0 save-errors (those run at runtime, Redis up) and per-restart orphan batches.
+
+**Fix (shipped):** defer restore — `__init__` no longer restores; a one-time
+`_ensure_restored()` runs on the first `check_candle` tick, by which point
+candles are flowing so Redis/Postgres are guaranteed connected. Phase 1's
+per-record isolation (#64) is retained as defence-in-depth.
 **Scope:** `execution_service/shadow_monitor.py` + `tests/` only. Shadow-only, no real-order code, no feature-version bump, no training-query change.
 **Falsification:** orphans/24h → 0 across ≥3 restarts. Sentinel = Telegram `SHADOW_ORPHAN_ALERT`.
 
@@ -17,16 +31,17 @@
 **Note:** Phase 1 already needs the per-record try/except to *observe* per-record failures — so candidate-bug #1 fix lands here naturally. That is intended: it is the most defensible fix and enables the diagnosis.
 **Gate:** unit test proving one bad record no longer aborts the whole restore; deploy; wait for ≥1 restart; read logs/metrics.
 
-## Phase 2 — Resolve-on-eviction (forward recovery)
-**Goal:** a position that can't be restored is resolved at its last-known state instead of being orphaned.
-**Work:** when the restore drops a position (or on the cleanup path), if enough state exists (filled + last candle), route through `_resolve` with the correct outcome (timeout/sl/tp from candle history) rather than leaving the row NULL for `_cleanup_orphaned_db_rows`. Define the exact data available and the fallback when it isn't.
-**Decision deferred to implementation:** exact mechanism (resolve during load vs a reconcile pass) — depends on Phase 1 findings.
-**Gate:** unit test: an evictable filled position resolves to a real outcome, not `shadow_orphaned`.
+## Phase 2 — Defer restore until Redis is connected ✅ DONE (the actual fix)
+**Goal:** restore must run when Redis is up, not in `__init__` (always pre-connect).
+**Work (shipped):** `__init__` sets `_restored=False` and no longer restores; `_ensure_restored()` runs the one-time `_load_from_redis()` + `_cleanup_orphaned_db_rows()` on the first `check_candle` tick. Idempotent.
+**Gate:** ✅ `TestShadowRestoreDeferral` — restore NOT in `__init__`, runs once on first tick, not re-run after. Full suite 1356 passed.
 
-## Phase 3 — Latent correctness: drop only on confirmed write
-**Goal:** `del self._positions[sid]` must not drop a position whose `_resolve` DB write failed.
-**Work:** `_resolve` returns success/failure; `check_candle` only removes from `_positions` (and Redis) on confirmed write. On failure, keep tracking so a later tick retries.
-**Gate:** unit test: simulated write failure keeps the position tracked; no silent drop.
+> The original speculative Phase 2 (resolve-on-eviction) is moot: with restore actually working, positions are no longer evicted unresolved. Kept only as a note.
+
+## Phase 3 — Latent correctness: drop only on confirmed write (PARKED)
+**Status:** parked — `shadow_outcome_resolved_error=0` in production, so the
+drop-after-failed-write path doesn't fire. Defence-in-depth only; revisit if
+resolve errors ever appear. Not blocking the orphan fix.
 
 ## Verification (all phases)
 ```bash
