@@ -162,6 +162,60 @@ export async function fetchDetectionTimeline(
   return fetchApi<DetectionTimeline>(`/chart/detection_timeline?${params.toString()}`);
 }
 
+// Curate the active zones down to the few that actually matter, so the chart
+// isn't a wall of boxes: drop spent zones (mitigated OB / filled FVG), drop weak
+// OBs (low impulse), and keep only the N nearest-to-price per (timeframe, type).
+const OB_MIN_IMPULSE = 0.5;
+const PER_GROUP = 2; // max zones per (timeframe, type)
+const MAX_DIST_PCT = 3; // only zones within this % of price are "actionable"
+
+function distPct(z: DetectionZone, price: number): number {
+  if (price <= 0) return Infinity;
+  if (price >= z.low && price <= z.high) return 0; // price inside the zone
+  return (Math.min(Math.abs(price - z.high), Math.abs(price - z.low)) / price) * 100;
+}
+
+// Curate to the few zones that matter: drop spent (mitigated OB / filled FVG) and
+// weak OBs, then keep only what's near price — within MAX_DIST_PCT, but always the
+// single nearest per timeframe so the HTF bias zone stays visible even if farther.
+// Finally cap PER_GROUP per (timeframe, type).
+export function curateZones(
+  zones: DetectionZone[],
+  price: number,
+  perGroup = PER_GROUP,
+): DetectionZone[] {
+  const live = zones.filter((z) => {
+    const spent = z.type === "order_block" ? z.mitigated : z.fully_filled;
+    if (spent) return false; // done its job — hide
+    if (z.type === "order_block" && (z.impulse_score ?? 0) < OB_MIN_IMPULSE) return false;
+    return true;
+  });
+
+  // Nearest zone per timeframe is always kept (bias anchor), even past the gate.
+  const nearestPerTf = new Map<string, DetectionZone>();
+  for (const z of live) {
+    const tf = z.source_tf ?? "";
+    const cur = nearestPerTf.get(tf);
+    if (!cur || distPct(z, price) < distPct(cur, price)) nearestPerTf.set(tf, z);
+  }
+  const anchors = new Set(nearestPerTf.values());
+
+  const kept = live.filter((z) => distPct(z, price) <= MAX_DIST_PCT || anchors.has(z));
+
+  // Cap to the closest perGroup per (source_tf, type).
+  const groups = new Map<string, DetectionZone[]>();
+  for (const z of kept) {
+    const key = `${z.source_tf ?? ""}:${z.type}`;
+    (groups.get(key) ?? groups.set(key, []).get(key)!).push(z);
+  }
+  const out: DetectionZone[] = [];
+  for (const arr of groups.values()) {
+    arr.sort((a, b) => distPct(a, price) - distPct(b, price));
+    out.push(...arr.slice(0, perGroup));
+  }
+  return out;
+}
+
 // Resolve the zones active as-of `asOfMs` from a cached timeline, deriving the
 // spent flag (mitigated for OBs, fully_filled for FVGs) at that point in time.
 // When significantOnly is set, drop low-significance zones (small FVGs) — the

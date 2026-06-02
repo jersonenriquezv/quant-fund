@@ -8,6 +8,7 @@ import {
   fetchLiveCandle,
   fetchDetectionTimeline,
   zonesAsOf,
+  curateZones,
   RESOLUTIONS,
   RESOLUTION_MS,
   SYMBOLS,
@@ -195,7 +196,11 @@ export default function ChartPage() {
     const idx = replay ? asOfIdx : bars.length - 1;
     const asOfMs = bars[idx]?.timestamp;
     if (!asOfMs) return;
-    const zones = zonesAsOf(timelineRef.current, asOfMs, significantOnly);
+    const price = bars[idx]?.close ?? 0;
+    // "Focus" on (significantOnly): keep only impulsive, unmitigated zones nearest
+    // to price. Off: show everything raw (incl. spent/dimmed) for inspection.
+    let zones = zonesAsOf(timelineRef.current, asOfMs, significantOnly);
+    if (significantOnly) zones = curateZones(zones, price);
     renderDetections(chart, zones, asOfMs);
     setDetCount(zones.length);
   }, [showDetections, significantOnly, asOfIdx, replay, barCount, timelineReady]);
@@ -293,8 +298,8 @@ export default function ChartPage() {
           {showDetections && (
             <button className={`chart-toggle ${significantOnly ? "on" : ""}`}
               onClick={() => setSignificantOnly((v) => !v)}
-              title="Show only impulsive (significant) FVGs — LuxAlgo-style adaptive filter">
-              Significant
+              title="Focus: only impulsive, unmitigated zones nearest to price (per timeframe). Off = show all raw zones.">
+              Focus
             </button>
           )}
         </div>
