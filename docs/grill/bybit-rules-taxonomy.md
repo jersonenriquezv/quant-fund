@@ -1,5 +1,5 @@
 # Bybit Manual Trading — Rules Taxonomy v3
-*Version 3.0 — built from grill `docs/grill/rules-rewrite-2026-05-13.md`. Replaces v2 (AI-generated theatre with 5-95% violation rates).*
+*Version 3.0 — built from grill `docs/grill/_archive/rules-rewrite-2026-05-13.md`. Replaces v2 (AI-generated theatre with 5-95% violation rates).*
 
 **Effective:** 2026-05-13
 **Validation gate:** Rule 13 — N=30 trades with full journal before any change.
@@ -35,9 +35,9 @@ Mobile annotation form filled BEFORE placing limit order:
 - **`thesis_invalidation`** — market behaviour that breaks the thesis, distinct from SL price (e.g. "cierre 15m > 80.1k = thesis short rota"). Structured sub-field of Rule 11 ("pre-TP1 escape only on invalidation"). Added 2026-05-15.
 
 Form auto-rejects if emotional state ∈ {impaciente, FOMO, revanchero}.
-No journal entry = no trade. Engineering enforcement in `docs/plans/bybit-journal-enforcement.md`.
+No journal entry = no trade. Engineering enforcement in `docs/plans/_archive/bybit-journal-enforcement.md`.
 
-**Note 2026-05-15:** `trigger_condition` and `thesis_invalidation` are STRUCTURED SUB-FIELDS of existing Rules 1 + 11, NOT new rules. Rule 13 (no new binding rules during N=30 test) is therefore not violated — these capture content the user was already supposed to write inside `thesis_pre` prose, but in queryable columns. See `docs/plans/manual-edge-discipline-2026-05-15.md` Phase 1 for instrumentation rationale.
+**Note 2026-05-15:** `trigger_condition` and `thesis_invalidation` are STRUCTURED SUB-FIELDS of existing Rules 1 + 11, NOT new rules. Rule 13 (no new binding rules during N=30 test) is therefore not violated — these capture content the user was already supposed to write inside `thesis_pre` prose, but in queryable columns. See `docs/plans/_archive/manual-edge-discipline-2026-05-15.md` Phase 1 for instrumentation rationale.
 
 ---
 
@@ -105,7 +105,7 @@ No capital scaling or rule changes until N=30 trades with full journal under all
 Mid-test rule changes invalidate the test. Hold the line.
 
 ### Guideline (NOT binding rule yet) — Optimal trading hours
-**Source:** `docs/grill/optimal-hours-2026-05-13.md` (90d OKX data analysis).
+**Source:** `docs/grill/_archive/optimal-hours-2026-05-13.md` (90d OKX data analysis).
 
 Default trading window: **9:00 AM — 12:00 PM EDT** (UTC 13-16). Best mean-reversion regime for BTC and ETH simultaneously.
 Avoid: 2-7 PM EDT (UTC 18-23) — ETH dead, BTC mediocre.

@@ -379,7 +379,7 @@ Per grill verdict `docs/grill/bot-viability-2026-05-13.md`. SMC class empiricall
 
 **Allowed:**
 - Bug fixes in `data_service/`, `risk_service/`, `execution_service/` that do not change setup behavior
-- Bybit-side work (separate plan: `docs/plans/bybit-leak-measurement.md`)
+- Bybit-side work (separate plan: `docs/plans/_archive/bybit-leak-measurement.md`)
 - Docs, monitoring, infrastructure
 
 **Decision dates:**
@@ -388,31 +388,31 @@ Per grill verdict `docs/grill/bot-viability-2026-05-13.md`. SMC class empiricall
 
 ### Side plan — Bybit leak measurement Phase 0 (2026-05-13)
 
-**STATUS: done — pivoted after Phase 1.** Phase 1 surfaced 2 quantified leaks (rule 11 day-of-week 41% violation, rule 14 journal 5% fill) that made Phases 2-4 obsolete. See `docs/plans/bybit-leak-measurement.md` revision note.
+**STATUS: done — pivoted after Phase 1.** Phase 1 surfaced 2 quantified leaks (rule 11 day-of-week 41% violation, rule 14 journal 5% fill) that made Phases 2-4 obsolete. See `docs/plans/_archive/bybit-leak-measurement.md` revision note.
 
 ### Side plan — Bybit journal enforcement (2026-05-13)
 
-Replaces leak-measurement Phases 2-4. Goal: lift `bybit_trade_annotations` fill rate from 5% → ≥80% so future grills have data to work with. Tracer = audit current workflow end-to-end to find the actual failure stage. Plan: `docs/plans/bybit-journal-enforcement.md`. Action C (`/grill-me strategy-edge-on-btc-eth`) queued behind Phase 3 success.
+Replaces leak-measurement Phases 2-4. Goal: lift `bybit_trade_annotations` fill rate from 5% → ≥80% so future grills have data to work with. Tracer = audit current workflow end-to-end to find the actual failure stage. Plan: `docs/plans/_archive/bybit-journal-enforcement.md`. Action C (`/grill-me strategy-edge-on-btc-eth`) queued behind Phase 3 success.
 
 ### Side plan — Manual edge discipline instrumentation (2026-05-15)
 
-Pre-trade structured fields (`trigger_condition`, `thesis_invalidation`) + falsification widget on `/bybit` page + consolidated Telegram checklist. Instruments v3 rules without adding new binding rules (respects Rule 13). Plan: `docs/plans/manual-edge-discipline-2026-05-15.md`. Source grill: `docs/grill/manual-edge-discipline-2026-05-15.md`. Unblocks Action C grill at N=30 rule-compliant trades.
+Pre-trade structured fields (`trigger_condition`, `thesis_invalidation`) + falsification widget on `/bybit` page + consolidated Telegram checklist. Instruments v3 rules without adding new binding rules (respects Rule 13). Plan: `docs/plans/_archive/manual-edge-discipline-2026-05-15.md`. Source grill: `docs/grill/_archive/manual-edge-discipline-2026-05-15.md`. Unblocks Action C grill at N=30 rule-compliant trades.
 
 ### Bybit rules taxonomy rewrite (2026-05-13)
 
-Original 14-rule taxonomy was AI-generated theatre — user confessed 5-95% violation rates depending on rule. Rewrite grilled in `docs/grill/rules-rewrite-2026-05-13.md`. New taxonomy v3 in `docs/grill/bybit-rules-taxonomy.md`. Hard validation gate Rule 13 = N=30 trades with full journal before any scaling or rule changes. Real edge thesis: POC mean reversion with 4H 50 EMA trend filter + 3-confluence minimum + Limit-only enforcement.
+Original 14-rule taxonomy was AI-generated theatre — user confessed 5-95% violation rates depending on rule. Rewrite grilled in `docs/grill/_archive/rules-rewrite-2026-05-13.md`. New taxonomy v3 in `docs/grill/bybit-rules-taxonomy.md`. Hard validation gate Rule 13 = N=30 trades with full journal before any scaling or rule changes. Real edge thesis: POC mean reversion with 4H 50 EMA trend filter + 3-confluence minimum + Limit-only enforcement.
 
 ### Side plan — Top-Down Telegram Brief (2026-05-20)
 
-Read-only analytical tool for manual Bybit entries (BTC/ETH/XRP/SOL). Swing cascade (4H→1H→30m→15m) reconciled multi-TF bias + unbroken liquidity threats, delivered via Telegram. NO `strategy_service/` touches, NO ML feature changes — FREEZE-safe. Falsification: WR comparison via `topdown_brief_used` journal annotation, 30 days post Phase 4 ship. Plan: `docs/plans/topdown-telegram-brief-2026-05-20.md`. Source grill: `docs/grill/topdown-telegram-brief-2026-05-20.md` (verdict BUILD).
+Read-only analytical tool for manual Bybit entries (BTC/ETH/XRP/SOL). Swing cascade (4H→1H→30m→15m) reconciled multi-TF bias + unbroken liquidity threats, delivered via Telegram. NO `strategy_service/` touches, NO ML feature changes — FREEZE-safe. Falsification: WR comparison via `topdown_brief_used` journal annotation, 30 days post Phase 4 ship. Plan: `docs/plans/_archive/topdown-telegram-brief-2026-05-20.md`. Source grill: `docs/grill/_archive/topdown-telegram-brief-2026-05-20.md` (verdict BUILD).
 
 ### Side plan — SL Classifier Post-Mortem (2026-05-20)
 
-Read-only analysis script to classify engine1 SL failures into modal types (wrong_direction / sl_too_tight_noise / late_entry / wrong_zone / counter_trend_valid). No detector / setting / ML feature changes. Falls under FREEZE "monitoring/infrastructure" allowance. Plan: `docs/plans/sl-classifier-postmortem.md`. Source grill: `docs/grill/one-step-down-cascade-2026-05-20.md` (verdict KILL on OSD cascade, pivoted to this).
+Read-only analysis script to classify engine1 SL failures into modal types (wrong_direction / sl_too_tight_noise / late_entry / wrong_zone / counter_trend_valid). No detector / setting / ML feature changes. Falls under FREEZE "monitoring/infrastructure" allowance. Plan: `docs/plans/_archive/sl-classifier-postmortem.md`. Source grill: `docs/grill/_archive/one-step-down-cascade-2026-05-20.md` (verdict KILL on OSD cascade, pivoted to this).
 
 ### Side plan — /topdown manual strategy backtest (2026-05-24) — DONE
 
-Offline historical backtest of `/topdown` SMC top-down brief (post-PR4) vs random-entry null with identical SL/TP/timeout. Pure Python rule replay — zero LLM, zero tokens. FREEZE-safe (no `strategy_service/`, no ML version bump). Scope: BTC/ETH/SOL/DOGE on 15m × 150d window (XRP/AVAX/LINK excluded due to 15m coverage gap). Fees: 0.02% RT maker primary + 0.11% RT taker stress. Plan: `docs/plans/backtest-topdown-2026-05-24.md`. Source grill: `docs/grill/backtest-topdown-2026-05-24.md` (verdict BUILD). **Outcome 2026-05-24: NO EDGE** (Δ +2.32pp WR, p=0.0073, below the 10pp practical threshold). Full report: `backtest_results/topdown_20260524_192804_report.md`. Decision: do not port to bot, continue live falsification. See §8 changelog 2026-05-24 entry for findings.
+Offline historical backtest of `/topdown` SMC top-down brief (post-PR4) vs random-entry null with identical SL/TP/timeout. Pure Python rule replay — zero LLM, zero tokens. FREEZE-safe (no `strategy_service/`, no ML version bump). Scope: BTC/ETH/SOL/DOGE on 15m × 150d window (XRP/AVAX/LINK excluded due to 15m coverage gap). Fees: 0.02% RT maker primary + 0.11% RT taker stress. Plan: `docs/plans/_archive/backtest-topdown-2026-05-24.md`. Source grill: `docs/grill/_archive/backtest-topdown-2026-05-24.md` (verdict BUILD). **Outcome 2026-05-24: NO EDGE** (Δ +2.32pp WR, p=0.0073, below the 10pp practical threshold). Full report: `backtest_results/topdown_20260524_192804_report.md`. Decision: do not port to bot, continue live falsification. See §8 changelog 2026-05-24 entry for findings.
 
 ### Side experiment — Scalp Shadow v1 (2026-05-04)
 
@@ -550,7 +550,7 @@ D: net_score <  2
 **Not included:** C2 frontend overlay + C3 fidelity gate (overlay vs a recorded `ml_setups`/`trades` setup) — need the TradingView frontend (blocked on Charting Library private-repo access) and a live DB.
 
 ### 2026-06-01 — Chart replay Phase A2: TradingView Datafeed backend
-**Files:** `dashboard/api/routes/chart.py` (new), `dashboard/api/queries.py`, `dashboard/api/main.py`, `tests/test_chart_datafeed.py`, `docs/context/06-dashboard.md`, plan `docs/plans/chart-replay-2026-06-01.md`, grill `docs/grill/chart-replay.md`.
+**Files:** `dashboard/api/routes/chart.py` (new), `dashboard/api/queries.py`, `dashboard/api/main.py`, `tests/test_chart_datafeed.py`, `docs/context/06-dashboard.md`, plan `docs/plans/chart-replay-2026-06-01.md`, grill `docs/grill/_archive/chart-replay.md`.
 
 **What changed:** backend half of the dashboard chart-replay tool (grill verdict BUILD). Added UDF Datafeed endpoints `/api/chart/{config,symbols,search,history}` consumed by the upcoming `/chart` route. `queries.get_candles_range()` is a new range query by `from`/`to` ms (cap 5000, keeps bars nearest `to`). Scope locked to BTC/ETH allowlist; resolution map 5/15/60/240 → 5m/15m/1h/4h; UDF seconds↔ms conversion + `no_data`/`nextTime` paging. Read-only on bot data (SELECTs candles only). 10 unit tests, no live DB.
 
@@ -660,7 +660,7 @@ D: net_score <  2
 **Operator note (deploy):** activation needs `BOT_TELEGRAM_ALERTS_ENABLED=false` in `config/.env` + `docker compose up -d --build bot` (mute + crash handler), and installing the digest timer: `cp docs/systemd/daily-status.{service,timer} ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user enable --now daily-status.timer`.
 
 ### 2026-05-26 — signal_scanner engine replaced: classifier → /topdown edge-triplet
-**Files:** `scripts/signal_scanner.py` (engine swap), `scripts/topdown_snapshot.py` (+`build_edge_signal` helper), `tests/test_signal_scanner_edge.py` (new, 12 tests), `docs/plans/signal-scanner-topdown-edge-2026-05-25.md` (Phases 1–3 done).
+**Files:** `scripts/signal_scanner.py` (engine swap), `scripts/topdown_snapshot.py` (+`build_edge_signal` helper), `tests/test_signal_scanner_edge.py` (new, 12 tests), `docs/plans/_archive/signal-scanner-topdown-edge-2026-05-25.md` (Phases 1–3 done).
 
 **What changed:** The scanner's live `scan()` no longer runs the auto-classifier (grade A/B — proven no out-of-sample edge). It now runs the `/topdown` edge-triplet engine, which measured **+0.13R maker (+0.20R deduped)** on BTC/ETH (`docs/audits/topdown-edge-expectancy-2026-05-25.md`).
 - New additive helper `build_edge_signal(pair)` in `topdown_snapshot.py` exposes the existing `_build_snapshot` → `_trade_triplet` as a flat signal dict. **`/topdown` brief output is byte-identical** (additive only — 124 topdown tests pass).
@@ -697,7 +697,7 @@ D: net_score <  2
 
 ### 2026-05-24 — /topdown manual strategy backtest shipped
 
-**Files:** `scripts/backtest_topdown.py` (new, ~1,120 LOC), `scripts/topdown_snapshot.py` (+45 LOC: time-machine `_now_ms`/`_set_replay_time` shim + `_trade_triplet` geometry guard), `tests/test_topdown_snapshot.py` (+2 tests), `backtest_results/topdown_20260524_192804_{trades,random_trades,report}.{csv,csv,md}`, `backtest_results/TRACKER.md` (+1 row), `docs/grill/backtest-topdown-2026-05-24.md` (new), `docs/plans/backtest-topdown-2026-05-24.md` (new).
+**Files:** `scripts/backtest_topdown.py` (new, ~1,120 LOC), `scripts/topdown_snapshot.py` (+45 LOC: time-machine `_now_ms`/`_set_replay_time` shim + `_trade_triplet` geometry guard), `tests/test_topdown_snapshot.py` (+2 tests), `backtest_results/topdown_20260524_192804_{trades,random_trades,report}.{csv,csv,md}`, `backtest_results/TRACKER.md` (+1 row), `docs/grill/_archive/backtest-topdown-2026-05-24.md` (new), `docs/plans/_archive/backtest-topdown-2026-05-24.md` (new).
 
 **What changed:**
 - Offline historical backtest of `/topdown` triplet (post PR1-PR4) vs random-entry null with identical SL/TP/timeout. BTC/ETH/SOL/DOGE × 150d × 15m grid. N = 6,830 emissions / paired 6,830 random.
@@ -779,12 +779,12 @@ Statistically significant Δ, but **far below the 10pp practical-edge threshold*
 **Tests:** Detector + its tests intact in `tests/test_scalp_setups.py` (replay validation). Full suite expected green.
 
 ### 2026-05-19 — Bybit watcher periodic sync + Rule 10/11 operational clarifications
-**Files:** `data_service/bybit_watcher.py`, `config/settings.py`, `docs/grill/bybit-rules-taxonomy.md`, `docs/grill/discipline-no-manual-exits-2026-05-19.md` (new).
+**Files:** `data_service/bybit_watcher.py`, `config/settings.py`, `docs/grill/bybit-rules-taxonomy.md`, `docs/grill/_archive/discipline-no-manual-exits-2026-05-19.md` (new).
 
 **What changed:**
 - `bybit_watcher.py`: new `_periodic_sync_loop` coroutine spawned in `run_forever`. Pulls `bybit_executions` + `bybit_closed_pnl` every `BYBIT_PERIODIC_SYNC_SEC` (default 1800s) with a `BYBIT_PERIODIC_SYNC_DAYS`-day lookback (default 2). Toggle: `BYBIT_PERIODIC_SYNC_ENABLED` (default true).
 - `bybit_rules-taxonomy.md`: operational clarifications appended to Rule 10 (TP trigger-Market, TP frozen post-entry, SL only moves to breakeven after +1R) and Rule 11 (manual close before TP1 only when price touches pre-recorded `thesis_invalidation`; without recorded invalidation, manual close forbidden). Same Phase 1 framing — clarification of existing rules, not a new Rule. Rule 13 freeze respected.
-- New grill `docs/grill/discipline-no-manual-exits-2026-05-19.md` records the decision tree.
+- New grill `docs/grill/_archive/discipline-no-manual-exits-2026-05-19.md` records the decision tree.
 
 **Why:** Audit showed `bybit_executions` sync dead 33 days (2026-04-16 → 2026-05-19) because the watcher only calls `sync_closed_pnl` on close events and the manual `scripts/sync_bybit.py` was never cronned. Without the executions table fresh, rule-compliance measurement (planned post Rule 13 forward test) is blind. User also confessed three discretionary post-entry behaviors (early Market close, stuck close-Limit, moved TP/SL). Grilled against the default-kill stance: kill the request for new journaling fields (Gate 0 shows 1/5 fill rate — more fields = more empty fields), commit to discipline + minimal infra instead.
 

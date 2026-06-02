@@ -1,6 +1,6 @@
 # Journal workflow audit — Phase 1 (bybit-journal-enforcement)
 **Date:** 2026-05-13
-**Plan:** docs/plans/bybit-journal-enforcement.md
+**Plan:** docs/plans/_archive/bybit-journal-enforcement.md
 **Tracer goal:** identify the actual failure point in the current annotation pipeline.
 
 ## Stage-by-stage results

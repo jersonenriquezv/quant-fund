@@ -1,9 +1,9 @@
 # Plan: Manual Edge Discipline — instrument v3 rules for N=30 forward test
 
 **Slug:** manual-edge-discipline-2026-05-15
-**Source grill:** `docs/grill/manual-edge-discipline-2026-05-15.md` (amended with v3 alignment note)
+**Source grill:** `docs/grill/_archive/manual-edge-discipline-2026-05-15.md` (amended with v3 alignment note)
 **Source taxonomy:** `docs/grill/bybit-rules-taxonomy.md` v3 (rules 1-14 — authoritative)
-**Source plan in motion:** `docs/plans/bybit-journal-enforcement.md` (Phase 2 shipped PR #29 #30, Phase 3 fill-rate measurement in flight)
+**Source plan in motion:** `docs/plans/_archive/bybit-journal-enforcement.md` (Phase 2 shipped PR #29 #30, Phase 3 fill-rate measurement in flight)
 **Created:** 2026-05-15
 **Status:** pending
 **Tracer bullet:** Rule 13's N=30 forward test cannot meaningfully start until **trigger** and **thesis_invalidation** are captured as structured fields (today both are buried inside free-text `thesis_pre`). Phase 1 adds the two fields + watcher enforcement and tests whether user fills them on the next 5 attempted trades.
@@ -182,7 +182,7 @@ Total estimate: ~150 LOC.
 
 After Phases 1-3 are done AND N=30 rule-compliant trades have accumulated in the falsification widget:
 
-- Run `/grill-me strategy-edge-on-btc-eth` (queued in `docs/plans/bybit-journal-enforcement.md`).
+- Run `/grill-me strategy-edge-on-btc-eth` (queued in `docs/plans/_archive/bybit-journal-enforcement.md`).
 - That grill answers: with full journal + structured trigger + structured invalidation on N=30, does the user's discretionary strategy show statistically distinguishable edge from random?
 - This plan does NOT pre-shape that grill. Per Rule 13, the question must be re-formed by what the data actually shows.
 

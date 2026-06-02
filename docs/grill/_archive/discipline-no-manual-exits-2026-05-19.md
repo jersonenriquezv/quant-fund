@@ -7,7 +7,7 @@
 - `CLAUDE.md`, `docs/SYSTEM_BASELINE.md` — bot SHADOW-ONLY, ~$86 untouched; ML v0 next re-run 2026-05-25.
 - `MEMORY.md` — Bybit ~$4.6k real money. Phase 1 (`trigger_condition` + `thesis_invalidation`) shipped 2026-05-15 (commit b5f2ece).
 - `docs/grill/bybit-rules-taxonomy.md` v3 — Rules 1-14, Rule 13 freeze until 2026-06-08, Rule 14 = weekly review.
-- `docs/grill/simplify-manual-confluences-2026-05-16.md` — prior grill: PIVOT to LLM judge gated on Gate 0 (≥4/5 fill rate).
+- `docs/grill/_archive/simplify-manual-confluences-2026-05-16.md` — prior grill: PIVOT to LLM judge gated on Gate 0 (≥4/5 fill rate).
 - DB queries:
   - 5 Bybit annotations post-2026-05-15 → only **1/5 filled** trigger_condition + thesis_invalidation + thesis_pre (20%). Gate 0 failing hard. All 5 had `order_id IS NULL` → Rule 6 enforcement (PR #29) doesn't fire because no tracked limit order.
   - 60d execs all-time: 27/39 closes via Market (69%), 12/39 via Limit. `bybit_executions` sync dead 2026-04-16 → 2026-05-19 (manual `sync_bybit.py` not invoked for 33 days).

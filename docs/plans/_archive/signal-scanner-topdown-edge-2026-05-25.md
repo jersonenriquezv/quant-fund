@@ -1,6 +1,6 @@
 # Plan: signal_scanner engine → /topdown edge-triplet
 **Slug:** signal-scanner-topdown-edge-2026-05-25
-**Source grill:** docs/grill/signal-scanner-topdown-edge-2026-05-25.md
+**Source grill:** docs/grill/_archive/signal-scanner-topdown-edge-2026-05-25.md
 **Created:** 2026-05-25
 **Status:** done (all 3 phases, 2026-05-26)
 **Tracer bullet:** Phase 1 proves a dry-run of the new engine emits valid edge-triplets on BTC/ETH (limit price = sweep level, SL correct side, sweep ≤0.5%) at roughly the expected ~3/day under 6h dedup.

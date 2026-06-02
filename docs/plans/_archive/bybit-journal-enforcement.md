@@ -35,7 +35,7 @@ This plan does NOT add new alpha. It enforces an existing rule (rule 14: journal
 - `bybit_trade_annotations` schema + recent rows
 
 **Outputs:**
-- `docs/grill/journal-workflow-audit-2026-05-13.md` with per-stage friction analysis:
+- `docs/grill/_archive/journal-workflow-audit-2026-05-13.md` with per-stage friction analysis:
   - Stage 1: position open detected by watcher? (yes/no, latency)
   - Stage 2: empty annotation row inserted? (yes/no, schema)
   - Stage 3: Telegram alert sent? (yes/no, link present)
@@ -58,7 +58,7 @@ This plan does NOT add new alpha. It enforces an existing rule (rule 14: journal
 - [ ] Rollback if: any stage of infra is broken (e.g. watcher dead, form 500s) — fix infra in this phase before designing enforcement
 
 **Evidence (filled by /phased-implementation):**
-- 2026-05-13 — Phase 1 audit complete. Full report: `docs/grill/journal-workflow-audit-2026-05-13.md`
+- 2026-05-13 — Phase 1 audit complete. Full report: `docs/grill/_archive/journal-workflow-audit-2026-05-13.md`
 - **Stages 1-3, 5-7 all WORKING.** Watcher healthy 13 days, annotations inserted 37/37, Telegram alerts firing 11/11 in last 30d, form loads, PATCH endpoint works, closure alerts fire.
 - **Failure isolated to Stage 4 (link click) → Stage 6 (form completion).** Pure discoverability + motivation gap. No bug to fix.
 - **Architectural gap surfaced:** current flow is POST-trade (annotation row created after watcher observes order). Rule 6 requires PRE-trade journaling. Need design choice in Phase 2 (Options A pre-trade flow / B post-trade auto-cancel / C hybrid).
@@ -72,7 +72,7 @@ This plan does NOT add new alpha. It enforces an existing rule (rule 14: journal
   - [ ] Choose Phase 2 option: A (new pre-trade flow) / B (auto-cancel forcing function) / C (hybrid)
   - [ ] Lesson_post enforcement: yes or just thesis_pre?
 - **Rollback trigger fired:** no
-- **Files changed:** 2 (`docs/grill/journal-workflow-audit-2026-05-13.md` new, this evidence block)
+- **Files changed:** 2 (`docs/grill/_archive/journal-workflow-audit-2026-05-13.md` new, this evidence block)
 - **LOC delta:** 0 code, +85 docs
 
 ---
@@ -82,7 +82,7 @@ This plan does NOT add new alpha. It enforces an existing rule (rule 14: journal
 **Plan revision 2026-05-13:** original Phase 2 was branching/vague pending Phase 1 result. Phase 1 identified Option B as user choice. Phase 2 spec rewritten concretely below.
 
 **Inputs:**
-- Phase 1 audit findings (`docs/grill/journal-workflow-audit-2026-05-13.md`)
+- Phase 1 audit findings (`docs/grill/_archive/journal-workflow-audit-2026-05-13.md`)
 - User decision: Option B (auto-cancel) chosen 2026-05-13
 - Existing infra: `bybit_watcher.py`, `bybit_pending_orders` table, Bybit cancel-order API
 
@@ -178,7 +178,7 @@ This is one grill session, not a phased plan. Do not pre-plan it; the question m
 ## Changelog hook
 
 On Phase 3 completion, append to `docs/SYSTEM_BASELINE.md` §9:
-> `2026-05-XX — Bybit journal enforcement complete. Fill rate <X%>. Next: <action C grill / continued enforcement / abandon>. Plan: docs/plans/bybit-journal-enforcement.md`
+> `2026-05-XX — Bybit journal enforcement complete. Fill rate <X%>. Next: <action C grill / continued enforcement / abandon>. Plan: docs/plans/_archive/bybit-journal-enforcement.md`
 
 ## Constraints active during this plan
 

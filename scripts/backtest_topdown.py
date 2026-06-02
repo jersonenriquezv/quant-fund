@@ -3,7 +3,7 @@
 Phase 1 ships replay_at() + --tracer-mode.
 Phase 2 ships --simulate: walk-forward fill resolver across 150d × 4 pairs,
         paired random-null benchmark, CSV output under backtest_results/.
-See docs/plans/backtest-topdown-2026-05-24.md.
+See docs/plans/_archive/backtest-topdown-2026-05-24.md.
 
 Run:
   PYTHONPATH=. venv/bin/python scripts/backtest_topdown.py --tracer-mode
@@ -1117,7 +1117,7 @@ def run_report(run_id: str) -> int:
     lines.append(f"# /topdown Backtest Report — {run_id}")
     lines.append("")
     lines.append(f"**Generated:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
-    lines.append(f"**Source plan:** `docs/plans/backtest-topdown-2026-05-24.md`")
+    lines.append(f"**Source plan:** `docs/plans/_archive/backtest-topdown-2026-05-24.md`")
     lines.append(f"**Trade CSVs:** `{trades_path}`, `{random_path}`")
     lines.append("")
     lines.append(f"## Verdict: **{verdict_label}**")
@@ -1319,7 +1319,7 @@ def run_report(run_id: str) -> int:
     lines.append("")
     lines.append("---")
     lines.append("")
-    lines.append(f"*Report generator: `scripts/backtest_topdown.py --report {run_id}`. Phase 3 of `docs/plans/backtest-topdown-2026-05-24.md`.*")
+    lines.append(f"*Report generator: `scripts/backtest_topdown.py --report {run_id}`. Phase 3 of `docs/plans/_archive/backtest-topdown-2026-05-24.md`.*")
     lines.append("")
 
     with open(report_path, "w") as f:

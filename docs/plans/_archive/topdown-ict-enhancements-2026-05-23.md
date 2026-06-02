@@ -1,6 +1,9 @@
 # Plan: /topdown ICT Enhancements
+
+> **⛔ ABANDONED — NO EDGE.** PRs #37–42 never merged; backtest verdict **NO EDGE** (`backtest_results/TRACKER.md`). Disregard the in-review status below — archived for decision rationale only.
+
 **Slug:** topdown-ict-enhancements-2026-05-23
-**Source grill:** docs/grill/topdown-ict-enhancements-2026-05-23.md
+**Source grill:** docs/grill/_archive/topdown-ict-enhancements-2026-05-23.md
 **Created:** 2026-05-23
 **Status:** pending
 **Tracer bullet:** Can 3 ICT helpers (displacement / PD array / inducement) be computed purely from `MarketStructureState` + raw candles already loaded by `_build_snapshot`, AND does the resulting Telegram-Markdown brief render under one mobile screen (~25 lines) for SOL/USDT?
@@ -12,7 +15,7 @@ Extend existing `/topdown` brief (branch `feat/manual-edge-discipline-phase1`, c
 **Status:** in-review (work + gate complete 2026-05-23, awaiting user manual validation)
 **Branch:** `feat/topdown-ict-enhancements-phase1` off `feat/manual-edge-discipline-phase1`
 **Inputs:**
-- Grill doc `docs/grill/topdown-ict-enhancements-2026-05-23.md` (BUILD verdict)
+- Grill doc `docs/grill/_archive/topdown-ict-enhancements-2026-05-23.md` (BUILD verdict)
 - Existing `scripts/topdown_snapshot.py` (cascade + reconcile + render)
 - Existing analyzers on `feat/manual-edge-discipline-phase1`:
   - `MarketStructureState.swing_highs / swing_lows / structure_breaks / latest_break / trend`
@@ -131,8 +134,8 @@ Extend existing `/topdown` brief (branch `feat/manual-edge-discipline-phase1`, c
   - `M scripts/explain_bot.py` (+30 / -7 LOC — telegram-mode routing, brief-render logging, help text update)
   - `+ tests/test_topdown_snapshot.py` (~430 LOC — 41 tests across 6 classes)
   - `+ docs/topdown_brief_reference.md` (ICT concept → public source mapping)
-  - `+ docs/grill/topdown-ict-enhancements-2026-05-23.md` (grill verdict)
-  - `+ docs/plans/topdown-ict-enhancements-2026-05-23.md` (this plan)
+  - `+ docs/grill/_archive/topdown-ict-enhancements-2026-05-23.md` (grill verdict)
+  - `+ docs/plans/_archive/topdown-ict-enhancements-2026-05-23.md` (this plan)
 - LOC delta: +606 / -21 in tracked files; +430 tests; ~620 in new docs.
 
 ---

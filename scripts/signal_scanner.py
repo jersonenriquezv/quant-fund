@@ -46,7 +46,7 @@ DEDUP_HOURS = 6       # don't re-alert the same pair/direction within this windo
 # --- Edge engine (topdown triplet) -----------------------------------------
 # The classifier path above (grade A/B) has no out-of-sample edge. The edge
 # engine swaps in the /topdown triplet logic, which measured +0.20R maker
-# (deduped) on BTC/ETH. See docs/plans/signal-scanner-topdown-edge-2026-05-25.md.
+# (deduped) on BTC/ETH. See docs/plans/_archive/signal-scanner-topdown-edge-2026-05-25.md.
 SCANNER_PAIRS = ["BTC/USDT", "ETH/USDT"]  # edge confirmed only here, not TRADING_PAIRS
 MAX_SWEEP_PCT = 0.5   # actionable sweep gate — tighter than topdown's 1.0% spectator cap
 
@@ -294,7 +294,7 @@ async def scan_classifier(dry_run: bool = False) -> list[dict[str, Any]]:
 
     Scanned TRADING_PAIRS × {long, short}, alerted on grade A/B. Proven to
     carry no out-of-sample edge; replaced by the edge engine in `scan()` on
-    2026-05-26 (docs/plans/signal-scanner-topdown-edge-2026-05-25.md). Not on
+    2026-05-26 (docs/plans/_archive/signal-scanner-topdown-edge-2026-05-25.md). Not on
     any live path. `classify` imported locally so the live path stays clean.
     """
     from strategy_service.trade_classifier import classify

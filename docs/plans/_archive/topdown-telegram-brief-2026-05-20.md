@@ -1,6 +1,9 @@
 # Plan: Top-Down Telegram Brief — Swing Cascade
+
+> **PARTIAL / ARCHIVED.** The base /topdown brief shipped (PRs #43/#44). The v2 enhancement follow-ons (PRs #37–42) were **NOT merged — NO EDGE** (`backtest_results/TRACKER.md`). Archived for rationale.
+
 **Slug:** topdown-telegram-brief-2026-05-20
-**Source grill:** docs/grill/topdown-telegram-brief-2026-05-20.md
+**Source grill:** docs/grill/_archive/topdown-telegram-brief-2026-05-20.md
 **Created:** 2026-05-20
 **Status:** pending
 **Tracer bullet:** Phase 1 proves the reconciled multi-TF interpretation (4H→1H→15m as proxy) matches user's independent TradingView read on ≥3 of 4 pairs.

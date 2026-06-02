@@ -1,10 +1,13 @@
 # Grill: /topdown ICT Enhancements
+
+> **⛔ ABANDONED — NO EDGE.** The /topdown v2 enhancement stack (PRs #37–42) was never merged; backtest verdict was **NO EDGE** (`backtest_results/TRACKER.md`). Disregard any in-review/in-progress status below — archived for decision rationale only.
+
 **Date:** 2026-05-23
 **Topic:** Extend existing `/topdown` Telegram brief (branch `feat/manual-edge-discipline-phase1`, commit `bb7de40`) with pure-SMC / ICT-named complements to bias detection. Bug fix on target distance. Telegram-Markdown reformat.
 **Verdict:** BUILD — all additions map 1:1 to documented ICT Top-Down Analysis vocabulary. No new data sources. No `strategy_service/` change. FREEZE-safe.
 
 ## Context loaded
-- `/topdown` lives on branch `feat/manual-edge-discipline-phase1` (not merged to main). Container `quant-fund-explain-bot-1` is running it. Original grill `docs/grill/topdown-telegram-brief-2026-05-20.md` verdict BUILD.
+- `/topdown` lives on branch `feat/manual-edge-discipline-phase1` (not merged to main). Container `quant-fund-explain-bot-1` is running it. Original grill `docs/grill/_archive/topdown-telegram-brief-2026-05-20.md` verdict BUILD.
 - Current implementation: `scripts/topdown_snapshot.py` — cascade 4H(×2)→1H→30m→15m. Output: reconciled bias + invalidation + nearest unbroken liq + play idea. Renderer `_render_short` for mobile.
 - User trades manually on Bybit (~$4.6k capital), BTC/ETH/XRP/SOL. Rules taxonomy v3 (`docs/grill/bybit-rules-taxonomy.md`) anchors edge thesis around POC mean reversion + 4H trend filter + ≥3 confluences + Limit-only.
 - FREEZE 2026-05-13 → 2026-06-08 forbids `strategy_service/` changes. Read-only analyzers (`market_structure.py`, `order_blocks.py`, `fvg.py`, `liquidity.py`, `volume_profile.py`) are reachable from `topdown_snapshot.py` — FREEZE-safe.

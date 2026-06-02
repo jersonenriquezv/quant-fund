@@ -5,7 +5,7 @@ thesis_invalidation are wired through:
   - Pydantic models (AnnotationUpdate accepts both, AnnotationOut exposes both)
   - row_to_out roundtrip
 
-Plan: docs/plans/manual-edge-discipline-2026-05-15.md
+Plan: docs/plans/_archive/manual-edge-discipline-2026-05-15.md
 """
 
 from __future__ import annotations

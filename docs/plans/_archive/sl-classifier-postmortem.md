@@ -1,6 +1,6 @@
 # Plan: SL Classifier Post-Mortem
 **Slug:** sl-classifier-postmortem
-**Source grill:** docs/grill/one-step-down-cascade-2026-05-20.md
+**Source grill:** docs/grill/_archive/one-step-down-cascade-2026-05-20.md
 **Created:** 2026-05-20
 **Status:** pending
 **Tracer bullet:** Prove `ml_setups` + `candles` tables have enough granularity to compute MFE/MAE per SL and assign a failure mode label.

@@ -312,7 +312,7 @@ Central hub for data quality types and gating logic:
 
 **What it does:** When `BYBIT_JOURNAL_ENFORCEMENT_ENABLED=true`, the watcher runs `_enforce_journal_deadline` on every 60s tick. For each `bybit_pending_orders` row where `status='pending'`, `thesis_pre IS NULL`, `enforcement_cancelled_at IS NULL`, and `placed_at` is older than the deadline, it calls Bybit `cancel_order` and stamps `enforcement_cancelled_at`. A Telegram alert is sent on success and on cancel-API failure.
 
-**Why it exists:** Phase 1 audit (`docs/grill/journal-workflow-audit-2026-05-13.md`) showed 95% of trades had no `thesis_pre` filled despite working infra. Discipline alone failed. This is the structural enforcement of Rule 6 from `docs/grill/bybit-rules-taxonomy.md` — the order itself dies if the user does not journal it within 5 minutes.
+**Why it exists:** Phase 1 audit (`docs/grill/_archive/journal-workflow-audit-2026-05-13.md`) showed 95% of trades had no `thesis_pre` filled despite working infra. Discipline alone failed. This is the structural enforcement of Rule 6 from `docs/grill/bybit-rules-taxonomy.md` — the order itself dies if the user does not journal it within 5 minutes.
 
 **Operational notes:**
 - Default is OFF. Flip env `BYBIT_JOURNAL_ENFORCEMENT_ENABLED=true` and restart bybit-watcher container to activate.

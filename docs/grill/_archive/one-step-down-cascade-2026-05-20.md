@@ -62,4 +62,4 @@ OSD survives 0 of 7 BUILD criteria:
 ## Pivot accepted
 **New work**: SL classifier post-mortem. Read-only analysis script. Does NOT touch detectors, settings, or ML feature surface. Safe to run during ML v0 validation window.
 
-→ See plan: `docs/plans/sl-classifier-postmortem.md`
+→ See plan: `docs/plans/_archive/sl-classifier-postmortem.md`

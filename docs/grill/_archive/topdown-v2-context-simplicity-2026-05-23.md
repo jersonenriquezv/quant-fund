@@ -1,10 +1,13 @@
 # Grill: /topdown v2 — Daily Context + Simplicity + Adaptive TP
+
+> **⛔ ABANDONED — NO EDGE.** The /topdown v2 enhancement stack (PRs #37–42) was never merged; backtest verdict was **NO EDGE** (`backtest_results/TRACKER.md`). Disregard any in-review/in-progress status below — archived for decision rationale only.
+
 **Date:** 2026-05-23
 **Topic:** Second iteration of `/topdown` after Phase 1 deployment. Bundle: Daily Context Memory (PDH/PDL/PWH/PWL + daily bias chain), simpler output (less noise), explicit entry/SL/TP triplet in PLAY, adaptive TP scaling, PD-bias conflict flag, sweep distance gate, BOS session quality.
 **Verdict:** BUILD — all 6 grill questions resolved 2026-05-23. Scope: 3 sequenced PRs under one plan, ~2 days total. Architecture: pure derivation over existing `candles` table, no new collection cron, no cache table.
 
 ## Context loaded
-- Phase 1 (`docs/plans/topdown-ict-enhancements-2026-05-23.md`) deployed 2026-05-23 in `quant-fund-explain-bot-1`. PR #37 open. Working, but user testing surfaced gaps.
+- Phase 1 (`docs/plans/_archive/topdown-ict-enhancements-2026-05-23.md`) deployed 2026-05-23 in `quant-fund-explain-bot-1`. PR #37 open. Working, but user testing surfaced gaps.
 - Memory `feedback_brief_output_preferences.md` written 2026-05-23 — closes > wicks, simple > dense, adaptive TP, explicit entry/SL/TP, flag bias/PD conflicts, sweep distance gate, session quality.
 - Candle data inventory (`docker exec quant-fund-postgres-1 psql ...`):
   ```
@@ -46,7 +49,7 @@ User's core insight: **closes are price action truth, wicks are bait** (ICT/Wyck
 - **PR 3 (1 day):** Adaptive TP logic — scaled vs single TP recommendation based on distance ratio.
 **User answer:** (pending)
 **Grade:** —
-**Notes:** Both PRs sit under one plan doc `docs/plans/topdown-v2-context-simplicity-2026-05-23.md`. Each PR has its own verification gate. Total grill effort = one doc.
+**Notes:** Both PRs sit under one plan doc `docs/plans/_archive/topdown-v2-context-simplicity-2026-05-23.md`. Each PR has its own verification gate. Total grill effort = one doc.
 
 ### Q3: Define "long-distance" vs "short-distance" for adaptive TP — by what metric?
 **My recommended answer:** Distance ratio OR daily ATR multiple — user pick.
