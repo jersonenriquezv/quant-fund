@@ -53,6 +53,11 @@ class FakePostgres:
     def __init__(self):
         self.ml_rows: dict[str, dict] = {}
         self.orphan_cleanup_calls = 0
+        self.metrics: list[tuple[str, float, dict | None]] = []
+
+    def insert_metric(self, name: str, value: float = 1.0,
+                      pair: str | None = None, labels: dict | None = None) -> None:
+        self.metrics.append((name, value, labels))
 
     def update_ml_shadow_tracking(self, setup_id: str, fields: dict) -> None:
         self.ml_rows.setdefault(setup_id, {}).update(fields)
@@ -288,3 +293,50 @@ class TestShadowRedisPersistence:
             "ShadowMonitor.__init__ must trigger one orphan sweep to clean "
             "rows stranded by the previous crash."
         )
+
+
+class TestShadowRestorePerRecordIsolation:
+    """Orphan-leak root cause: one unparseable record in the Redis snapshot
+    aborted the ENTIRE restore loop, dropping every in-flight shadow position
+    (which then aged out as `shadow_orphaned`). Restore must isolate per
+    record — a bad record is dropped, the rest survive.
+    """
+
+    def _corrupt_snapshot(self, redis):
+        """Inject a record with an unknown field that ShadowPosition rejects,
+        alongside whatever good records are already saved."""
+        import json
+        raw = redis.get_bot_state("shadow_positions")
+        data = json.loads(raw) if raw else {}
+        data["corrupt"] = {"setup_id": "corrupt", "not_a_field": 123}
+        redis.set_bot_state("shadow_positions", json.dumps(data))
+
+    def test_bad_record_does_not_abort_restore(self, shadow_factory):
+        redis, _postgres, make = shadow_factory
+        mon_a = make()
+        mon_a.add_shadow(_mk_setup(setup_id="good", entry=75000.0),
+                         orderbook=None, risk_approval=_FakeApproval())
+        del mon_a
+
+        self._corrupt_snapshot(redis)
+
+        # Instance B: must still restore the good record despite the bad one.
+        mon_b = make()
+        assert "good" in mon_b._positions, (
+            "a single bad record must not abort restore of valid positions"
+        )
+        assert "corrupt" not in mon_b._positions
+
+    def test_bad_record_emits_dropped_metric(self, shadow_factory):
+        redis, postgres, make = shadow_factory
+        mon_a = make()
+        mon_a.add_shadow(_mk_setup(setup_id="good2", entry=75000.0),
+                         orderbook=None, risk_approval=_FakeApproval())
+        del mon_a
+        self._corrupt_snapshot(redis)
+        postgres.metrics.clear()
+        make()  # instance B restores
+        dropped = [m for m in postgres.metrics
+                   if m[0] == "shadow_redis_load_dropped"
+                   and (m[2] or {}).get("reason") == "parse_error"]
+        assert dropped, "parse failure must emit shadow_redis_load_dropped"
