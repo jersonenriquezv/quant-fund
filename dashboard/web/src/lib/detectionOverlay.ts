@@ -24,10 +24,17 @@ function zoneColors(z: DetectionZone): { fill: string; border: string } {
     : { fill: `rgba(245,158,11,${a})`, border: `rgba(245,158,11,${b})` };
 }
 
-// Short label, direction-distinct (↑ bullish / ↓ bearish) with a spent marker.
+// HTF (bias) zones are drawn more prominently than the chart's own TF.
+const HTF_LABELS = new Set(["1W", "1D", "4H"]);
+function isHtf(z: DetectionZone): boolean {
+  return z.source_tf != null && HTF_LABELS.has(z.source_tf);
+}
+
+// Short label: kind + direction (↑/↓) + source timeframe + spent marker.
 function label(z: DetectionZone): string {
   const kind = z.type === "order_block" ? "OB" : "FVG";
   const arrow = z.direction === "bullish" ? "↑" : "↓";
+  const tf = z.source_tf ? ` ${z.source_tf}` : "";
   const spent =
     z.type === "order_block"
       ? z.mitigated
@@ -36,7 +43,7 @@ function label(z: DetectionZone): string {
       : z.fully_filled
       ? " fill"
       : "";
-  return `${kind}${arrow}${spent}`;
+  return `${kind}${arrow}${tf}${spent}`;
 }
 
 let registered = false;
@@ -60,6 +67,7 @@ export function ensureDetectionOverlayRegistered(): void {
       const yTop = Math.min(coordinates[0].y, coordinates[1].y);
       const w = xRight - xLeft;
       const h = Math.abs(coordinates[1].y - coordinates[0].y);
+      const htf = isHtf(z);
       return [
         {
           type: "rect",
@@ -68,7 +76,7 @@ export function ensureDetectionOverlayRegistered(): void {
             style: "stroke_fill",
             color: fill,
             borderColor: border,
-            borderSize: 1,
+            borderSize: htf ? 2 : 1, // HTF bias zones drawn heavier
             borderRadius: 2,
           },
           ignoreEvent: true,

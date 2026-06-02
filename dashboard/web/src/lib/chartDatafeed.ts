@@ -68,6 +68,7 @@ export interface DetectionZone {
   timestamp: number; // ms (zone origin candle)
   high: number;
   low: number;
+  source_tf?: string; // timeframe the zone was detected on (MTF overlay): "1D"/"4H"/...
   // OB-only
   mitigated?: boolean;
   entry_price?: number;
@@ -111,12 +112,13 @@ export interface ZoneLifecycle extends DetectionZone {
   expire_ts: number;
   spent_ts: number | null;
   significant: boolean; // FVG: displacement bar beat the adaptive threshold; OB: always true
+  source_tf: string;    // TF this zone was detected on (MTF)
 }
 
 export interface DetectionTimeline {
   zones: ZoneLifecycle[];
   as_of: number;
-  bars: number;
+  timeframes: string[]; // TFs included in this overlay (HTF bias + chart TF)
 }
 
 // One replay over the window ending at `toMs` → every zone's lifecycle. Fetch

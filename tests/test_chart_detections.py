@@ -308,12 +308,13 @@ def test_timeline_marks_fvg_significance_by_adaptive_threshold():
     assert by_ts[3000]["significant"] is False  # flat bar
 
 
-def test_timeline_endpoint_shape(client, monkeypatch):
+def test_timeline_endpoint_is_multi_timeframe(client, monkeypatch):
+    """Replays HTF bias TFs (1d, 4h) + the chart TF, tagging zones by source_tf."""
     rows = [_candle_row(1_700_000_000_000 + i * 300_000) for i in range(60)]
-    captured = {}
+    tfs_seen = []
 
     async def fake(pair, tf, from_ms, to_ms, limit=600):
-        captured["args"] = (pair, tf, from_ms, to_ms, limit)
+        tfs_seen.append(tf)
         return rows
     monkeypatch.setattr(queries, "get_candles_range", fake)
 
@@ -322,11 +323,23 @@ def test_timeline_endpoint_shape(client, monkeypatch):
     })
     assert r.status_code == 200
     body = r.json()
-    assert set(body) == {"zones", "as_of", "bars"}
-    assert body["bars"] == 60
+    assert set(body) == {"zones", "as_of", "timeframes"}
     assert body["as_of"] == 1_700_100_000
-    assert isinstance(body["zones"], list)
-    assert captured["args"] == ("BTC/USDT", "5m", 0, 1_700_100_000_000, 600)
+    # HTF bias (1d, 4h) always replayed, plus the chart TF (5m).
+    assert set(tfs_seen) == {"1d", "4h", "5m"}
+    assert body["timeframes"] == ["1D", "4H", "5m"]
+
+
+def test_timeline_chart_tf_in_htf_set_not_duplicated(client, monkeypatch):
+    """Viewing 4h (already an HTF bias TF) must not replay it twice."""
+    async def fake(pair, tf, from_ms, to_ms, limit=600):
+        return []
+    monkeypatch.setattr(queries, "get_candles_range", fake)
+
+    r = client.get("/api/chart/detection_timeline", params={
+        "symbol": "BTC/USDT", "resolution": "240", "to": 1_700_000_000,
+    })
+    assert r.json()["timeframes"] == ["1D", "4H"]
 
 
 def test_timeline_empty_window_returns_empty(client, monkeypatch):
@@ -337,4 +350,7 @@ def test_timeline_empty_window_returns_empty(client, monkeypatch):
     r = client.get("/api/chart/detection_timeline", params={
         "symbol": "BTC/USDT", "resolution": "60", "to": 1_700_000_000,
     })
-    assert r.json() == {"zones": [], "as_of": 1_700_000_000, "bars": 0}
+    body = r.json()
+    assert body["zones"] == []
+    assert body["as_of"] == 1_700_000_000
+    assert body["timeframes"] == ["1D", "4H", "1H"]

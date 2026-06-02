@@ -25,6 +25,11 @@ router = APIRouter()
 # Caps the O(window^2) structure recompute; well above any zone's max age in bars.
 DETECTION_WINDOW_BARS = 600
 
+# Sentinel expire_ts (ms, ~year 3000) for zones still active at the end of a
+# replay — they outlive their own timeframe's last bar, so they render as-of any
+# later time (e.g. an HTF zone shown on an LTF chart).
+ZONE_OPEN_TS = 32503680000000
+
 # --- Scope --------------------------------------------------------------
 # Locked to the two pairs with clean, deep candle history (grill decision).
 CHART_PAIRS = ("BTC/USDT", "ETH/USDT")
@@ -388,7 +393,25 @@ def _replay_detection_timeline(
                 sig,
             )
 
+    # Zones still active on the final replay bar are "open" — they have not been
+    # invalidated, so they remain valid for any later as-of time. Without this an
+    # HTF zone's expire_ts would be its last HTF bar (older than the current LTF
+    # bar), and it would never render on a lower-timeframe chart.
+    if candles:
+        final_now = candles[-1].timestamp
+        for rec in zones.values():
+            if rec["expire_ts"] == final_now:
+                rec["expire_ts"] = ZONE_OPEN_TS
+
     return {"zones": list(zones.values())}
+
+
+# Multi-timeframe overlay: HTF context (bias) is ALWAYS shown, plus the chart's
+# own TF. Aligns the overlay with the top-down strategy (1D/4H bias -> LTF entry)
+# instead of dumping every gap of a single timeframe. label is what the overlay
+# tags each zone with (source_tf).
+TIMEFRAME_LABEL = {"5m": "5m", "15m": "15m", "1h": "1H", "4h": "4H", "1d": "1D"}
+HTF_OVERLAY_TIMEFRAMES = ["1d", "4h"]  # always overlaid, regardless of chart TF
 
 
 @router.get("/chart/detection_timeline")
@@ -397,27 +420,41 @@ async def chart_detection_timeline(
     resolution: str = Query(...),
     to: int = Query(..., description="Window end, Unix seconds (UDF convention)"),
 ) -> dict:
-    """Zone lifecycle over the window ending at `to`, for client-side as-of filtering.
+    """Multi-timeframe zone lifecycles over the window ending at `to`.
 
-    One detector replay (same ~2.5s cost as a single /chart/detections call) yields
-    every zone's born/expire/spent timestamps. The frontend fetches this once per
-    symbol/resolution and filters in memory while scrubbing/playing — no per-bar
-    server calls. See docs/plans/chart-replay-2026-06-01.md.
+    Replays the detectors on the HTF bias timeframes (1D, 4H) AND the chart's own
+    timeframe, tagging each zone with its `source_tf`. So on a 5m chart you still
+    see the structural 4H/1D gaps (top-down), not just 5m noise. Significance
+    (LuxAlgo adaptive threshold) is computed per-TF, against that TF's volatility.
+
+    One replay per TF (each ~2.5s, same cost as a /detections call) runs in
+    parallel off the event loop; the frontend fetches this once per symbol/res
+    (and per new live bar) and filters client-side. See chart-replay plan.
     """
     _validate_chart_pair(symbol)
-    timeframe = _resolve_timeframe(resolution)
+    base_tf = _resolve_timeframe(resolution)
     to_ms = to * 1000
 
-    rows = await queries.get_candles_range(
-        symbol, timeframe, 0, to_ms, limit=DETECTION_WINDOW_BARS
-    )
-    if not rows:
-        return {"zones": [], "as_of": to, "bars": 0}
+    # HTF bias TFs + the chart TF (deduped, HTF first for stable z-order).
+    tfs: list[str] = list(HTF_OVERLAY_TIMEFRAMES)
+    if base_tf not in tfs:
+        tfs.append(base_tf)
 
-    candles = _rows_to_candles(rows, symbol, timeframe)
-    result = await asyncio.to_thread(
-        _replay_detection_timeline, candles, symbol, timeframe
-    )
-    result["as_of"] = to
-    result["bars"] = len(candles)
-    return result
+    async def _one(tf: str) -> tuple[str, list[dict]]:
+        rows = await queries.get_candles_range(
+            symbol, tf, 0, to_ms, limit=DETECTION_WINDOW_BARS
+        )
+        if not rows:
+            return tf, []
+        candles = _rows_to_candles(rows, symbol, tf)
+        result = await asyncio.to_thread(
+            _replay_detection_timeline, candles, symbol, tf
+        )
+        label = TIMEFRAME_LABEL.get(tf, tf)
+        for z in result["zones"]:
+            z["source_tf"] = label
+        return tf, result["zones"]
+
+    per_tf = await asyncio.gather(*[_one(tf) for tf in tfs])
+    zones = [z for _, tf_zones in per_tf for z in tf_zones]
+    return {"zones": zones, "as_of": to, "timeframes": [TIMEFRAME_LABEL.get(t, t) for t in tfs]}
