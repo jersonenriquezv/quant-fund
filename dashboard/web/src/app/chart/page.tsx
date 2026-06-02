@@ -5,11 +5,12 @@ import Link from "next/link";
 import { init, dispose, type Chart } from "klinecharts";
 import {
   fetchHistory,
-  fetchDetections,
+  fetchDetectionTimeline,
+  zonesAsOf,
   RESOLUTIONS,
   SYMBOLS,
   type Kline,
-  type DetectionZone,
+  type ZoneLifecycle,
 } from "@/lib/chartDatafeed";
 import {
   ensureDetectionOverlayRegistered,
@@ -56,9 +57,9 @@ export default function ChartPage() {
   const chartRef = useRef<Chart | null>(null);
   const barsRef = useRef<Kline[]>([]);
   const prevIdxRef = useRef<number>(-1);
-  const detTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const detSeq = useRef<number>(0); // drops out-of-order detection responses
-  const lastDetAsOf = useRef<number | null>(null); // skip requery when as-of bar unchanged
+  const detSeq = useRef<number>(0); // drops out-of-order timeline responses
+  const timelineRef = useRef<ZoneLifecycle[]>([]); // cached zone lifecycles
+  const timelineTs = useRef<number | null>(null); // last bar the timeline was built for
 
   const [chartReady, setChartReady] = useState(false);
   const [symbol, setSymbol] = useState(SYMBOLS[0]);
@@ -73,6 +74,7 @@ export default function ChartPage() {
   const [speed, setSpeed] = useState(2);
   const [showDetections, setShowDetections] = useState(false);
   const [detCount, setDetCount] = useState<number | null>(null);
+  const [timelineReady, setTimelineReady] = useState(0); // bumps when timeline refetched
 
   // Init chart once.
   useEffect(() => {
@@ -152,42 +154,48 @@ export default function ChartPage() {
     if (playing && asOfIdx >= barCount - 1 && barCount > 0) setPlaying(false);
   }, [asOfIdx, barCount, playing]);
 
-  // Detection overlay. The backend replay is ~2.5s/call, so we never requery
-  // per-bar while playing — zones freeze during playback and refresh once on
-  // pause/settle. A sequence token drops out-of-order (stale) responses, and we
-  // skip the call entirely when the as-of bar hasn't changed.
+  // Detection timeline — fetch ONCE per symbol/resolution (and on each new live
+  // bar), not per scrub. The replay is ~2.5s, so doing it once and filtering the
+  // cached lifecycles client-side keeps scrub/playback instant and off the server.
+  useEffect(() => {
+    if (!chartReady || !showDetections) return;
+    const bars = barsRef.current;
+    if (!bars.length) return;
+    const lastTs = bars[bars.length - 1].timestamp;
+    if (lastTs === timelineTs.current) return; // window unchanged — reuse cache
+    const seq = ++detSeq.current;
+    (async () => {
+      try {
+        const tl = await fetchDetectionTimeline(symbol, resolution, lastTs);
+        if (seq !== detSeq.current) return; // superseded
+        timelineRef.current = tl.zones;
+        timelineTs.current = lastTs;
+        setTimelineReady((n) => n + 1); // nudge the render effect
+      } catch {
+        /* keep previous timeline on transient error */
+      }
+    })();
+  }, [chartReady, showDetections, symbol, resolution, barCount]);
+
+  // Render zones active as-of the current bar from the cached timeline. Pure
+  // client-side filter → instant, runs every bar during playback with no fetch.
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
     if (!showDetections) {
       clearDetections(chart);
       setDetCount(null);
-      lastDetAsOf.current = null;
       return;
     }
-    if (playing) return; // keep the last-rendered zones; don't thrash mid-play
     const bars = barsRef.current;
     if (!bars.length) return;
     const idx = replay ? asOfIdx : bars.length - 1;
     const asOfMs = bars[idx]?.timestamp;
-    if (!asOfMs || asOfMs === lastDetAsOf.current) return;
-
-    if (detTimer.current) clearTimeout(detTimer.current);
-    detTimer.current = setTimeout(async () => {
-      const seq = ++detSeq.current;
-      try {
-        const d = await fetchDetections(symbol, resolution, asOfMs);
-        if (seq !== detSeq.current) return; // a newer request superseded this one
-        lastDetAsOf.current = asOfMs;
-        const zones: DetectionZone[] = [...d.order_blocks, ...d.fvgs];
-        renderDetections(chart, zones, asOfMs);
-        setDetCount(zones.length);
-      } catch {
-        /* leave previous zones on transient error */
-      }
-    }, 500);
-    return () => { if (detTimer.current) clearTimeout(detTimer.current); };
-  }, [showDetections, asOfIdx, replay, symbol, resolution, barCount, playing]);
+    if (!asOfMs) return;
+    const zones = zonesAsOf(timelineRef.current, asOfMs);
+    renderDetections(chart, zones, asOfMs);
+    setDetCount(zones.length);
+  }, [showDetections, asOfIdx, replay, barCount, timelineReady]);
 
   // A3 — live candle wiring. In live (non-replay) mode, poll the latest bars and
   // update the forming candle so the chart ticks in real time. Detections gate

@@ -37,7 +37,10 @@ A chart in the dashboard with:
 | C2 overlay frontend | ✅ **DONE — PR #58** |
 | C3 fidelity gate | ⏭️ (manual, needs DB) |
 
-**Post-merge fixes (PR #61):** nav link to `/chart`; API proxied same-origin through Next (Tailscale reachability); detection overlay made non-thrashing — `/chart/detections` is ~2.5s/call (O(n²) 600-bar replay), so the overlay now freezes during playback, refreshes on pause/settle, drops out-of-order responses (seq token), and skips requery when the as-of bar is unchanged. **Still open:** the 2.5s replay cost itself (option 2 — return zone timeline once, filter client-side) is deferred to a follow-up.
+**Post-merge fixes (PR #61):**
+- Nav link to `/chart`; API proxied same-origin through Next (Tailscale reachability).
+- **Detection perf — solved (not just mitigated).** `/chart/detections` is ~2.5s/call (O(n²) 600-bar replay), so per-bar requery during scrub/play piled up and flickered. New endpoint `GET /chart/detection_timeline` does ONE replay over the window and returns each zone's lifecycle (`born_ts`/`expire_ts`/`spent_ts`). Frontend fetches it once per symbol/resolution (and per new live bar), then `zonesAsOf()` filters the cached lifecycles client-side as the bar moves → zero per-bar server calls, instant scrub. Verified: 1 timeline call survives a full replay playthrough; active-as-of-newest count matches the old `/detections` endpoint exactly. Old `/detections` retained (single-shot use).
+- **Overlay cosmetic.** Fixed klinecharts' default text style painting a blue chip behind every label (`backgroundColor`/`borderColor` = blue) — forced transparent. Direction-distinct labels (`OB↑/↓`, `FVG↑/↓`; previously both directions rendered "B"), labels anchored to the as-of (right) edge so they stay visible when the origin scrolls off-screen, overlays `lock: true`.
 
 Backend (A2 + C1) is **complete and library-agnostic** — survives the TV→klinecharts switch unchanged.
 

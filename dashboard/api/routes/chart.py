@@ -280,3 +280,120 @@ async def chart_detections(
     result["as_of"] = to
     result["bars"] = len(candles)
     return result
+
+
+def _zone_key(kind: str, direction: str, origin_ts: int, high: float) -> str:
+    """Stable identity for a zone across bars (origin + price band)."""
+    return f"{kind}:{direction}:{origin_ts}:{round(high, 2)}"
+
+
+def _replay_detection_timeline(
+    candles: list[Candle], pair: str, timeframe: str
+) -> dict:
+    """Replay the detectors ONCE over the window and record each zone's lifecycle.
+
+    Returns, per unique zone, the bar timestamps when it was born, last seen
+    (expiry), and first marked spent (mitigated/filled). The frontend caches this
+    and filters client-side as the as-of bar moves — so a replay/scrub costs ZERO
+    extra server calls instead of one ~2.5s detector replay per bar.
+    """
+    structure = MarketStructureAnalyzer()
+    ob_detector = OrderBlockDetector()
+    fvg_detector = FVGDetector()
+
+    # key -> accumulated lifecycle record (geometry from latest sighting).
+    zones: dict[str, dict] = {}
+
+    def _touch(key: str, base: dict, now_ms: int, spent: bool) -> None:
+        rec = zones.get(key)
+        if rec is None:
+            zones[key] = {
+                **base,
+                "born_ts": now_ms,
+                "expire_ts": now_ms,
+                "spent_ts": now_ms if spent else None,
+            }
+            return
+        rec.update(base)  # refresh evolving fields (filled_pct, retest_count, ...)
+        rec["expire_ts"] = now_ms
+        if spent and rec["spent_ts"] is None:
+            rec["spent_ts"] = now_ms
+
+    for i in range(len(candles)):
+        visible = candles[: i + 1]
+        now_ms = visible[-1].timestamp
+        state = structure.analyze(visible, pair, timeframe)
+        active_obs = ob_detector.update(
+            visible, state.structure_breaks, pair, timeframe, now_ms
+        )
+        active_fvgs = fvg_detector.update(visible, pair, timeframe, now_ms)
+
+        for ob in active_obs:
+            key = _zone_key("order_block", ob.direction, ob.timestamp, ob.high)
+            _touch(
+                key,
+                {
+                    "type": "order_block",
+                    "direction": ob.direction,
+                    "timestamp": ob.timestamp,
+                    "high": ob.high,
+                    "low": ob.low,
+                    "body_high": ob.body_high,
+                    "body_low": ob.body_low,
+                    "entry_price": ob.entry_price,
+                    "impulse_score": ob.impulse_score,
+                    "retest_count": ob.retest_count,
+                },
+                now_ms,
+                ob.mitigated,
+            )
+        for fvg in active_fvgs:
+            key = _zone_key("fvg", fvg.direction, fvg.timestamp, fvg.high)
+            _touch(
+                key,
+                {
+                    "type": "fvg",
+                    "direction": fvg.direction,
+                    "timestamp": fvg.timestamp,
+                    "high": fvg.high,
+                    "low": fvg.low,
+                    "size_pct": fvg.size_pct,
+                    "filled_pct": fvg.filled_pct,
+                },
+                now_ms,
+                fvg.fully_filled,
+            )
+
+    return {"zones": list(zones.values())}
+
+
+@router.get("/chart/detection_timeline")
+async def chart_detection_timeline(
+    symbol: str = Query(...),
+    resolution: str = Query(...),
+    to: int = Query(..., description="Window end, Unix seconds (UDF convention)"),
+) -> dict:
+    """Zone lifecycle over the window ending at `to`, for client-side as-of filtering.
+
+    One detector replay (same ~2.5s cost as a single /chart/detections call) yields
+    every zone's born/expire/spent timestamps. The frontend fetches this once per
+    symbol/resolution and filters in memory while scrubbing/playing — no per-bar
+    server calls. See docs/plans/chart-replay-2026-06-01.md.
+    """
+    _validate_chart_pair(symbol)
+    timeframe = _resolve_timeframe(resolution)
+    to_ms = to * 1000
+
+    rows = await queries.get_candles_range(
+        symbol, timeframe, 0, to_ms, limit=DETECTION_WINDOW_BARS
+    )
+    if not rows:
+        return {"zones": [], "as_of": to, "bars": 0}
+
+    candles = _rows_to_candles(rows, symbol, timeframe)
+    result = await asyncio.to_thread(
+        _replay_detection_timeline, candles, symbol, timeframe
+    )
+    result["as_of"] = to
+    result["bars"] = len(candles)
+    return result

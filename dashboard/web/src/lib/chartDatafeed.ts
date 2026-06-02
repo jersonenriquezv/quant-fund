@@ -100,3 +100,48 @@ export async function fetchDetections(
   // Normalize ms on each zone (backend already returns ms timestamps).
   return d;
 }
+
+// --- detection timeline (perf: one replay, client-side as-of filtering) ----
+
+// A zone plus its lifecycle in bar timestamps (ms): when it was first detected,
+// last active (expiry), and first marked spent (mitigated/filled).
+export interface ZoneLifecycle extends DetectionZone {
+  born_ts: number;
+  expire_ts: number;
+  spent_ts: number | null;
+}
+
+export interface DetectionTimeline {
+  zones: ZoneLifecycle[];
+  as_of: number;
+  bars: number;
+}
+
+// One replay over the window ending at `toMs` → every zone's lifecycle. Fetch
+// this once per symbol/resolution (and on each new live bar) and filter with
+// zonesAsOf() while scrubbing — no per-bar server call (the replay is ~2.5s).
+export async function fetchDetectionTimeline(
+  symbol: string,
+  resolution: string,
+  toMs: number,
+): Promise<DetectionTimeline> {
+  const params = new URLSearchParams({
+    symbol,
+    resolution,
+    to: String(Math.floor(toMs / 1000)),
+  });
+  return fetchApi<DetectionTimeline>(`/chart/detection_timeline?${params.toString()}`);
+}
+
+// Resolve the zones active as-of `asOfMs` from a cached timeline, deriving the
+// spent flag (mitigated for OBs, fully_filled for FVGs) at that point in time.
+export function zonesAsOf(timeline: ZoneLifecycle[], asOfMs: number): DetectionZone[] {
+  return timeline
+    .filter((z) => z.born_ts <= asOfMs && asOfMs <= z.expire_ts)
+    .map((z) => {
+      const spent = z.spent_ts != null && z.spent_ts <= asOfMs;
+      return z.type === "order_block"
+        ? { ...z, mitigated: spent }
+        : { ...z, fully_filled: spent };
+    });
+}

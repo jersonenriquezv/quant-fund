@@ -32,7 +32,8 @@ Si el dashboard crashea, el bot sigue operando normalmente.
 | `GET /api/chart/symbols?symbol=` | Static | resolveSymbol — LibrarySymbolInfo (solo BTC/USDT, ETH/USDT) |
 | `GET /api/chart/search?query=` | Static | searchSymbols — restringido al allowlist BTC/ETH |
 | `GET /api/chart/history?symbol=&resolution=&from=&to=` | PG candles | getBars — OHLCV por rango (from/to en segundos UDF), cap 5000 bars |
-| `GET /api/chart/detections?symbol=&resolution=&to=` | PG candles + detectores OB/FVG (in-memory, read-only) | Overlay de detecciones del bot: zonas OB/FVG activas as-of `to`. Replay incremental, expiración por `current_time_ms`=ts de la barra (sin reloj wall-clock); window 600 barras, corre off event-loop |
+| `GET /api/chart/detections?symbol=&resolution=&to=` | PG candles + detectores OB/FVG (in-memory, read-only) | Overlay de detecciones del bot: zonas OB/FVG activas as-of `to`. Replay incremental, expiración por `current_time_ms`=ts de la barra (sin reloj wall-clock); window 600 barras, corre off event-loop. ~2.5s/call (O(n²)) — uso single-shot |
+| `GET /api/chart/detection_timeline?symbol=&resolution=&to=` | igual que `/detections` | **Perf**: UN solo replay sobre el window → lifecycle de cada zona (`born_ts`/`expire_ts`/`spent_ts`). El front lo pide una vez por símbolo/resolución y filtra client-side (`zonesAsOf()`) al mover la barra → cero llamadas por-barra en scrub/replay. Sustituye al patrón de re-consultar `/detections` cada barra |
 | `POST /api/manual/calculate` | Pure math | Position sizing & R:R calculator (linear + inverse) |
 | `POST /api/manual/trades` | PG manual_trades | Create manual trade (planned) |
 | `GET /api/manual/trades` | PG manual_trades | List trades (filter by status/pair) |
@@ -49,10 +50,11 @@ Si el dashboard crashea, el bot sigue operando normalmente.
 ## Frontend — Layout
 
 ### Ruta `/chart` — klinecharts (replay + overlay)
-Página dedicada (`src/app/chart/page.tsx`, libs `src/lib/chartDatafeed.ts` + `src/lib/detectionOverlay.ts`). Usa **klinecharts 9.8.12** (lazy en esta ruta; bundle ~54 kB; sparklines siguen SVG). Switchers BTC/ETH + 5m/15m/1h/4h, panel VOL aparte, tema Apple-dark. `chartDatafeed.ts` mapea las respuestas UDF de `/api/chart/*` (segundos) a klines (ms). Datos via `/api/chart/history` (confirmed-bar; sin ticks intra-vela).
+Página dedicada (`src/app/chart/page.tsx`, libs `src/lib/chartDatafeed.ts` + `src/lib/detectionOverlay.ts`). Usa **klinecharts 9.8.12** (lazy en esta ruta; bundle ~54 kB; sparklines siguen SVG). Switchers BTC/ETH + 5m/15m/1h/4h, panel VOL aparte, tema Apple-dark. `chartDatafeed.ts` mapea las respuestas UDF de `/api/chart/*` (segundos) a klines (ms). Datos via `/api/chart/history`.
+- **Live wiring (A3):** en modo live (no-replay) hace poll cada 3s y `updateData` de la última vela → el chart "tickea" en tiempo real. (Orderbook depth viz = idea futura aparte; no es lo que hace tickear las velas.)
 - **Bar replay (A5):** toggle "Replay" → barra con play/pause/step + slider + velocidad (1/2/4/8×) + label as-of. Revela historia avanzando un puntero visible-to (avance de 1 vela = `updateData`; saltos = `applyNewData`).
-- **Overlay de detecciones (C2):** toggle "Detections" consulta `/api/chart/detections` as-of la vela actual y dibuja zonas OB/FVG como rects de color (overlay custom de klinecharts en `detectionOverlay.ts`). En replay re-consulta as-of el puntero → las zonas aparecen/mitigan en el tiempo (loop de validación del detector).
-- **Pendiente:** long/short position tool (A6), gate de fidelidad C3 (overlay vs setup grabado en `ml_setups`/`trades`).
+- **Overlay de detecciones (C2):** toggle "Detections" pide `/api/chart/detection_timeline` UNA vez (por símbolo/resolución y por nueva vela live) y filtra client-side con `zonesAsOf()` al mover la barra → zonas aparecen/mitigan/expiran en el tiempo sin llamadas por-barra (loop de validación del detector, scrub instantáneo). Rects custom de klinecharts en `detectionOverlay.ts`; labels `OB↑/↓` `FVG↑/↓` ancladas al borde as-of, `lock:true`, bg transparente (el text style default de klinecharts pintaba un chip azul).
+- **Pendiente:** long/short position tool (A6), gate de fidelidad C3 (overlay vs setup grabado en `ml_setups`/`trades`), pase mobile A7.
 
 ```
 HEADER: Status dot + "QF" + LIVE/DEMO pill + F&G pill (colored) + UTC clock (time only)
