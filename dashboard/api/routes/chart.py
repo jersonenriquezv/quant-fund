@@ -35,6 +35,7 @@ RESOLUTION_TO_TIMEFRAME = {
     "15": "15m",
     "60": "1h",
     "240": "4h",
+    "D": "1d",
 }
 SUPPORTED_RESOLUTIONS = list(RESOLUTION_TO_TIMEFRAME.keys())
 
@@ -301,10 +302,13 @@ def _replay_detection_timeline(
     ob_detector = OrderBlockDetector()
     fvg_detector = FVGDetector()
 
+    # Lookup for the displacement candle behind each FVG (FVG.timestamp == c2.ts).
+    ts_to_candle = {c.timestamp: c for c in candles}
+
     # key -> accumulated lifecycle record (geometry from latest sighting).
     zones: dict[str, dict] = {}
 
-    def _touch(key: str, base: dict, now_ms: int, spent: bool) -> None:
+    def _touch(key: str, base: dict, now_ms: int, spent: bool, significant: bool) -> None:
         rec = zones.get(key)
         if rec is None:
             zones[key] = {
@@ -312,6 +316,7 @@ def _replay_detection_timeline(
                 "born_ts": now_ms,
                 "expire_ts": now_ms,
                 "spent_ts": now_ms if spent else None,
+                "significant": significant,  # fixed at formation; not updated
             }
             return
         rec.update(base)  # refresh evolving fields (filled_pct, retest_count, ...)
@@ -319,9 +324,21 @@ def _replay_detection_timeline(
         if spent and rec["spent_ts"] is None:
             rec["spent_ts"] = now_ms
 
+    # LuxAlgo "Auto Threshold": a gap is significant only if its displacement
+    # bar's body move exceeds 2x the running mean of |body move %|. Adapts to
+    # volatility, so only impulsive bars qualify (cuts the small-gap noise).
+    cum_abs_delta = 0.0
+    n_bars = 0
+
     for i in range(len(candles)):
         visible = candles[: i + 1]
-        now_ms = visible[-1].timestamp
+        bar = visible[-1]
+        now_ms = bar.timestamp
+        if bar.open:
+            cum_abs_delta += abs(bar.close - bar.open) / bar.open
+        n_bars += 1
+        threshold = (cum_abs_delta / n_bars) * 2 if n_bars else 0.0
+
         state = structure.analyze(visible, pair, timeframe)
         active_obs = ob_detector.update(
             visible, state.structure_breaks, pair, timeframe, now_ms
@@ -346,9 +363,15 @@ def _replay_detection_timeline(
                 },
                 now_ms,
                 ob.mitigated,
+                True,  # OBs aren't the noise source; always shown
             )
         for fvg in active_fvgs:
             key = _zone_key("fvg", fvg.direction, fvg.timestamp, fvg.high)
+            disp = ts_to_candle.get(fvg.timestamp)
+            sig = False
+            if disp is not None and disp.open:
+                delta = abs(disp.close - disp.open) / disp.open
+                sig = delta > threshold
             _touch(
                 key,
                 {
@@ -362,6 +385,7 @@ def _replay_detection_timeline(
                 },
                 now_ms,
                 fvg.fully_filled,
+                sig,
             )
 
     return {"zones": list(zones.values())}

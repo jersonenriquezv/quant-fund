@@ -73,6 +73,7 @@ export default function ChartPage() {
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(2);
   const [showDetections, setShowDetections] = useState(false);
+  const [significantOnly, setSignificantOnly] = useState(true); // LuxAlgo de-noise: on by default
   const [detCount, setDetCount] = useState<number | null>(null);
   const [timelineReady, setTimelineReady] = useState(0); // bumps when timeline refetched
 
@@ -192,10 +193,10 @@ export default function ChartPage() {
     const idx = replay ? asOfIdx : bars.length - 1;
     const asOfMs = bars[idx]?.timestamp;
     if (!asOfMs) return;
-    const zones = zonesAsOf(timelineRef.current, asOfMs);
+    const zones = zonesAsOf(timelineRef.current, asOfMs, significantOnly);
     renderDetections(chart, zones, asOfMs);
     setDetCount(zones.length);
-  }, [showDetections, asOfIdx, replay, barCount, timelineReady]);
+  }, [showDetections, significantOnly, asOfIdx, replay, barCount, timelineReady]);
 
   // A3 — live candle wiring. In live (non-replay) mode, poll the latest bars and
   // update the forming candle so the chart ticks in real time. Detections gate
@@ -251,6 +252,13 @@ export default function ChartPage() {
             onClick={() => setShowDetections((v) => !v)}>
             Detections{detCount != null ? ` (${detCount})` : ""}
           </button>
+          {showDetections && (
+            <button className={`chart-toggle ${significantOnly ? "on" : ""}`}
+              onClick={() => setSignificantOnly((v) => !v)}
+              title="Show only impulsive (significant) FVGs — LuxAlgo-style adaptive filter">
+              Significant
+            </button>
+          )}
         </div>
         <div className="chart-status">{loading ? "loading…" : error ?? ""}</div>
       </header>

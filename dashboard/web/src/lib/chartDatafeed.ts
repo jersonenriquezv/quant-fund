@@ -19,6 +19,7 @@ export const RESOLUTIONS: { label: string; resolution: string }[] = [
   { label: "15m", resolution: "15" },
   { label: "1h", resolution: "60" },
   { label: "4h", resolution: "240" },
+  { label: "1D", resolution: "D" },
 ];
 
 export const SYMBOLS = ["BTC/USDT", "ETH/USDT"];
@@ -109,6 +110,7 @@ export interface ZoneLifecycle extends DetectionZone {
   born_ts: number;
   expire_ts: number;
   spent_ts: number | null;
+  significant: boolean; // FVG: displacement bar beat the adaptive threshold; OB: always true
 }
 
 export interface DetectionTimeline {
@@ -135,9 +137,16 @@ export async function fetchDetectionTimeline(
 
 // Resolve the zones active as-of `asOfMs` from a cached timeline, deriving the
 // spent flag (mitigated for OBs, fully_filled for FVGs) at that point in time.
-export function zonesAsOf(timeline: ZoneLifecycle[], asOfMs: number): DetectionZone[] {
+// When significantOnly is set, drop low-significance zones (small FVGs) — the
+// LuxAlgo-style adaptive de-noise filter, applied chart-side only.
+export function zonesAsOf(
+  timeline: ZoneLifecycle[],
+  asOfMs: number,
+  significantOnly = false,
+): DetectionZone[] {
   return timeline
     .filter((z) => z.born_ts <= asOfMs && asOfMs <= z.expire_ts)
+    .filter((z) => !significantOnly || z.significant)
     .map((z) => {
       const spent = z.spent_ts != null && z.spent_ts <= asOfMs;
       return z.type === "order_block"

@@ -28,7 +28,7 @@ Si el dashboard crashea, el bot sigue operando normalmente.
 | `GET /api/headlines` | Redis (`qf:bot:news:headlines:{BTC,ETH}`) | Recent news headlines (CryptoCompare) |
 | `POST /api/trades/{pair}/cancel` | Redis write (`qf:cancel_request:{pair}`) | Solicita cancelación de posición (TTL 60s) |
 | `GET /api/liquidation/heatmap/{pair}` | PG candles + Redis OI + cache | Estimated liquidation levels (bins con long/short USD) |
-| `GET /api/chart/config` | Static | TradingView UDF Datafeed config (resoluciones soportadas: 5/15/60/240) |
+| `GET /api/chart/config` | Static | TradingView UDF Datafeed config (resoluciones soportadas: 5/15/60/240/D) |
 | `GET /api/chart/symbols?symbol=` | Static | resolveSymbol — LibrarySymbolInfo (solo BTC/USDT, ETH/USDT) |
 | `GET /api/chart/search?query=` | Static | searchSymbols — restringido al allowlist BTC/ETH |
 | `GET /api/chart/history?symbol=&resolution=&from=&to=` | PG candles | getBars — OHLCV por rango (from/to en segundos UDF), cap 5000 bars |
@@ -50,10 +50,11 @@ Si el dashboard crashea, el bot sigue operando normalmente.
 ## Frontend — Layout
 
 ### Ruta `/chart` — klinecharts (replay + overlay)
-Página dedicada (`src/app/chart/page.tsx`, libs `src/lib/chartDatafeed.ts` + `src/lib/detectionOverlay.ts`). Usa **klinecharts 9.8.12** (lazy en esta ruta; bundle ~54 kB; sparklines siguen SVG). Switchers BTC/ETH + 5m/15m/1h/4h, panel VOL aparte, tema Apple-dark. `chartDatafeed.ts` mapea las respuestas UDF de `/api/chart/*` (segundos) a klines (ms). Datos via `/api/chart/history`.
+Página dedicada (`src/app/chart/page.tsx`, libs `src/lib/chartDatafeed.ts` + `src/lib/detectionOverlay.ts`). Usa **klinecharts 9.8.12** (lazy en esta ruta; bundle ~54 kB; sparklines siguen SVG). Switchers BTC/ETH + 5m/15m/1h/4h/1D (1D usa candles `1d` del DB; 1W no almacenado), panel VOL aparte, tema Apple-dark. `chartDatafeed.ts` mapea las respuestas UDF de `/api/chart/*` (segundos) a klines (ms). Datos via `/api/chart/history`.
 - **Live wiring (A3):** en modo live (no-replay) hace poll cada 3s y `updateData` de la última vela → el chart "tickea" en tiempo real. (Orderbook depth viz = idea futura aparte; no es lo que hace tickear las velas.)
 - **Bar replay (A5):** toggle "Replay" → barra con play/pause/step + slider + velocidad (1/2/4/8×) + label as-of. Revela historia avanzando un puntero visible-to (avance de 1 vela = `updateData`; saltos = `applyNewData`).
 - **Overlay de detecciones (C2):** toggle "Detections" pide `/api/chart/detection_timeline` UNA vez (por símbolo/resolución y por nueva vela live) y filtra client-side con `zonesAsOf()` al mover la barra → zonas aparecen/mitigan/expiran en el tiempo sin llamadas por-barra (loop de validación del detector, scrub instantáneo). Rects custom de klinecharts en `detectionOverlay.ts`; labels `OB↑/↓` `FVG↑/↓` ancladas al borde as-of, `lock:true`, bg transparente (el text style default de klinecharts pintaba un chip azul).
+- **Filtro "Significant" (de-ruido FVG, solo chart):** toggle (ON por defecto) que aplica el umbral adaptativo de LuxAlgo — un FVG es significativo si la barra de desplazamiento (`FVG.timestamp`==c2) se movió más que `2× la media corrida de |body %|`. El backend lo precomputa por zona (`significant`) en `detection_timeline`; el front filtra con `zonesAsOf(..., significantOnly)`. NO toca el detector del bot (`fvg.py` sigue con `FVG_MIN_SIZE_PCT` fijo) — el chart sigue siendo herramienta de validación; el filtro es solo visual. OBs siempre `significant=true` (no son la fuente de ruido).
 - **Pendiente:** long/short position tool (A6), gate de fidelidad C3 (overlay vs setup grabado en `ml_setups`/`trades`), pase mobile A7.
 
 ```

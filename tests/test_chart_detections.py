@@ -253,6 +253,61 @@ def test_timeline_tracks_zone_lifecycle():
     assert z["spent_ts"] == 3000
 
 
+def test_timeline_marks_fvg_significance_by_adaptive_threshold():
+    """An FVG whose displacement bar (FVG.timestamp == c2.ts) moved more than 2x
+    the running mean body % is significant; a flat displacement bar is not."""
+    from shared.models import Candle
+
+    def mk(ts, o, c):
+        return Candle(timestamp=ts, open=o, high=max(o, c) + 1, low=min(o, c) - 1,
+                      close=c, volume=1, volume_quote=1, pair="BTC/USDT",
+                      timeframe="5m", confirmed=True)
+
+    # bar2 (ts=2000) is a big-body displacement; bar3 (ts=3000) is flat.
+    candles = [mk(1000, 100, 100), mk(2000, 100, 110), mk(3000, 110, 110)]
+
+    class FakeState:
+        structure_breaks = []
+
+    class FakeStructure:
+        def analyze(self, *a):
+            return FakeState()
+
+    class FakeOB:
+        def update(self, *a):
+            return []
+
+    def make_fvg(ts):
+        class F:
+            direction = "bullish"; timestamp = ts; high = 109.0; low = 108.0
+            size_pct = 0.01; filled_pct = 0.0; fully_filled = False
+        return F()
+
+    # Only emit zones on the final bar so the running threshold covers all 3 bars.
+    calls = {"n": 0}
+
+    class FakeFVG:
+        def update(self, *a):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                return []
+            return [make_fvg(2000), make_fvg(3000)]  # big-body vs flat displacement
+
+    orig = (chart.MarketStructureAnalyzer, chart.OrderBlockDetector, chart.FVGDetector)
+    chart.MarketStructureAnalyzer = FakeStructure
+    chart.OrderBlockDetector = FakeOB
+    chart.FVGDetector = FakeFVG
+    try:
+        out = chart._replay_detection_timeline(candles, "BTC/USDT", "5m")
+    finally:
+        (chart.MarketStructureAnalyzer, chart.OrderBlockDetector,
+         chart.FVGDetector) = orig
+
+    by_ts = {z["timestamp"]: z for z in out["zones"]}
+    assert by_ts[2000]["significant"] is True   # 10% body >> threshold
+    assert by_ts[3000]["significant"] is False  # flat bar
+
+
 def test_timeline_endpoint_shape(client, monkeypatch):
     rows = [_candle_row(1_700_000_000_000 + i * 300_000) for i in range(60)]
     captured = {}
