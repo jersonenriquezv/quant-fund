@@ -107,6 +107,19 @@ web:
   depends_on: [api]
 ```
 
+### Acceso a la API desde el navegador (proxy same-origin)
+
+El navegador NUNCA llama al puerto `:8000` directamente. `next.config.ts` define un
+`rewrites()` que reenvía `/api/*` → `http://127.0.0.1:8000` (web corre en
+`network_mode: host`, así que `127.0.0.1:8000` es la api). El cliente (`src/lib/api.ts`,
+`getApiBase()`) usa origen relativo (`""`), por lo que todas las llamadas REST salen al
+mismo origen `:3000`. Esto elimina la dependencia de que `:8000` sea alcanzable desde el
+cliente — clave para acceso por Tailscale/SSH donde sólo `:3000` está expuesto — y evita
+CORS por completo. **WebSocket** (`wsUrl()` / `getWsBase()`) SÍ apunta directo a
+`ws://<hostname>:8000`: los rewrites de Next no proxean upgrades WS de forma fiable, así
+que el ticker de precios en vivo requiere que `:8000` sea alcanzable. El build-arg
+`NEXT_PUBLIC_API_URL` sólo afecta al render del servidor (SSR), no al cliente.
+
 ## Archivos
 
 ```

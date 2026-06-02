@@ -1,8 +1,20 @@
+// REST goes same-origin in the browser — Next rewrites (next.config.ts) proxy
+// /api/* to the backend, so the API port need not be reachable from the client.
+// Server-side render still calls the backend directly.
 function getApiBase(): string {
   if (typeof window !== "undefined") {
-    return `http://${window.location.hostname}:8000`;
+    return "";
   }
-  return process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  return process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+}
+
+// WebSocket can't be proxied reliably through Next rewrites, so it still hits
+// the API port directly on the page's own host.
+function getWsBase(): string {
+  if (typeof window !== "undefined") {
+    return `ws://${window.location.hostname}:8000`;
+  }
+  return (process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000").replace(/^http/, "ws");
 }
 
 function getAuthHeaders(): Record<string, string> {
@@ -18,8 +30,7 @@ export async function fetchApi<T>(path: string): Promise<T> {
 }
 
 export function wsUrl(): string {
-  const base = getApiBase().replace(/^http/, "ws");
-  return `${base}/api/ws`;
+  return `${getWsBase()}/api/ws`;
 }
 
 // Types matching the API models
