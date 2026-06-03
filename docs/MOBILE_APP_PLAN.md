@@ -1,7 +1,7 @@
 # Trade Log — Mobile App Plan
 
 **Status:** Draft — awaiting review
-**Author:** Jerson + Claude
+**Author:** Jerson
 **Date:** 2026-04-17
 **Scope:** Mobilize the `/bybit` endpoint into a standalone mobile application while preserving the existing visual identity (black `#050505` + lime `#b2fd02` + Fraunces serif + JetBrains Mono + grain overlay).
 
@@ -432,6 +432,7 @@ This plan adapts as follows:
 3. **Cloudflare Tunnel on the Nitro 5** — OK to expose FastAPI publicly (with auth)? Or keep Tailscale-only and skip store launch?
 4. **Screenshot storage:** R2 or local-disk-via-FastAPI? R2 costs ~pennies but adds a vendor.
 5. **Should the app include read-only access to the OKX bot's `/` dashboard** too (shadow monitor, live setups), or strictly the Bybit journal? (Recommend: strictly journal for V1 — OKX bot dashboard is monitoring, different UX.)
+   - **RESOLVED 2026-06-03:** Journal stays V1. The **Chart** (`/chart` — klinecharts overlay + analysis) gets added as a **V2 module via WebView** (klinecharts has no native RN port). Analysis = OB/FVG overlay + `/topdown` brief + new on-demand AI analysis. Exposed behind JWT on the same tunnel. Full plan: `docs/plans/mobile-chart-module-2026-06-03.md`.
 6. **Confluence auto-snapshot work:** what's the ETA from the parallel session? Plan assumes it lands before P3 (week 4). If slipping, we fall back to V1 manual confluences + V2 auto.
 7. **Do you want weekly Claude review push** to fire automatically every Sunday 10am local (`scripts/weekly_review_bybit.py` + push), or user-initiated only?
 
