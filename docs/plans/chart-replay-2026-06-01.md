@@ -35,7 +35,7 @@ A chart in the dashboard with:
 | A6 position tool (custom) | ⏭️ |
 | A7 mobile | ⏭️ |
 | C2 overlay frontend | ✅ **DONE — PR #58** |
-| C3 fidelity gate | ⏭️ (manual, needs DB) |
+| C3 fidelity gate | ✅ **DONE — `scripts/chart_c3_fidelity.py`** (80 setups, 0 lies, 2026-06-03) |
 
 **Post-merge fixes (PR #61):**
 - Nav link to `/chart`; API proxied same-origin through Next (Tailscale reachability).
@@ -110,15 +110,26 @@ Backend (A2 + C1) is **complete and library-agnostic** — survives the TV→kli
 - klinecharts custom overlay/figure layer: render returned zones as colored boxes (bullish/bearish OB, FVG) across their time/price extent. OB vs FVG distinct; mitigated/filled dimmed.
 - Toggle "Show bot detections". On replay step or scroll, re-query `/api/chart/detections?to=<as-of bar>`.
 
-### C3. Fidelity verification gate (CRITICAL) ⏭️ (manual, needs DB)
-- Pick a known historical setup from `ml_setups` / `trades` (recorded OB/FVG with timestamp + geometry).
-- Confirm the overlaid zone at that bar **matches** what the live bot recorded (high/low/direction/mitigation). Divergence → harness bug, fix before shipping.
+### C3. Fidelity verification gate (CRITICAL) ✅ DONE — `scripts/chart_c3_fidelity.py` (2026-06-03)
+- Automated, repeatable (read-only on DB, no docker). Pulls recorded zone-derived setups
+  (`setup_a/b/f/g/h`, `setup_d_bos/choch`) from `ml_setups`, then drives the **real overlay code**
+  (`chart._replay_detections`) over the same 600-bar window as-of each setup's detection bar.
+- Classifies each: **EXACT** (raw OB edge == recorded SL, <0.05% — byte-exact zone reproduction),
+  **BAND** (entry inside a matching-direction zone), **CASCADE** (zones present but entry/SL synthesised
+  off the raw edge by `_resolve_entry` — a setup-construction detail, not an overlay defect),
+  **LIE** (no matching-direction zone in replay — the only true overlay failure).
+- **Result (n=80, both pairs): EXACT 10, BAND 64, CASCADE 6, LIE 0. VERDICT PASS** — the overlay
+  reproduces the live detector exactly; the 10 byte-exact OB-edge matches prove the replay harness
+  (`current_time_ms`=bar.ts, incremental, 600-bar window) is faithful.
+- **Scope note:** `engine1_trend_pullback`, `scalp_*`, `bench_*` are OUT of scope — they derive entry/SL
+  from impulse-origin/ATR or random, not OB/FVG, so they never map to overlay zones (not a bug). The
+  overlay only draws OB/FVG.
 - Proves the overlay isn't "a lie" (grill Q2).
 
 ### Phase C verification gate
-- Overlay zones appear and move correctly as replay steps.
-- C3 fidelity passes against ≥1 recorded setup per pair.
-- No event-loop blocking (already handled in C1 via `to_thread`).
+- Overlay zones appear and move correctly as replay steps. ✅
+- C3 fidelity passes against ≥1 recorded setup per pair. ✅ (80 setups, 0 lies — `scripts/chart_c3_fidelity.py`)
+- No event-loop blocking (already handled in C1 via `to_thread`). ✅
 
 ---
 

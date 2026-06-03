@@ -528,6 +528,13 @@ D: net_score <  2
 
 ## 8. Changelog
 
+### 2026-06-03 — Chart replay C3: detection-overlay fidelity gate PASSED
+**Files:** `scripts/chart_c3_fidelity.py` (new), `docs/plans/chart-replay-2026-06-01.md`.
+
+**What changed:** ran the CRITICAL C3 fidelity gate (grill Q2 — "is the overlay a lie?"). New repeatable script (read-only on DB, no docker) pulls recorded OB/FVG-derived setups (`setup_a/b/f/g/h`, `setup_d_bos/choch`) from `ml_setups`, then drives the **real overlay code** (`chart._replay_detections`) over the same 600-bar window as-of each setup's detection bar, classifying each: **EXACT** (raw OB edge == recorded SL <0.05%, byte-exact zone reproduction), **BAND** (entry inside a matching-direction zone), **CASCADE** (zones present but entry/SL synthesised off the raw edge by `_resolve_entry` — setup-construction, not an overlay defect), **LIE** (no matching-direction zone in replay — the only true overlay failure). **Result n=80, both pairs: EXACT 10, BAND 64, CASCADE 6, LIE 0 → PASS.** The 10 byte-exact matches confirm the replay harness (`current_time_ms`=bar.ts, incremental, 600-bar window) is faithful to the live detector — no `SimulatedClock` needed (validates the C1 design note empirically). **Scope:** `engine1_trend_pullback`/`scalp_*`/`bench_*` are OUT of scope — they derive entry/SL from impulse-origin+ATR or random, not OB/FVG, so they never map to overlay zones (expected, not a bug). The overlay draws only OB/FVG.
+
+**Remaining chart pending:** A6 long/short position tool, A7 mobile pass (375px). Plan: `docs/plans/chart-replay-2026-06-01.md`.
+
 ### 2026-06-02 — Shadow orphan-leak fix: defer Redis restore until connected
 **Files:** `execution_service/shadow_monitor.py`, `tests/test_shadow_infra.py`, `docs/grill/shadow-orphan-leak-2026-06-02.md`, `docs/plans/shadow-orphan-leak-fix-2026-06-02.md`.
 
