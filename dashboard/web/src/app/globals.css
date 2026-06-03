@@ -1424,6 +1424,17 @@ select.manual-input {
   color: #000;
   border-color: transparent;
 }
+/* A6 position tool buttons */
+.chart-pos-long { color: var(--long, #b2fd02); }
+.chart-pos-short { color: var(--short, #ff4d4d); }
+.chart-pos-long:hover { background: rgba(178, 253, 2, 0.12); }
+.chart-pos-short:hover { background: rgba(255, 77, 77, 0.12); }
+.chart-pos-clear {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+  font-variant-numeric: tabular-nums;
+}
+
 .chart-canvas {
   flex: 1;
   min-height: 0;

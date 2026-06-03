@@ -20,6 +20,12 @@ import {
   renderDetections,
   clearDetections,
 } from "@/lib/detectionOverlay";
+import {
+  ensurePositionOverlayRegistered,
+  createPosition,
+  clearPosition,
+  onPositionChange,
+} from "@/lib/positionTool";
 
 const CHART_STYLES = {
   grid: {
@@ -79,19 +85,26 @@ export default function ChartPage() {
   const [significantOnly, setSignificantOnly] = useState(true); // LuxAlgo de-noise: on by default
   const [detCount, setDetCount] = useState<number | null>(null);
   const [timelineReady, setTimelineReady] = useState(0); // bumps when timeline refetched
+  const [positionRR, setPositionRR] = useState<number | null>(null); // A6 live R:R
 
   // Init chart once.
   useEffect(() => {
     if (!containerRef.current) return;
     ensureDetectionOverlayRegistered();
+    ensurePositionOverlayRegistered();
+    onPositionChange(setPositionRR);
     const chart = init(containerRef.current);
     if (chart) {
       chart.setStyles(CHART_STYLES);
       chart.createIndicator("VOL", false); // separate sub-pane below candles
       chartRef.current = chart;
+      if (process.env.NODE_ENV !== "production") {
+        (window as unknown as { __qfChart?: unknown }).__qfChart = chart; // dev/test handle
+      }
       setChartReady(true);
     }
     return () => {
+      onPositionChange(null);
       if (containerRef.current) dispose(containerRef.current);
       chartRef.current = null;
     };
@@ -269,6 +282,24 @@ export default function ChartPage() {
   const step = (d: number) =>
     setAsOfIdx((i) => Math.min(barCount - 1, Math.max(0, i + d)));
 
+  // A6 — drop a practice position. Entry = the as-of bar's close; the box's left
+  // edge anchors ~60% across the visible window so it extends toward "now".
+  const placePosition = (direction: "long" | "short") => {
+    const chart = chartRef.current;
+    const bars = barsRef.current;
+    if (!chart || !bars.length) return;
+    const idx = replay ? asOfIdx : bars.length - 1;
+    const entry = bars[idx]?.close ?? 0;
+    // Anchor the box ~40 bars back so its left edge lands inside the typical
+    // viewport (klinecharts loads far more bars than it shows).
+    const anchorIdx = Math.max(0, idx - 40);
+    const anchorTs = bars[anchorIdx]?.timestamp ?? bars[idx].timestamp;
+    if (entry) createPosition(chart, { direction, entry, anchorTs });
+  };
+  const removePosition = () => {
+    if (chartRef.current) clearPosition(chartRef.current);
+  };
+
   const asOfTs = barsRef.current[asOfIdx]?.timestamp;
 
   return (
@@ -302,6 +333,15 @@ export default function ChartPage() {
               Focus
             </button>
           )}
+          <div className="chart-seg chart-pos" title="Drop a practice position. Drag the entry/SL/TP handles; R:R updates live.">
+            <button className="chart-seg-btn chart-pos-long" onClick={() => placePosition("long")}>+ Long</button>
+            <button className="chart-seg-btn chart-pos-short" onClick={() => placePosition("short")}>+ Short</button>
+            {positionRR != null && (
+              <button className="chart-seg-btn chart-pos-clear" onClick={removePosition} title="Clear position">
+                R:R {positionRR.toFixed(2)} ✕
+              </button>
+            )}
+          </div>
         </div>
         <div className="chart-status">{loading ? "loading…" : error ?? ""}</div>
       </header>

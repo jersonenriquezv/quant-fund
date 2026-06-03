@@ -82,7 +82,7 @@ Dashboard reads from these keys. **Never write to `qf:bot:*` from the dashboard*
 - Add inline styles for responsive layout. Use CSS classes.
 - Skip Pair format validation on Redis-bound endpoints.
 - Expose write endpoints without Bearer auth.
-- Add a charting library without checking bundle size impact. Sparklines stay SVG. (Exception: `klinecharts` is allowed but ONLY lazy-loaded on the `/chart` route — bundle checked at 52.4 kB, isolated to that route. Do not import it into the dashboard home or sparklines.)
+- Add a charting library without checking bundle size impact. Sparklines stay SVG. (Exception: `klinecharts` is allowed but ONLY lazy-loaded on the `/chart` route — bundle checked at 52.4 kB, isolated to that route — 56 kB after the A6 position tool. Do not import it into the dashboard home or sparklines.)
 
 ## Verify after changes
 ```bash
