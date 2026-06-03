@@ -528,12 +528,17 @@ D: net_score <  2
 
 ## 8. Changelog
 
+### 2026-06-03 — Chart replay A6: long/short position practice tool
+**Files:** `dashboard/web/src/lib/positionTool.ts` (new), `dashboard/web/src/app/chart/page.tsx`, `dashboard/web/src/app/globals.css`, `docs/context/06-dashboard.md`, `dashboard/CLAUDE.md`.
+
+**What changed:** added the A6 long/short position practice tool to `/chart` — a single klinecharts custom overlay (`positionTool`) with three draggable price handles (entry/SL/TP). Draws a green reward box (entry→TP) + red risk box (entry→SL) extending to the right edge, a dashed entry line, and right-anchored labels (`TP <px> (+x%)`, `SL <px> (-x%)`, `Entry <px> · R:R <n>`). Direction is implied by geometry, so dragging a handle through entry flips long↔short. `+ Long` / `+ Short` toolbar buttons seed the default 1%-risk / 2%-reward (2R) offsets; the R:R chip button clears the position. `createPointFigures` reads live point values each repaint, so R:R + box + labels recompute on every drag with no React round-trip; `onPressedMoveEnd` mirrors R:R into the toolbar chip. Pure practice — no persistence, no order placement; read-only on bot/DB. Bundle: `/chart` 52.4→56 kB (lazy, route-isolated). Verified in-browser (Playwright, real DB): create/geometry/labels/Clear, live R:R recompute (proven via API point move 2.00→1.00), 375px no overflow.
+
+**Remaining chart pending:** A7 full mobile pass; tuning knobs (Focus/OB significance), FVG-into-bot port decision, 1W timeframe.
+
 ### 2026-06-03 — Chart replay C3: detection-overlay fidelity gate PASSED
 **Files:** `scripts/chart_c3_fidelity.py` (new), `docs/plans/chart-replay-2026-06-01.md`.
 
 **What changed:** ran the CRITICAL C3 fidelity gate (grill Q2 — "is the overlay a lie?"). New repeatable script (read-only on DB, no docker) pulls recorded OB/FVG-derived setups (`setup_a/b/f/g/h`, `setup_d_bos/choch`) from `ml_setups`, then drives the **real overlay code** (`chart._replay_detections`) over the same 600-bar window as-of each setup's detection bar, classifying each: **EXACT** (raw OB edge == recorded SL <0.05%, byte-exact zone reproduction), **BAND** (entry inside a matching-direction zone), **CASCADE** (zones present but entry/SL synthesised off the raw edge by `_resolve_entry` — setup-construction, not an overlay defect), **LIE** (no matching-direction zone in replay — the only true overlay failure). **Result n=80, both pairs: EXACT 10, BAND 64, CASCADE 6, LIE 0 → PASS.** The 10 byte-exact matches confirm the replay harness (`current_time_ms`=bar.ts, incremental, 600-bar window) is faithful to the live detector — no `SimulatedClock` needed (validates the C1 design note empirically). **Scope:** `engine1_trend_pullback`/`scalp_*`/`bench_*` are OUT of scope — they derive entry/SL from impulse-origin+ATR or random, not OB/FVG, so they never map to overlay zones (expected, not a bug). The overlay draws only OB/FVG.
-
-**Remaining chart pending:** A6 long/short position tool, A7 mobile pass (375px). Plan: `docs/plans/chart-replay-2026-06-01.md`.
 
 ### 2026-06-02 — Shadow orphan-leak fix: defer Redis restore until connected
 **Files:** `execution_service/shadow_monitor.py`, `tests/test_shadow_infra.py`, `docs/grill/shadow-orphan-leak-2026-06-02.md`, `docs/plans/shadow-orphan-leak-fix-2026-06-02.md`.

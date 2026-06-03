@@ -32,7 +32,7 @@ A chart in the dashboard with:
 | A3 live wiring | ✅ **DONE — PR #61** (forming-candle tick via `/chart/live`, 2s) |
 | A4 `/chart` route | ✅ **DONE — PR #57** |
 | A5 replay control (custom) | ✅ **DONE — PR #58** |
-| A6 position tool (custom) | ⏭️ |
+| A6 position tool (custom) | ✅ **DONE — `src/lib/positionTool.ts`** (draggable long/short, live R:R, 2026-06-03) |
 | A7 mobile | ⏭️ |
 | C2 overlay frontend | ✅ **DONE — PR #58** |
 | C3 fidelity gate | ✅ **DONE — `scripts/chart_c3_fidelity.py`** (80 setups, 0 lies, 2026-06-03) |
@@ -81,8 +81,19 @@ Backend (A2 + C1) is **complete and library-agnostic** — survives the TV→kli
 ### A5. Bar replay control (custom) ⏭️
 - A "Replay" mode: pick a start bar, then a play/pause/step control advances a `visibleTo` pointer; feed klinecharts only candles `<= visibleTo`. Speed selector. This is a data-slice over history we already serve — no special backend.
 
-### A6. Long/Short Position tool (custom) ⏭️
-- klinecharts custom overlay: drag entry, SL, TP handles; render the box + live R:R label (reward/risk from the three prices). Long vs short coloring. No persistence/scoring (grill: pure practice).
+### A6. Long/Short Position tool (custom) ✅ DONE — `src/lib/positionTool.ts` (2026-06-03)
+- Single klinecharts custom overlay (`positionTool`), `needDefaultPointFigure` → three draggable price
+  handles (entry / SL / TP). Draws a green reward box (entry→TP) and red risk box (entry→SL) extending
+  to the right edge, dashed entry line, and right-anchored labels: `TP <px> (+x%)`, `SL <px> (-x%)`,
+  `Entry <px> · R:R <n>`. Direction is implied by geometry, so dragging a handle through entry flips
+  long↔short automatically (reward stays green, risk red). `+ Long` / `+ Short` toolbar buttons seed the
+  default 1%-risk / 2%-reward (2R) offsets; the R:R chip button clears it.
+- `createPointFigures` reads the live point values every repaint → R:R + box + labels recompute on each
+  drag with zero React round-trip. `onPressedMoveEnd` mirrors the R:R into the toolbar chip.
+- No persistence / no order placement (grill: pure practice). Read-only — no bot/DB writes.
+- **Verified in browser (Playwright, real DB):** create long/short, geometry + colors, labels visible,
+  Clear; live R:R recompute proven by moving the SL point via the chart API (2.00→1.00, box grew); 375px
+  no horizontal overflow. Dev-only `window.__qfChart` / `__qfPosId` test handles (stripped from prod).
 
 ### A7. Mobile (CLAUDE.md mandate) ⏭️
 - Test at **375px**: chart usable, replay + position controls reachable, nothing overflows. Trim/condense the toolbar on narrow screens.
