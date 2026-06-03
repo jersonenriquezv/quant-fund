@@ -1429,11 +1429,20 @@ select.manual-input {
 .chart-pos-short { color: var(--short, #ff4d4d); }
 .chart-pos-long:hover { background: rgba(178, 253, 2, 0.12); }
 .chart-pos-short:hover { background: rgba(255, 77, 77, 0.12); }
+.chart-pos-long.active { background: var(--long, #b2fd02); color: #000; }
+.chart-pos-short.active { background: var(--short, #ff4d4d); color: #000; }
 .chart-pos-clear {
   color: #fff;
   background: rgba(255, 255, 255, 0.08);
   font-variant-numeric: tabular-nums;
 }
+.chart-arm-hint {
+  font-size: 12px;
+  color: var(--accent, #4da3ff);
+  align-self: center;
+  white-space: nowrap;
+}
+.chart-canvas.arming { cursor: crosshair; }
 
 .chart-canvas {
   flex: 1;
