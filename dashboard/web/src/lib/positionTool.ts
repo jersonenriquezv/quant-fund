@@ -124,10 +124,12 @@ export function ensurePositionOverlayRegistered(): void {
       const tp = priceOf(overlay, I_TP);
       const dp = precision?.price ?? 2;
 
-      // Boxes span the full pane width; lines too, so a handle can be grabbed
-      // anywhere along them. The handle dot sits at the point's own x.
+      // Boxes/lines start at the anchor bar (where the position was placed) and
+      // extend to the right edge — they do NOT span the whole chart. The handle
+      // dots sit at that same left edge.
       const xRight = bounding.width;
-      const w = xRight;
+      const xLeft = Math.min(cE.x, cS.x, cT.x);
+      const w = Math.max(0, xRight - xLeft);
 
       const riskTop = Math.min(cE.y, cS.y);
       const riskH = Math.abs(cS.y - cE.y);
@@ -140,7 +142,7 @@ export function ensurePositionOverlayRegistered(): void {
 
       const lineFig = (y: number, color: string, key: string) => ({
         type: "line",
-        attrs: { coordinates: [{ x: 0, y }, { x: xRight, y }] },
+        attrs: { coordinates: [{ x: xLeft, y }, { x: xRight, y }] },
         styles: { color, size: key === "entry" ? 1 : 1, style: key === "entry" ? "dashed" : "solid" },
         // NOT ignoreEvent: pressing a line selects the overlay so its handles
         // become draggable (klinecharts hides handles until the overlay is hit).
@@ -153,8 +155,8 @@ export function ensurePositionOverlayRegistered(): void {
       });
 
       return [
-        { type: "rect", attrs: { x: 0, y: rewardTop, width: w, height: rewardH }, styles: { style: "fill", color: REWARD_FILL }, ignoreEvent: true },
-        { type: "rect", attrs: { x: 0, y: riskTop, width: w, height: riskH }, styles: { style: "fill", color: RISK_FILL }, ignoreEvent: true },
+        { type: "rect", attrs: { x: xLeft, y: rewardTop, width: w, height: rewardH }, styles: { style: "fill", color: REWARD_FILL }, ignoreEvent: true },
+        { type: "rect", attrs: { x: xLeft, y: riskTop, width: w, height: riskH }, styles: { style: "fill", color: RISK_FILL }, ignoreEvent: true },
         lineFig(cT.y, REWARD_LINE, "tp"),
         lineFig(cS.y, RISK_LINE, "sl"),
         lineFig(cE.y, ENTRY_LINE, "entry"),
