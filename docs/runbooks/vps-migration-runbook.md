@@ -9,12 +9,15 @@ Conventions: `NITRO$` = run on the current home server, `VPS$` = run on the new 
 ---
 
 ## Phase 0 — Inventory ✅ (captured 2026-06-03)
-- **Secrets:** copy `config/.env` verbatim (40 keys). Re-check before cutover:
-  - ⚠️ `GRAFANA_ADMIN_PASSWORD` is **not** in `.env` — find its real source (shell env /
-    compose default) or Grafana login breaks on the VPS.
-  - ⚠️ `EXPERIMENT_ID` is **not** in `.env` — runs on the settings.py default
-    `engine1_short_quarantine_v1d_2026_05_22`. Pin it explicitly in the VPS `.env`.
+- **Secrets — THREE env files to migrate** (all gitignored, copy verbatim):
+  1. `./.env` (repo root, 6 keys) — **used by docker compose**: `GRAFANA_ADMIN_PASSWORD`,
+     `POSTGRES_PASSWORD`, `REDIS_PASSWORD`, `BYBIT_API_KEY/SECRET`, `BYBIT_TESTNET`.
+  2. `config/.env` (40 keys) — used by the Python app (OKX, Telegram, Anthropic, risk knobs…).
+  3. `dashboard/web/.env.local` — `NEXT_PUBLIC_DASHBOARD_API_KEY` (frontend).
   - Confirm `OKX_SANDBOX=false` + `ENABLED_SETUPS=[]` carried over (shadow-only).
+  - `EXPERIMENT_ID` lives as a settings.py default (not env) → carries over with the repo
+    automatically; no action. (Same for `GRAFANA_ADMIN_PASSWORD` — it IS in `./.env`,
+    earlier "missing" note was wrong, only `config/.env` had been checked.)
 - **Baseline row counts to match post-migration:** candles 528,629 · ml_setups 10,355 ·
   trades 43 · bybit_executions 200 · bybit_closed_pnl 62 · bybit_trade_annotations 53 ·
   ai_decisions 534 · campaigns 5 · manual_trades 6. DB 241 MB.
@@ -54,8 +57,10 @@ Conventions: `NITRO$` = run on the current home server, `VPS$` = run on the new 
 ## Phase 2 — Stand up data services (no cutover yet)
 ```
 VPS$ git clone https://github.com/jersonenriquezv/quant-fund.git && cd quant-fund
-# Copy .env over tailscale (NOT git):
-NITRO$ scp config/.env <vps-tailscale-ip>:~/quant-fund/config/.env
+# Copy ALL THREE env files over tailscale (NOT git — they're gitignored):
+NITRO$ scp .env <vps>:~/quant-fund/.env
+NITRO$ scp config/.env <vps>:~/quant-fund/config/.env
+NITRO$ scp dashboard/web/.env.local <vps>:~/quant-fund/dashboard/web/.env.local
 VPS$ docker compose up -d postgres redis      # data services only; bot/api/web/grafana stay down
 ```
 **OKX EU-IP sanity check — do this BEFORE committing to cutover.** One signed REST call
