@@ -69,6 +69,8 @@ export default function ChartPage() {
   const detSeq = useRef<number>(0); // drops out-of-order timeline responses
   const timelineRef = useRef<ZoneLifecycle[]>([]); // cached zone lifecycles
   const timelineTs = useRef<number | null>(null); // last bar the timeline was built for
+  const reconcilingRef = useRef<boolean>(false); // prevents overlapping reconciles
+  const lastReconcileRef = useRef<number>(0); // debounce rapid visibility toggles
 
   const [chartReady, setChartReady] = useState(false);
   const [symbol, setSymbol] = useState(SYMBOLS[0]);
@@ -86,6 +88,7 @@ export default function ChartPage() {
   const [detCount, setDetCount] = useState<number | null>(null);
   const [timelineReady, setTimelineReady] = useState(0); // bumps when timeline refetched
   const [positionRR, setPositionRR] = useState<number | null>(null); // A6 live R:R
+  const [armDir, setArmDir] = useState<"long" | "short" | null>(null); // click-to-place mode
 
   // Init chart once.
   useEffect(() => {
@@ -139,6 +142,54 @@ export default function ChartPage() {
   }, [symbol, resolution, replay]);
 
   useEffect(() => { if (chartReady) load(); }, [chartReady, load]);
+
+  // Reconcile closed bars against /history WITHOUT the heavy load() side effects
+  // (no spinner, no viewport reset, no asOfIdx reset). The live poll only ever
+  // appends/updates the tail and never re-pulls /history, so a backgrounded tab
+  // (throttled setInterval) that skips a period leaves a permanent hole, and every
+  // forming bar it pushed (volume 0, approx OHLC) is never replaced by the real
+  // closed candle. Re-fetching /history fixes both. Silent + viewport-preserving.
+  const reconcile = useCallback(async () => {
+    const chart = chartRef.current;
+    if (!chart || replay) return;
+    if (reconcilingRef.current) return; // already in flight
+    if (Date.now() - lastReconcileRef.current < 2000) return; // debounce toggles
+    reconcilingRef.current = true;
+    try {
+      const fresh = await fetchHistory(symbol, resolution);
+      if (!fresh.length) return;
+      const cur = barsRef.current;
+      const freshLast = fresh[fresh.length - 1].timestamp;
+      // Keep the current forming bar only if its period is still open (newer than
+      // the freshest closed bar); otherwise /history now carries it as a real bar.
+      const last = cur[cur.length - 1];
+      const merged = last && last.timestamp > freshLast ? [...fresh, last] : fresh;
+      // Skip the repaint when nothing changed (same length + same tail timestamp).
+      if (merged.length === cur.length &&
+          merged[merged.length - 1]?.timestamp === last?.timestamp) {
+        return;
+      }
+      const offset = chart.getOffsetRightDistance(); // preserve horizontal scroll
+      barsRef.current = merged;
+      setBarCount(merged.length);
+      chart.applyNewData(merged);
+      chart.setOffsetRightDistance(offset);
+    } catch {
+      /* transient — keep current data */
+    } finally {
+      reconcilingRef.current = false;
+      lastReconcileRef.current = Date.now();
+    }
+  }, [symbol, resolution, replay]);
+
+  // Re-fetch /history when the tab regains focus. Browsers throttle/pause the 2s
+  // live poll while backgrounded; on return the data may have skipped periods.
+  useEffect(() => {
+    if (replay || !chartReady) return;
+    const onVis = () => { if (document.visibilityState === "visible") reconcile(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [replay, chartReady, reconcile]);
 
   // Reflect asOfIdx onto the chart (replay only). Append-by-one when playing.
   useEffect(() => {
@@ -254,6 +305,15 @@ export default function ChartPage() {
           }
         }
 
+        // Period skipped (≥1 closed bar missing between last and now) — e.g. the
+        // poll was throttled while backgrounded. Don't blind-push past the hole;
+        // re-fetch /history to backfill the missed closed bars, then let the next
+        // tick append the current forming bar normally.
+        if (last && formed.timestamp > last.timestamp + pms) {
+          reconcile();
+          return;
+        }
+
         const isNewBar = !last || formed.timestamp > last.timestamp;
         // Skip the repaint when nothing actually moved (idle market) — avoids a
         // pointless full canvas redraw every 2s.
@@ -273,7 +333,7 @@ export default function ChartPage() {
       }
     }, 2000);
     return () => clearInterval(id);
-  }, [replay, chartReady, symbol, resolution]);
+  }, [replay, chartReady, symbol, resolution, reconcile]);
 
   const toggleReplay = () => {
     setPlaying(false);
@@ -282,23 +342,33 @@ export default function ChartPage() {
   const step = (d: number) =>
     setAsOfIdx((i) => Math.min(barCount - 1, Math.max(0, i + d)));
 
-  // A6 — drop a practice position. Entry = the as-of bar's close; the box's left
-  // edge anchors ~60% across the visible window so it extends toward "now".
-  const placePosition = (direction: "long" | "short") => {
-    const chart = chartRef.current;
-    const bars = barsRef.current;
-    if (!chart || !bars.length) return;
-    const idx = replay ? asOfIdx : bars.length - 1;
-    const entry = bars[idx]?.close ?? 0;
-    // Anchor the box ~40 bars back so its left edge lands inside the typical
-    // viewport (klinecharts loads far more bars than it shows).
-    const anchorIdx = Math.max(0, idx - 40);
-    const anchorTs = bars[anchorIdx]?.timestamp ?? bars[idx].timestamp;
-    if (entry) createPosition(chart, { direction, entry, anchorTs });
-  };
+  // A6 — click-to-place (TradingView-style). Arming a direction switches the
+  // cursor to a crosshair; the next click on the chart drops the entry at that
+  // exact price/time (then the handles are dragged freely).
   const removePosition = () => {
     if (chartRef.current) clearPosition(chartRef.current);
   };
+
+  // While armed, the next click on the chart places the position there.
+  useEffect(() => {
+    if (!armDir) return;
+    const el = containerRef.current;
+    const chart = chartRef.current;
+    if (!el || !chart) return;
+    const onDown = (e: PointerEvent) => {
+      const rect = el.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const pt = chart.convertFromPixel([{ x, y }], {});
+      const point = Array.isArray(pt) ? pt[0] : pt;
+      const entry = point?.value;
+      const ts = point?.timestamp ?? barsRef.current[barsRef.current.length - 1]?.timestamp;
+      if (entry && ts) createPosition(chart, { direction: armDir, entry, anchorTs: ts });
+      setArmDir(null);
+    };
+    el.addEventListener("pointerdown", onDown, { once: true, capture: true });
+    return () => el.removeEventListener("pointerdown", onDown, { capture: true } as EventListenerOptions);
+  }, [armDir]);
 
   const asOfTs = barsRef.current[asOfIdx]?.timestamp;
 
@@ -333,15 +403,18 @@ export default function ChartPage() {
               Focus
             </button>
           )}
-          <div className="chart-seg chart-pos" title="Drop a practice position. Drag the entry/SL/TP handles; R:R updates live.">
-            <button className="chart-seg-btn chart-pos-long" onClick={() => placePosition("long")}>+ Long</button>
-            <button className="chart-seg-btn chart-pos-short" onClick={() => placePosition("short")}>+ Short</button>
+          <div className="chart-seg chart-pos" title="Pick Long/Short, then click on the chart to drop the entry. Click the position to show its handles: drag a line to move the whole position, drag a handle dot to adjust that level. R:R updates live.">
+            <button className={`chart-seg-btn chart-pos-long ${armDir === "long" ? "active" : ""}`}
+              onClick={() => setArmDir((d) => (d === "long" ? null : "long"))}>+ Long</button>
+            <button className={`chart-seg-btn chart-pos-short ${armDir === "short" ? "active" : ""}`}
+              onClick={() => setArmDir((d) => (d === "short" ? null : "short"))}>+ Short</button>
             {positionRR != null && (
               <button className="chart-seg-btn chart-pos-clear" onClick={removePosition} title="Clear position">
                 R:R {positionRR.toFixed(2)} ✕
               </button>
             )}
           </div>
+          {armDir && <span className="chart-arm-hint">click chart to place {armDir} entry…</span>}
         </div>
         <div className="chart-status">{loading ? "loading…" : error ?? ""}</div>
       </header>
@@ -364,7 +437,7 @@ export default function ChartPage() {
         </div>
       )}
 
-      <div ref={containerRef} className="chart-canvas" />
+      <div ref={containerRef} className={`chart-canvas ${armDir ? "arming" : ""}`} />
     </main>
   );
 }

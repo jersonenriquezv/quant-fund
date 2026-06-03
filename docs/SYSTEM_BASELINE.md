@@ -528,6 +528,11 @@ D: net_score <  2
 
 ## 8. Changelog
 
+### 2026-06-03 — Chart A6 position tool → TradingView-style (click-to-place + free drag)
+**Files:** `dashboard/web/src/lib/positionTool.ts`, `dashboard/web/src/app/chart/page.tsx`, `dashboard/web/src/app/globals.css`, `docs/context/06-dashboard.md`.
+
+**What changed:** reworked the A6 position tool from a fixed-spawn box into a TradingView-style **Long/Short Position** tool. `+ Long`/`+ Short` now **arm** the tool (crosshair cursor + hint); the next click on the chart drops the entry at that exact price/time via `chart.convertFromPixel`. Lines are full-width and selectable; clicking the position reveals draggable **handles** (`needDefaultPointFigure` + enlarged `styles.point`). **Interaction (klinecharts model):** drag a *line* → the whole position translates (entry+SL+TP move together via `performEventPressedMove`, R:R preserved); drag a *handle dot* → that level adjusts independently (SL/TP), R:R recomputes. Direction stays implied by geometry (crossing entry flips long↔short). `onPressedMoving`/`onPressedMoveEnd` mirror the live R:R into the toolbar chip. Bundle `/chart` 56→56.7 kB. **Verified Playwright (real DB):** click-to-place at the clicked price, line-drag moves whole (R:R held), SL-handle drag moves only SL (R:R 2.00→0.79), clear, re-place resets to 2.00, 375px no overflow. Still pure practice — no persistence, no orders, read-only.
+
 ### 2026-06-03 — Chart replay A6: long/short position practice tool
 **Files:** `dashboard/web/src/lib/positionTool.ts` (new), `dashboard/web/src/app/chart/page.tsx`, `dashboard/web/src/app/globals.css`, `docs/context/06-dashboard.md`, `dashboard/CLAUDE.md`.
 
