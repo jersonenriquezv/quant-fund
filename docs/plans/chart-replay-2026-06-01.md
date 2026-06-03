@@ -86,7 +86,8 @@ Backend (A2 + C1) is **complete and library-agnostic** — survives the TV→kli
   chart drops the entry at that exact price/time (`chart.convertFromPixel`). Seeds default 1%-risk /
   2%-reward (2R); the R:R chip button clears it.
 - Single klinecharts overlay (`positionTool`): green reward box (entry→TP) + red risk box (entry→SL) at
-  full width, full-width lines (entry dashed), right-anchored labels `TP/SL (±%)` + `Entry · R:R`.
+  starting at the anchor bar (where it was placed) and extending to the right edge — NOT the whole chart;
+  lines + boxes share that left edge (entry dashed), right-anchored labels `TP/SL (±%)` + `Entry · R:R`.
   Handles are draggable dots (`needDefaultPointFigure` + enlarged `styles.point`) revealed on select.
 - **Interaction (klinecharts model):** drag a *line* → whole position translates (entry+SL+TP move
   together via `performEventPressedMove`, R:R preserved); drag a *handle dot* → that level adjusts

@@ -528,6 +528,11 @@ D: net_score <  2
 
 ## 8. Changelog
 
+### 2026-06-03 — Chart A6 position tool: anchor box to the placement bar
+**Files:** `dashboard/web/src/lib/positionTool.ts`, `docs/context/06-dashboard.md`, `docs/plans/chart-replay-2026-06-01.md`.
+
+**What changed:** the position tool's reward/risk boxes + price lines now start at the **anchor bar** (where the entry was placed) and extend to the right edge, instead of spanning the whole chart width. `createPointFigures` uses `xLeft = min(cE.x, cS.x, cT.x)` for the rects + line left edge (was `x:0`). Matches TradingView — the position visibly originates from its entry candle; handles sit at that left edge. Verified in browser: box left edge lands at the click point. Pure visual; no behavior/read-only change.
+
 ### 2026-06-03 — Chart A6 position tool → TradingView-style (click-to-place + free drag)
 **Files:** `dashboard/web/src/lib/positionTool.ts`, `dashboard/web/src/app/chart/page.tsx`, `dashboard/web/src/app/globals.css`, `docs/context/06-dashboard.md`.
 
