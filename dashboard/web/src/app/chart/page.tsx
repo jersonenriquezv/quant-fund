@@ -9,6 +9,7 @@ import {
   fetchDetectionTimeline,
   zonesAsOf,
   curateZones,
+  periodStartMs,
   RESOLUTIONS,
   RESOLUTION_MS,
   SYMBOLS,
@@ -291,7 +292,7 @@ export default function ChartPage() {
         if (resolution === "5") {
           formed = live; // Redis candle IS this 5m bar — use its O/H/L/C directly
         } else {
-          const barTs = Math.floor(live.timestamp / pms) * pms; // current HTF period
+          const barTs = periodStartMs(resolution, live.timestamp); // current HTF period (weekly = Monday-aligned)
           if (last && last.timestamp === barTs) {
             formed = {
               ...last,

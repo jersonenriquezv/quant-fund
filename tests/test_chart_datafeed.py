@@ -50,7 +50,7 @@ def test_config_exposes_only_supported_resolutions(client):
     r = client.get("/api/chart/config")
     assert r.status_code == 200
     body = r.json()
-    assert body["supported_resolutions"] == ["5", "15", "60", "240", "D"]
+    assert body["supported_resolutions"] == ["5", "15", "60", "240", "D", "W"]
     assert body["supports_search"] is True
 
 
@@ -60,7 +60,7 @@ def test_resolve_symbol_ok_for_btc(client):
     info = r.json()
     assert info["ticker"] == "BTC/USDT"
     assert info["session"] == "24x7"
-    assert info["supported_resolutions"] == ["5", "15", "60", "240", "D"]
+    assert info["supported_resolutions"] == ["5", "15", "60", "240", "D", "W"]
 
 
 def test_resolve_symbol_rejects_pair_outside_allowlist(client):
