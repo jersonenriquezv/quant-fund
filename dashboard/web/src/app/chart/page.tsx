@@ -88,6 +88,7 @@ export default function ChartPage() {
   const [significantOnly, setSignificantOnly] = useState(true); // LuxAlgo de-noise: on by default
   const [detCount, setDetCount] = useState<number | null>(null);
   const [timelineReady, setTimelineReady] = useState(0); // bumps when timeline refetched
+  const [hourTick, setHourTick] = useState(0); // wall-clock heartbeat to refresh live HTF detections
   const [positionRR, setPositionRR] = useState<number | null>(null); // A6 live R:R
   const [armDir, setArmDir] = useState<"long" | "short" | null>(null); // click-to-place mode
 
@@ -230,21 +231,39 @@ export default function ChartPage() {
     if (!chartReady || !showDetections) return;
     const bars = barsRef.current;
     if (!bars.length) return;
-    const lastTs = bars[bars.length - 1].timestamp;
-    if (lastTs === timelineTs.current) return; // window unchanged — reuse cache
+    // As-of: replay → the pointer bar; live → wall-clock NOW. An HTF bar starts
+    // hours/days before "now", so using its start would hide zones born within
+    // the current forming bar — up to 7 days stale on 1W (the bug 1W exposed).
+    // The cache key bounds refetch cost: low TFs still refresh per new bar,
+    // HTF refreshes at most hourly (min(period, 1h)), driven by hourTick.
+    const pms = RESOLUTION_MS[resolution] ?? 5 * 60_000;
+    const asOf = replay ? bars[bars.length - 1].timestamp : Date.now();
+    const refreshMs = Math.min(pms, 3_600_000);
+    const key = replay
+      ? bars[bars.length - 1].timestamp
+      : Math.floor(asOf / refreshMs) * refreshMs;
+    if (key === timelineTs.current) return; // window unchanged — reuse cache
     const seq = ++detSeq.current;
     (async () => {
       try {
-        const tl = await fetchDetectionTimeline(symbol, resolution, lastTs);
+        const tl = await fetchDetectionTimeline(symbol, resolution, asOf);
         if (seq !== detSeq.current) return; // superseded
         timelineRef.current = tl.zones;
-        timelineTs.current = lastTs;
+        timelineTs.current = key;
         setTimelineReady((n) => n + 1); // nudge the render effect
       } catch {
         /* keep previous timeline on transient error */
       }
     })();
-  }, [chartReady, showDetections, symbol, resolution, barCount]);
+  }, [chartReady, showDetections, symbol, resolution, replay, barCount, hourTick]);
+
+  // Wall-clock heartbeat (live only) so HTF detection overlays refresh as zones
+  // form within the current bar, instead of going stale until the bar closes.
+  useEffect(() => {
+    if (replay || !chartReady) return;
+    const id = setInterval(() => setHourTick((n) => n + 1), 60_000);
+    return () => clearInterval(id);
+  }, [replay, chartReady]);
 
   // Render zones active as-of the current bar from the cached timeline. Pure
   // client-side filter → instant, runs every bar during playback with no fetch.
@@ -259,7 +278,9 @@ export default function ChartPage() {
     const bars = barsRef.current;
     if (!bars.length) return;
     const idx = replay ? asOfIdx : bars.length - 1;
-    const asOfMs = bars[idx]?.timestamp;
+    // Match the timeline's as-of: live filters against NOW (not the HTF bar's
+    // start), so zones active right now render even mid-bar.
+    const asOfMs = replay ? bars[idx]?.timestamp : Date.now();
     if (!asOfMs) return;
     const price = bars[idx]?.close ?? 0;
     // "Focus" on (significantOnly): keep only impulsive, unmitigated zones nearest
