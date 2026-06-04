@@ -91,6 +91,38 @@ async def get_candles_range(
     return [dict(r) for r in reversed(rows)]
 
 
+async def get_weekly_candles(
+    pair: str, from_ms: int, to_ms: int, limit: int = 5000
+) -> list[dict]:
+    """Weekly candles aggregated from stored 1d candles (no 1w stored).
+
+    Buckets daily bars into Monday-00:00-UTC weeks using tz-free integer math
+    (epoch day 0 = Thursday, so shift by 3 to land week starts on Monday). The
+    frontend's live forming-bar aggregation uses the identical formula, so a
+    forming weekly bar lines up exactly with the closed ones. Same output shape
+    as get_candles_range. Ascending, capped at `limit` (newest kept).
+    """
+    async with db.pg_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT
+                   (((timestamp / 86400000) - (((timestamp / 86400000) + 3) % 7))
+                    * 86400000) AS timestamp,
+                   (array_agg(open ORDER BY timestamp ASC))[1]   AS open,
+                   MAX(high)                                     AS high,
+                   MIN(low)                                      AS low,
+                   (array_agg(close ORDER BY timestamp DESC))[1] AS close,
+                   SUM(volume)                                   AS volume,
+                   SUM(volume_quote)                             AS volume_quote
+               FROM candles
+               WHERE pair = $1 AND timeframe = '1d'
+                 AND timestamp >= $2 AND timestamp <= $3
+               GROUP BY 1
+               ORDER BY 1 DESC LIMIT $4""",
+            pair, from_ms, to_ms, limit,
+        )
+    return [dict(r) for r in reversed(rows)]
+
+
 async def get_trade_stats() -> dict:
     async with db.pg_pool.acquire() as conn:
         row = await conn.fetchrow("""

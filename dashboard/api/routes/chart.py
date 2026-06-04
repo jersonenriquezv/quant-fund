@@ -43,8 +43,19 @@ RESOLUTION_TO_TIMEFRAME = {
     "60": "1h",
     "240": "4h",
     "D": "1d",
+    "W": "1w",  # virtual — aggregated from stored 1d candles, not stored
 }
 SUPPORTED_RESOLUTIONS = list(RESOLUTION_TO_TIMEFRAME.keys())
+
+
+async def _fetch_candle_rows(
+    pair: str, timeframe: str, from_ms: int, to_ms: int, limit: int = 5000
+) -> list[dict]:
+    """Candle rows for a timeframe. '1w' has no stored rows — aggregate it from
+    1d on the fly; everything else is a direct range query."""
+    if timeframe == "1w":
+        return await queries.get_weekly_candles(pair, from_ms, to_ms, limit)
+    return await queries.get_candles_range(pair, timeframe, from_ms, to_ms, limit)
 
 # Per-pair price formatting for LibrarySymbolInfo.
 _PRICESCALE = {
@@ -156,11 +167,11 @@ async def chart_history(
     from_ms = from_ * 1000
     to_ms = to * 1000
 
-    rows = await queries.get_candles_range(symbol, timeframe, from_ms, to_ms)
+    rows = await _fetch_candle_rows(symbol, timeframe, from_ms, to_ms)
 
     if not rows:
         # Report the most recent bar before `from` so the library can page back.
-        earlier = await queries.get_candles_range(symbol, timeframe, 0, from_ms, limit=1)
+        earlier = await _fetch_candle_rows(symbol, timeframe, 0, from_ms, limit=1)
         nxt = earlier[-1]["timestamp"] // 1000 if earlier else None
         return {"s": "no_data", "nextTime": nxt}
 
@@ -275,7 +286,7 @@ async def chart_detections(
     to_ms = to * 1000
 
     # Window = the last DETECTION_WINDOW_BARS bars at or before `to`.
-    rows = await queries.get_candles_range(
+    rows = await _fetch_candle_rows(
         symbol, timeframe, 0, to_ms, limit=DETECTION_WINDOW_BARS
     )
     if not rows:
@@ -447,7 +458,7 @@ def _replay_detection_timeline(
 # own TF. Aligns the overlay with the top-down strategy (1D/4H bias -> LTF entry)
 # instead of dumping every gap of a single timeframe. label is what the overlay
 # tags each zone with (source_tf).
-TIMEFRAME_LABEL = {"5m": "5m", "15m": "15m", "1h": "1H", "4h": "4H", "1d": "1D"}
+TIMEFRAME_LABEL = {"5m": "5m", "15m": "15m", "1h": "1H", "4h": "4H", "1d": "1D", "1w": "1W"}
 HTF_OVERLAY_TIMEFRAMES = ["1d", "4h"]  # always overlaid, regardless of chart TF
 
 
@@ -478,7 +489,7 @@ async def chart_detection_timeline(
         tfs.append(base_tf)
 
     async def _one(tf: str) -> tuple[str, list[dict]]:
-        rows = await queries.get_candles_range(
+        rows = await _fetch_candle_rows(
             symbol, tf, 0, to_ms, limit=DETECTION_WINDOW_BARS
         )
         if not rows:

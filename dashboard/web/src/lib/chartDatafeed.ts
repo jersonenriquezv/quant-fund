@@ -13,13 +13,16 @@ export interface Kline {
   volume: number;
 }
 
+const DAY_MS = 24 * 60 * 60_000;
+
 // Resolution string -> period length in ms (for client-side forming-bar aggregation).
 export const RESOLUTION_MS: Record<string, number> = {
   "5": 5 * 60_000,
   "15": 15 * 60_000,
   "60": 60 * 60_000,
   "240": 240 * 60_000,
-  "D": 24 * 60 * 60_000,
+  "D": DAY_MS,
+  "W": 7 * DAY_MS,
 };
 
 // klinecharts period -> backend UDF resolution string.
@@ -29,7 +32,22 @@ export const RESOLUTIONS: { label: string; resolution: string }[] = [
   { label: "1h", resolution: "60" },
   { label: "4h", resolution: "240" },
   { label: "1D", resolution: "D" },
+  { label: "1W", resolution: "W" },
 ];
+
+// Start (ms) of the period containing `ts`. Weekly aligns to Monday 00:00 UTC
+// via the SAME tz-free integer math the backend's weekly aggregation uses
+// (epoch day 0 = Thursday → shift by 3), so a forming weekly bar lines up
+// exactly with the closed weekly candles from /history. Other TFs are a plain
+// epoch-aligned floor (they all divide evenly into a UTC day).
+export function periodStartMs(resolution: string, ts: number): number {
+  if (resolution === "W") {
+    const d = Math.floor(ts / DAY_MS);
+    return (d - ((d + 3) % 7)) * DAY_MS;
+  }
+  const pms = RESOLUTION_MS[resolution] ?? 5 * 60_000;
+  return Math.floor(ts / pms) * pms;
+}
 
 export const SYMBOLS = ["BTC/USDT", "ETH/USDT"];
 
