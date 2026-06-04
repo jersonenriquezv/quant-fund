@@ -33,7 +33,7 @@ A chart in the dashboard with:
 | A4 `/chart` route | ✅ **DONE — PR #57** |
 | A5 replay control (custom) | ✅ **DONE — PR #58** |
 | A6 position tool (custom) | ✅ **DONE — `src/lib/positionTool.ts`** (draggable long/short, live R:R, 2026-06-03) |
-| A7 mobile | ⏭️ |
+| A7 mobile | ✅ **DONE — condensed toolbar at 375px, 0 overflow** |
 | C2 overlay frontend | ✅ **DONE — PR #58** |
 | C3 fidelity gate | ✅ **DONE — `scripts/chart_c3_fidelity.py`** (80 setups, 0 lies, 2026-06-03) |
 
