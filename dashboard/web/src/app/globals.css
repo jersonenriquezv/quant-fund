@@ -1487,23 +1487,46 @@ select.manual-input {
 }
 
 @media (max-width: 639px) {
+  /* Condense the toolbar so the chart keeps the screen — every saved row of
+     chrome is candle height on a 375px phone. */
   .chart-header {
-    gap: 10px;
-    padding: 10px 12px;
+    gap: 8px;
+    padding: 8px 10px;
+  }
+  .chart-back { font-size: 12px; }
+  .chart-controls {
+    gap: 8px;
+    width: 100%;
+  }
+  .chart-seg { padding: 2px; }
+  .chart-seg-btn {
+    padding: 5px 10px;
+    font-size: 11px;
+  }
+  .chart-toggle {
+    padding: 5px 10px;
+    font-size: 11px;
   }
   .chart-status {
     margin-left: 0;
     width: 100%;
     order: 3;
   }
-  .chart-seg-btn {
-    padding: 6px 11px;
+  /* Empty status (no loading/error) must not reserve a blank row. */
+  .chart-status:empty { display: none; }
+  .chart-arm-hint { font-size: 11px; }
+  .chart-replay-bar {
+    gap: 8px;
+    padding: 6px 10px;
   }
-  .chart-toggle {
-    padding: 6px 11px;
+  .chart-replay-btn {
+    width: 32px;
+    height: 28px;
   }
+  .chart-replay-slider { min-width: 90px; }
   .chart-asof {
     width: 100%;
     order: 5;
+    text-align: right;
   }
 }
