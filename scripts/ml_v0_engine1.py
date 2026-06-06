@@ -30,6 +30,7 @@ Run:
 """
 from __future__ import annotations
 
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -48,7 +49,16 @@ SETUP_TYPE = "engine1_trend_pullback"
 MIN_FEATURE_VERSION = 4
 RANDOM_STATE = 42
 HOLDOUT_FRAC = 0.20
-REPORT_PATH = Path(__file__).resolve().parent.parent / "docs" / "audits" / "ml-v0-engine1-2026-05-25.md"
+# Date-stamped per run so re-runs never overwrite a prior report (the 2026-05-25
+# baseline must survive for comparison). Override with ML_V0_REPORT_PATH if needed.
+REPORT_PATH = Path(
+    os.environ.get(
+        "ML_V0_REPORT_PATH",
+        Path(__file__).resolve().parent.parent
+        / "docs" / "audits"
+        / f"ml-v0-engine1-{datetime.utcnow():%Y-%m-%d}.md",
+    )
+)
 
 # Columns to drop before training. Three categories:
 # 1. Identity / metadata — would leak setup_type membership or be high-cardinality nonsense.
