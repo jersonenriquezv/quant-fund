@@ -41,3 +41,7 @@ backtest_results/
 content/
 video/
 backups/
+
+# Local scratch / tooling
+.playwright-mcp/
+pinescript-luxalgo.md
