@@ -189,7 +189,32 @@ relies on historical correlations that break down exactly when you need then-dur
 HRP MODEL 
 machine learning clusters the true structural relationships of assets. buils stable portfolios without relying on flawed historical correlation matrices 
 
-
 Stop searching for the perfect formation 
 shift the queston from " how do i make money?" to how do i avoid producing false results? 
 Technical analysis is not the answer. but the raw material to run the the factory 
+
+### AFML — implementación en el bot (puente)
+
+Estudio arriba = teoría (estaciones 1–6). En el repo la ejecución está repartida así:
+
+- **Decisión Engine One (shadow):** `python scripts/ml_v0_engine1.py` el **2026-06-08** (re-run N≈200). Umbrales y freeze → `docs/SYSTEM_BASELINE.md` §8 (2026-05-11) y §7.1 (gates G1–G6).
+- **Gap AFML vs código actual (auditoría + backlog):** `docs/audits/afml-wyckoff-gap-2026-06-01.md` — Tier 1 (labels, sample weights), **Tier 1b** (`data_service` / columnas barrier + ventana de label + helper training), Tier 2 (purged CV en v0, deploy meta-label), Tier 3 (dollar bars, fracdiff).
+- **Después de edge (si pasa 6/8):** roadmap clasificador + Kelly → `docs/audits/ai-service-audit-2026-03-18.md` Phase 2–4. **No** usar `plans/ai-recalibration.md` (path Claude viejo; reemplazado por meta-label en baseline H6).
+- **SMC inducement (otro hilo, post-6/8):** `docs/plans/smc-inducement-pullback-fixes-2026-06-01.md` (features v19, no mezclar con Tier 1b).
+
+
+### About fvg 
+
+1. Frescura (freshness). Un FVG recién formado, en la pierna de impulso más reciente, tiene más peso que uno que quedó enterrado tres swings atrás.
+2. Draw on liquidity. El precio no va al FVG "porque sí" — va buscando liquidez. El FVG es una zona donde reacciona de camino a la liquidez, o se vuelve un imán cuando hay liquidez del otro lado. Si tu FVG sin mitigar está en la dirección donde está el draw, la probabilidad de que lo visite es alta. Si está en contra del draw actual, puede quedarse abierto mucho tiempo.
+3. Estructura. Mientras la estructura que creó el FVG siga intacta (mismo sesgo), el FVG mantiene su lógica. Si hubo un CHoCH/BOS que rompió ese sesgo, el FVG no se borra, pero su contexto cambió.
+Cuándo sí pierde validez de verdad: cuando el precio lo atraviesa por completo y cierra del otro lado con desplazamiento. Ahí deja de ser zona de reacción en el sentido original y puede convertirse en un IFVG (Inversion FVG) — actúa al revés (un FVG alcista invalidado pasa a funcionar como resistencia). Ojo también con la mitigación parcial: si solo tocó el CE (consequent encroachment, el 50% del gap), mucha gente ya lo considera mitigado. Depende de la regla que uses — toque del borde, toque del CE, o relleno total.
+En low time frames la historia es distinta en la práctica, no en la teoría. Los FVGs de 1m/5m/15m son los mismos conceptualmente, pero:
+
+Se forman e invalidan constantemente, el ruido los consume rápido. Un FVG de 5m aislado, sin alineación con HTF, tiene probabilidad baja y "envejece" rápido en sentido funcional.
+La forma correcta de usarlos es como refinamiento, no como señal independiente: el HTF FVG (4H/1H) define la zona de interés, y bajás a LTF a buscar el FVG que se forme dentro de esa zona para afinar la entrada con mejor R:R.
+Un LTF FVG que apunta en contra de tu sesgo de 4H casi siempre es ruido.
+
+Price action 
+Never buy above equal lows, never sell below equal highs.
+
