@@ -93,6 +93,21 @@ Same posture as the inducement audit: **instrument/fix infra, don't churn ML fea
 2. **S3 vertical-barrier fix:** stop dropping timeout outcomes — label by sign of return; consider per-setup horizon vs fixed 12h. Improves the labeling that the 6/8 decision rests on.
 3. **Sample-weights wiring:** plug existing `compute_sample_uniqueness` into `ml_v0_engine1.py`. Improves AUC honesty before the go/no-go.
 
+**Tier 1b — Data service / `ml_setups` schema (infra only, no `ML_FEATURE_VERSION` bump)**
+
+Post–data-service review (2026-06-04). Goal: make the dataset AFML-ready for purged CV, meta-labeling, and reproducible training queries without changing detector semantics. Safe during the 6/8 freeze if limited to nullable columns + writers + SQL helpers (allowed: `data_service/` bugfixes/infra per SYSTEM_BASELINE §9).
+
+| # | Item | Why (AFML) | Files | Status |
+|---|------|------------|-------|--------|
+| 1b.1 | **Barrier snapshot at insert** — persist `barrier_upper_r`, `barrier_lower_r`, `vertical_barrier_hours` (and reuse existing `daily_vol` as vol scale at detection). Derive from setup geometry + `SHADOW_TRADE_TIMEOUT_HOURS` / per-setup `time_stop_seconds` when present. | Triple-barrier labels (Ch.3) should be explicit in the row, not re-derived offline from prices. | `data_store.py` (migration + `insert_ml_setup`), `main.py` `_ml_log_setup` or `shared/ml_features.py` | Pending |
+| 1b.2 | **Canonical label window** — `label_start_ms` (= `setup.timestamp` or first fill ts), `label_end_ms` (= resolution **candle** `timestamp`, not `resolved_at = NOW()`). `shadow_resolve_candle_ts` (v17) is close; formalize as the purge/uniqueness end time. | Purged k-fold + sample uniqueness (Ch.4, Ch.7) need observation start and holding-period end on market time. | `update_ml_setup_outcome` in `data_store.py`, `shadow_monitor.py` `_resolve` | Pending |
+| 1b.3 | **`ml_training_rows()` helper** — single SQL/view: `feature_version >= 4`, `ml_market_outcome_filter_sql()`, `outcome_type IS NOT NULL`, optional `experiment_id` / `setup_type`; document stationary feature whitelist (same set as `feature_importance.py` drops). | One import path for training scripts — avoids ad-hoc queries that leak absolute prices or non-market outcomes. | `data_store.py` (Python helper + optional SQL view), `scripts/feature_importance.py`, `scripts/ml_v0_engine1.py` | Pending |
+| 1b.4 | **Outcome-only path-dependent columns** — write `guardian_shadow_*` and optional `risk_daily_dd_pct` / `risk_weekly_dd_pct` on **outcome update**, not on feature insert (or duplicate: NULL at insert, fill at resolve). | Ch.3 meta-label features must be known at bet time; guardian flags are path-dependent (Ch.8 importance only). | `insert_ml_setup` / `update_ml_setup_outcome`, `main.py` `_ml_log_setup` | Pending |
+
+**Already aligned (no Tier 1b work):** confirmed-candle-only pipeline; `VALID_OUTCOMES` / `NON_MARKET_OUTCOMES`; `daily_vol` (v6); PG candle history with `volume_quote` (future dollar bars); CVD `None` when invalid; `created_at` + `resolved_at` for offline purge in `feature_importance.py`.
+
+**Explicitly out of Tier 1b (Tier 3 / post-edge):** dollar-bar builder (S1), fracdiff (S2), live meta-label deploy (S5).
+
 **Tier 2 — after 2026-06-08 re-run (touches the model / gate)**
 4. **S4b** swap naive 80/20 holdout → built `PurgedKFoldCV` in the v0 gate once N grows.
 5. **S5** Phase-2 deploy: load model, replace `confidence=1.0` with calibrated P → unlocks the already-plumbed Kelly path. Blocked on AUC being trustworthy.
@@ -103,4 +118,4 @@ Same posture as the inducement audit: **instrument/fix infra, don't churn ML fea
 8. **W** consolidation-box primitive → revive `sweep_choch` on swing TF (SMC-side, pairs with the deferred inducement work).
 9. **S6** correlation/cluster heat cap — only at >$1k capital.
 
-**Next step:** Tier-1 #1 (S4a) shipped in PR #62. Tier-1 #2 (timeout labels) + #3 (sample-uniqueness) are deferred behind the **2026-06-08** v0 re-run to keep that longitudinal AUC read method-stable — re-evaluate after the Engine-2 verdict is recorded. Tier-2/3 stay parked behind the same freeze alongside the inducement plan.
+**Next step:** Tier-1 #1 (S4a) shipped in PR #62. Tier-1 #2 (timeout labels) + #3 (sample-uniqueness) are deferred behind the **2026-06-08** v0 re-run to keep that longitudinal AUC read method-stable — re-evaluate after the Engine-2 verdict is recorded. **Tier-1b** (schema/helpers) can ship in parallel with #2/#3 if it does not bump `ML_FEATURE_VERSION`; otherwise bundle 1b.1–1b.2 with the first post-6/8 code week. **Engine One decision (2026-06-08):** `python scripts/ml_v0_engine1.py` — see `docs/SYSTEM_BASELINE.md` §8 (2026-05-11). If AUC test ≥ 0.60 → Tier-2 + `docs/audits/ai-service-audit-2026-03-18.md` Phase 2–4; if ≤ 0.55 → Engine 2, skip meta-label deploy. Tier-2/3 stay parked behind the same freeze alongside the inducement plan (`docs/plans/smc-inducement-pullback-fixes-2026-06-01.md`).
