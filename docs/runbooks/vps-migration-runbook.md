@@ -18,9 +18,12 @@ Conventions: `NITRO$` = run on the current home server, `VPS$` = run on the new 
   - `EXPERIMENT_ID` lives as a settings.py default (not env) → carries over with the repo
     automatically; no action. (Same for `GRAFANA_ADMIN_PASSWORD` — it IS in `./.env`,
     earlier "missing" note was wrong, only `config/.env` had been checked.)
-- **Baseline row counts to match post-migration:** candles 528,629 · ml_setups 10,355 ·
-  trades 43 · bybit_executions 200 · bybit_closed_pnl 62 · bybit_trade_annotations 53 ·
-  ai_decisions 534 · campaigns 5 · manual_trades 6. DB 241 MB.
+- **Baseline row counts (reference, refreshed 2026-06-06):** candles 537,153 ·
+  ml_setups 11,073 · trades 43 · bybit_executions 202 · bybit_closed_pnl 63 ·
+  bybit_trade_annotations 54 · ai_decisions 534 · campaigns 5 · manual_trades 6. DB 246 MB.
+  These grow daily (shadow firehose ~150–330 ml_setups/day) — they are a sanity reference,
+  not a fixed target. The authoritative check is the cutover dump: counts on the VPS must
+  match the `scripts/backup.sh` dump taken at Phase 4, not these numbers.
 - **Redis (106 keys):** `qf:bot:shadow_positions` MUST survive (shadow state restored on
   first tick via deferred-restore, PR #66) + `qf:bot:htf_bias` + `qf:bot:last_candle_ts:*`.
 - **Pre-migration safety dump:** `NITRO$ bash scripts/backup.sh` → `backups/<stamp>/`.
