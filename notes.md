@@ -218,3 +218,24 @@ Un LTF FVG que apunta en contra de tu sesgo de 4H casi siempre es ruido.
 Price action 
 Never buy above equal lows, never sell below equal highs.
 
+Scenario analisis 
+
+
+Based on the Trader Tom video from youtube "Trading psychology talk london 2020 by Tom hougaard 3 PARTS
+He mentioned something called scenario analasis. The way he presetns this idea is from th CFD, ETFs or stocks perspective. Most of the terminology is based on that framework but I think we could find the way to approach to crypto. Scenario analisis, from what I understand is make statistic, probablities based on data about how many times or how often certain setup repeats under certain circunstances, here are some examples: 
+1. If thursday is higher than friday, then does the following monday look like? 
+2.If you only traded “extended bars” on a scalp basis, how would you do? Would you make money?
+3.Is there evidence to support that what Monday starts, Wednesday continues?
+4.How often is a low or a high made in the first 30 minutes of the day?
+5.how often do gaps occur? Do they always fill, as the saying goes?
+6.How often does the market have trend days? How do you trade a trend day?
+7.Are there common denominators between strong* trend days?
+8.Is there support for the comment that strong Fridays means strong Mondays?
+9.If Tuesday is lower than Monday, then what does that mean for Wednesday?
+
+The results I show you is manually tested. It means I go through many print outs. I am certain I could do it much quicker if I had a programmer to do the testing for me. However, while I am checking for data, I also take in other pieces of information.
+What I have asked myself here specifically is this question:
+
+If Monday so far is the highest traded point for the last 3 days, i.e. Monday Tuesday Wednesday, then how often is Thursday going to trade below the low of Wednesday?
+I found there were a total of 25 times, when I was faced with this possibility, i.e. Monday was so far the highest point of the week, and Tuesday and Wednesday were weak.
+Out of those 25 times, the Dow trade below the Wednesday low a total of 21 times.
