@@ -146,6 +146,7 @@ Status actual:
 - `ENABLED_SETUPS: list = []` — live execution gate (vacío = SHADOW-only).
 - `SHADOW_MODE_SETUPS` includes legacy shadow setups plus redesign Engine 1 tracks. See `docs/SYSTEM_BASELINE.md` for the current authoritative list.
 - `SHADOW_DIRECTION_FILTER = {"setup_a": ["short"], "engine1_trend_pullback": ["short"]}`.
+- `ENGINE1_IMPULSE_GATE_ENABLED` (default `false`) + `ENGINE1_IMPULSE_GATE_MAX` (`2.24`) — gate low-impulse en `engines/trend_pullback.py`: cuando se habilita, suprime entradas con `impulse.atr_multiple > MAX` (Lane A 2026-06-08: low-impulse concentra el edge, PF v1d ~1.0→~4.5 OOS, 5/5 walk-forward). Default OFF = sin cambio de comportamiento. Filtra feature existente → no ML version bump. Encender solo tras validación forward. Plan: `docs/plans/engine1-entry-gate.md`.
 - `QUICK_SETUP_TYPES = ("setup_c", "setup_d_bos", "setup_d_choch", "setup_e")` — `setup_c`/`setup_e` remain in the legacy tuple for compatibility but are removed from active/shadow setup lists.
 - `AI_BYPASS_SETUP_TYPES = ("setup_a", "setup_b", "setup_f")`.
 
