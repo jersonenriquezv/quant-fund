@@ -543,3 +543,56 @@ class TestEngineEvaluate:
             swings_htf=[crowding_swing],
         )
         assert out_crowded is None
+
+
+# ============================================================
+# Engine 1 low-impulse entry gate (Lane A 2026-06-08)
+# ============================================================
+
+class TestEngineImpulseGate:
+    """Default-OFF gate that suppresses entries above an impulse ATR multiple.
+
+    Filters the existing `impulse.atr_multiple` feature, so default-off must
+    leave emission behaviour byte-identical to the ungated engine.
+    """
+
+    def _history(self):
+        return TestEngineEvaluate()._build_full_history()
+
+    def _emit(self, eng):
+        return eng.evaluate(
+            pair="BTC/USDT",
+            candles=self._history(),
+            current_price=self._history()[-1].close,
+            htf_bias="bullish",
+            swings_htf=[120.0, 130.0],
+        )
+
+    def test_default_is_off(self):
+        from config.settings import settings
+        assert settings.ENGINE1_IMPULSE_GATE_ENABLED is False
+
+    def test_gate_off_emits_unchanged(self, monkeypatch):
+        from config.settings import settings
+        monkeypatch.setattr(settings, "ENGINE1_IMPULSE_GATE_ENABLED", False)
+        # A restrictive MAX must NOT matter while the gate is disabled.
+        monkeypatch.setattr(settings, "ENGINE1_IMPULSE_GATE_MAX", 0.01)
+        out = self._emit(TrendPullbackEngine())
+        assert out is not None
+        assert out.setup_type == SETUP_TYPE
+
+    def test_gate_on_suppresses_when_impulse_exceeds_max(self, monkeypatch):
+        from config.settings import settings
+        monkeypatch.setattr(settings, "ENGINE1_IMPULSE_GATE_ENABLED", True)
+        # MAX below any real impulse (which must clear IMPULSE_MIN_ATR_MULT=2.0).
+        monkeypatch.setattr(settings, "ENGINE1_IMPULSE_GATE_MAX", 0.01)
+        assert self._emit(TrendPullbackEngine()) is None
+
+    def test_gate_on_allows_when_impulse_within_max(self, monkeypatch):
+        from config.settings import settings
+        monkeypatch.setattr(settings, "ENGINE1_IMPULSE_GATE_ENABLED", True)
+        # MAX above any plausible impulse → gate passes, emission unchanged.
+        monkeypatch.setattr(settings, "ENGINE1_IMPULSE_GATE_MAX", 999.0)
+        out = self._emit(TrendPullbackEngine())
+        assert out is not None
+        assert out.setup_type == SETUP_TYPE
