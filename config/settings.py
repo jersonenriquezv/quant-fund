@@ -950,6 +950,18 @@ class Settings:
         # Engine 1 v1b isolates the only positive v1 slice (ETH short).
         "engine1_trend_pullback": ["short"],
     })
+    # Engine 1 low-impulse entry gate. Lane A finding (2026-06-08): filtering
+    # engine1 entries to impulse_atr_multiple <= MAX lifts v1d PF ~1.0 -> ~4.5
+    # out-of-sample (5/5 walk-forward folds beat baseline). Filters an EXISTING
+    # feature, so NO ML_FEATURE_VERSION bump. Default OFF — emission behaviour is
+    # unchanged until forward shadow validation passes (N>=50 forward rows or
+    # 2026-07-08). Plan: docs/plans/engine1-entry-gate.md.
+    ENGINE1_IMPULSE_GATE_ENABLED: bool = (
+        os.getenv("ENGINE1_IMPULSE_GATE_ENABLED", "false").lower() == "true"
+    )
+    ENGINE1_IMPULSE_GATE_MAX: float = float(
+        os.getenv("ENGINE1_IMPULSE_GATE_MAX", "2.24")
+    )
     # Pair filter for shadow mode — restrict setups to specific pairs.
     # Omitted setups track all TRADING_PAIRS. Empty list = blocked entirely.
     # Quarantine d_choch / d_bos to BTC+ETH per redesign §3.4–3.5

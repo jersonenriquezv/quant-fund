@@ -405,6 +405,20 @@ class TrendPullbackEngine:
             return None
         impulse, pullback = result
 
+        # Low-impulse entry gate (default OFF). When enabled, suppress entries
+        # whose impulse is too strong — Lane A (2026-06-08) showed low-impulse
+        # setups carry the edge (less-exhausted move = more continuation room).
+        # Filters on the existing `atr_multiple` feature, no ML version change.
+        if (
+            settings.ENGINE1_IMPULSE_GATE_ENABLED
+            and impulse.atr_multiple > settings.ENGINE1_IMPULSE_GATE_MAX
+        ):
+            logger.debug(
+                f"Engine1 [{pair}]: impulse {impulse.atr_multiple:.2f}× > gate "
+                f"{settings.ENGINE1_IMPULSE_GATE_MAX}× — suppressed"
+            )
+            return None
+
         # Direction must align with HTF bias for trend-continuation thesis.
         expected_dir = "long" if htf_bias == "bullish" else "short"
         if impulse.direction != expected_dir:

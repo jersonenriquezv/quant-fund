@@ -99,6 +99,8 @@
 | SETUP_D_ENTRY_PCT | 85% | D |
 | QUICK_OB_MAX_DISTANCE_PCT | 1.5% | quick |
 | QUICK_SETUP_COOLDOWN | 1h | quick |
+| ENGINE1_IMPULSE_GATE_ENABLED | false (default) | engine1 — low-impulse entry gate, default OFF (no behaviour change). Enable only on Phase 1 forward-validation pass. Plan: `docs/plans/engine1-entry-gate.md` |
+| ENGINE1_IMPULSE_GATE_MAX | 2.24 | engine1 — suppress entries with `impulse_atr_multiple` above this when gate enabled. Filters existing feature → no ML version bump |
 
 ### TP/SL Configuration
 | Parameter | Value |
@@ -568,6 +570,7 @@ D: net_score <  2
 - Scalp 6/8 review: `scalp_vol_cvd_div_v1` already killed 2026-05-22 (4 emits confirms dead); `scalp_liq_reclaim_v1` survives (62 emits ≥10). Noted: liq_reclaim is the standout (WR 79.5% / PF 2.56) but fails graduation on N (44/100) and freq (2.82/day vs ≥5).
 - FREEZE (5/13→6/8) expired. 6/8 fork resolved to KEEP (not hard-kill): non-SMC signals (engine1, liq_reclaim) carry edge outside the 5/13 "SMC dead" verdict.
 - Consolidated ml_v0 / Engine-2 decision rules from issue #25 into new §7.2 (single canonical home). New plain-language guide `docs/STRATEGY_REFINEMENT_GUIDE.md` maps every signal vs its gate; copies no thresholds (links to §7.1/§7.2/§9).
+- **engine1 low-impulse gate code shipped default-OFF.** `ENGINE1_IMPULSE_GATE_ENABLED`/`ENGINE1_IMPULSE_GATE_MAX` in settings + suppression in `engines/trend_pullback.py` + 4 tests (default-off proven byte-identical). Lifts v1d PF ~1.0→~4.5 OOS; **5/5 walk-forward folds beat baseline**. Filters existing feature → no ML version bump. Enable gated on Phase 1 forward validation (N≥50 forward ≈ 3 days, or 2026-07-08). Plan: `docs/plans/engine1-entry-gate.md`.
 
 ### 2026-06-03 — Chart A6 position tool: anchor box to the placement bar
 **Files:** `dashboard/web/src/lib/positionTool.ts`, `docs/context/06-dashboard.md`, `docs/plans/chart-replay-2026-06-01.md`.

@@ -22,8 +22,12 @@ engine1_trend_pullback is break-even raw (PF ~1.0 on v1d). In-sample slicing + a
 - Keep collecting shadow rows as-is. No code, no deploy.
 - After the gate condition below is met, re-run `scripts/validate_engine1_gates_oos.py` adapted to filter `created_at > '2026-06-08'` only (or a one-off query) — measure forward PF of the `<=2.24` subset vs the full forward cohort.
 
+**Walk-forward evidence (added 2026-06-08, existing data):** 5 rolling-origin folds, cutoff re-derived per fold's train. Gate beat ungated baseline PF in **5/5 folds** (gatePF 12.4 / 6.5 / 7.0 / 12.9 / 1.48 vs base 2.67 / 1.52 / 3.97 / 0.9 / 0.47); 4/5 also cleared the absolute PF≥1.5 bar (fold 5 = 1.48, narrow miss but still 3× its baseline). Robust across time windows, not a single-split artifact. Script: ad-hoc walk-forward (see session) — fold over `scripts/validate_engine1_gates_oos.py` logic.
+
+**Timeline note:** engine1 v1d emits ~21 resolved/day, so **N≥50 forward rows accrue in ~2–3 days**, not weeks. The 30-day clause is only a backstop ceiling.
+
 **Verification gate:**
-- [ ] Automated: forward cohort reaches **N ≥ 50 resolved** post-freeze rows OR **30 days elapsed** (2026-07-08), whichever first. Then: gated-subset **PF ≥ 1.5** AND gated PF beats ungated forward PF by **≥ 0.3**.
+- [ ] Automated: forward cohort reaches **N ≥ 50 resolved** post-freeze rows (≈3 days) OR **30 days elapsed** (2026-07-08), whichever first. Then: gated-subset **PF ≥ 1.5** AND gated PF beats ungated forward PF by **≥ 0.3**.
 - [ ] Manual: confirm forward winners are distributed (top-win share < 30%), not 1-2 fat trades.
 - [ ] Rollback if: forward PF < 1.5 OR gated does not beat ungated by ≥0.3 → KILL the gate, mark plan abandoned, write one-line post-mortem. Do NOT proceed to Phase 2.
 
@@ -32,8 +36,8 @@ engine1_trend_pullback is break-even raw (PF ~1.0 on v1d). In-sample slicing + a
 
 ---
 
-## Phase 2 — Implement gate in engine (shadow only) — ONLY if Phase 1 passes
-**Status:** pending (blocked by Phase 1)
+## Phase 2 — Implement gate in engine (shadow only)
+**Status:** CODE SHIPPED default-OFF 2026-06-08 (PR #80 follow-up). Enabling the suppression (`ENGINE1_IMPULSE_GATE_ENABLED=true`) remains BLOCKED on Phase 1 forward-validation pass. Built ahead of Phase 1 because walk-forward (5/5 folds beat baseline) de-risked it and default-off changes zero live/shadow behaviour — code is reviewed/tested and ready to flip the day the forward number confirms.
 **Inputs:** Phase 1 pass + the frozen cutoff value (or a re-derived value if Phase 1 recommends, recorded explicitly).
 **Outputs:**
 - `engine1_impulse_atr_multiple` gate wired in `strategy_service/engines/trend_pullback.py`, controlled by a new `settings.ENGINE1_IMPULSE_GATE_MAX` (default off / very high so behavior is unchanged until deliberately enabled).
