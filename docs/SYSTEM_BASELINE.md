@@ -346,6 +346,31 @@ WHERE journal_schema_version = 2     -- v1 frozen, excluded (free-text era, unle
 - Using non-purged CV with overlapping triple-barrier labels (leakage inflates AUC by ≥ 0.10).
 - Enabling bet sizing without calibration — Kelly on miscalibrated probabilities is strictly worse than flat size.
 
+### 7.2 Engine 1 ML v0 pre-gate (signal check) — decision rules
+
+Canonical home for the ml_v0 decision rules (origin: GitHub issue #25; consolidated here 2026-06-08 so all graduation criteria live in SYSTEM_BASELINE). This is a **pre-gate**, not the activation gate: it asks "do the captured features carry predictive signal at all?" *before* investing in the full §7.1 G1–G6 rigor (purged CV, calibration, Brier, Kelly). Script: `scripts/ml_v0_engine1.py`. Re-run on schedule; do NOT tune model or detectors between runs.
+
+**Decision rules (AUC on out-of-sample holdout):**
+
+| AUC test | Verdict | Action |
+|----------|---------|--------|
+| > 0.60 | EDGE CLARO | Keep collecting; do NOT build Engine 2 yet |
+| 0.55–0.60 | SEÑAL DÉBIL | Re-train at larger N, decide |
+| 0.50–0.55 | MARGINAL | Build Engine 2 (Failed Breakout, `strategy_redesign_2026_04.md §4.2`) |
+| < 0.50 | ANTI-EDGE | Audit deeply |
+
+**Run history (no tuning between runs, by design):**
+
+| Date | N (tp+sl) | AUC test | Verdict |
+|------|-----------|----------|---------|
+| 2026-05-11 | 58 | 0.7222 | EDGE CLARO (provisional, holdout N<20) |
+| 2026-05-25 | 148 | 0.7010 | EDGE CLARO |
+| 2026-06-08 | 283 | 0.7160 | EDGE CLARO — do NOT build Engine 2; next gate 6/15 |
+
+Stable ~0.71–0.72 across three runs at growing N → signal is real, not noise. Overfit gap (train ~0.95 vs test ~0.72) persists; expected at small N with no tuning. Reports: `docs/audits/ml-v0-engine1-<date>.md`.
+
+**Pre-gate ≠ live.** Passing this only means features carry signal. Turning engine1 into live money still requires the §7.1 G1–G6 activation gate (purged CV, calibration, Kelly-safe, 200-paper-trade shadow comparison). G1 (≥500 *filled* outcomes) is currently unmeetable in shadow-only mode — see open question in `docs/STRATEGY_REFINEMENT_GUIDE.md`.
+
 ---
 
 ## 9. Active Roadmap (2026-04-20)
@@ -366,7 +391,15 @@ WHERE journal_schema_version = 2     -- v1 frozen, excluded (free-text era, unle
 
 **Principle:** each batch ships + passes bar before next starts. No parallel strategy work during infra phase.
 
-### FREEZE — Strategy work halted (2026-05-13 → 2026-06-08)
+### FREEZE — Strategy work halted (2026-05-13 → 2026-06-08) — EXPIRED 2026-06-08
+
+**Resolution (2026-06-08):** Freeze period complete. The 6/8 fork was hard-kill vs extract-platform. **Decision: neither kill nor hard-pivot — keep collecting in shadow.** Rationale: two NON-SMC signals show edge that the 5/13 "SMC dead" verdict did not cover:
+- engine1_trend_pullback: ml_v0 AUC 0.716 (3rd stable run, N=283) = EDGE CLARO; raw WR 45.2% / PF 1.03 (v1d) beats bench_random 26.6% / PF 0.48. Raw is breakeven → needs the §7.1 meta-label filter to become money. Engine 2: NOT built (per §7.2 rules).
+- scalp_liq_reclaim_v1: WR 79.5% / PF 2.56 vs random 35% / PF 0.39, but N=44 (<100) and 2.82 emits/day (<5/day gate) → not yet graduatable (§9 scalp validation rules).
+
+Legacy SMC class (A/B/D/F) stays dead — collecting labels only, no granular work. Plain-language map of where every signal stands vs its gate: `docs/STRATEGY_REFINEMENT_GUIDE.md`. Strategy-touch work stays gated on the graduation criteria in §7.1 / §7.2 / §9, not reopened wholesale.
+
+**Active refinement (post-freeze):** engine1 low-impulse entry gate — plan `docs/plans/engine1-entry-gate.md` (grill BUILD). Phase 1 = pre-registered forward shadow validation (cutoff `engine1_impulse_atr_multiple ≤ 2.24` frozen 2026-06-08, decide at N≥50 forward rows or 2026-07-08). No code/live until it passes. Refines WHICH engine1 signals fire; no signal change, no ML version bump.
 
 Per grill verdict `docs/grill/bot-viability-2026-05-13.md`. SMC class empirically dead (0/10 setups beat random at N≥15). Bot in shadow-only mode through ML v0 re-train cycle.
 
@@ -527,6 +560,14 @@ D: net_score <  2
 ---
 
 ## 8. Changelog
+
+### 2026-06-08 — ML v0 6/8 re-train + FREEZE expiry + graduation criteria consolidation
+**Files:** `docs/SYSTEM_BASELINE.md` (§7.2 new, §9 FREEZE resolution), `docs/STRATEGY_REFINEMENT_GUIDE.md` (new), `docs/audits/ml-v0-engine1-2026-06-08.md` (new), `docs/grill/strategy-refinement-guide-2026-06-08.md` (new).
+- ml_v0 re-train: AUC test **0.7160** at N=283 (3rd stable run, 0.72→0.70→0.72). Verdict EDGE CLARO → do NOT build Engine 2. Next gate 6/15.
+- Pipeline health (`report_engine1_shadow.py`): SANO — 337 resolved, no leakage/orphans, dedup 7.9%, v1d quarantine intact.
+- Scalp 6/8 review: `scalp_vol_cvd_div_v1` already killed 2026-05-22 (4 emits confirms dead); `scalp_liq_reclaim_v1` survives (62 emits ≥10). Noted: liq_reclaim is the standout (WR 79.5% / PF 2.56) but fails graduation on N (44/100) and freq (2.82/day vs ≥5).
+- FREEZE (5/13→6/8) expired. 6/8 fork resolved to KEEP (not hard-kill): non-SMC signals (engine1, liq_reclaim) carry edge outside the 5/13 "SMC dead" verdict.
+- Consolidated ml_v0 / Engine-2 decision rules from issue #25 into new §7.2 (single canonical home). New plain-language guide `docs/STRATEGY_REFINEMENT_GUIDE.md` maps every signal vs its gate; copies no thresholds (links to §7.1/§7.2/§9).
 
 ### 2026-06-03 — Chart A6 position tool: anchor box to the placement bar
 **Files:** `dashboard/web/src/lib/positionTool.ts`, `docs/context/06-dashboard.md`, `docs/plans/chart-replay-2026-06-01.md`.
