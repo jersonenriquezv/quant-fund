@@ -27,6 +27,14 @@ import {
   clearPosition,
   onPositionChange,
 } from "@/lib/positionTool";
+import {
+  ensureDrawingOverlaysRegistered,
+  startDrawing,
+  cancelPendingDrawing,
+  clearAllDrawings,
+  restoreDrawings,
+} from "@/lib/drawingTools";
+import ChartToolbar, { type ToolboxAction } from "@/components/ChartToolbar";
 
 const CHART_STYLES = {
   grid: {
@@ -91,12 +99,15 @@ export default function ChartPage() {
   const [hourTick, setHourTick] = useState(0); // wall-clock heartbeat to refresh live HTF detections
   const [positionRR, setPositionRR] = useState<number | null>(null); // A6 live R:R
   const [armDir, setArmDir] = useState<"long" | "short" | null>(null); // click-to-place mode
+  const [activeTool, setActiveTool] = useState<ToolboxAction>("cursor"); // left toolbox
+  const restoredSymbolRef = useRef<string | null>(null); // last symbol whose drawings were restored
 
   // Init chart once.
   useEffect(() => {
     if (!containerRef.current) return;
     ensureDetectionOverlayRegistered();
     ensurePositionOverlayRegistered();
+    ensureDrawingOverlaysRegistered();
     onPositionChange(setPositionRR);
     const chart = init(containerRef.current);
     if (chart) {
@@ -136,6 +147,13 @@ export default function ChartPage() {
       setAsOfIdx(startIdx);
       chartRef.current.applyNewData(replay ? bars.slice(0, startIdx + 1) : bars);
       prevIdxRef.current = startIdx;
+      // Saved drawings are per symbol — restore on first load and on symbol
+      // switch (a BTC trend line on the ETH chart is meaningless). Resolution
+      // toggles keep them: points are (timestamp, value), valid across TFs.
+      if (restoredSymbolRef.current !== symbol) {
+        restoreDrawings(chartRef.current, symbol);
+        restoredSymbolRef.current = symbol;
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load chart data.");
     } finally {
@@ -371,6 +389,47 @@ export default function ChartPage() {
     if (chartRef.current) clearPosition(chartRef.current);
   };
 
+  // Left toolbox state machine. Picking any tool first cancels whatever was
+  // armed (in-progress drawing or position placement) — one active tool at a
+  // time, TradingView-style. Drawing tools auto-revert to cursor on placement.
+  const selectTool = useCallback((tool: ToolboxAction) => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    cancelPendingDrawing(chart);
+    setArmDir(null);
+    if (tool === "cursor") {
+      setActiveTool("cursor");
+      return;
+    }
+    if (tool === "long" || tool === "short") {
+      setActiveTool(tool);
+      setArmDir(tool);
+      return;
+    }
+    if (tool === "clear") {
+      clearAllDrawings(chart, symbol);
+      setActiveTool("cursor");
+      return;
+    }
+    setActiveTool(tool);
+    startDrawing(chart, symbol, tool, () => setActiveTool("cursor"));
+  }, [symbol]);
+
+  // Esc cancels the armed tool (drawing in progress or position placement).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") selectTool("cursor");
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectTool]);
+
+  // The position tool disarms itself after placement (armDir → null inside the
+  // pointerdown effect) — mirror that back onto the toolbox highlight.
+  useEffect(() => {
+    if (!armDir) setActiveTool((t) => (t === "long" || t === "short" ? "cursor" : t));
+  }, [armDir]);
+
   // While armed, the next click on the chart places the position there.
   useEffect(() => {
     if (!armDir) return;
@@ -425,18 +484,15 @@ export default function ChartPage() {
               Focus
             </button>
           )}
-          <div className="chart-seg chart-pos" title="Pick Long/Short, then click on the chart to drop the entry. Click the position to show its handles: drag a line to move the whole position, drag a handle dot to adjust that level. R:R updates live.">
-            <button className={`chart-seg-btn chart-pos-long ${armDir === "long" ? "active" : ""}`}
-              onClick={() => setArmDir((d) => (d === "long" ? null : "long"))}>+ Long</button>
-            <button className={`chart-seg-btn chart-pos-short ${armDir === "short" ? "active" : ""}`}
-              onClick={() => setArmDir((d) => (d === "short" ? null : "short"))}>+ Short</button>
-            {positionRR != null && (
-              <button className="chart-seg-btn chart-pos-clear" onClick={removePosition} title="Clear position">
-                R:R {positionRR.toFixed(2)} ✕
-              </button>
-            )}
-          </div>
+          {positionRR != null && (
+            <button className="chart-toggle chart-pos-clear" onClick={removePosition} title="Clear position">
+              R:R {positionRR.toFixed(2)} ✕
+            </button>
+          )}
           {armDir && <span className="chart-arm-hint">click chart to place {armDir} entry…</span>}
+          {activeTool !== "cursor" && !armDir && (
+            <span className="chart-arm-hint">click chart to draw…</span>
+          )}
         </div>
         <div className="chart-status">{loading ? "loading…" : error ?? ""}</div>
       </header>
@@ -459,7 +515,14 @@ export default function ChartPage() {
         </div>
       )}
 
-      <div ref={containerRef} className={`chart-canvas ${armDir ? "arming" : ""}`} />
+      <div className="chart-body">
+        <ChartToolbar active={activeTool} onSelect={selectTool} />
+        <div
+          ref={containerRef}
+          className={`chart-canvas ${armDir ? "arming" : ""}`}
+          onContextMenu={(e) => e.preventDefault()} // right-click deletes drawings instead
+        />
+      </div>
     </main>
   );
 }
