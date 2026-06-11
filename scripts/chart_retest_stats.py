@@ -127,7 +127,12 @@ def replay_zones(candles: list[Candle], pair: str, timeframe: str) -> list[dict]
 
 def classify_zone(zone: dict, candles: list[Candle], last_ts: int) -> str:
     """retested | no_retest | never_left | censored — see module docstring."""
-    lo, hi = zone["low"], zone["high"]
+    # OBs: the zone shown on the chart (and traded) is the candle BODY, not the
+    # wick-to-wick range — measure retest against the same band the user sees.
+    if zone["type"] == "order_block" and zone.get("body_high") is not None:
+        lo, hi = zone["body_low"], zone["body_high"]
+    else:
+        lo, hi = zone["low"], zone["high"]
     born, expire = zone["born_ts"], zone["expire_ts"]
     left = False
     for c in candles:

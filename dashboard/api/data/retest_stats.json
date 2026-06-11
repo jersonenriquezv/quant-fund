@@ -1,5 +1,5 @@
 {
-  "generated_at_ms": 1781211238329,
+  "generated_at_ms": 1781214614824,
   "params": {
     "pairs": "BTC/USDT,ETH/USDT",
     "tf_bars": {
@@ -14,17 +14,17 @@
   },
   "stats": {
     "fvg:15m:bearish": {
-      "n": 531,
+      "n": 533,
       "retested": 344,
-      "pct": 64.8,
-      "excluded_never_left": 173,
+      "pct": 64.5,
+      "excluded_never_left": 171,
       "excluded_censored": 1
     },
     "fvg:15m:bullish": {
       "n": 495,
       "retested": 361,
       "pct": 72.9,
-      "excluded_never_left": 144,
+      "excluded_never_left": 145,
       "excluded_censored": 7
     },
     "fvg:1d:bearish": {
@@ -49,11 +49,11 @@
       "excluded_censored": 0
     },
     "fvg:1h:bullish": {
-      "n": 345,
-      "retested": 185,
-      "pct": 53.6,
+      "n": 346,
+      "retested": 186,
+      "pct": 53.8,
       "excluded_never_left": 178,
-      "excluded_censored": 3
+      "excluded_censored": 2
     },
     "fvg:4h:bearish": {
       "n": 143,
@@ -70,31 +70,31 @@
       "excluded_censored": 0
     },
     "fvg:5m:bearish": {
-      "n": 454,
-      "retested": 314,
-      "pct": 69.2,
+      "n": 455,
+      "retested": 316,
+      "pct": 69.5,
       "excluded_never_left": 102,
-      "excluded_censored": 1
+      "excluded_censored": 0
     },
     "fvg:5m:bullish": {
       "n": 380,
       "retested": 293,
       "pct": 77.1,
-      "excluded_never_left": 102,
-      "excluded_censored": 5
+      "excluded_never_left": 103,
+      "excluded_censored": 6
     },
     "order_block:15m:bearish": {
-      "n": 327,
-      "retested": 232,
-      "pct": 70.9,
-      "excluded_never_left": 42,
+      "n": 351,
+      "retested": 237,
+      "pct": 67.5,
+      "excluded_never_left": 19,
       "excluded_censored": 1
     },
     "order_block:15m:bullish": {
-      "n": 299,
-      "retested": 228,
-      "pct": 76.3,
-      "excluded_never_left": 34,
+      "n": 312,
+      "retested": 216,
+      "pct": 69.2,
+      "excluded_never_left": 21,
       "excluded_censored": 1
     },
     "order_block:1d:bearish": {
@@ -105,53 +105,53 @@
       "excluded_censored": 0
     },
     "order_block:1d:bullish": {
-      "n": 0,
+      "n": 1,
       "retested": 0,
       "pct": null,
-      "excluded_never_left": 1,
+      "excluded_never_left": 0,
       "excluded_censored": 0
     },
     "order_block:1h:bearish": {
-      "n": 190,
-      "retested": 112,
-      "pct": 58.9,
-      "excluded_never_left": 28,
+      "n": 200,
+      "retested": 108,
+      "pct": 54.0,
+      "excluded_never_left": 18,
       "excluded_censored": 0
     },
     "order_block:1h:bullish": {
-      "n": 147,
-      "retested": 96,
-      "pct": 65.3,
-      "excluded_never_left": 21,
-      "excluded_censored": 3
+      "n": 156,
+      "retested": 98,
+      "pct": 62.8,
+      "excluded_never_left": 11,
+      "excluded_censored": 4
     },
     "order_block:4h:bearish": {
-      "n": 40,
-      "retested": 21,
-      "pct": 52.5,
-      "excluded_never_left": 7,
+      "n": 45,
+      "retested": 18,
+      "pct": 40.0,
+      "excluded_never_left": 2,
       "excluded_censored": 0
     },
     "order_block:4h:bullish": {
-      "n": 22,
-      "retested": 13,
-      "pct": null,
-      "excluded_never_left": 12,
+      "n": 30,
+      "retested": 20,
+      "pct": 66.7,
+      "excluded_never_left": 4,
       "excluded_censored": 0
     },
     "order_block:5m:bearish": {
-      "n": 412,
-      "retested": 266,
-      "pct": 64.6,
-      "excluded_never_left": 64,
+      "n": 451,
+      "retested": 263,
+      "pct": 58.3,
+      "excluded_never_left": 23,
       "excluded_censored": 0
     },
     "order_block:5m:bullish": {
-      "n": 322,
-      "retested": 276,
-      "pct": 85.7,
-      "excluded_never_left": 45,
-      "excluded_censored": 4
+      "n": 343,
+      "retested": 278,
+      "pct": 81.0,
+      "excluded_never_left": 26,
+      "excluded_censored": 5
     }
   }
 }

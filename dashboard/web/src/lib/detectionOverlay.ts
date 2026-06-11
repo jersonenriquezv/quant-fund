@@ -142,6 +142,9 @@ export function ensureDetectionOverlayRegistered(): void {
 }
 
 // Clear and (re)draw all detection zones as-of `asOfMs` as one overlay.
+// OBs use the candle BODY as the zone (SMC: the valid zone is the opposing
+// candle's body, not its wicks — full wick-to-wick boxes looked huge and wrong
+// to the eye). FVGs are the literal 3-candle gap, which has no tighter form.
 export function renderDetections(
   chart: Chart,
   zones: DetectionZone[],
@@ -152,9 +155,11 @@ export function renderDetections(
   if (!zones.length) return;
   const points: { timestamp: number; value: number }[] = [];
   for (const z of zones) {
-    // point pair per zone: origin @ high (top-left), as-of bar @ low (bottom-right)
-    points.push({ timestamp: z.timestamp, value: z.high });
-    points.push({ timestamp: asOfMs, value: z.low });
+    const top = z.type === "order_block" ? z.body_high ?? z.high : z.high;
+    const bottom = z.type === "order_block" ? z.body_low ?? z.low : z.low;
+    // point pair per zone: origin @ top (top-left), as-of bar @ bottom (bottom-right)
+    points.push({ timestamp: z.timestamp, value: top });
+    points.push({ timestamp: asOfMs, value: bottom });
   }
   chart.createOverlay({
     name: OVERLAY_NAME,
