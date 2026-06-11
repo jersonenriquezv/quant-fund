@@ -33,7 +33,9 @@ import {
   cancelPendingDrawing,
   clearAllDrawings,
   restoreDrawings,
+  deleteSelectedDrawing,
 } from "@/lib/drawingTools";
+import { isPositionSelected } from "@/lib/positionTool";
 import ChartToolbar, { type ToolboxAction } from "@/components/ChartToolbar";
 
 const CHART_STYLES = {
@@ -416,13 +418,29 @@ export default function ChartPage() {
   }, [symbol]);
 
   // Esc cancels the armed tool (drawing in progress or position placement).
+  // Backspace/Delete removes whatever drawing (or the position) is selected.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") selectTool("cursor");
+      if (e.key === "Escape") {
+        selectTool("cursor");
+        return;
+      }
+      if (e.key === "Backspace" || e.key === "Delete") {
+        const tag = (e.target as HTMLElement | null)?.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA") return; // typing, not deleting drawings
+        const chart = chartRef.current;
+        if (!chart) return;
+        if (deleteSelectedDrawing(chart, symbol)) {
+          e.preventDefault();
+        } else if (isPositionSelected()) {
+          clearPosition(chart);
+          e.preventDefault();
+        }
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selectTool]);
+  }, [selectTool, symbol]);
 
   // The position tool disarms itself after placement (armDir → null inside the
   // pointerdown effect) — mirror that back onto the toolbox highlight.

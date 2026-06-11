@@ -69,7 +69,7 @@ const TOOLS: ToolDef[] = [
     ),
   },
   {
-    id: "fibonacciLine",
+    id: "fibRetracement",
     label: "Fib retracement",
     icon: (
       <svg width="16" height="16" viewBox="0 0 16 16">

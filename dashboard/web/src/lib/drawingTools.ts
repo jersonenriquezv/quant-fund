@@ -18,7 +18,7 @@ export type DrawingToolId =
   | "rayLine"
   | "horizontalStraightLine"
   | "rectangleZone"
-  | "fibonacciLine";
+  | "fibRetracement";
 
 const GROUP_ID = "drawing";
 const STORE_PREFIX = "qf-chart-drawings:";
@@ -40,6 +40,14 @@ const DRAWING_STYLES = {
     activeRadius: 6,
   },
 };
+
+// Fib retracement — SMC bounce levels only (no 0.236/0.382 clutter), drawn ONLY
+// across the selected swing (xA..xB), not full chart width. 0/1 are dim swing
+// boundaries; the golden pocket (0.618–0.786) gets a faint fill. The knob:
+const FIB_BOUNCE_LEVELS = [0.5, 0.618, 0.705, 0.786];
+const FIB_GOLD = "rgba(240,185,11,0.9)";
+const FIB_GOLD_FILL = "rgba(240,185,11,0.07)";
+const FIB_DIM = "rgba(156,163,175,0.5)";
 
 let registered = false;
 
@@ -74,6 +82,65 @@ export function ensureDrawingOverlaysRegistered(): void {
           },
         },
       ] as never;
+    },
+  });
+  // Custom fib: built-in fibonacciLine paints 7 full-width levels — too noisy.
+  // Point A = swing start (level 1), point B = swing end (level 0); retracement
+  // levels measured back from B.
+  registerOverlay({
+    name: "fibRetracement",
+    totalStep: 3,
+    needDefaultPointFigure: true,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    createPointFigures: ({ coordinates, overlay, precision }) => {
+      if (coordinates.length < 2) return [];
+      const [a, b] = coordinates;
+      const vA = (overlay.points[0]?.value as number) ?? 0;
+      const vB = (overlay.points[1]?.value as number) ?? 0;
+      const xL = Math.min(a.x, b.x);
+      const xR = Math.max(a.x, b.x);
+      const dp = precision?.price ?? 2;
+      const yAt = (lvl: number) => b.y + (a.y - b.y) * lvl;
+      const priceAt = (lvl: number) => vB + (vA - vB) * lvl;
+      const figs: unknown[] = [];
+
+      // golden pocket fill (0.618–0.786)
+      const gTop = Math.min(yAt(0.618), yAt(0.786));
+      figs.push({
+        type: "rect",
+        attrs: { x: xL, y: gTop, width: xR - xL, height: Math.abs(yAt(0.786) - yAt(0.618)) },
+        styles: { style: "fill", color: FIB_GOLD_FILL },
+        ignoreEvent: true,
+      });
+
+      // swing boundaries — dim dashed, no labels (they're just the anchors)
+      for (const lvl of [0, 1]) {
+        figs.push({
+          type: "line",
+          attrs: { coordinates: [{ x: xL, y: yAt(lvl) }, { x: xR, y: yAt(lvl) }] },
+          styles: { color: FIB_DIM, size: 1, style: "dashed" },
+        });
+      }
+      // bounce levels — gold, labeled with ratio + price
+      for (const lvl of FIB_BOUNCE_LEVELS) {
+        const y = yAt(lvl);
+        figs.push({
+          type: "line",
+          attrs: { coordinates: [{ x: xL, y }, { x: xR, y }] },
+          styles: { color: FIB_GOLD, size: 1 },
+        });
+        figs.push({
+          type: "text",
+          attrs: {
+            x: xR + 4, y, align: "left", baseline: "middle",
+            text: `${lvl} ${priceAt(lvl).toLocaleString("en-US", { minimumFractionDigits: dp, maximumFractionDigits: dp })}`,
+          },
+          styles: { color: FIB_GOLD, size: 11, backgroundColor: "transparent", borderColor: "transparent" },
+          ignoreEvent: true,
+        });
+      }
+      return figs as never;
     },
   });
 }
@@ -115,9 +182,18 @@ function saveDrawings(chart: Chart, symbol: string): void {
 // OverlayEvent carries the overlay but NOT the chart instance — keep the last
 // chart seen (single-chart page) and operate through it in the callbacks.
 let lastChart: Chart | null = null;
+let selectedId: string | null = null; // currently selected drawing (Backspace target)
 
 function attachCallbacks(symbol: string) {
   return {
+    onSelected: (e: OverlayEvent) => {
+      selectedId = e.overlay.id;
+      return false;
+    },
+    onDeselected: (e: OverlayEvent) => {
+      if (selectedId === e.overlay.id) selectedId = null;
+      return false;
+    },
     onPressedMoveEnd: () => {
       if (lastChart) saveDrawings(lastChart, symbol);
       return false;
@@ -127,6 +203,16 @@ function attachCallbacks(symbol: string) {
       return true; // swallow so klinecharts doesn't also select it
     },
   };
+}
+
+/** Backspace/Delete: remove the currently selected drawing. Returns true if a
+ *  drawing was selected and removed (so the caller can fall through to other
+ *  deletable things — e.g. the position tool — when it wasn't). */
+export function deleteSelectedDrawing(chart: Chart, symbol: string): boolean {
+  if (!selectedId || !live.has(selectedId)) return false;
+  removeDrawing(chart, symbol, selectedId);
+  selectedId = null;
+  return true;
 }
 
 /** Arm a drawing tool: klinecharts enters interactive placement (user clicks
@@ -175,6 +261,7 @@ export function removeDrawing(chart: Chart, symbol: string, id: string): void {
 
 export function clearAllDrawings(chart: Chart, symbol: string): void {
   pendingId = null;
+  selectedId = null;
   live.clear();
   chart.removeOverlay({ groupId: GROUP_ID });
   try {
@@ -189,6 +276,7 @@ export function clearAllDrawings(chart: Chart, symbol: string): void {
 export function restoreDrawings(chart: Chart, symbol: string): void {
   lastChart = chart;
   pendingId = null;
+  selectedId = null;
   live.clear();
   chart.removeOverlay({ groupId: GROUP_ID });
   let stored: StoredDrawing[] = [];
@@ -200,13 +288,15 @@ export function restoreDrawings(chart: Chart, symbol: string): void {
   if (!Array.isArray(stored)) return;
   for (const d of stored) {
     if (!d || typeof d.name !== "string" || !Array.isArray(d.points) || !d.points.length) continue;
+    // fibs saved before the custom overlay replaced klinecharts' fibonacciLine
+    const name = d.name === "fibonacciLine" ? "fibRetracement" : d.name;
     const id = chart.createOverlay({
-      name: d.name,
+      name,
       groupId: GROUP_ID,
       points: d.points,
       styles: DRAWING_STYLES,
       ...attachCallbacks(symbol),
     });
-    if (typeof id === "string") live.set(id, d.name);
+    if (typeof id === "string") live.set(id, name);
   }
 }
