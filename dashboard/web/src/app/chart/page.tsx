@@ -27,6 +27,16 @@ import {
   clearPosition,
   onPositionChange,
 } from "@/lib/positionTool";
+import {
+  ensureDrawingOverlaysRegistered,
+  startDrawing,
+  cancelPendingDrawing,
+  clearAllDrawings,
+  restoreDrawings,
+  deleteSelectedDrawing,
+} from "@/lib/drawingTools";
+import { isPositionSelected } from "@/lib/positionTool";
+import ChartToolbar, { type ToolboxAction } from "@/components/ChartToolbar";
 
 const CHART_STYLES = {
   grid: {
@@ -84,23 +94,28 @@ export default function ChartPage() {
   const [asOfIdx, setAsOfIdx] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(2);
-  const [showDetections, setShowDetections] = useState(false);
+  const [detMode, setDetMode] = useState<"off" | "boxes" | "subtle">("off"); // cycles per click
+  const showDetections = detMode !== "off";
   const [significantOnly, setSignificantOnly] = useState(true); // LuxAlgo de-noise: on by default
   const [detCount, setDetCount] = useState<number | null>(null);
   const [timelineReady, setTimelineReady] = useState(0); // bumps when timeline refetched
   const [hourTick, setHourTick] = useState(0); // wall-clock heartbeat to refresh live HTF detections
   const [positionRR, setPositionRR] = useState<number | null>(null); // A6 live R:R
   const [armDir, setArmDir] = useState<"long" | "short" | null>(null); // click-to-place mode
+  const [activeTool, setActiveTool] = useState<ToolboxAction>("cursor"); // left toolbox
+  const restoredSymbolRef = useRef<string | null>(null); // last symbol whose drawings were restored
 
   // Init chart once.
   useEffect(() => {
     if (!containerRef.current) return;
     ensureDetectionOverlayRegistered();
     ensurePositionOverlayRegistered();
+    ensureDrawingOverlaysRegistered();
     onPositionChange(setPositionRR);
     const chart = init(containerRef.current);
     if (chart) {
       chart.setStyles(CHART_STYLES);
+      chart.setOffsetRightDistance(140); // room for right-projected detection zones
       chart.createIndicator("VOL", false); // separate sub-pane below candles
       chartRef.current = chart;
       if (process.env.NODE_ENV !== "production") {
@@ -136,6 +151,13 @@ export default function ChartPage() {
       setAsOfIdx(startIdx);
       chartRef.current.applyNewData(replay ? bars.slice(0, startIdx + 1) : bars);
       prevIdxRef.current = startIdx;
+      // Saved drawings are per symbol — restore on first load and on symbol
+      // switch (a BTC trend line on the ETH chart is meaningless). Resolution
+      // toggles keep them: points are (timestamp, value), valid across TFs.
+      if (restoredSymbolRef.current !== symbol) {
+        restoreDrawings(chartRef.current, symbol);
+        restoredSymbolRef.current = symbol;
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load chart data.");
     } finally {
@@ -227,8 +249,10 @@ export default function ChartPage() {
   // Detection timeline — fetch ONCE per symbol/resolution (and on each new live
   // bar), not per scrub. The replay is ~2.5s, so doing it once and filtering the
   // cached lifecycles client-side keeps scrub/playback instant and off the server.
+  // Runs even with Detections OFF (prefetch): the server caches the replay per
+  // candle window, so toggling Detections on is then instant.
   useEffect(() => {
-    if (!chartReady || !showDetections) return;
+    if (!chartReady) return;
     const bars = barsRef.current;
     if (!bars.length) return;
     // As-of: replay → the pointer bar; live → wall-clock NOW. An HTF bar starts
@@ -255,7 +279,7 @@ export default function ChartPage() {
         /* keep previous timeline on transient error */
       }
     })();
-  }, [chartReady, showDetections, symbol, resolution, replay, barCount, hourTick]);
+  }, [chartReady, symbol, resolution, replay, barCount, hourTick]);
 
   // Wall-clock heartbeat (live only) so HTF detection overlays refresh as zones
   // form within the current bar, instead of going stale until the bar closes.
@@ -287,9 +311,9 @@ export default function ChartPage() {
     // to price. Off: show everything raw (incl. spent/dimmed) for inspection.
     let zones = zonesAsOf(timelineRef.current, asOfMs, significantOnly);
     if (significantOnly) zones = curateZones(zones, price);
-    renderDetections(chart, zones, asOfMs);
+    renderDetections(chart, zones, asOfMs, detMode === "subtle" ? "subtle" : "boxes");
     setDetCount(zones.length);
-  }, [showDetections, significantOnly, asOfIdx, replay, barCount, timelineReady]);
+  }, [showDetections, detMode, significantOnly, asOfIdx, replay, barCount, timelineReady]);
 
   // A3 — live candle wiring. In live (non-replay) mode, poll the FORMING candle
   // (Redis, via /chart/live) every 2s and tick it onto the chart. /history only
@@ -371,6 +395,63 @@ export default function ChartPage() {
     if (chartRef.current) clearPosition(chartRef.current);
   };
 
+  // Left toolbox state machine. Picking any tool first cancels whatever was
+  // armed (in-progress drawing or position placement) — one active tool at a
+  // time, TradingView-style. Drawing tools auto-revert to cursor on placement.
+  const selectTool = useCallback((tool: ToolboxAction) => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    cancelPendingDrawing(chart);
+    setArmDir(null);
+    if (tool === "cursor") {
+      setActiveTool("cursor");
+      return;
+    }
+    if (tool === "long" || tool === "short") {
+      setActiveTool(tool);
+      setArmDir(tool);
+      return;
+    }
+    if (tool === "clear") {
+      clearAllDrawings(chart, symbol);
+      setActiveTool("cursor");
+      return;
+    }
+    setActiveTool(tool);
+    startDrawing(chart, symbol, tool, () => setActiveTool("cursor"));
+  }, [symbol]);
+
+  // Esc cancels the armed tool (drawing in progress or position placement).
+  // Backspace/Delete removes whatever drawing (or the position) is selected.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        selectTool("cursor");
+        return;
+      }
+      if (e.key === "Backspace" || e.key === "Delete") {
+        const tag = (e.target as HTMLElement | null)?.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA") return; // typing, not deleting drawings
+        const chart = chartRef.current;
+        if (!chart) return;
+        if (deleteSelectedDrawing(chart, symbol)) {
+          e.preventDefault();
+        } else if (isPositionSelected()) {
+          clearPosition(chart);
+          e.preventDefault();
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectTool, symbol]);
+
+  // The position tool disarms itself after placement (armDir → null inside the
+  // pointerdown effect) — mirror that back onto the toolbox highlight.
+  useEffect(() => {
+    if (!armDir) setActiveTool((t) => (t === "long" || t === "short" ? "cursor" : t));
+  }, [armDir]);
+
   // While armed, the next click on the chart places the position there.
   useEffect(() => {
     if (!armDir) return;
@@ -415,8 +496,9 @@ export default function ChartPage() {
             Replay
           </button>
           <button className={`chart-toggle ${showDetections ? "on" : ""}`}
-            onClick={() => setShowDetections((v) => !v)}>
-            Detections{detCount != null ? ` (${detCount})` : ""}
+            onClick={() => setDetMode((m) => (m === "off" ? "boxes" : m === "boxes" ? "subtle" : "off"))}
+            title="Cycles: Off → Boxes (filled zones) → Lines (edges only, candles stay readable) → Off">
+            Detections{detCount != null ? ` (${detCount})` : ""}{detMode === "boxes" ? " ▣" : detMode === "subtle" ? " ☰" : ""}
           </button>
           {showDetections && (
             <button className={`chart-toggle ${significantOnly ? "on" : ""}`}
@@ -425,18 +507,15 @@ export default function ChartPage() {
               Focus
             </button>
           )}
-          <div className="chart-seg chart-pos" title="Pick Long/Short, then click on the chart to drop the entry. Click the position to show its handles: drag a line to move the whole position, drag a handle dot to adjust that level. R:R updates live.">
-            <button className={`chart-seg-btn chart-pos-long ${armDir === "long" ? "active" : ""}`}
-              onClick={() => setArmDir((d) => (d === "long" ? null : "long"))}>+ Long</button>
-            <button className={`chart-seg-btn chart-pos-short ${armDir === "short" ? "active" : ""}`}
-              onClick={() => setArmDir((d) => (d === "short" ? null : "short"))}>+ Short</button>
-            {positionRR != null && (
-              <button className="chart-seg-btn chart-pos-clear" onClick={removePosition} title="Clear position">
-                R:R {positionRR.toFixed(2)} ✕
-              </button>
-            )}
-          </div>
+          {positionRR != null && (
+            <button className="chart-toggle chart-pos-clear" onClick={removePosition} title="Clear position">
+              R:R {positionRR.toFixed(2)} ✕
+            </button>
+          )}
           {armDir && <span className="chart-arm-hint">click chart to place {armDir} entry…</span>}
+          {activeTool !== "cursor" && !armDir && (
+            <span className="chart-arm-hint">click chart to draw…</span>
+          )}
         </div>
         <div className="chart-status">{loading ? "loading…" : error ?? ""}</div>
       </header>
@@ -459,7 +538,14 @@ export default function ChartPage() {
         </div>
       )}
 
-      <div ref={containerRef} className={`chart-canvas ${armDir ? "arming" : ""}`} />
+      <div className="chart-body">
+        <ChartToolbar active={activeTool} onSelect={selectTool} />
+        <div
+          ref={containerRef}
+          className={`chart-canvas ${armDir ? "arming" : ""}`}
+          onContextMenu={(e) => e.preventDefault()} // right-click deletes drawings instead
+        />
+      </div>
     </main>
   );
 }

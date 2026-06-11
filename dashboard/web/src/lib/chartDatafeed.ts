@@ -112,8 +112,11 @@ export interface DetectionZone {
   high: number;
   low: number;
   source_tf?: string; // timeframe the zone was detected on (MTF overlay): "1D"/"4H"/...
+  retest_pct?: number | null; // historical % of this category revisited (offline stats)
   // OB-only
   mitigated?: boolean;
+  body_high?: number; // max(open, close) of the OB candle — the rendered zone
+  body_low?: number;  // min(open, close)
   entry_price?: number;
   impulse_score?: number;
   retest_count?: number;

@@ -38,6 +38,12 @@ export function onPositionChange(cb: RRListener | null): void {
   rrListener = cb;
 }
 
+// Selection state — lets the page's Backspace handler clear a selected position.
+let posSelected = false;
+export function isPositionSelected(): boolean {
+  return posSelected;
+}
+
 function priceOf(overlay: Overlay, i: number): number {
   return (overlay.points[i]?.value as number) ?? 0;
 }
@@ -111,6 +117,14 @@ export function ensurePositionOverlayRegistered(): void {
     },
     onPressedMoveEnd: ({ overlay }) => {
       emitRR(overlay);
+      return false;
+    },
+    onSelected: () => {
+      posSelected = true;
+      return false;
+    },
+    onDeselected: () => {
+      posSelected = false;
       return false;
     },
     createPointFigures: ({ overlay, coordinates, bounding, precision }) => {
@@ -203,6 +217,7 @@ export function createPosition(chart: Chart, seed: PositionSeed): void {
 }
 
 export function clearPosition(chart: Chart): void {
+  posSelected = false;
   chart.removeOverlay({ groupId: GROUP_ID });
   if (rrListener) rrListener(null);
 }

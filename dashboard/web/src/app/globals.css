@@ -1444,9 +1444,47 @@ select.manual-input {
 }
 .chart-canvas.arming { cursor: crosshair; }
 
+/* Toolbox rail + canvas share the remaining height */
+.chart-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.chart-toolbox {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 4px;
+  border-right: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.02);
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+.chart-tool-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  color: #9ca3af;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.chart-tool-btn:hover { background: rgba(255, 255, 255, 0.06); color: #fff; }
+.chart-tool-btn.active { background: var(--long, #b2fd02); color: #000; }
+.chart-tool-long { color: var(--long, #b2fd02); }
+.chart-tool-short { color: var(--short, #ff4d4d); }
+.chart-tool-long.active { background: var(--long, #b2fd02); color: #000; }
+.chart-tool-short.active { background: var(--short, #ff4d4d); color: #000; }
+.chart-tool-clear:hover { background: rgba(255, 77, 77, 0.12); color: var(--short, #ff4d4d); }
+
 .chart-canvas {
   flex: 1;
   min-height: 0;
+  min-width: 0;
   width: 100%;
 }
 
@@ -1528,5 +1566,21 @@ select.manual-input {
     width: 100%;
     order: 5;
     text-align: right;
+  }
+  /* Toolbox: vertical rail costs ~38px of 375px width — flip to a horizontal
+     scrollable row above the canvas instead. */
+  .chart-body { flex-direction: column; }
+  .chart-toolbox {
+    flex-direction: row;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 4px 6px;
+  }
+  .chart-tool-btn {
+    width: 32px;
+    height: 30px;
+    flex-shrink: 0;
   }
 }

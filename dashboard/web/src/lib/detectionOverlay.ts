@@ -11,6 +11,9 @@ import type { DetectionZone } from "@/lib/chartDatafeed";
 const OVERLAY_NAME = "detectionZones";
 const GROUP_ID = "detections";
 
+// Zone render style — "boxes" (filled rects) or "subtle" (edge lines only).
+export type DetectionStyle = "boxes" | "subtle";
+
 // type+direction+state -> fill / border. Mitigated/filled zones are dimmed.
 function zoneColors(z: DetectionZone): { fill: string; border: string } {
   const spent = z.type === "order_block" ? z.mitigated : z.fully_filled;
@@ -33,7 +36,9 @@ function isHtf(z: DetectionZone): boolean {
   return z.source_tf != null && HTF_LABELS.has(z.source_tf);
 }
 
-// Short label: kind + direction (↑/↓) + source timeframe + spent marker.
+// Short label: kind + direction (↑/↓) + source timeframe + spent marker +
+// historical retest rate for the zone's category (when the sample was big
+// enough — see scripts/chart_retest_stats.py).
 function label(z: DetectionZone): string {
   const kind = z.type === "order_block" ? "OB" : "FVG";
   const arrow = z.direction === "bullish" ? "↑" : "↓";
@@ -46,7 +51,8 @@ function label(z: DetectionZone): string {
       : z.fully_filled
       ? " fill"
       : "";
-  return `${kind}${arrow}${tf}${spent}`;
+  const retest = z.retest_pct != null ? ` · ${Math.round(z.retest_pct)}%` : "";
+  return `${kind}${arrow}${tf}${spent}${retest}`;
 }
 
 const TEXT_STYLE = {
@@ -73,10 +79,17 @@ export function ensureDetectionOverlayRegistered(): void {
     needDefaultPointFigure: false,
     needDefaultXAxisFigure: false,
     needDefaultYAxisFigure: false,
-    // coordinates carry 2 points per zone (origin, as-of); extendData is the
-    // matching zones array. Draw one rect + one label per zone in a single pass.
-    createPointFigures: ({ coordinates, overlay }) => {
-      const zones = (overlay.extendData as DetectionZone[]) ?? [];
+    // coordinates carry 2 points per zone (origin, as-of); extendData is
+    // {zones, mode}. Draw everything in a single pass.
+    // mode "boxes": filled rect + border (original). mode "subtle": only thin
+    // top/bottom edge lines, no fill — candles stay fully readable.
+    //
+    // Zones PROJECT RIGHT: from the as-of bar to the canvas edge (the empty
+    // margin), instead of spanning back to their origin candle — boxes over
+    // the historical price action buried the candles when zones piled up.
+    createPointFigures: ({ coordinates, overlay, bounding }) => {
+      const ext = (overlay.extendData as { zones: DetectionZone[]; mode: DetectionStyle }) ?? { zones: [], mode: "boxes" };
+      const { zones, mode } = ext;
       const figures: unknown[] = [];
       for (let i = 0; i < zones.length; i++) {
         const c0 = coordinates[2 * i];
@@ -84,23 +97,35 @@ export function ensureDetectionOverlayRegistered(): void {
         if (!c0 || !c1) continue;
         const z = zones[i];
         const { fill, border } = zoneColors(z);
-        const xLeft = Math.min(c0.x, c1.x);
-        const xRight = Math.max(c0.x, c1.x);
+        const xLeft = c1.x; // as-of bar — zones live to the RIGHT of price
+        const xRight = bounding.width;
         const yTop = Math.min(c0.y, c1.y);
-        const w = xRight - xLeft;
-        const h = Math.abs(c1.y - c0.y);
-        figures.push({
-          type: "rect",
-          attrs: { x: xLeft, y: yTop, width: w, height: h },
-          styles: {
-            style: "stroke_fill",
-            color: fill,
-            borderColor: border,
-            borderSize: isHtf(z) ? 2 : 1, // HTF bias zones drawn heavier
-            borderRadius: 2,
-          },
-          ignoreEvent: true,
-        });
+        const yBottom = Math.max(c0.y, c1.y);
+        const w = Math.max(0, xRight - xLeft);
+        const h = yBottom - yTop;
+        if (mode === "subtle") {
+          for (const y of [yTop, yBottom]) {
+            figures.push({
+              type: "line",
+              attrs: { coordinates: [{ x: xLeft, y }, { x: xRight, y }] },
+              styles: { color: border, size: isHtf(z) ? 2 : 1 },
+              ignoreEvent: true,
+            });
+          }
+        } else {
+          figures.push({
+            type: "rect",
+            attrs: { x: xLeft, y: yTop, width: w, height: h },
+            styles: {
+              style: "stroke_fill",
+              color: fill,
+              borderColor: border,
+              borderSize: isHtf(z) ? 2 : 1, // HTF bias zones drawn heavier
+              borderRadius: 2,
+            },
+            ignoreEvent: true,
+          });
+        }
         figures.push({
           // Anchored to the as-of (right) edge so it stays visible when the zone
           // origin scrolls off-screen left. bg/border forced transparent —
@@ -117,24 +142,30 @@ export function ensureDetectionOverlayRegistered(): void {
 }
 
 // Clear and (re)draw all detection zones as-of `asOfMs` as one overlay.
+// OBs use the candle BODY as the zone (SMC: the valid zone is the opposing
+// candle's body, not its wicks — full wick-to-wick boxes looked huge and wrong
+// to the eye). FVGs are the literal 3-candle gap, which has no tighter form.
 export function renderDetections(
   chart: Chart,
   zones: DetectionZone[],
   asOfMs: number,
+  mode: DetectionStyle = "boxes",
 ): void {
   chart.removeOverlay({ groupId: GROUP_ID });
   if (!zones.length) return;
   const points: { timestamp: number; value: number }[] = [];
   for (const z of zones) {
-    // point pair per zone: origin @ high (top-left), as-of bar @ low (bottom-right)
-    points.push({ timestamp: z.timestamp, value: z.high });
-    points.push({ timestamp: asOfMs, value: z.low });
+    const top = z.type === "order_block" ? z.body_high ?? z.high : z.high;
+    const bottom = z.type === "order_block" ? z.body_low ?? z.low : z.low;
+    // point pair per zone: origin @ top (top-left), as-of bar @ bottom (bottom-right)
+    points.push({ timestamp: z.timestamp, value: top });
+    points.push({ timestamp: asOfMs, value: bottom });
   }
   chart.createOverlay({
     name: OVERLAY_NAME,
     groupId: GROUP_ID,
     lock: true,
-    extendData: zones,
+    extendData: { zones, mode },
     points,
   });
 }
