@@ -36,7 +36,9 @@ function isHtf(z: DetectionZone): boolean {
   return z.source_tf != null && HTF_LABELS.has(z.source_tf);
 }
 
-// Short label: kind + direction (↑/↓) + source timeframe + spent marker.
+// Short label: kind + direction (↑/↓) + source timeframe + spent marker +
+// historical retest rate for the zone's category (when the sample was big
+// enough — see scripts/chart_retest_stats.py).
 function label(z: DetectionZone): string {
   const kind = z.type === "order_block" ? "OB" : "FVG";
   const arrow = z.direction === "bullish" ? "↑" : "↓";
@@ -49,7 +51,8 @@ function label(z: DetectionZone): string {
       : z.fully_filled
       ? " fill"
       : "";
-  return `${kind}${arrow}${tf}${spent}`;
+  const retest = z.retest_pct != null ? ` · ${Math.round(z.retest_pct)}%` : "";
+  return `${kind}${arrow}${tf}${spent}${retest}`;
 }
 
 const TEXT_STYLE = {

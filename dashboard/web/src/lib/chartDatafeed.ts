@@ -112,6 +112,7 @@ export interface DetectionZone {
   high: number;
   low: number;
   source_tf?: string; // timeframe the zone was detected on (MTF overlay): "1D"/"4H"/...
+  retest_pct?: number | null; // historical % of this category revisited (offline stats)
   // OB-only
   mitigated?: boolean;
   entry_price?: number;

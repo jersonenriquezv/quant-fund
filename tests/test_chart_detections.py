@@ -354,3 +354,23 @@ def test_timeline_empty_window_returns_empty(client, monkeypatch):
     assert body["zones"] == []
     assert body["as_of"] == 1_700_000_000
     assert body["timeframes"] == ["1D", "4H", "1H"]
+
+
+# --- retest stats enrichment ------------------------------------------------
+
+def test_retest_pct_lookup_from_stats_file(monkeypatch):
+    """Zones get the category rate; unknown categories and small-N get None."""
+    monkeypatch.setattr(chart, "_retest_stats", {
+        "order_block:1h:bullish": {"n": 147, "retested": 96, "pct": 65.3},
+        "fvg:1d:bullish": {"n": 12, "retested": 1, "pct": None},  # below MIN_N
+    })
+    assert chart._get_retest_pct("order_block", "1h", "bullish") == 65.3
+    assert chart._get_retest_pct("fvg", "1d", "bullish") is None
+    assert chart._get_retest_pct("fvg", "4h", "bearish") is None  # absent
+
+
+def test_retest_pct_missing_file_is_safe(monkeypatch, tmp_path):
+    """No stats file -> every lookup is None, endpoint never breaks."""
+    monkeypatch.setattr(chart, "_retest_stats", None)
+    monkeypatch.setattr(chart, "_RETEST_STATS_PATH", tmp_path / "absent.json")
+    assert chart._get_retest_pct("order_block", "1h", "bullish") is None
