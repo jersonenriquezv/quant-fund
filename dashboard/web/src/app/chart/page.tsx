@@ -249,8 +249,10 @@ export default function ChartPage() {
   // Detection timeline — fetch ONCE per symbol/resolution (and on each new live
   // bar), not per scrub. The replay is ~2.5s, so doing it once and filtering the
   // cached lifecycles client-side keeps scrub/playback instant and off the server.
+  // Runs even with Detections OFF (prefetch): the server caches the replay per
+  // candle window, so toggling Detections on is then instant.
   useEffect(() => {
-    if (!chartReady || !showDetections) return;
+    if (!chartReady) return;
     const bars = barsRef.current;
     if (!bars.length) return;
     // As-of: replay → the pointer bar; live → wall-clock NOW. An HTF bar starts
@@ -277,7 +279,7 @@ export default function ChartPage() {
         /* keep previous timeline on transient error */
       }
     })();
-  }, [chartReady, showDetections, symbol, resolution, replay, barCount, hourTick]);
+  }, [chartReady, symbol, resolution, replay, barCount, hourTick]);
 
   // Wall-clock heartbeat (live only) so HTF detection overlays refresh as zones
   // form within the current bar, instead of going stale until the bar closes.

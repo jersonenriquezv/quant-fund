@@ -484,6 +484,14 @@ def _replay_detection_timeline(
 TIMEFRAME_LABEL = {"5m": "5m", "15m": "15m", "1h": "1H", "4h": "4H", "1d": "1D", "1w": "1W"}
 HTF_OVERLAY_TIMEFRAMES = ["1d", "4h"]  # always overlaid, regardless of chart TF
 
+# Timeline replay cache (in-memory, per process). The ~2.5s replay over a
+# 600-bar window is fully determined by (symbol, tf, the window's last bar) —
+# it only changes when that TF prints a new candle. ~12 hot keys live here
+# (2 pairs x 6 TFs); FIFO-evict beyond the cap. Cached zones are raw (before
+# source_tf/retest_pct enrichment), copied on read so callers can't mutate.
+_timeline_cache: dict[tuple[str, str, int], list[dict]] = {}
+_TIMELINE_CACHE_MAX = 32
+
 
 @router.get("/chart/detection_timeline")
 async def chart_detection_timeline(
@@ -517,18 +525,29 @@ async def chart_detection_timeline(
         )
         if not rows:
             return tf, []
-        candles = _rows_to_candles(rows, symbol, tf)
-        result = await asyncio.to_thread(
-            _replay_detection_timeline, candles, symbol, tf
-        )
+        # Cache on the window's identity (its last bar): same window -> same
+        # replay. Saves the ~2.5s detector replay on every toggle/reload until
+        # this TF closes a new candle.
+        cache_key = (symbol, tf, int(rows[-1]["timestamp"]))
+        cached = _timeline_cache.get(cache_key)
+        if cached is None:
+            candles = _rows_to_candles(rows, symbol, tf)
+            result = await asyncio.to_thread(
+                _replay_detection_timeline, candles, symbol, tf
+            )
+            cached = result["zones"]
+            while len(_timeline_cache) >= _TIMELINE_CACHE_MAX:
+                _timeline_cache.pop(next(iter(_timeline_cache)))
+            _timeline_cache[cache_key] = cached
+        zones = [dict(z) for z in cached]  # copy — enrichment must not hit the cache
         label = TIMEFRAME_LABEL.get(tf, tf)
-        for z in result["zones"]:
+        for z in zones:
             z["source_tf"] = label
             # Historical category retest rate (offline stats) — the overlay
             # label shows it so the trader knows how often this kind of zone
             # gets revisited. None when the sample is too small.
             z["retest_pct"] = _get_retest_pct(z["type"], tf, z["direction"])
-        return tf, result["zones"]
+        return tf, zones
 
     per_tf = await asyncio.gather(*[_one(tf) for tf in tfs])
     zones = [z for _, tf_zones in per_tf for z in tf_zones]

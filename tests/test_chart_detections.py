@@ -374,3 +374,38 @@ def test_retest_pct_missing_file_is_safe(monkeypatch, tmp_path):
     monkeypatch.setattr(chart, "_retest_stats", None)
     monkeypatch.setattr(chart, "_RETEST_STATS_PATH", tmp_path / "absent.json")
     assert chart._get_retest_pct("order_block", "1h", "bullish") is None
+
+
+def test_timeline_replay_cached_per_candle_window(client, monkeypatch):
+    """Same (symbol, tf, last-bar) window must not replay the detectors twice."""
+    monkeypatch.setattr(chart, "_timeline_cache", {})
+    calls = {"n": 0}
+
+    async def fake_rows(pair, tf, from_ms, to_ms, limit=600):
+        return [{
+            "timestamp": 1_700_000_000_000, "open": 1.0, "high": 2.0,
+            "low": 0.5, "close": 1.5, "volume": 10.0, "volume_quote": 15.0,
+        }]
+    monkeypatch.setattr(queries, "get_candles_range", fake_rows)
+
+    def fake_replay(candles, pair, tf):
+        calls["n"] += 1
+        return {"zones": [{
+            "type": "fvg", "direction": "bullish", "timestamp": 1_700_000_000_000,
+            "high": 2.0, "low": 1.0, "size_pct": 1.0, "filled_pct": 0.0,
+            "born_ts": 1_700_000_000_000, "expire_ts": chart.ZONE_OPEN_TS,
+            "spent_ts": None, "significant": True,
+        }]}
+    monkeypatch.setattr(chart, "_replay_detection_timeline", fake_replay)
+
+    params = {"symbol": "BTC/USDT", "resolution": "60", "to": 1_700_000_000}
+    r1 = client.get("/api/chart/detection_timeline", params=params)
+    after_first = calls["n"]
+    r2 = client.get("/api/chart/detection_timeline", params=params)
+    assert after_first == 3  # one replay per TF (1d, 4h, 1h)
+    assert calls["n"] == 3  # second request: all cache hits
+    # enrichment still applied on the cached copy
+    assert all(z["source_tf"] for z in r2.json()["zones"])
+    # and the cached raw zones were NOT mutated by enrichment
+    assert all("source_tf" not in z for zs in chart._timeline_cache.values() for z in zs)
+    assert r1.json()["zones"] == r2.json()["zones"]
