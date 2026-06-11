@@ -94,7 +94,8 @@ export default function ChartPage() {
   const [asOfIdx, setAsOfIdx] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(2);
-  const [showDetections, setShowDetections] = useState(false);
+  const [detMode, setDetMode] = useState<"off" | "boxes" | "subtle">("off"); // cycles per click
+  const showDetections = detMode !== "off";
   const [significantOnly, setSignificantOnly] = useState(true); // LuxAlgo de-noise: on by default
   const [detCount, setDetCount] = useState<number | null>(null);
   const [timelineReady, setTimelineReady] = useState(0); // bumps when timeline refetched
@@ -307,9 +308,9 @@ export default function ChartPage() {
     // to price. Off: show everything raw (incl. spent/dimmed) for inspection.
     let zones = zonesAsOf(timelineRef.current, asOfMs, significantOnly);
     if (significantOnly) zones = curateZones(zones, price);
-    renderDetections(chart, zones, asOfMs);
+    renderDetections(chart, zones, asOfMs, detMode === "subtle" ? "subtle" : "boxes");
     setDetCount(zones.length);
-  }, [showDetections, significantOnly, asOfIdx, replay, barCount, timelineReady]);
+  }, [showDetections, detMode, significantOnly, asOfIdx, replay, barCount, timelineReady]);
 
   // A3 — live candle wiring. In live (non-replay) mode, poll the FORMING candle
   // (Redis, via /chart/live) every 2s and tick it onto the chart. /history only
@@ -492,8 +493,9 @@ export default function ChartPage() {
             Replay
           </button>
           <button className={`chart-toggle ${showDetections ? "on" : ""}`}
-            onClick={() => setShowDetections((v) => !v)}>
-            Detections{detCount != null ? ` (${detCount})` : ""}
+            onClick={() => setDetMode((m) => (m === "off" ? "boxes" : m === "boxes" ? "subtle" : "off"))}
+            title="Cycles: Off → Boxes (filled zones) → Lines (edges only, candles stay readable) → Off">
+            Detections{detCount != null ? ` (${detCount})` : ""}{detMode === "boxes" ? " ▣" : detMode === "subtle" ? " ☰" : ""}
           </button>
           {showDetections && (
             <button className={`chart-toggle ${significantOnly ? "on" : ""}`}

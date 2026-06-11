@@ -11,6 +11,9 @@ import type { DetectionZone } from "@/lib/chartDatafeed";
 const OVERLAY_NAME = "detectionZones";
 const GROUP_ID = "detections";
 
+// Zone render style — "boxes" (filled rects) or "subtle" (edge lines only).
+export type DetectionStyle = "boxes" | "subtle";
+
 // type+direction+state -> fill / border. Mitigated/filled zones are dimmed.
 function zoneColors(z: DetectionZone): { fill: string; border: string } {
   const spent = z.type === "order_block" ? z.mitigated : z.fully_filled;
@@ -73,10 +76,13 @@ export function ensureDetectionOverlayRegistered(): void {
     needDefaultPointFigure: false,
     needDefaultXAxisFigure: false,
     needDefaultYAxisFigure: false,
-    // coordinates carry 2 points per zone (origin, as-of); extendData is the
-    // matching zones array. Draw one rect + one label per zone in a single pass.
+    // coordinates carry 2 points per zone (origin, as-of); extendData is
+    // {zones, mode}. Draw everything in a single pass.
+    // mode "boxes": filled rect + border (original). mode "subtle": only thin
+    // top/bottom edge lines, no fill — candles stay fully readable.
     createPointFigures: ({ coordinates, overlay }) => {
-      const zones = (overlay.extendData as DetectionZone[]) ?? [];
+      const ext = (overlay.extendData as { zones: DetectionZone[]; mode: DetectionStyle }) ?? { zones: [], mode: "boxes" };
+      const { zones, mode } = ext;
       const figures: unknown[] = [];
       for (let i = 0; i < zones.length; i++) {
         const c0 = coordinates[2 * i];
@@ -87,20 +93,32 @@ export function ensureDetectionOverlayRegistered(): void {
         const xLeft = Math.min(c0.x, c1.x);
         const xRight = Math.max(c0.x, c1.x);
         const yTop = Math.min(c0.y, c1.y);
+        const yBottom = Math.max(c0.y, c1.y);
         const w = xRight - xLeft;
-        const h = Math.abs(c1.y - c0.y);
-        figures.push({
-          type: "rect",
-          attrs: { x: xLeft, y: yTop, width: w, height: h },
-          styles: {
-            style: "stroke_fill",
-            color: fill,
-            borderColor: border,
-            borderSize: isHtf(z) ? 2 : 1, // HTF bias zones drawn heavier
-            borderRadius: 2,
-          },
-          ignoreEvent: true,
-        });
+        const h = yBottom - yTop;
+        if (mode === "subtle") {
+          for (const y of [yTop, yBottom]) {
+            figures.push({
+              type: "line",
+              attrs: { coordinates: [{ x: xLeft, y }, { x: xRight, y }] },
+              styles: { color: border, size: isHtf(z) ? 2 : 1 },
+              ignoreEvent: true,
+            });
+          }
+        } else {
+          figures.push({
+            type: "rect",
+            attrs: { x: xLeft, y: yTop, width: w, height: h },
+            styles: {
+              style: "stroke_fill",
+              color: fill,
+              borderColor: border,
+              borderSize: isHtf(z) ? 2 : 1, // HTF bias zones drawn heavier
+              borderRadius: 2,
+            },
+            ignoreEvent: true,
+          });
+        }
         figures.push({
           // Anchored to the as-of (right) edge so it stays visible when the zone
           // origin scrolls off-screen left. bg/border forced transparent —
@@ -121,6 +139,7 @@ export function renderDetections(
   chart: Chart,
   zones: DetectionZone[],
   asOfMs: number,
+  mode: DetectionStyle = "boxes",
 ): void {
   chart.removeOverlay({ groupId: GROUP_ID });
   if (!zones.length) return;
@@ -134,7 +153,7 @@ export function renderDetections(
     name: OVERLAY_NAME,
     groupId: GROUP_ID,
     lock: true,
-    extendData: zones,
+    extendData: { zones, mode },
     points,
   });
 }
