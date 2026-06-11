@@ -83,7 +83,11 @@ export function ensureDetectionOverlayRegistered(): void {
     // {zones, mode}. Draw everything in a single pass.
     // mode "boxes": filled rect + border (original). mode "subtle": only thin
     // top/bottom edge lines, no fill — candles stay fully readable.
-    createPointFigures: ({ coordinates, overlay }) => {
+    //
+    // Zones PROJECT RIGHT: from the as-of bar to the canvas edge (the empty
+    // margin), instead of spanning back to their origin candle — boxes over
+    // the historical price action buried the candles when zones piled up.
+    createPointFigures: ({ coordinates, overlay, bounding }) => {
       const ext = (overlay.extendData as { zones: DetectionZone[]; mode: DetectionStyle }) ?? { zones: [], mode: "boxes" };
       const { zones, mode } = ext;
       const figures: unknown[] = [];
@@ -93,11 +97,11 @@ export function ensureDetectionOverlayRegistered(): void {
         if (!c0 || !c1) continue;
         const z = zones[i];
         const { fill, border } = zoneColors(z);
-        const xLeft = Math.min(c0.x, c1.x);
-        const xRight = Math.max(c0.x, c1.x);
+        const xLeft = c1.x; // as-of bar — zones live to the RIGHT of price
+        const xRight = bounding.width;
         const yTop = Math.min(c0.y, c1.y);
         const yBottom = Math.max(c0.y, c1.y);
-        const w = xRight - xLeft;
+        const w = Math.max(0, xRight - xLeft);
         const h = yBottom - yTop;
         if (mode === "subtle") {
           for (const y of [yTop, yBottom]) {

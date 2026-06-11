@@ -115,6 +115,7 @@ export default function ChartPage() {
     const chart = init(containerRef.current);
     if (chart) {
       chart.setStyles(CHART_STYLES);
+      chart.setOffsetRightDistance(140); // room for right-projected detection zones
       chart.createIndicator("VOL", false); // separate sub-pane below candles
       chartRef.current = chart;
       if (process.env.NODE_ENV !== "production") {
