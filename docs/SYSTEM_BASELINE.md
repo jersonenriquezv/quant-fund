@@ -405,6 +405,11 @@ Legacy SMC class (A/B/D/F) stays dead — collecting labels only, no granular wo
 
 Per grill verdict `docs/grill/bot-viability-2026-05-13.md`. SMC class empirically dead (0/10 setups beat random at N≥15). Bot in shadow-only mode through ML v0 re-train cycle.
 
+**Dual Thrust ETH 6h — forward validation IN PROGRESS (2026-06-13):** External Jesse research (`docs/audits/jesse-strategy-research-2026-06-12.md`, PR #83) found a non-SMC strategy passing full anti-overfit MC validation on Binance. Named `dual_thrust_eth` (NOT "engine2" — avoids §7.2 collision; that rule = speculative engine1-platform spinoff, this = externally-validated). Plan `docs/plans/engine2-dual-thrust.md`, grill `docs/grill/engine2-dual-thrust.md`.
+- **Phase 1 PASS:** fixed-param revalidation on OKX `ETH-USDT-SWAP` 6h → Sharpe 1.999, net +206%, DD -15%, 133 trades (stronger than Binance 1.723). Harness fidelity confirmed. **Trap:** OKX `6H`=Hong-Kong anchor collapses it; MUST use `6Hutc` (UTC).
+- **Phase 2 PASS:** funding-adjusted Sharpe 2.003 (funding near-zero/favorable); MC trade-shuffle P(loss)=0. → PROCEED.
+- **Phase 3 = forward paper re-sim (Option 1, chosen 2026-06-13).** NOT an in-bot shadow port: Dual Thrust is stop-and-reverse, no TP (68% exits = flips) which `ShadowMonitor` (fixed TP/SL/timeout) can't model; a fixed-R:R proxy would validate a different strategy. Instead `~/jesse-research/project/forward_resim.py` re-runs the faithful strategy weekly on fresh OKX candles, slices OOS trades by freeze date. Zero bot-pipeline changes. Decision (Phase 4): N≥25 forward trades OR 180d → KEEP if PF≥1.3 & net>0, else KILL. If KEEP, an in-bot flip-aware port becomes a justified follow-up.
+
 **Forbidden until 6/8 (or earlier ML kill):**
 - New setups, even small ones
 - Any commit touching `strategy_service/`, `quick_setups.py`, `scalp_setups.py`, `engines/`
