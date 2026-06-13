@@ -166,7 +166,31 @@ SL. Even a pessimistic few-bps slippage per stop cannot close the 0.8-Sharpe
 margin over the 1.0 bar. A 1m-granularity refinement is deferred unless a live
 shadow diverges.
 
-### Verdict: Phase 2 PASS → PROCEED-TO-PORT (Phase 3 shadow engine)
+### Verdict: Phase 2 PASS → PROCEED (Phase 3)
 Funding-adjusted Sharpe 2.003 (≥1.0 ✓), net +207% (>0 ✓), MC P(loss) 0.0 (≤0.10 ✓).
 The Dual Thrust ETH 6h edge survives venue transfer, funding, and trade-order
-randomization. Cleared for a shadow-only `engine2_dual_thrust` port.
+randomization.
+
+---
+
+## Phase 3 decision (2026-06-13) — forward paper re-sim (not in-bot shadow port)
+
+**The modeling problem:** Dual Thrust is **stop-and-reverse with no take-profit**.
+Backtest exits: 91/133 flips (opposite signal, median 72h later), 42/133 SL — i.e.
+**68% of exits are flips, 0% are TP**. The bot's `ShadowMonitor` resolves a setup only
+via fixed TP/SL/timeout and has no "close on opposite signal". So:
+- A fixed-R:R proxy (TP1/TP2 + timeout) would collect forward data on a *different*
+  strategy and could never validate the Sharpe-2.0 result. Rejected.
+- A flip-aware shadow (opposite signal closes the open position) is faithful but needs
+  significant new ShadowMonitor infra. Deferred.
+
+**Chosen (Option 1): forward paper re-simulation.** `~/jesse-research/project/forward_resim.py`
+re-runs the *exact* validated strategy (flip + ATR SL, funding-adjusted) on freshly
+fetched OKX candles each week and slices out trades opened on/after the freeze date
+(2026-06-13) as the genuine out-of-sample forward set. Faithful (real flips), light
+(one script + cron), isolated (zero bot-pipeline / `SHADOW_MODE_SETUPS` changes).
+
+Baseline run 2026-06-13: in-sample reference 133 trades / WR 40% / **PF 2.067** /
+net $20.7k; forward N=0 (freeze is today). Decision (Phase 4): **N ≥ 25 forward
+trades OR 180 days → KEEP if forward PF ≥ 1.3 AND net > 0, else KILL.** If KEEP, an
+in-bot flip-aware port / live-small becomes a justified follow-up decision.

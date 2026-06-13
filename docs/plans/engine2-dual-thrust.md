@@ -64,43 +64,56 @@ Winner params (fixed everywhere): `stop_loss_atr_rate 1.645, down_length 10, up_
 
 ---
 
-## Phase 3 — Port to Engine 2 (shadow), only if Phase 2 passes
-**Status:** pending
-**Inputs:** Validated pandas spec (Phase 1/2). Engine pattern from `strategy_service/engines/` + `service.evaluate_all()`.
-**Outputs:**
-- `strategy_service/engines/dual_thrust.py` — self-contained engine: 6h+1D candle aggregation buffer, Dual Thrust detection, own entry/SL/TP geometry, own gates. Emits `TradeSetup` with `setup_type = "engine2_dual_thrust"`.
-- Wiring in `service.evaluate_all()` (NOT `evaluate()` first-match path).
-- `config/settings.py`: `ENGINE2_*` params (defaults = winner params), pair scope (ETH only v1).
-- `"engine2_dual_thrust"` added to `SHADOW_MODE_SETUPS` (NOT `ENABLED_SETUPS`).
-- `tests/test_engine_dual_thrust.py`: 6h aggregation correctness, threshold cross long/short, SL direction (`_check_sl_direction`), flip logic, parity vs pandas backtest on a fixed candle fixture.
-- Docs: SYSTEM_BASELINE §setup-status + §thresholds; `docs/context/02-strategy.md` detector behavior.
-**Work:**
-- Build 6h+1D aggregation: buffer confirmed LTF candles, emit on 6h boundary close + maintain rolling 1D open. Pipeline evaluates per-candle but engine only acts on 6h boundary.
-- Implement detection mirroring the validated pandas rule exactly (shared constants where possible to prevent drift).
-- Wire, gate behind `SHADOW_MODE_SETUPS`, set `EXPERIMENT_ID` tag for this engine's rows (own regime tag, e.g. `engine2_dualthrust_eth_v1_2026_06`).
-**Verification gate:**
-- [ ] Automated: `pytest tests/test_engine_dual_thrust.py` — all pass, 0 new failures in `tests/test_strategy_integration.py`.
-- [ ] Automated: parity — engine emits the same long/short/flip decisions as the pandas backtest on a shared 100-bar fixture (≥95% match; document any divergence).
-- [ ] Manual: deploy to shadow (`docker compose up -d --build bot`), confirm engine2 emits in logs within first 6h boundary; run deploy verification checklist.
-- [ ] Rollback if: integration tests regress OR parity < 95% OR engine double-blocks/cannibalizes existing setups → revert branch, engine stays unmerged.
+## Phase 3 — Forward paper re-sim (Option 1, chosen 2026-06-13)
+**Status:** DONE (2026-06-13) — harness built, baseline run clean.
 
-**Evidence:**
-_(empty until phase runs)_
+**Why not the in-bot shadow port:** Dual Thrust is **stop-and-reverse with no TP** —
+68% of backtest exits are flips (opposite signal fires, median 72h later), only 32%
+are SL. The bot's `ShadowMonitor` resolves only via fixed TP/SL/timeout; it has no
+"close on opposite signal". A fixed-R:R proxy (the old Phase 3) would collect data on
+a *different* strategy and could never validate the Sharpe-2.0 edge. A flip-aware
+shadow would need significant new ShadowMonitor infra. **Decision: forward paper
+re-sim** — faithful, light, isolated. If it survives forward, an in-bot port becomes
+a justified follow-up (revisit the flip-aware option then).
+
+**Inputs:** Validated pandas spec (Phase 1/2), `okx_revalidation.backtest`.
+**Outputs (built):**
+- `~/jesse-research/project/forward_resim.py` — re-runs the SAME faithful strategy
+  (flip + ATR SL, funding-adjusted) on freshly fetched OKX candles, slices trades
+  opened **on/after the freeze date** (`FREEZE_DATE=2026-06-13`) as the out-of-sample
+  forward set. Deterministic + idempotent (rebuilds the CSV each run).
+- `okx_revalidation.load_okx_6h` topped up with the recent `/market/candles` endpoint
+  (history-candles lags ~1-2 days; forward needs the freshest closed bars).
+- Forward store: `~/jesse-research/project/forward/dual_thrust_eth_forward_trades.csv`
+  + append-only `dual_thrust_eth_runlog.csv` (one row per run: date, days_live, stats).
+**Work done:**
+- Freeze params = Phase-1/2 winner (`okx_revalidation.HP`). Frozen at 2026-06-13.
+- Baseline run: in-sample reference 133 trades / WR 40% / **PF 2.067** / net $20.7k;
+  forward = 0 (freeze is today). Pipeline validated; Phase 1 re-run shows no regression.
+- **Cron (weekly):** `~/quant-fund/venv/bin/python ~/jesse-research/project/forward_resim.py`
+  — to be installed on the server (see plan tail). No bot deploy, no pipeline touch.
+**Verification gate:**
+- [x] Forward harness runs, slices OOS trades by freeze date, writes CSV + runlog.
+- [x] In-sample reference reproduces Phase-1/2 (PF 2.07, WR 40%, 133 trades).
+- [x] Zero changes to bot pipeline / `SHADOW_MODE_SETUPS` / execution.
+
+**Evidence:** `forward_resim.py` baseline output 2026-06-13 (forward N=0, accumulating).
 
 ---
 
-## Phase 4 — Shadow soak + decision
-**Status:** pending
-**Inputs:** Live shadow `engine2_dual_thrust` emissions.
+## Phase 4 — Forward soak + decision
+**Status:** pending (accumulating from 2026-06-13)
+**Inputs:** Weekly `forward_resim.py` runs → growing forward trade set.
 **Outputs:**
-- `scripts/report_engine2_shadow.py` (mirror of `report_engine1_shadow.py`): separates `to`/`tp`/`sl`/`be`, per-pair WR/PF.
-- A dated go/no-go on whether OKX shadow reproduces the backtest edge.
+- A dated go/no-go on whether the OKX Dual Thrust edge holds **out of sample, forward**.
+- If KEEP: a follow-up decision on an in-bot flip-aware shadow port and/or live-small.
 **Work:**
-- Collect until **N ≥ 100 resolved outcomes OR 30 days** (same exit bar as engine1).
-- Compare shadow PF/WR vs backtest expectation and vs a co-emitted random-direction benchmark (reuse `engines/benchmarks.py` pattern).
+- Run weekly. Cadence ≈ 5 trades/month (133/2y), so the set fills slowly.
+- Compare forward PF/WR/expectancy vs the in-sample reference (PF 2.07, WR 40%).
 **Verification gate:**
-- [ ] Automated: N ≥ 100 resolved OR 30 days elapsed.
-- [ ] Quantitative: shadow PF ≥ 1.3 AND WR beats random-direction benchmark by ≥ 10pp → candidate for live-small discussion (separate decision, NOT in this plan).
+- [ ] Trigger: **N ≥ 25 forward trades OR 180 days** (`DECISION_MIN_TRADES` / `DECISION_MAX_DAYS`).
+- [ ] KEEP if: forward **PF ≥ 1.3 AND net > 0** (`DECISION_PF_BAR`). → candidate for in-bot port / live-small (separate decision).
+- [ ] KILL if: forward PF < 1.3 OR net ≤ 0 at trigger → document as a backtest edge that decayed forward; strategy parked.
 - [ ] Rollback if: shadow PF < 1.0 at N≥100 → KILL engine, document as another transfer failure (backtest edge that didn't survive forward/live microstructure).
 
 **Evidence:**
@@ -113,8 +126,8 @@ _(empty until phase runs)_
 - **Porting into Jesse / adding an OKX Jesse driver** — pandas standalone is cheaper and doubles as the engine spec.
 - **4h variant (runner-up #7)** — weaker MC tails (p5 -0.20), only 47 trades; not worth a second engine yet.
 
-## Open questions (must resolve before starting)
-- **"Engine 2" naming vs SYSTEM_BASELINE §7.2 ("Engine 2 NOT built").** That rule referred to NOT building a speculative second SMC-style engine off engine1's meta-label platform. This Dual Thrust is an externally-validated non-SMC strategy entering shadow-only for data collection — different basis. Decide: keep the `engine2_dual_thrust` name (and add a §7.2 note distinguishing it) vs pick a non-colliding name (e.g. `dual_thrust_eth`). **User answers before Phase 3** (cosmetic — does not block Phase 1/2).
+## Open questions (RESOLVED)
+- **Naming — RESOLVED 2026-06-13: use `dual_thrust_eth`** (not `engine2_dual_thrust`). Avoids the collision with SYSTEM_BASELINE §7.2 ("Engine 2 NOT built", which refers to a speculative SMC engine off engine1's meta-label platform — a different thing). All Phase 3 artifacts use `setup_type = "dual_thrust_eth"`, file `strategy_service/engines/dual_thrust.py`, settings `DUAL_THRUST_*`, EXPERIMENT_ID `dual_thrust_eth_v1_2026_06`.
 
 ## Changelog hook
 On completion, append to `docs/SYSTEM_BASELINE.md` §9 changelog:
