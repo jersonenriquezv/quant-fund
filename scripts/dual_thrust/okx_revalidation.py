@@ -69,13 +69,36 @@ def _resample(df1m: pd.DataFrame, rule: str) -> pd.DataFrame:
     return agg.reset_index(drop=True)
 
 
+def _jesse_pg_env() -> dict:
+    """POSTGRES_* from the jesse-research .env (outside this repo); real env wins.
+    No secret is hardcoded here — the password must come from .env or the
+    environment, else we fail loudly."""
+    path = os.path.expanduser("~/jesse-research/project/.env")
+    vals = {}
+    if os.path.exists(path):
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    k, _, v = line.partition("=")
+                    vals[k.strip()] = v.strip().strip('"').strip("'")
+    vals.update({k: v for k, v in os.environ.items() if k.startswith("POSTGRES_")})
+    return vals
+
+
 def load_binance_1m(symbol: str = "ETH-USDT") -> pd.DataFrame:
+    env = _jesse_pg_env()
+    password = env.get("POSTGRES_PASSWORD")
+    if not password:
+        raise RuntimeError(
+            "POSTGRES_PASSWORD not set — export it or add it to "
+            "~/jesse-research/project/.env")
     conn = psycopg2.connect(
-        host=os.getenv("POSTGRES_HOST", "localhost"),
-        dbname=os.getenv("POSTGRES_NAME", "jesse_db"),
-        user=os.getenv("POSTGRES_USERNAME", "jer"),
-        password=os.getenv("POSTGRES_PASSWORD", "quantJer2026"),
-        port=int(os.getenv("POSTGRES_PORT", "5432")),
+        host=env.get("POSTGRES_HOST", "localhost"),
+        dbname=env.get("POSTGRES_NAME", "jesse_db"),
+        user=env.get("POSTGRES_USERNAME", "jer"),
+        password=password,
+        port=int(env.get("POSTGRES_PORT", "5432")),
     )
     q = (
         "SELECT timestamp, open, high, low, close, volume FROM candle "
