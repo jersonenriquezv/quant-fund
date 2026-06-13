@@ -405,6 +405,8 @@ Legacy SMC class (A/B/D/F) stays dead — collecting labels only, no granular wo
 
 Per grill verdict `docs/grill/bot-viability-2026-05-13.md`. SMC class empirically dead (0/10 setups beat random at N≥15). Bot in shadow-only mode through ML v0 re-train cycle.
 
+**Pending (2026-06-13):** Engine 2 — Dual Thrust ETH 6h shadow port. External Jesse research (`docs/audits/jesse-strategy-research-2026-06-12.md`, PR #83) found a non-SMC strategy passing full anti-overfit MC validation on Binance data. Plan `docs/plans/engine2-dual-thrust.md` (grill `docs/grill/engine2-dual-thrust.md`, verdict PIVOT). Phase 1 tracer = revalidate fixed params on OKX `ETH-USDT-SWAP` candles (KILL gate: Sharpe ≥1.2 + net >0). NOT started. NB: distinct from the §7.2 "Engine 2 NOT built" rule (that was a speculative engine1-platform spinoff; this is externally-validated, shadow-only).
+
 **Forbidden until 6/8 (or earlier ML kill):**
 - New setups, even small ones
 - Any commit touching `strategy_service/`, `quick_setups.py`, `scalp_setups.py`, `engines/`
