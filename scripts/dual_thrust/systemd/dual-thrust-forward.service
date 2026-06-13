@@ -1,0 +1,8 @@
+[Unit]
+Description=Dual Thrust ETH 6h forward paper re-sim (Engine 2 Phase 4)
+
+[Service]
+Type=oneshot
+ExecStart=/home/jer/quant-fund/venv/bin/python /home/jer/jesse-research/project/forward_resim.py
+StandardOutput=append:/home/jer/jesse-research/project/forward/cron.log
+StandardError=append:/home/jer/jesse-research/project/forward/cron.log
