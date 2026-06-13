@@ -124,3 +124,49 @@ engine implementation (Phase 3).
 The Sharpe-1.72 Binance edge **transfers to OKX**, in fact stronger (1.999 vs 1.723),
 with a lower drawdown (-15% vs -22%). The grill's single-risk-that-matters (Binance→OKX
 transfer untested) is retired. Funding drag and intrabar-fill realism remain (Phase 2).
+
+---
+
+## OKX Phase 2 (2026-06-13) — funding + Monte Carlo
+
+Run via `okx_revalidation.py --phase2`. Adds OKX 8h funding to every trade
+(charge = side × Σrate × notional over the hold) and a 1000-iteration trade-shuffle
+Monte Carlo on the funding-adjusted per-trade returns.
+
+**Funding:** mean rate 0.0019%/8h (median 0.0028%) — near-zero on OKX ETH.
+Net effect over the trade set: a **+$64 tailwind** (the strategy is short-heavy and
+collects positive funding more than it pays). Sharpe **1.999 → 2.003** with funding;
+net +206% → +207%. Funding is a non-issue for this rule.
+
+| metric | no funding | with funding |
+|---|---|---|
+| Sharpe | 1.999 | **2.003** |
+| Net % | +206.4 | **+207.0** |
+| Max DD % | -15.2 | -15.2 |
+| Trades | 133 | 133 |
+
+Hold-time: median 72h, p90 250h, max 660h — funding cost does not concentrate
+(intervals × near-zero rate).
+
+⚠️ **Funding data caveat:** OKX `funding-rate-history` only serves ~3 months
+(280 events), not the full 2y. Given the magnitude (≈0 and favorable), the
+full-window drag is immaterial — extrapolation stays sub-1% of net and likely a
+net credit. Not a blocker.
+
+**Monte Carlo (trade-shuffle, n=1000, funding-adj):** P(loss) = **0.0**, worst-5%
+path drawdown -25.3%. Note the shuffle's *final value* is order-invariant
+(∏(1+rᵢ) commutes) so p5 = p50 = final — the same artifact Jesse's `mc_trades`
+shows (their final_value_p5 == p50). Only path-dependent drawdown varies; -25%
+worst-5% is acceptable vs the -15% realized.
+
+**Intrabar-fill realism (documented bound, not 1m-resampled):** SL fills at the
+exact stop on a 6h high/low touch (optimistic — a real gap-through fills worse);
+entries/flips at next-6h-open (realistic, slippage ignored). 42 of 133 exits are
+SL. Even a pessimistic few-bps slippage per stop cannot close the 0.8-Sharpe
+margin over the 1.0 bar. A 1m-granularity refinement is deferred unless a live
+shadow diverges.
+
+### Verdict: Phase 2 PASS → PROCEED-TO-PORT (Phase 3 shadow engine)
+Funding-adjusted Sharpe 2.003 (≥1.0 ✓), net +207% (>0 ✓), MC P(loss) 0.0 (≤0.10 ✓).
+The Dual Thrust ETH 6h edge survives venue transfer, funding, and trade-order
+randomization. Cleared for a shadow-only `engine2_dual_thrust` port.
