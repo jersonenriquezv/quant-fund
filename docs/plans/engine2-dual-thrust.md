@@ -12,7 +12,7 @@ External Jesse research (`docs/audits/jesse-strategy-research-2026-06-12.md`, PR
 Winner params (fixed everywhere): `stop_loss_atr_rate 1.645, down_length 10, up_length 3, down_coeff 0.301, up_coeff 0.891`, anchor = 1D open, trade TF = 6h, direction = long+short, flip on opposite signal.
 
 ## Phase 1 — OKX fixed-param revalidation (tracer bullet)
-**Status:** pending
+**Status:** PASS (2026-06-13)
 **Inputs:** Winner params above. Bot OKX client `data_service/exchange_client.py::backfill_candles`. Jesse research report for the exact rule definition.
 **Outputs:**
 - `~/jesse-research/project/okx_revalidation.py` (or `scripts/` if cleaner) — standalone pandas Dual Thrust backtest, fixed params.
@@ -24,13 +24,18 @@ Winner params (fixed everywhere): `stop_loss_atr_rate 1.645, down_length 10, up_
 - Conservative fills: SL counts as hit if the 6h bar low (long) / high (short) crosses it; entry at signal-bar close. Fee 0.05% × 2 per round-trip. No funding yet (Phase 2).
 - Cross-check: also replay on Binance candles in the SAME pandas harness to confirm it reproduces the Jesse ~1.72 (proves the harness is faithful, not a reimplementation bug).
 **Verification gate:**
-- [ ] Automated: pandas harness reproduces Jesse Binance result within ±0.2 Sharpe (harness fidelity check).
-- [ ] Automated: OKX fixed-param backtest → **Sharpe ≥ 1.2 AND net% > 0 AND trades ≥ 80** over the 2y window.
-- [ ] Manual: eyeball OKX equity curve — no single-trade or single-month dominance.
-- [ ] Rollback if: OKX Sharpe < 1.2 OR net ≤ 0 → **KILL**. Mark grill verdict KILL, stop. No engine code written.
+- [x] Automated: pandas harness reproduces Jesse Binance result within ±0.2 Sharpe — **1.667 vs 1.723, |Δ|=0.056 PASS**.
+- [x] Automated: OKX fixed-param backtest → Sharpe ≥ 1.2 AND net% > 0 AND trades ≥ 80 — **Sharpe 1.999, net +206%, 133 trades PASS**.
+- [x] Manual: eyeball OKX equity curve — **21/26 months positive (81%), best month 25.6%, no single-month dominance**.
+- [x] Rollback if OKX Sharpe < 1.2 OR net ≤ 0 — N/A, gate passed.
 
-**Evidence (filled by /phased-implementation):**
-_(empty until phase runs)_
+**Evidence (filled 2026-06-13):**
+- Harness: `~/jesse-research/project/okx_revalidation.py` (standalone pandas; OKX 6h cached `storage/okx/ETH-USDT-SWAP_6h.csv`).
+- Fidelity (Binance 6h): Sharpe 1.667, net +153%, DD -18.4%, 139 trades, WR 36.0% — reproduces Jesse #8 (1.723 / +155 / 159 / 40.3%).
+- OKX gate (`ETH-USDT-SWAP` 6h, UTC-aligned): Sharpe 1.999, net +206%, DD -15.2%, 133 trades, WR 39.9%.
+- Result block appended to `docs/audits/jesse-strategy-research-2026-06-12.md` → "## OKX revalidation (2026-06-13)".
+- **Key finding / trap for Phase 3:** OKX `6H` bar = Hong-Kong 08:00 anchor → collapses to Sharpe 0.21. MUST use `6Hutc` (00:00 UTC). The engine's 6h aggregation must be UTC-aligned.
+- **Verdict: PASS — edge transfers to OKX (stronger than Binance). Proceed to Phase 2.**
 
 ---
 

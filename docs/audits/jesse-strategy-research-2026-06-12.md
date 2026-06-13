@@ -70,3 +70,57 @@ cd ~/jesse-research/project
 ~/jesse-research/venv/bin/python run_mc_candles.py     # MC candles leg
 ```
 Raw results: `results/*.json`.
+
+---
+
+## OKX revalidation (2026-06-13) — Engine 2 Phase 1 tracer
+
+The winner (#8) was fit on **Binance** candles; the bot trades **OKX**. Phase 1 of
+the Engine 2 plan (`docs/plans/engine2-dual-thrust.md`) re-runs the SAME rule with
+**FIXED winner params** on OKX `ETH-USDT-SWAP` 6h, to test whether the edge survives
+the venue transfer before any code is written.
+
+**Harness:** `~/jesse-research/project/okx_revalidation.py` — standalone pandas
+reimplementation of `strategies/DUAL_THRUST` (faithful to the source, including its
+`down_max_high = max(low)` column quirk). Execution mirrors the Jesse lifecycle:
+signals at bar close → market entry/flip at next-bar open → SL intrabar → flip
+re-enters one bar after liquidation. Fee 0.05%/side, no funding (Phase 2). Window
+2024-06-12 → 2026-06-11.
+
+**Leg 1 — fidelity (harness vs Jesse, Binance 6h):**
+
+| metric | Jesse #8 | harness | 
+|---|---|---|
+| Sharpe | 1.723 | **1.667** (|Δ|=0.056 ✓ within ±0.2) |
+| Net % | +155 | +153 |
+| Max DD % | — | -18.4 |
+| Trades | 159 | 139 |
+| Win rate | 40.3% | 36.0% |
+
+Harness reproduces the Jesse result → mechanics trusted.
+
+**Leg 2 — OKX gate (`ETH-USDT-SWAP` 6h, UTC-aligned):**
+
+| metric | value | gate |
+|---|---|---|
+| Sharpe | **1.999** | ≥1.2 ✓ |
+| Net % | **+206** | >0 ✓ |
+| Max DD % | -15.2 | — |
+| Trades | 133 | ≥80 ✓ |
+| Win rate | 39.9% | — |
+
+Concentration (manual eyeball): **21/26 months positive (81%)**, best month 25.6%
+of net, worst -$1,863. Top-5-trades = 83% of *dollar* net, but that is a compounding
+artifact (per-trade risk fixed at 2%, late trades run a 3× balance), not a single
+trade carrying the result. No single-month dominance.
+
+**⚠️ Timezone gotcha:** OKX exposes two 6h variants. The Hong-Kong `6H` (08:00
+anchor) misaligns the 1D Dual-Thrust anchor and **collapses the strategy to Sharpe
+0.21 / +4% net**. Only `6Hutc` (00:00 UTC, matching Binance/Jesse) gives the 1.999.
+A live port MUST aggregate 6h from UTC-aligned data — this is a real trap for the
+engine implementation (Phase 3).
+
+### Verdict: Phase 1 PASS → proceed to Phase 2 (funding + MC on OKX)
+The Sharpe-1.72 Binance edge **transfers to OKX**, in fact stronger (1.999 vs 1.723),
+with a lower drawdown (-15% vs -22%). The grill's single-risk-that-matters (Binance→OKX
+transfer untested) is retired. Funding drag and intrabar-fill realism remain (Phase 2).
