@@ -115,12 +115,15 @@ def fetch_data() -> pd.DataFrame:
         password=settings.POSTGRES_PASSWORD, connect_timeout=10,
     )
     conn.set_session(readonly=True, autocommit=True)
+    # Exclude rows whose features were computed over a partial/forming candle
+    # (partial-candle backfill bug, tagged 2026-06-15 — see SYSTEM_BASELINE §7).
     query = """
         SELECT *
         FROM ml_setups
         WHERE setup_type = %s
           AND feature_version >= %s
           AND outcome_type IN ('shadow_tp', 'shadow_sl')
+          AND (data_quality IS NULL OR data_quality <> 'partial_candle_risk')
         ORDER BY created_at
     """
     df = pd.read_sql(query, conn, params=(SETUP_TYPE, MIN_FEATURE_VERSION))
