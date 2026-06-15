@@ -30,7 +30,8 @@ from risk_service import RiskService
 from execution_service import ExecutionService
 from execution_service.campaign_monitor import CampaignMonitor
 from execution_service.shadow_monitor import ShadowMonitor
-from execution_service.dual_thrust_shadow import DualThrustShadowTracker
+from execution_service.dual_thrust_shadow import (
+    DualThrustShadowTracker, format_telegram as dual_thrust_format_telegram)
 from shared.notifier import TelegramNotifier
 from shared.alert_manager import AlertManager
 from data_service.liquidation_estimator import estimate_liquidation_levels
@@ -126,7 +127,14 @@ async def on_candle_confirmed(candle: Candle) -> None:
             and candle.pair == "ETH/USDT" and candle.timeframe == "4h"):
         try:
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, _dual_thrust_shadow.on_candle, candle)
+            result = await loop.run_in_executor(
+                None, _dual_thrust_shadow.on_candle, candle)
+            # Push each new theoretical flip/SL to Telegram. Direct send (not the
+            # muted alert path): flips are rare + the signal the operator wants
+            # during the soak. Order-free — no live trade is implied.
+            if result is not None and result.new_trades and _notifier is not None:
+                for tr in result.new_trades:
+                    await _notifier.send(dual_thrust_format_telegram(tr, candle.pair))
         except Exception as e:
             logger.error(f"Dual Thrust shadow hook error: {e}")
 
