@@ -98,12 +98,12 @@ def test_tracker_dedup_same_bar(monkeypatch):
     tracker = DTS.DualThrustShadowTracker(candle_fetcher=lambda: candles)
     trigger = candles[-1]  # ETH/USDT 4h
 
-    st1 = tracker.on_candle(trigger)
-    assert st1 is not None
+    ev1 = tracker.on_candle(trigger)
+    assert ev1 is not None and len(ev1.new_trades) >= 1  # a flip happened
     count_after_first = tracker._last_trade_count
-    # Same last_ts -> dedup: returns state, trade count unchanged.
-    st2 = tracker.on_candle(trigger)
-    assert st2 is not None
+    # Same last_ts -> dedup: returns eval with NO new trades, count unchanged.
+    ev2 = tracker.on_candle(trigger)
+    assert ev2 is not None and ev2.new_trades == ()
     assert tracker._last_trade_count == count_after_first
 
 
@@ -113,3 +113,15 @@ def test_tracker_insufficient_candles(monkeypatch):
     trigger = Candle(timestamp=1, open=1, high=1, low=1, close=1, volume=1,
                      volume_quote=1, pair="ETH/USDT", timeframe="4h", confirmed=True)
     assert tracker.on_candle(trigger) is None
+
+
+def test_format_telegram():
+    flip = DTS.ShadowTrade(entry_ts=1, exit_ts=2, side=1, entry=1800.0,
+                           exit=1850.0, qty=1.0, pnl_net=50.0, reason="flip")
+    msg = DTS.format_telegram(flip, "ETH/USDT")
+    assert "FLIP" in msg and "ETH/USDT" in msg
+    assert "1,800.00" in msg and "1,850.00" in msg and "+50.00" in msg
+    sl = DTS.ShadowTrade(entry_ts=1, exit_ts=2, side=-1, entry=1800.0,
+                         exit=1820.0, qty=1.0, pnl_net=-20.0, reason="sl")
+    smsg = DTS.format_telegram(sl, "ETH/USDT")
+    assert "SL" in smsg and "SHORT" in smsg and "-20.00" in smsg

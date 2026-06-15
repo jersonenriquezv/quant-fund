@@ -64,6 +64,29 @@ class ShadowState:
     trades: tuple[ShadowTrade, ...]    # all closed trades over the window
 
 
+@dataclass(frozen=True)
+class ShadowEval:
+    """One evaluation: the full state + the trades that are NEW since the last
+    processed bar (what the caller may push to Telegram)."""
+    state: ShadowState
+    new_trades: tuple[ShadowTrade, ...]
+
+
+_SIDE_NAME = {1: "LONG", -1: "SHORT", 0: "FLAT"}
+
+
+def format_telegram(tr: ShadowTrade, pair: str) -> str:
+    """Telegram message for a completed theoretical Dual Thrust trade (flip/SL)."""
+    emoji = "\U0001f504" if tr.reason == "flip" else "\U0001f6d1"  # 🔄 / 🛑
+    sign = "+" if tr.pnl_net >= 0 else ""
+    return (
+        f"{emoji} <b>DT SHADOW {tr.reason.upper()}</b> (no order)\n"
+        f"{pair} 4h {_SIDE_NAME[tr.side]}\n"
+        f"entry ${tr.entry:,.2f} → exit ${tr.exit:,.2f}\n"
+        f"theoretical PnL: {sign}{tr.pnl_net:,.2f}"
+    )
+
+
 def simulate_fills(candles: Sequence[Candle], hp: dict) -> ShadowState:
     """Replay the Dual Thrust brain + harness fill model over ``candles``.
 
@@ -164,8 +187,9 @@ class DualThrustShadowTracker:
         self._last_processed_ts: int = 0
         self._last_trade_count: int = 0
 
-    def on_candle(self, candle: Candle) -> Optional[ShadowState]:
-        """Evaluate on a confirmed ETH 4h candle. Returns the replay state.
+    def on_candle(self, candle: Candle) -> Optional[ShadowEval]:
+        """Evaluate on a confirmed ETH 4h candle. Returns the replay state plus
+        any trades NEW since the last processed bar (caller pushes to Telegram).
 
         Never raises into the pipeline — caller still wraps in try/except, but
         this method itself swallows fetch/replay errors and returns None.
@@ -186,22 +210,21 @@ class DualThrustShadowTracker:
 
         # Dedup: only act/log once per closed bar.
         if state.last_ts == self._last_processed_ts:
-            return state
+            return ShadowEval(state, ())
         self._last_processed_ts = state.last_ts
 
-        side_name = {1: "LONG", -1: "SHORT", 0: "FLAT"}
         new_trades = state.trades[self._last_trade_count:]
         self._last_trade_count = len(state.trades)
 
         for tr in new_trades:
             logger.info(
-                f"DT_SHADOW_TRADE pair={self.PAIR} side={side_name[tr.side]} "
+                f"DT_SHADOW_TRADE pair={self.PAIR} side={_SIDE_NAME[tr.side]} "
                 f"entry={tr.entry:.2f} exit={tr.exit:.2f} reason={tr.reason} "
                 f"pnl_net={tr.pnl_net:.2f} entry_ts={tr.entry_ts} exit_ts={tr.exit_ts}")
 
         logger.info(
-            f"DT_SHADOW_STATE ts={state.last_ts} signal={side_name[state.signal]} "
-            f"position={side_name[state.position_side]} "
+            f"DT_SHADOW_STATE ts={state.last_ts} signal={_SIDE_NAME[state.signal]} "
+            f"position={_SIDE_NAME[state.position_side]} "
             f"entry={state.position_entry} stop={state.position_stop} "
             f"balance={state.balance:.2f} trades={len(state.trades)}")
-        return state
+        return ShadowEval(state, new_trades)
