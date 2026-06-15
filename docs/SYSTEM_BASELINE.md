@@ -568,6 +568,11 @@ D: net_score <  2
 
 ## 8. Changelog
 
+### 2026-06-15 — Dual Thrust Phase 1a: live check / fresh-candle parity
+**Files:** `scripts/dual_thrust_live_check.py` (new), `tests/test_dual_thrust_live_check.py` (new), `docs/plans/dual-thrust-live-small-port.md` (Phase 1a/1b/1c).
+- `dual_thrust_live_check.py` fetches the latest OKX ETH 6h (`6Hutc`) + 4h candles, re-runs engine-vs-harness parity on fresh data, and prints the current live signal (price vs upper/lower thrust, long/short/flat, distance to triggers). Weekly forward-validation heartbeat; touches no pipeline/risk/execution.
+- First run (03:49 UTC, 999 candles/TF): FRESH PARITY PASS both TFs (engine == harness on live + out-of-sample bars). Current signal both FLAT — ETH $1724.60, near 4h long trigger (+0.47%). Next: Phase 1b pipeline shadow wiring (ETH 4h, no money).
+
 ### 2026-06-15 — Dual Thrust engine port (Phase 0): brain + parity gate
 **Files:** `strategy_service/engines/dual_thrust.py` (new), `scripts/dual_thrust_parity.py` (new), `tests/test_dual_thrust_engine.py` (new), `docs/plans/dual-thrust-live-small-port.md` (new).
 - Ported the validated Jesse harness signal brain VERBATIM into `dual_thrust.py` (ETH 6h + 4h param sets from `candidates.json`): `wilder_atr`, thrust thresholds (incl. the documented `down` low-col quirk), raw long/short/flat signal, 1D-anchor-from-trade-bars. Execution/fills NOT included (those are the simulated "hands" — replaced by real orders in Phase 1).
