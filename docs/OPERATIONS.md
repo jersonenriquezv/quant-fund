@@ -245,7 +245,7 @@ sudo systemctl disable --now signal-scanner.timer
 - Migrations use `ALTER TABLE ADD COLUMN IF NOT EXISTS` (idempotent)
 - Version tracking via `schema_version` table — each migration records its version number
 
-### Current Schema Version: 21
+### Current Schema Version: 22
 
 | Version | Description | Date |
 |---------|-------------|------|
@@ -263,6 +263,7 @@ sudo systemctl disable --now signal-scanner.timer
 | 19 | ml_setups: regime_label categorical | 2026-04 |
 | 20 | ml_setups: widen outcome_type to VARCHAR(50) (idempotent — prod already widened ad-hoc) | 2026-04 |
 | 21 | ml_setups: Engine 1 lossless metric columns (engine1_impulse_atr_multiple, engine1_pullback_depth_pct, engine1_pullback_candle_count, engine1_entry_atr_distance) | 2026-04 |
+| 22 | ml_setups: data_quality tag (partial-candle risk — rows whose trigger bar was a forming candle pre-backfill-fix; excluded from training) | 2026-06 |
 
 ### Adding a New Migration
 

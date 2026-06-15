@@ -49,7 +49,7 @@ Operational rules for Claude when modifying `data_service/`. The eyes and ears �
 ## Rules — modifying storage
 1. **Redis is cache only.** Bot must work if Redis dies (degraded). Never use Redis for inter-service messaging — direct function calls only.
 2. **Redis key pattern:** `qf:{category}:{pair}:{detail}`. TTLs MUST be set: candles 24h, funding 9h, OI 10min.
-3. **PostgreSQL is source of truth for history.** All inserts must use `ON CONFLICT DO NOTHING` for dedup. `_ensure_connected()` retries once on `OperationalError`/`InterfaceError`.
+3. **PostgreSQL is source of truth for history.** Inserts use `ON CONFLICT DO NOTHING` for dedup. **Exception — candles:** `store_candles(upsert=True)` uses `ON CONFLICT DO UPDATE` so an authoritative (closed) bar overwrites a stale partial frozen by an earlier insert. The live candle path (`service._on_candle` + `_backfill_all`) passes `upsert=True`; this is safe only because `backfill_candles` drops the forming bar at source (a forming bar must never overwrite a closed one). See `docs/plans/partial-candle-backfill-fix.md`. `_ensure_connected()` retries once on `OperationalError`/`InterfaceError`.
 4. **Schema migrations are idempotent.** `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`. Use `_apply_migration(cur, N, "description")` to record version. Bump `ML_FEATURE_VERSION` if adding ML feature columns. Update `docs/OPERATIONS.md` §schema.
 5. **`VALID_OUTCOMES`** in `data_store.py` is the authoritative whitelist for `ml_setups.outcome_type`. Drift emits WARNING in `update_ml_setup_outcome`. New outcome types must be added there first.
 6. **`NON_MARKET_OUTCOMES`** is the subset to exclude from training/edge queries. Use `ml_market_outcome_filter_sql()` helper in new scripts to avoid drift.

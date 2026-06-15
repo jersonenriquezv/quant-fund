@@ -25,7 +25,11 @@ Wire the already-validated Dual Thrust engine (Phase 0 parity PASS) into the liv
 - [ ] Rollback if: any unreconcilable mismatch → STOP. Either the WS feed needs fixing, or pivot live execution to read REST candles directly (making 1b moot). Document and re-grill.
 
 **Evidence (filled by /phased-implementation):**
-_empty_
+- **2026-06-15 — GATE FAILED.** `scripts/dual_thrust_candle_parity.py` over 299 overlapping ETH/USDT 4h bars (2026-04-26 → 2026-06-15): **215 OHLC mismatches across 143/399 bars (~36%)**, signal stream 1 diff / 272 (2026-05-12 12:00 flipped 0→-1).
+- **Root cause (proven):** 143/143 mismatched bars have the bot's range **strictly inside** OKX REST `4H` range (bot high ≤ rest high AND bot low ≥ rest low; open always matches = first tick). Signature of WS 4h candles confirmed/stored on a **partial tick window** — the bot misses wick extremes (and sometimes close). Chronic + intermittent (spread evenly Apr→Jun, not the 6/15 crash-loop alone). Worst example 2026-06-12 12:00: bot saw 1669–1672, real bar was 1652–1690.
+- **Conclusion:** the bot's WS-built 4h store **cannot** faithfully reproduce the validated Dual Thrust signals. Signal impact is small TODAY (1/272) only because Dual Thrust is mostly FLAT with wide thrust margins — not safe to rely on near a threshold or for live capital.
+- **Decision → pivot (plan rollback option B):** live/shadow path must read OKX REST `4H` directly (the authoritative source Phase 0/1a already validated against), NOT `data_store.load_candles`. Phase 2 re-scoped: hook still fires on the bot's confirmed ETH 4h candle (timing trigger only), but the tracker fetches REST bars for computation.
+- **Broader flag (out of scope for 1b):** partial-candle drift likely affects ALL pairs/TFs in the WS store — every SMC setup + ML feature reads `load_candles`. Worth a separate investigation/ticket; NOT fixed here.
 
 ---
 

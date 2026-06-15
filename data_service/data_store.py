@@ -919,16 +919,45 @@ class PostgresStore:
                     cur.execute(f"ALTER TABLE ml_setups ADD COLUMN IF NOT EXISTS {col_def}")
                 self._apply_migration(cur, 21, "ml_setups: Engine 1 lossless metric columns")
 
+            if current_version < 22:
+                # data_quality — nullable tag for rows whose features were
+                # computed over a partial (forming) candle before the
+                # partial-candle backfill fix (docs/plans/partial-candle-backfill-fix.md).
+                # NULL = clean / unassessed. 'partial_candle_risk' = the trigger
+                # bar coincided with a forming bar at a known WS reconnect.
+                # Training/edge queries should exclude 'partial_candle_risk'.
+                cur.execute(
+                    "ALTER TABLE ml_setups ADD COLUMN IF NOT EXISTS "
+                    "data_quality VARCHAR(30)"
+                )
+                self._apply_migration(cur, 22, "ml_setups: data_quality tag (partial-candle risk)")
+
         logger.info("PostgreSQL tables verified/created")
 
     # --- Candle Storage ---
 
-    def store_candles(self, candles: list[Candle]) -> int:
-        """Batch insert candles. Skips duplicates via ON CONFLICT.
-        Returns number of candles actually inserted.
+    def store_candles(self, candles: list[Candle], upsert: bool = False) -> int:
+        """Batch insert candles. Returns number of rows inserted/updated.
+
+        Conflict handling:
+        - ``upsert=False`` (default): ``ON CONFLICT DO NOTHING`` — existing rows
+          are left untouched. Legacy behavior.
+        - ``upsert=True``: ``ON CONFLICT DO UPDATE`` — overwrite OHLCV with the
+          new (authoritative) values. Used to correct partial/forming bars that
+          were frozen by a prior DO-NOTHING insert. Only ever call with CLOSED,
+          confirmed bars — a forming bar must never overwrite a closed one.
         """
         if not candles:
             return 0
+
+        conflict_sql = (
+            """ON CONFLICT (pair, timeframe, timestamp) DO UPDATE SET
+                   open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
+                   close = EXCLUDED.close, volume = EXCLUDED.volume,
+                   volume_quote = EXCLUDED.volume_quote"""
+            if upsert else
+            "ON CONFLICT (pair, timeframe, timestamp) DO NOTHING"
+        )
 
         for attempt in range(2):
             if not self._ensure_connected():
@@ -945,7 +974,7 @@ class PostgresStore:
                         """INSERT INTO candles (pair, timeframe, timestamp, open, high, low,
                                                close, volume, volume_quote)
                            VALUES %s
-                           ON CONFLICT (pair, timeframe, timestamp) DO NOTHING""",
+                           """ + conflict_sql,
                         values,
                         page_size=100,
                     )

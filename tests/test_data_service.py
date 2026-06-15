@@ -913,3 +913,49 @@ class TestOIContractSize:
         assert "ETH/USDT" in _CONTRACT_SIZES
         assert _CONTRACT_SIZES["BTC/USDT"] == 0.01
         assert _CONTRACT_SIZES["ETH/USDT"] == 0.1
+
+
+class TestBackfillFormingBarGuard:
+    """Fix A — backfill must never store the currently-forming bar.
+
+    Regression guard for the partial-candle bug: ccxt fetch_ohlcv returns the
+    in-progress bar as the last element; storing it confirmed froze partial OHLC.
+    """
+
+    def _make_client(self, batch):
+        from data_service.exchange_client import ExchangeClient
+        client = ExchangeClient.__new__(ExchangeClient)  # skip ccxt __init__
+        client._market_exchange = MagicMock()
+        client._market_exchange.fetch_ohlcv = MagicMock(return_value=batch)
+        return client
+
+    def test_forming_bar_dropped(self):
+        tf = "1h"
+        tf_ms = 60 * 60 * 1000
+        now_ms = int(time.time() * 1000)
+        # 3 closed bars + 1 still-forming bar (its close time is in the future).
+        closed = [
+            [now_ms - 4 * tf_ms, 100.0, 101.0, 99.0, 100.5, 10.0],
+            [now_ms - 3 * tf_ms, 100.5, 102.0, 100.0, 101.5, 11.0],
+            [now_ms - 2 * tf_ms, 101.5, 103.0, 101.0, 102.5, 12.0],
+        ]
+        forming = [now_ms - 100, 102.5, 102.6, 102.4, 102.5, 1.0]  # ts+tf_ms > now
+        client = self._make_client(closed + [forming])
+
+        candles = client.backfill_candles("BTC/USDT", tf, count=4)
+
+        assert len(candles) == 3, "forming bar must be excluded"
+        assert all(c.timestamp + tf_ms <= now_ms for c in candles)
+        assert forming[0] not in [c.timestamp for c in candles]
+
+    def test_all_closed_bars_kept(self):
+        tf = "1h"
+        tf_ms = 60 * 60 * 1000
+        now_ms = int(time.time() * 1000)
+        closed = [
+            [now_ms - 3 * tf_ms, 100.0, 101.0, 99.0, 100.5, 10.0],
+            [now_ms - 2 * tf_ms, 100.5, 102.0, 100.0, 101.5, 11.0],
+        ]
+        client = self._make_client(closed)
+        candles = client.backfill_candles("BTC/USDT", tf, count=2)
+        assert len(candles) == 2
