@@ -18,6 +18,7 @@ Receive `RiskApproval` → place entry + attached SL/TP on OKX → manage positi
 | `monitor.py` | Async loop (5s poll). SL/TP discovery, manual fallback, breakeven, trailing, slippage guard, sl_too_close, emergency retry |
 | `campaign_monitor.py` | HTF position trades. Pyramid adds, trailing SL on 4H swings, 7d timeout |
 | `shadow_monitor.py` | Shadow position tracker. No exchange orders — simulates TP/SL/timeout from price ticks. ML outcome resolution |
+| `dual_thrust_shadow.py` | Dual Thrust order-free shadow tracker. On each confirmed ETH 4h candle, replays the validated brain + harness fill model (verbatim port — stop-and-reverse, ATR stop) on fresh OKX REST 4h bars. No orders, no risk/execution path. Gated by `DUAL_THRUST_SHADOW_ENABLED`. See `docs/plans/dual-thrust-phase1b-shadow-wiring.md` |
 | `position_guardian.py` | Cross-cutting safety checks |
 | `models.py` | `ManagedPosition`, `PositionCampaign`, `CampaignAdd` dataclasses |
 

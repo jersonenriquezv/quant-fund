@@ -71,8 +71,17 @@ Before risking the live bot path, prove the brain stays faithful on **fresh** OK
 - **First run (2026-06-15 03:49 UTC, 999 candles each):** FRESH PARITY PASS ✅ both TFs (engine == harness trade-for-trade on live data, incl. out-of-sample bars). Current signal both **FLAT** — ETH $1724.60; 6h upper thrust 1743.62 (+1.10% away), 4h upper 1732.68 (+0.47% away). Near a long trigger, not fired.
 - **Cadence:** run weekly as the forward-validation heartbeat. Zero bot risk (touches no pipeline/risk/execution code).
 
-### Phase 1b — Pipeline shadow wiring (no money) — NEXT
-Wire `dual_thrust.latest_signal` into the candle pipeline for ETH 4h (native TF) as a **shadow** evaluator: on each confirmed 4h candle, log the signal + theoretical flip position (faithful real-time replay of the harness fill model), NO orders. Re-check parity on the bot's own real-time candle feed for ≥2 weeks (catches feed/alignment drift vs the REST-fetched candles used in 1a). Needs: 4h candle access in the pipeline, a shadow store, flag-gated. 6h variant deferred until the `6Hutc` subscription (Phase 2).
+### Phase 1b — Pipeline shadow wiring (no money) — ✅ CODE DONE 2026-06-15 (soak pending)
+Wired the validated Dual Thrust brain + harness fill model into `main.py:on_candle_confirmed` as an **order-free** shadow evaluator for ETH 4h: `execution_service/dual_thrust_shadow.py` (`simulate_fills` verbatim port + `DualThrustShadowTracker`), gated by `DUAL_THRUST_SHADOW_ENABLED` (default OFF). Detail + evidence: `docs/plans/dual-thrust-phase1b-shadow-wiring.md`.
+
+**Key pivot (P1 tracer outcome):** the bot's WS candle store was found UNRELIABLE (partial/forming bars frozen — surfaced by the 1b-P1 parity tracer, root cause fixed in **PR #90**, deployed 2026-06-15, candle-parity now 21/21 PASS). Rather than depend on the feed, the shadow tracker reads **OKX REST `4H` directly** (authoritative, what 1a validated against) and re-runs the full deterministic fill loop each close → trade-for-trade parity with the harness by construction. This **supersedes** the original "≥2-week parity on the bot feed" requirement (feed drift is no longer the risk path).
+
+**Gate → Phase 1c (NO-GO until ALL true):**
+- `DUAL_THRUST_SHADOW_ENABLED=true` deployed, bot `Up (healthy)`, no pipeline regression.
+- ≥3–5 real ETH 4h flip events observed in production behaving as the harness predicts (DT is mostly FLAT → days between signals; this soak is inherently slow).
+- Parity scripts still PASS (`dual_thrust_parity.py`, `dual_thrust_shadow_parity.py`, `dual_thrust_candle_parity.py --all`).
+
+Only when this gate passes does Phase 1c open — and it gets its **own grill** (first real money, touches `execution_service` + sizing).
 
 ### Phase 1c — 4h live-small (native TF, fastest)
 Flip `dual_thrust_eth_4h` to live, $86, **0.5% risk/trade**. 4h needs no new data infra.

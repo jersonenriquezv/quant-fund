@@ -1034,6 +1034,13 @@ class Settings:
     # Disabled by default — each detector commit flips its own setup_type into
     # SHADOW_MODE_SETUPS once wired. The master flag is a kill switch.
     SCALP_SHADOW_ENABLED: bool = os.getenv("SCALP_SHADOW_ENABLED", "false").lower() == "true"
+
+    # Dual Thrust shadow (docs/plans/dual-thrust-phase1b-shadow-wiring.md, Phase 2).
+    # On each confirmed ETH/USDT 4h candle, replay the validated Dual Thrust
+    # brain + harness fill model on freshly-fetched OKX REST 4h bars and record a
+    # theoretical flip position. ORDER-FREE (no execution_service, no orders).
+    # Default OFF — kill switch. Read directly from OKX REST, not the bot store.
+    DUAL_THRUST_SHADOW_ENABLED: bool = os.getenv("DUAL_THRUST_SHADOW_ENABLED", "false").lower() == "true"
     # v3 (2026-05-06): clean experiment_id reset after discovering that v1+v2
     # rows were silently tagged with the global EXPERIMENT_ID instead of
     # SCALP_EXPERIMENT_ID — `_ml_log_setup` ignored this field until the
