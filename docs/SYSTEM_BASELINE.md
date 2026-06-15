@@ -568,6 +568,13 @@ D: net_score <  2
 
 ## 8. Changelog
 
+### 2026-06-15 — Dual Thrust engine port (Phase 0): brain + parity gate
+**Files:** `strategy_service/engines/dual_thrust.py` (new), `scripts/dual_thrust_parity.py` (new), `tests/test_dual_thrust_engine.py` (new), `docs/plans/dual-thrust-live-small-port.md` (new).
+- Ported the validated Jesse harness signal brain VERBATIM into `dual_thrust.py` (ETH 6h + 4h param sets from `candidates.json`): `wilder_atr`, thrust thresholds (incl. the documented `down` low-col quirk), raw long/short/flat signal, 1D-anchor-from-trade-bars. Execution/fills NOT included (those are the simulated "hands" — replaced by real orders in Phase 1).
+- **Parity gate (`scripts/dual_thrust_parity.py`):** proves the engine reproduces the harness **trade-for-trade** — 6h: 133 trades identical, Sharpe 1.9967, net +206.43%, final $30,642.51 (= documented winner). 4h param branch also bit-identical. PASS ✅.
+- NOT wired into the pipeline (no live, no shadow). Engine + proof only. Does NOT touch `ENABLED_SETUPS`, risk, or execution. Bot remains shadow-only. Live-small plan + phases: `docs/plans/dual-thrust-live-small-port.md`.
+- _Same-day, separate PR #86:_ OKX null-market crash fix (`shared/ccxt_utils.harden_okx_markets`) + ML v0 6/15 gate (AUC test 0.850, N=311 — final "do NOT build Engine 2" decision, 4 runs never <0.60).
+
 ### 2026-06-08 — ML v0 6/8 re-train + FREEZE expiry + graduation criteria consolidation
 **Files:** `docs/SYSTEM_BASELINE.md` (§7.2 new, §9 FREEZE resolution), `docs/STRATEGY_REFINEMENT_GUIDE.md` (new), `docs/audits/ml-v0-engine1-2026-06-08.md` (new), `docs/grill/strategy-refinement-guide-2026-06-08.md` (new).
 - ml_v0 re-train: AUC test **0.7160** at N=283 (3rd stable run, 0.72→0.70→0.72). Verdict EDGE CLARO → do NOT build Engine 2. Next gate 6/15.
