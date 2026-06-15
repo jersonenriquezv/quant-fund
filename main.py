@@ -30,6 +30,7 @@ from risk_service import RiskService
 from execution_service import ExecutionService
 from execution_service.campaign_monitor import CampaignMonitor
 from execution_service.shadow_monitor import ShadowMonitor
+from execution_service.dual_thrust_shadow import DualThrustShadowTracker
 from shared.notifier import TelegramNotifier
 from shared.alert_manager import AlertManager
 from data_service.liquidation_estimator import estimate_liquidation_levels
@@ -51,6 +52,7 @@ _risk_service: RiskService | None = None
 _execution_service: ExecutionService | None = None
 _campaign_monitor: CampaignMonitor | None = None
 _shadow_monitor: ShadowMonitor | None = None
+_dual_thrust_shadow: DualThrustShadowTracker | None = None
 _notifier: TelegramNotifier | None = None
 _alert_manager: AlertManager | None = None
 
@@ -115,6 +117,18 @@ async def on_candle_confirmed(candle: Candle) -> None:
     # Shadow monitor: evaluate all tracked shadow positions against this candle
     if _shadow_monitor is not None:
         _shadow_monitor.check_candle(candle.pair, candle)
+
+    # Dual Thrust shadow (order-free): on each confirmed ETH 4h candle, replay
+    # the validated brain + harness fill model on fresh OKX REST 4h bars and
+    # record a theoretical flip position. Fetch is blocking (ccxt) so run in an
+    # executor; an engine error must never break the pipeline.
+    if (settings.DUAL_THRUST_SHADOW_ENABLED and _dual_thrust_shadow is not None
+            and candle.pair == "ETH/USDT" and candle.timeframe == "4h"):
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, _dual_thrust_shadow.on_candle, candle)
+        except Exception as e:
+            logger.error(f"Dual Thrust shadow hook error: {e}")
 
     # ============================================================
     # HTF Campaign path — 4H candles trigger campaign evaluation
@@ -1195,7 +1209,7 @@ async def main() -> None:
         logger.error("Config validation failed. Exiting.")
         sys.exit(1)
 
-    global _data_service, _strategy_service, _ai_service, _risk_service, _execution_service, _campaign_monitor, _shadow_monitor, _notifier, _alert_manager
+    global _data_service, _strategy_service, _ai_service, _risk_service, _execution_service, _campaign_monitor, _shadow_monitor, _dual_thrust_shadow, _notifier, _alert_manager
 
     # Create Telegram notifier + AlertManager wrapper
     _notifier = TelegramNotifier(settings.TELEGRAM_BOT_TOKEN, settings.TELEGRAM_CHAT_ID)
@@ -1257,6 +1271,16 @@ async def main() -> None:
             f"Shadow Monitor initialized: {settings.SHADOW_MODE_SETUPS} "
             f"(${settings.effective_shadow_capital} virtual, basis={settings.SHADOW_CAPITAL_BASIS})"
         )
+
+    # Dual Thrust shadow tracker (order-free, ETH 4h). Reads authoritative OKX
+    # REST 4h bars via the exchange client (forming bar already dropped post the
+    # partial-candle fix). docs/plans/dual-thrust-phase1b-shadow-wiring.md Phase 2.
+    if settings.DUAL_THRUST_SHADOW_ENABLED:
+        _dual_thrust_shadow = DualThrustShadowTracker(
+            candle_fetcher=lambda: _data_service._exchange.backfill_candles(
+                "ETH/USDT", "4h", 500)
+        )
+        logger.info("Dual Thrust shadow tracker initialized (ETH/USDT 4h, order-free)")
 
     # Create CampaignMonitor for HTF position trades (when enabled)
     if settings.HTF_CAMPAIGN_ENABLED and _execution_service._executor is not None:
