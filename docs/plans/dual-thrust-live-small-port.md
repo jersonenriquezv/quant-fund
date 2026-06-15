@@ -65,7 +65,16 @@ Port the signal brain verbatim, prove it reproduces the harness before money.
 - Brain fidelity proven. What remains is the data feed (live candles) + execution (real orders) — Phases 1–2.
 - **Still TODO before live:** wire as a *shadow* engine in the pipeline (per-confirmed-candle `latest_signal`) so live signals are logged + re-checked vs harness on fresh candles for ≥2 weeks.
 
-### Phase 1 — 4h live-small (native TF, fastest)
+### Phase 1a — Live check / fresh-candle parity (no bot wiring) — ✅ DONE 2026-06-15
+Before risking the live bot path, prove the brain stays faithful on **fresh** OKX candles (data the optimizer never saw) and expose the **current** signal.
+- **Deliverable:** `scripts/dual_thrust_live_check.py` — fetches latest OKX ETH 6h (`6Hutc`) + 4h candles, (1) re-runs engine-vs-harness parity on them, (2) prints the live signal (price vs upper/lower thrust, long/short/flat, distance to triggers). CI-safe parser tests in `tests/test_dual_thrust_live_check.py`.
+- **First run (2026-06-15 03:49 UTC, 999 candles each):** FRESH PARITY PASS ✅ both TFs (engine == harness trade-for-trade on live data, incl. out-of-sample bars). Current signal both **FLAT** — ETH $1724.60; 6h upper thrust 1743.62 (+1.10% away), 4h upper 1732.68 (+0.47% away). Near a long trigger, not fired.
+- **Cadence:** run weekly as the forward-validation heartbeat. Zero bot risk (touches no pipeline/risk/execution code).
+
+### Phase 1b — Pipeline shadow wiring (no money) — NEXT
+Wire `dual_thrust.latest_signal` into the candle pipeline for ETH 4h (native TF) as a **shadow** evaluator: on each confirmed 4h candle, log the signal + theoretical flip position (faithful real-time replay of the harness fill model), NO orders. Re-check parity on the bot's own real-time candle feed for ≥2 weeks (catches feed/alignment drift vs the REST-fetched candles used in 1a). Needs: 4h candle access in the pipeline, a shadow store, flag-gated. 6h variant deferred until the `6Hutc` subscription (Phase 2).
+
+### Phase 1c — 4h live-small (native TF, fastest)
 Flip `dual_thrust_eth_4h` to live, $86, **0.5% risk/trade**. 4h needs no new data infra.
 - Real fills, real flips, real risk/executor exercised.
 - Monitor: fill slippage vs harness assumption, flip latency, SL placement, any `sl_too_close`/guardrail rejections.
