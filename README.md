@@ -204,6 +204,55 @@ Mobile responsive (375px+) with 3 breakpoints (desktop, tablet, mobile).
 
 ---
 
+## Interactive Chart Engine
+
+A TradingView-grade charting interface built from scratch on **klinecharts** — not an embedded widget. It reads the same OKX feed that drives the bot, so what's on the chart is exactly what the strategy saw.
+
+![Chart Engine](docs/screenshots/chart-desktop.png)
+
+- **Multi-pair / multi-timeframe** — BTC, ETH across 5m → 1W
+- **Drawing toolbox** — trendlines, rays, horizontal levels, rectangles, measure
+- **Replay mode** — step the market forward candle-by-candle to study setups in motion
+- **Detections overlay** — paints the bot's live signals on the chart: BOS/CHoCH, order blocks, FVG, liquidity sweeps
+- Volume + moving-average sub-panel
+
+Fully responsive — the toolbar reflows above the chart on mobile:
+
+![Chart Mobile](docs/screenshots/chart-mobile.png)
+
+---
+
+## Manual Trading & Position Sizing
+
+A self-contained cockpit for the discretionary book that runs alongside the bot. The **position-size calculator** turns a risk idea into exact orders:
+
+![Position Sizing Calculator](docs/screenshots/manual-calculator.png)
+
+- Enter price + stop + balance → outputs **position size, margin, leverage, and R-multiple** instantly
+- Risk fixed as a % of capital — never sized by feel
+- Linear (USDT) and inverse (USD) contracts, long/short
+- Validates the setup (R:R, SL distance, margin %) before letting you create the trade — with a plain-English verdict
+
+Below the calculator: live manual P&L, win rate, profit factor, open positions, full trade history, and a 30-day analytics breakdown by pair and direction.
+
+---
+
+## Trade Journal (Bybit)
+
+Every manual trade is logged, annotated, and graded. A read-only Bybit API daemon syncs real executions and cross-references each with a market-context snapshot captured at entry time — ML-grade journaling, not a spreadsheet.
+
+![Trade Journal](docs/screenshots/tradelog.png)
+
+Tracks PnL, win rate, profit factor, R-distribution, and a cumulative equity curve.
+
+---
+
+## Telegram Control
+
+The bot lives in your pocket. Priority-based push notifications: only what matters (signal flips, stop hits, real edge) reaches the phone — noise stays in the logs. A daily digest posts at 12:00 UTC, and the `/emergency` command freezes all execution remotely.
+
+---
+
 ## Grafana Monitoring
 
 Four pre-provisioned dashboards reading from PostgreSQL:
