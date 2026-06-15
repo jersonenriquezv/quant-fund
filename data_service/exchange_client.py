@@ -18,6 +18,7 @@ from typing import Optional
 import ccxt
 
 from config.settings import settings
+from shared.ccxt_utils import harden_okx_markets
 from shared.logger import setup_logger
 from shared.models import Candle, FundingRate, OpenInterest
 from data_service.data_integrity import CONTRACT_SIZES
@@ -54,6 +55,7 @@ class ExchangeClient:
         }
 
         self._exchange = ccxt.okx(config)
+        harden_okx_markets(self._exchange)
 
         if settings.OKX_SANDBOX:
             self._exchange.set_sandbox_mode(True)
@@ -65,7 +67,9 @@ class ExchangeClient:
         # Sandbox prices differ from real market — market data must always come
         # from production so the dashboard shows real prices.
         if settings.OKX_SANDBOX:
-            self._market_exchange = ccxt.okx({"enableRateLimit": True})
+            self._market_exchange = harden_okx_markets(
+                ccxt.okx({"enableRateLimit": True})
+            )
             logger.info("OKX market data client: using PRODUCTION for real prices")
         else:
             self._market_exchange = self._exchange
