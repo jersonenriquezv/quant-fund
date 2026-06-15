@@ -178,9 +178,21 @@ class ExchangeClient:
                 logger.error(f"Backfill exchange error: pair={pair} tf={timeframe}. Error: {e}")
                 break
 
+        # ccxt fetch_ohlcv returns the CURRENTLY-FORMING bar as the last element.
+        # Storing it as confirmed froze partial OHLC in PG (see
+        # docs/plans/partial-candle-backfill-fix.md). Drop any bar whose close
+        # time (ts + tf_ms) is still in the future — it is not closed yet.
+        tf_ms = self._timeframe_to_ms(timeframe)
+        now_ms = int(time.time() * 1000)
+        dropped_forming = 0
+
         # Convert to Candle dataclasses with validation
         for row in all_ohlcv:
             ts, o, h, l, c, vol = row[0], row[1], row[2], row[3], row[4], row[5]
+
+            if ts + tf_ms > now_ms:  # bar not yet closed → forming, never store
+                dropped_forming += 1
+                continue
 
             if not self._validate_candle(pair, timeframe, ts, o, h, l, c, vol):
                 continue
@@ -199,7 +211,8 @@ class ExchangeClient:
             ))
 
         logger.info(f"Backfill complete: pair={pair} tf={timeframe} "
-                    f"candles={len(candles)} requests={requests_made}")
+                    f"candles={len(candles)} requests={requests_made} "
+                    f"dropped_forming={dropped_forming}")
         return candles
 
     # ================================================================

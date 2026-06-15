@@ -480,9 +480,12 @@ class DataService:
                     # Store in memory
                     self._ws_feed.store_candles(candles)
 
-                    # Store in PostgreSQL
+                    # Store in PostgreSQL. upsert=True so an authoritative bar
+                    # overwrites any stale partial frozen by a prior insert
+                    # (see docs/plans/partial-candle-backfill-fix.md). Safe:
+                    # backfill_candles already drops the forming bar.
                     inserted = await loop.run_in_executor(
-                        None, self._postgres.store_candles, candles
+                        None, lambda: self._postgres.store_candles(candles, upsert=True)
                     )
 
                     # Cache latest in Redis
@@ -549,11 +552,13 @@ class DataService:
         # Cache in Redis
         self._redis.set_latest_candle(candle)
 
-        # Store in PostgreSQL (run in executor since psycopg2 is sync)
+        # Store in PostgreSQL (run in executor since psycopg2 is sync).
+        # upsert=True: this confirmed WS bar is authoritative — overwrite any
+        # stale partial previously frozen for the same timestamp.
         try:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
-                None, self._postgres.store_candles, [candle]
+                None, lambda: self._postgres.store_candles([candle], upsert=True)
             )
         except Exception as e:
             logger.error(f"Failed to store candle in PostgreSQL: "
