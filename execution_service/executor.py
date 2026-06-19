@@ -18,6 +18,7 @@ from typing import Callable, Optional
 import ccxt
 
 from config.settings import settings
+from shared.ccxt_utils import harden_okx_markets
 from shared.logger import setup_logger
 
 logger = setup_logger("execution_service")
@@ -35,6 +36,7 @@ class OrderExecutor:
         }
 
         self._exchange = ccxt.okx(config)
+        harden_okx_markets(self._exchange)
         # CRITICAL: ccxt defaults tdMode to 'cross' on every order unless
         # defaultMarginMode is set. This ensures ALL orders use isolated.
         self._exchange.options["defaultMarginMode"] = settings.MARGIN_MODE
