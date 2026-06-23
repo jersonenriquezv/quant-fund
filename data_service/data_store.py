@@ -586,6 +586,27 @@ class PostgresStore:
                 )
             """)
 
+            # Dual Thrust shadow — completed theoretical flip/SL trades from the
+            # order-free DT tracker (execution_service/dual_thrust_shadow.py).
+            # Own $10k paper book, separate from ml_setups. Dashboard reads this.
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS dt_shadow_trades (
+                    id SERIAL PRIMARY KEY,
+                    pair VARCHAR(20) NOT NULL,
+                    timeframe VARCHAR(5) NOT NULL DEFAULT '4h',
+                    side SMALLINT NOT NULL,             -- +1 long, -1 short
+                    entry_ts BIGINT NOT NULL,           -- Unix ms
+                    exit_ts BIGINT NOT NULL,
+                    entry_price DOUBLE PRECISION NOT NULL,
+                    exit_price DOUBLE PRECISION NOT NULL,
+                    qty DOUBLE PRECISION NOT NULL,
+                    pnl_net DOUBLE PRECISION NOT NULL,  -- net of DT fee model
+                    reason VARCHAR(10) NOT NULL,        -- flip | sl
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    UNIQUE(pair, entry_ts, exit_ts)
+                )
+            """)
+
             # ML instrumentation — setup feature snapshots for future model training
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS ml_setups (
@@ -989,6 +1010,51 @@ class PostgresStore:
                     return 0
             except psycopg2.Error as e:
                 logger.error(f"PostgreSQL candle insert failed: {e}")
+                return 0
+        return 0
+
+    def store_dt_shadow_trades(self, trades, pair: str, timeframe: str = "4h") -> int:
+        """Persist completed Dual Thrust shadow trades. Idempotent.
+
+        ``trades`` is a sequence of ``ShadowTrade`` (entry_ts/exit_ts/side/entry/
+        exit/qty/pnl_net/reason). The DT tracker re-replays the whole window on
+        every bar and on restart, so it re-emits historical trades as "new" —
+        ``ON CONFLICT (pair, entry_ts, exit_ts) DO NOTHING`` makes repeated writes
+        safe. Returns rows actually inserted.
+        """
+        if not trades:
+            return 0
+        for attempt in range(2):
+            if not self._ensure_connected():
+                return 0
+            try:
+                values = [
+                    (pair, timeframe, t.side, t.entry_ts, t.exit_ts,
+                     t.entry, t.exit, t.qty, t.pnl_net, t.reason)
+                    for t in trades
+                ]
+                with self._conn.cursor() as cur:
+                    psycopg2.extras.execute_values(
+                        cur,
+                        """INSERT INTO dt_shadow_trades
+                               (pair, timeframe, side, entry_ts, exit_ts,
+                                entry_price, exit_price, qty, pnl_net, reason)
+                           VALUES %s
+                           ON CONFLICT (pair, entry_ts, exit_ts) DO NOTHING""",
+                        values,
+                        page_size=100,
+                    )
+                    inserted = cur.rowcount
+                if inserted:
+                    logger.info(f"PostgreSQL: stored {inserted}/{len(trades)} DT shadow trades (pair={pair})")
+                return inserted
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                logger.warning(f"PostgreSQL DT shadow insert connection error (attempt {attempt+1}): {e}")
+                self._conn = None
+                if attempt == 1:
+                    return 0
+            except psycopg2.Error as e:
+                logger.error(f"PostgreSQL DT shadow insert failed: {e}")
                 return 0
         return 0
 

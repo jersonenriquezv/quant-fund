@@ -206,6 +206,42 @@ export interface ShadowMLStatus {
   updated_at: string | null;
 }
 
+export interface ShadowDTTrade {
+  pair: string;
+  side: number; // +1 long, -1 short
+  reason: string; // flip | sl
+  entry_ts: number;
+  exit_ts: number;
+  entry_price: number;
+  exit_price: number;
+  qty: number;
+  pnl_net: number;
+}
+
+export interface ShadowDTPoint {
+  ts: number;
+  equity: number;
+  pnl_net: number;
+  reason: string;
+}
+
+export interface ShadowDTResponse {
+  available: boolean;
+  start_balance: number;
+  current_balance: number;
+  total_profit: number;
+  return_pct: number;
+  max_drawdown_usd: number;
+  max_drawdown_pct: number;
+  n: number;
+  wins: number;
+  losses: number;
+  win_rate: number;
+  profit_factor: number | null;
+  points: ShadowDTPoint[];
+  trades: ShadowDTTrade[];
+}
+
 export interface PositionData {
   pair: string;
   direction: string;

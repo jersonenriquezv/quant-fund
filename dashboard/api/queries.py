@@ -339,6 +339,86 @@ async def get_shadow_equity_curve(
     }
 
 
+async def get_dt_shadow(start_balance: float = 10000.0, limit: int = 100) -> dict:
+    """Dual Thrust shadow trades + own paper-equity book.
+
+    Reads `dt_shadow_trades` (written by the order-free DT tracker). Separate
+    $10k paper book from the ml_setups shadows. pnl_net already net of the DT
+    fee model. Returns summary (balance, profit, return, max DD, WR, PF), an
+    equity curve (cumsum over exit_ts), and the most recent trades. Empty/flat
+    when the table doesn't exist yet (DT shadow never persisted a flip).
+    """
+    try:
+        async with db.pg_pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT pair, timeframe, side, entry_ts, exit_ts, entry_price,
+                          exit_price, qty, pnl_net, reason
+                   FROM dt_shadow_trades ORDER BY exit_ts ASC"""
+            )
+    except asyncpg.UndefinedTableError:
+        rows = None
+
+    if not rows:
+        return {
+            "available": bool(rows is not None),
+            "start_balance": round(start_balance, 2),
+            "current_balance": round(start_balance, 2),
+            "total_profit": 0.0, "return_pct": 0.0,
+            "max_drawdown_usd": 0.0, "max_drawdown_pct": 0.0,
+            "n": 0, "wins": 0, "losses": 0, "win_rate": 0.0, "profit_factor": 0.0,
+            "points": [], "trades": [],
+        }
+
+    equity = start_balance
+    peak = start_balance
+    max_dd_abs = 0.0
+    max_dd_pct = 0.0
+    wins = losses = 0
+    gross_profit = gross_loss = 0.0
+    points: list[dict] = []
+    trades: list[dict] = []
+    for r in rows:
+        pnl = float(r["pnl_net"])
+        equity += pnl
+        if equity > peak:
+            peak = equity
+        dd_abs = peak - equity
+        if dd_abs > max_dd_abs:
+            max_dd_abs = dd_abs
+            max_dd_pct = (dd_abs / peak * 100) if peak > 0 else 0.0
+        if pnl > 0:
+            wins += 1
+            gross_profit += pnl
+        else:
+            losses += 1
+            gross_loss += abs(pnl)
+        points.append({"ts": int(r["exit_ts"]), "equity": round(equity, 2),
+                       "pnl_net": round(pnl, 2), "reason": r["reason"]})
+        trades.append({
+            "pair": r["pair"], "side": int(r["side"]), "reason": r["reason"],
+            "entry_ts": int(r["entry_ts"]), "exit_ts": int(r["exit_ts"]),
+            "entry_price": float(r["entry_price"]), "exit_price": float(r["exit_price"]),
+            "qty": float(r["qty"]), "pnl_net": round(pnl, 2),
+        })
+
+    n = len(rows)
+    total_profit = equity - start_balance
+    return {
+        "available": True,
+        "start_balance": round(start_balance, 2),
+        "current_balance": round(equity, 2),
+        "total_profit": round(total_profit, 2),
+        "return_pct": round((total_profit / start_balance * 100) if start_balance > 0 else 0.0, 2),
+        "max_drawdown_usd": round(max_dd_abs, 2),
+        "max_drawdown_pct": round(max_dd_pct, 2),
+        "n": n, "wins": wins, "losses": losses,
+        "win_rate": round((wins / n * 100) if n > 0 else 0.0, 1),
+        "profit_factor": round((gross_profit / gross_loss), 4) if gross_loss > 0 else None,
+        "points": points,
+        "trades": list(reversed(trades))[:limit],  # most recent first
+    }
+
+
 async def get_ml_forward_status() -> dict | None:
     """Engine1 meta-label forward-gate state, written by ml_v1_forward_check.py.
 

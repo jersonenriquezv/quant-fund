@@ -188,6 +188,42 @@ class ShadowMLStatus(BaseModel):
     updated_at: str | None = None
 
 
+class ShadowDTTrade(BaseModel):
+    pair: str
+    side: int  # +1 long, -1 short
+    reason: str  # flip | sl
+    entry_ts: int
+    exit_ts: int
+    entry_price: float
+    exit_price: float
+    qty: float
+    pnl_net: float
+
+
+class ShadowDTPoint(BaseModel):
+    ts: int
+    equity: float
+    pnl_net: float
+    reason: str
+
+
+class ShadowDTResponse(BaseModel):
+    available: bool = False
+    start_balance: float = 0.0
+    current_balance: float = 0.0
+    total_profit: float = 0.0
+    return_pct: float = 0.0
+    max_drawdown_usd: float = 0.0
+    max_drawdown_pct: float = 0.0
+    n: int = 0
+    wins: int = 0
+    losses: int = 0
+    win_rate: float = 0.0
+    profit_factor: float | None = None
+    points: list[ShadowDTPoint] = []
+    trades: list[ShadowDTTrade] = []
+
+
 class WhaleMovementRecord(BaseModel):
     timestamp: int
     wallet: str

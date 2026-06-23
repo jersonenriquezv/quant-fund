@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Header } from "@/components/Header";
 import { fetchApi } from "@/lib/api";
-import type { ShadowTradeRecord, ShadowStats, ShadowEquityResponse, ShadowEquityPoint, ShadowMLStatus } from "@/lib/api";
+import type { ShadowTradeRecord, ShadowStats, ShadowEquityResponse, ShadowMLStatus, ShadowDTResponse } from "@/lib/api";
 
 function fmt(n: number | null | undefined, d: number = 2): string {
   if (n == null || Number.isNaN(n)) return "--";
@@ -40,16 +40,15 @@ function shortOutcome(o: string | null): string {
 }
 
 // Synthetic paper-equity curve (SVG sparkline — no charting lib per dashboard rules).
-function EquityCurve({ points }: { points: ShadowEquityPoint[] }) {
-  if (points.length < 2) {
+function EquityCurve({ values, start }: { values: number[]; start: number }) {
+  if (values.length < 2) {
     return (
       <div style={{ color: "var(--text-muted)", fontSize: 12, textAlign: "center", padding: "30px 0" }}>
-        Need 2+ resolved shadows for a curve
+        Need 2+ resolved trades for a curve
       </div>
     );
   }
-  const vals = points.map((p) => p.equity);
-  const start = points[0].equity - points[0].pnl_usd; // implied opening balance
+  const vals = values;
   const min = Math.min(start, ...vals);
   const max = Math.max(start, ...vals);
   const range = max - min || 1;
@@ -83,22 +82,25 @@ export default function ShadowPage() {
   const [stats, setStats] = useState<ShadowStats | null>(null);
   const [equity, setEquity] = useState<ShadowEquityResponse | null>(null);
   const [ml, setMl] = useState<ShadowMLStatus | null>(null);
+  const [dt, setDt] = useState<ShadowDTResponse | null>(null);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     try {
-      const [o, c, s, e, m] = await Promise.all([
+      const [o, c, s, e, m, d] = await Promise.all([
         fetchApi<ShadowTradeRecord[]>("/shadow/trades?status=open&limit=100"),
         fetchApi<ShadowTradeRecord[]>("/shadow/trades?status=closed&limit=100"),
         fetchApi<ShadowStats>("/shadow/stats"),
         fetchApi<ShadowEquityResponse>("/shadow/equity"),
         fetchApi<ShadowMLStatus>("/shadow/ml-status"),
+        fetchApi<ShadowDTResponse>("/shadow/dt"),
       ]);
       setOpen(o);
       setClosed(c);
       setStats(s);
       setEquity(e);
       setMl(m);
+      setDt(d);
     } finally {
       setLoading(false);
     }
@@ -179,7 +181,7 @@ export default function ShadowPage() {
             <span><span className="hero-stat-label">Resolved</span> {equity?.n ?? 0}</span>
           </div>
         </div>
-        <EquityCurve points={equity?.points ?? []} />
+        <EquityCurve values={(equity?.points ?? []).map((p) => p.equity)} start={equity?.start_balance ?? 10000} />
       </div>
 
       {/* ML training — engine1 meta-label forward gate */}
@@ -385,6 +387,77 @@ export default function ShadowPage() {
             </tbody>
           </table>
         </div>
+      </div>
+
+      {/* Dual Thrust shadow — separate $10k paper book */}
+      <div className="card" style={{ gridColumn: "1 / -1" }}>
+        <div className="card-title">Dual Thrust shadow — ETH 4h, separate paper ${fmt(dt?.start_balance ?? 10000, 0)} book</div>
+        {!dt?.available || dt.n === 0 ? (
+          <div style={{ color: "var(--text-muted)", fontSize: 12, padding: "16px 0" }}>
+            No DT flips persisted yet. Order-free tracker records a trade on each ETH 4h flip/SL (resolves ~every 4h).
+          </div>
+        ) : (
+          <>
+            <div style={{ color: "var(--text-muted)", fontSize: 11, marginBottom: 10 }}>
+              Stop-and-reverse Dual Thrust on ETH 4h, replayed order-free against OKX REST. Own paper book, independent of the ml_setups shadows.
+            </div>
+            <div className="hero-stats" style={{ height: "auto", marginBottom: 10 }}>
+              <div className="hero-stat">
+                <div className="hero-stat-label">Balance</div>
+                <div className="hero-value">${fmt(dt.current_balance)}</div>
+              </div>
+              <div className="hero-stat">
+                <div className="hero-stat-label">Profit</div>
+                <div className={`hero-value ${dt.total_profit >= 0 ? "hero-value-positive" : "hero-value-negative"}`}>
+                  {dt.total_profit >= 0 ? "+" : ""}${fmt(dt.total_profit)}
+                </div>
+              </div>
+              <div className="hero-stat">
+                <div className="hero-stat-label">Win Rate</div>
+                <div className="hero-value">{fmt(dt.win_rate, 1)}%</div>
+              </div>
+              <div className="hero-stat-secondary">
+                <span><span className="hero-stat-label">Trades</span> {dt.n} ({dt.wins}W·{dt.losses}L)</span>
+                <span><span className="hero-stat-label">PF</span> {dt.profit_factor == null ? "∞" : fmt(dt.profit_factor, 2)}</span>
+                <span><span className="hero-stat-label">Max DD</span> -${fmt(dt.max_drawdown_usd)} ({fmt(dt.max_drawdown_pct, 1)}%)</span>
+              </div>
+            </div>
+            <EquityCurve values={dt.points.map((p) => p.equity)} start={dt.start_balance} />
+            <div className="scroll-y" style={{ marginTop: 10 }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Exit</th>
+                    <th>Dir</th>
+                    <th style={{ textAlign: "right" }}>Entry</th>
+                    <th className="col-exit" style={{ textAlign: "right" }}>Exit px</th>
+                    <th style={{ textAlign: "right" }}>P&L $</th>
+                    <th className="col-type">Reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {dt.trades.map((t) => {
+                    const pnlClass = t.pnl_net >= 0 ? "pnl-positive" : "pnl-negative";
+                    return (
+                      <tr key={`${t.entry_ts}-${t.exit_ts}`} className="animate-in">
+                        <td style={{ color: "var(--text-muted)" }}>{formatTime(new Date(t.exit_ts).toISOString())}</td>
+                        <td>
+                          <span className={`badge ${t.side === 1 ? "badge-long" : "badge-short"}`}>
+                            {t.side === 1 ? "long" : "short"}
+                          </span>
+                        </td>
+                        <td className="num">{fmt(t.entry_price)}</td>
+                        <td className="num col-exit">{fmt(t.exit_price)}</td>
+                        <td className={`num ${pnlClass}`}>{t.pnl_net >= 0 ? "+" : ""}{fmt(t.pnl_net)}</td>
+                        <td className="col-type" style={{ fontSize: 11 }}>{t.reason}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

@@ -132,9 +132,17 @@ async def on_candle_confirmed(candle: Candle) -> None:
             # Push each new theoretical flip/SL to Telegram. Direct send (not the
             # muted alert path): flips are rare + the signal the operator wants
             # during the soak. Order-free — no live trade is implied.
-            if result is not None and result.new_trades and _notifier is not None:
-                for tr in result.new_trades:
-                    await _notifier.send(dual_thrust_format_telegram(tr, candle.pair))
+            if result is not None and result.new_trades:
+                # Persist completed flips/SLs (idempotent upsert — the tracker
+                # re-replays the whole window on restart, re-emitting historical
+                # trades as "new"; the first replay after a deploy backfills).
+                if _data_service is not None and _data_service.postgres is not None:
+                    await loop.run_in_executor(
+                        None, _data_service.postgres.store_dt_shadow_trades,
+                        result.new_trades, candle.pair, candle.timeframe)
+                if _notifier is not None:
+                    for tr in result.new_trades:
+                        await _notifier.send(dual_thrust_format_telegram(tr, candle.pair))
         except Exception as e:
             logger.error(f"Dual Thrust shadow hook error: {e}")
 

@@ -31,9 +31,12 @@ class _FakeConn:
         }
         self._ml_row = None      # row returned for ml_forward_status fetchrow
         self._ml_exc = None      # exception to raise for ml_forward_status fetchrow
+        self._fetch_exc = None   # exception to raise from fetch (e.g. missing table)
 
     async def fetch(self, sql, *args):
         self._rec.append((sql, args))
+        if self._fetch_exc is not None:
+            raise self._fetch_exc
         return list(self._fetch_rows)
 
     async def fetchrow(self, sql, *args):
@@ -176,6 +179,58 @@ def test_equity_curve_empty_is_flat(fake_pool):
     assert out["total_profit"] == 0.0
     assert out["max_drawdown_usd"] == 0.0
     assert out["points"] == []
+
+
+def _dt_row(exit_ts, pnl, side=-1, entry=1900.0, exit=1880.0, reason="flip", entry_ts=None):
+    return {
+        "pair": "ETH/USDT", "timeframe": "4h", "side": side,
+        "entry_ts": entry_ts if entry_ts is not None else exit_ts - 1,
+        "exit_ts": exit_ts, "entry_price": entry, "exit_price": exit,
+        "qty": 1.0, "pnl_net": pnl, "reason": reason,
+    }
+
+
+def test_dt_shadow_missing_table_unavailable(fake_pool):
+    fake_pool._conn._fetch_exc = asyncpg.UndefinedTableError("no table")
+    out = asyncio.run(queries.get_dt_shadow())
+    assert out["available"] is False
+    assert out["n"] == 0
+    assert out["current_balance"] == 10000.0
+
+
+def test_dt_shadow_empty_table_available_but_flat(fake_pool):
+    fake_pool._conn._fetch_rows = []
+    out = asyncio.run(queries.get_dt_shadow())
+    assert out["available"] is True
+    assert out["n"] == 0
+    assert out["total_profit"] == 0.0
+
+
+def test_dt_shadow_equity_wr_pf_and_drawdown(fake_pool):
+    # +200, -500, +100 on 10k: equity 10200, 9700, 9800. Peak 10200, trough 9700
+    # → max DD 500 (4.9%). 2 wins / 1 loss. PF = 300/500 = 0.6.
+    fake_pool._conn._fetch_rows = [
+        _dt_row(1000, 200.0), _dt_row(2000, -500.0, reason="sl"), _dt_row(3000, 100.0),
+    ]
+    out = asyncio.run(queries.get_dt_shadow())
+    assert out["available"] is True
+    assert out["n"] == 3
+    assert out["current_balance"] == pytest.approx(9800.0)
+    assert out["total_profit"] == pytest.approx(-200.0)
+    assert out["wins"] == 2 and out["losses"] == 1
+    assert out["win_rate"] == pytest.approx(66.7, abs=0.1)
+    assert out["profit_factor"] == pytest.approx(300.0 / 500.0)
+    assert out["max_drawdown_usd"] == pytest.approx(500.0)
+    assert [p["equity"] for p in out["points"]] == [10200.0, 9700.0, 9800.0]
+    # trades returned most-recent-first
+    assert out["trades"][0]["exit_ts"] == 3000
+
+
+def test_dt_shadow_pf_null_when_no_losses(fake_pool):
+    fake_pool._conn._fetch_rows = [_dt_row(1000, 50.0), _dt_row(2000, 25.0)]
+    out = asyncio.run(queries.get_dt_shadow())
+    assert out["profit_factor"] is None
+    assert out["losses"] == 0
 
 
 def test_ml_status_missing_table_returns_none(fake_pool):
