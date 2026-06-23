@@ -44,12 +44,18 @@ def main() -> int:
     clf = lgb.LGBMClassifier(**LGB_PARAMS)
     clf.fit(X, y, sample_weight=w.values, categorical_feature=cat or "auto")
 
+    # Freeze the exact categorical schema (column -> ordered categories). The
+    # forward scorer must re-apply THIS, not re-derive cat detection from a small
+    # forward slice (which drifts and trips LightGBM's category-mismatch check).
+    cat_categories = {c: list(X[c].cat.categories) for c in cat}
+
     cutoff = str(df["created_at"].max())
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump({
         "model": clf,
         "feature_names": list(X.columns),
         "cat_cols": cat,
+        "cat_categories": cat_categories,
         "cutoff_created_at": cutoff,
         "train_n": len(df),
         "setup_type": "engine1_trend_pullback",
