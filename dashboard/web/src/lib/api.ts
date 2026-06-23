@@ -184,6 +184,28 @@ export interface ShadowEquityResponse {
   points: ShadowEquityPoint[];
 }
 
+export interface ShadowMLArm {
+  wr: number | null;
+  pf: number | null; // null = infinite / undefined
+  pnl: number | null;
+  n: number | null;
+}
+
+export interface ShadowMLStatus {
+  available: boolean;
+  cutoff_created_at: string | null;
+  train_n: number | null;
+  n_forward: number;
+  n_gate: number;
+  gate_reached: boolean;
+  verdict_state: string | null; // accumulating | pass | fail
+  verdict: string | null;
+  take_all: ShadowMLArm | null;
+  top_half: ShadowMLArm | null;
+  bottom_half: ShadowMLArm | null;
+  updated_at: string | null;
+}
+
 export interface PositionData {
   pair: string;
   direction: string;

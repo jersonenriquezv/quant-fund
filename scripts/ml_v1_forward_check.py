@@ -14,6 +14,7 @@ Run:  python scripts/ml_v1_forward_check.py
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -46,6 +47,43 @@ def _telegram(text: str) -> None:
         print(f"telegram failed: {e}", file=sys.stderr)
 
 
+def _pf_json(x: float) -> float | None:
+    """JSON-safe profit factor — inf (no losers) becomes null."""
+    return None if x == float("inf") else round(float(x), 4)
+
+
+def _write_status(payload: dict) -> None:
+    """Persist the forward-gate state to a single-row PG table for the dashboard.
+
+    Read-only ML script writes here so the dashboard API (which can't see host
+    files / the log) can surface the gate without recomputing. Idempotent create;
+    best-effort — a failure here must never break the forward check itself.
+    """
+    try:
+        conn = psycopg2.connect(
+            host=settings.POSTGRES_HOST, port=settings.POSTGRES_PORT,
+            dbname=settings.POSTGRES_DB, user=settings.POSTGRES_USER,
+            password=settings.POSTGRES_PASSWORD, connect_timeout=10)
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS ml_forward_status (
+                    id smallint PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+                    payload jsonb NOT NULL,
+                    updated_at timestamptz NOT NULL DEFAULT now()
+                )
+            """)
+            cur.execute("""
+                INSERT INTO ml_forward_status (id, payload, updated_at)
+                VALUES (1, %s, now())
+                ON CONFLICT (id) DO UPDATE
+                  SET payload = EXCLUDED.payload, updated_at = now()
+            """, (json.dumps(payload),))
+        conn.close()
+    except Exception as e:  # noqa: BLE001 — status is auxiliary, never fatal
+        print(f"status write failed: {e}", file=sys.stderr)
+
+
 def main() -> int:
     if not MODEL_PATH.exists():
         print(f"ERROR: no frozen model at {MODEL_PATH}. Run ml_v1_freeze_model.py first.")
@@ -72,9 +110,17 @@ def main() -> int:
     conn.close()
 
     nf = len(df)
+    train_n = int(b.get("train_n") or 0)
     print(f"forward check — frozen cutoff {cutoff}, N_gate {N_GATE}")
     if nf == 0:
         print(f"  0 forward trades yet. Accumulating. (engine1 resolves ~12h.)")
+        _write_status({
+            "cutoff_created_at": str(cutoff), "train_n": train_n,
+            "n_forward": 0, "n_gate": N_GATE, "gate_reached": False,
+            "verdict_state": "accumulating",
+            "verdict": f"Accumulating 0/{N_GATE} forward trades — no verdict yet.",
+            "take_all": None, "top_half": None, "bottom_half": None,
+        })
         return 0
 
     pnl = pd.to_numeric(df["pnl_usd"], errors="coerce").fillna(0.0).values
@@ -111,8 +157,21 @@ def main() -> int:
     print(f"  top half:   WR {(ps[:k]>0).mean()*100:4.1f}%  PF {pfs(top_pf)}  ${ps[:k].sum():+.2f}")
     print(f"  bottom half:WR {(ps[k:]>0).mean()*100:4.1f}%  PF {pfs(bot_pf)}  ${ps[k:].sum():+.2f}")
 
+    arms = {
+        "take_all": {"wr": round((pnl > 0).mean() * 100, 1), "pf": _pf_json(all_pf), "pnl": round(float(pnl.sum()), 2), "n": nf},
+        "top_half": {"wr": round((ps[:k] > 0).mean() * 100, 1), "pf": _pf_json(top_pf), "pnl": round(float(ps[:k].sum()), 2), "n": int(k)},
+        "bottom_half": {"wr": round((ps[k:] > 0).mean() * 100, 1), "pf": _pf_json(bot_pf), "pnl": round(float(ps[k:].sum()), 2), "n": int(nf - k)},
+    }
+
     if nf < N_GATE:
         print(f"  STATUS: accumulating {nf}/{N_GATE} — no verdict yet.")
+        _write_status({
+            "cutoff_created_at": str(cutoff), "train_n": train_n,
+            "n_forward": nf, "n_gate": N_GATE, "gate_reached": False,
+            "verdict_state": "accumulating",
+            "verdict": f"Accumulating {nf}/{N_GATE} forward trades — no verdict yet.",
+            **arms,
+        })
         return 0
 
     holds = top_pf > max(all_pf, 1.0) and ps[:k].sum() > 0
@@ -121,6 +180,13 @@ def main() -> int:
     else:
         verdict = "FAIL — filter did not hold forward (impulse-gate trap). Do NOT size on it."
     print(f"  VERDICT @ N={nf}: {verdict}")
+    _write_status({
+        "cutoff_created_at": str(cutoff), "train_n": train_n,
+        "n_forward": nf, "n_gate": N_GATE, "gate_reached": True,
+        "verdict_state": "pass" if holds else "fail",
+        "verdict": verdict,
+        **arms,
+    })
 
     # Telegram milestone once per frozen cutoff (state file guards repeat spam).
     # Keyed to the cutoff so a RE-freeze (new window) re-arms the alert instead of

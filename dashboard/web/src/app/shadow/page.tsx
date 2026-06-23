@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Header } from "@/components/Header";
 import { fetchApi } from "@/lib/api";
-import type { ShadowTradeRecord, ShadowStats, ShadowEquityResponse, ShadowEquityPoint } from "@/lib/api";
+import type { ShadowTradeRecord, ShadowStats, ShadowEquityResponse, ShadowEquityPoint, ShadowMLStatus } from "@/lib/api";
 
 function fmt(n: number | null | undefined, d: number = 2): string {
   if (n == null || Number.isNaN(n)) return "--";
@@ -82,20 +82,23 @@ export default function ShadowPage() {
   const [closed, setClosed] = useState<ShadowTradeRecord[]>([]);
   const [stats, setStats] = useState<ShadowStats | null>(null);
   const [equity, setEquity] = useState<ShadowEquityResponse | null>(null);
+  const [ml, setMl] = useState<ShadowMLStatus | null>(null);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     try {
-      const [o, c, s, e] = await Promise.all([
+      const [o, c, s, e, m] = await Promise.all([
         fetchApi<ShadowTradeRecord[]>("/shadow/trades?status=open&limit=100"),
         fetchApi<ShadowTradeRecord[]>("/shadow/trades?status=closed&limit=100"),
         fetchApi<ShadowStats>("/shadow/stats"),
         fetchApi<ShadowEquityResponse>("/shadow/equity"),
+        fetchApi<ShadowMLStatus>("/shadow/ml-status"),
       ]);
       setOpen(o);
       setClosed(c);
       setStats(s);
       setEquity(e);
+      setMl(m);
     } finally {
       setLoading(false);
     }
@@ -177,6 +180,79 @@ export default function ShadowPage() {
           </div>
         </div>
         <EquityCurve points={equity?.points ?? []} />
+      </div>
+
+      {/* ML training — engine1 meta-label forward gate */}
+      <div className="card" style={{ gridColumn: "1 / -1" }}>
+        <div className="card-title">ML training — engine1 forward gate</div>
+        {!ml?.available ? (
+          <div style={{ color: "var(--text-muted)", fontSize: 12, padding: "16px 0" }}>
+            No forward-check run yet. Status appears once <span className="num">ml_v1_forward_check.py</span> runs (daily timer).
+          </div>
+        ) : (() => {
+          const pfFmt = (a: { pf: number | null; pnl: number | null } | null) =>
+            a == null ? "--" : a.pf == null ? ((a.pnl ?? 0) > 0 ? "∞" : "--") : a.pf.toFixed(2);
+          const stateColor =
+            ml.verdict_state === "pass" ? "var(--long)" :
+            ml.verdict_state === "fail" ? "var(--short)" : "var(--accent)";
+          const progress = Math.min(100, (ml.n_forward / Math.max(1, ml.n_gate)) * 100);
+          return (
+            <>
+              <div style={{ color: "var(--text-muted)", fontSize: 11, marginBottom: 12 }}>
+                Frozen model scores genuinely-unseen forward trades. Does the model&apos;s top-half beat take-all? That&apos;s the real-money gate.
+                {ml.cutoff_created_at && <> Freeze cutoff <span className="num">{ml.cutoff_created_at.slice(0, 16)}</span>, trained on N={ml.train_n}.</>}
+              </div>
+
+              {/* gate progress */}
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
+                <span className="hero-stat-label">Forward gate</span>
+                <span className="num" style={{ color: stateColor }}>{ml.n_forward} / {ml.n_gate}</span>
+              </div>
+              <div style={{ height: 8, borderRadius: 100, background: "var(--bg-secondary)", overflow: "hidden", marginBottom: 12 }}>
+                <div style={{ width: `${progress}%`, height: "100%", background: stateColor, borderRadius: 100, transition: "width .3s" }} />
+              </div>
+
+              <div style={{
+                fontSize: 12, padding: "8px 10px", borderRadius: 8, marginBottom: 12,
+                background: "var(--bg-secondary)", borderLeft: `3px solid ${stateColor}`, color: "var(--text-secondary)",
+              }}>
+                {ml.verdict}
+              </div>
+
+              <div className="scroll-y">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Arm</th>
+                      <th style={{ textAlign: "right" }}>N</th>
+                      <th style={{ textAlign: "right" }}>WR</th>
+                      <th style={{ textAlign: "right" }}>PF</th>
+                      <th style={{ textAlign: "right" }}>P&L $</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {([["Take all", ml.take_all], ["Model top half", ml.top_half], ["Model bottom half", ml.bottom_half]] as const).map(([label, a]) => (
+                      <tr key={label} className="animate-in">
+                        <td style={{ fontWeight: 600 }}>{label}</td>
+                        <td className="num">{a?.n ?? "--"}</td>
+                        <td className="num">{a?.wr != null ? a.wr.toFixed(1) + "%" : "--"}</td>
+                        <td className="num">{pfFmt(a)}</td>
+                        <td className={`num ${(a?.pnl ?? 0) >= 0 ? "pnl-positive" : "pnl-negative"}`}>
+                          {a?.pnl != null ? (a.pnl >= 0 ? "+" : "") + fmt(a.pnl) : "--"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {ml.updated_at && (
+                <div style={{ color: "var(--text-muted)", fontSize: 10, marginTop: 8 }}>
+                  Last check: {ml.updated_at.slice(0, 16)} UTC
+                </div>
+              )}
+            </>
+          );
+        })()}
       </div>
 
       {/* Open shadows */}

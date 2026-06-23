@@ -12,6 +12,7 @@ from fastapi import APIRouter, Query
 from dashboard.api.models import (
     ShadowTradeRecord, ShadowStats, ShadowSetupBreakdown,
     ShadowEquityResponse, ShadowEquityPoint,
+    ShadowMLStatus, ShadowMLArm,
 )
 from dashboard.api import queries
 
@@ -73,6 +74,31 @@ async def shadow_equity(
         max_drawdown_pct=d["max_drawdown_pct"],
         n=d["n"],
         points=[ShadowEquityPoint(**p) for p in d["points"]],
+    )
+
+
+@router.get("/shadow/ml-status", response_model=ShadowMLStatus)
+async def shadow_ml_status():
+    d = await queries.get_ml_forward_status()
+    if not d:
+        return ShadowMLStatus(available=False)
+
+    def _arm(a: dict | None) -> ShadowMLArm | None:
+        return ShadowMLArm(**a) if a else None
+
+    return ShadowMLStatus(
+        available=True,
+        cutoff_created_at=d.get("cutoff_created_at"),
+        train_n=d.get("train_n"),
+        n_forward=d.get("n_forward", 0),
+        n_gate=d.get("n_gate", 30),
+        gate_reached=d.get("gate_reached", False),
+        verdict_state=d.get("verdict_state"),
+        verdict=d.get("verdict"),
+        take_all=_arm(d.get("take_all")),
+        top_half=_arm(d.get("top_half")),
+        bottom_half=_arm(d.get("bottom_half")),
+        updated_at=d.get("updated_at"),
     )
 
 
