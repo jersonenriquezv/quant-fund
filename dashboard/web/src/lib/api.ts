@@ -117,6 +117,53 @@ export interface StatsData {
   avg_rr: number;
 }
 
+export interface ShadowTradeRecord {
+  setup_id: string | null;
+  setup_type: string | null;
+  pair: string | null;
+  direction: string | null;
+  entry_price: number | null;
+  sl_price: number | null;
+  tp1_price: number | null;
+  tp2_price: number | null;
+  actual_entry: number | null;
+  entry_distance_pct: number | null;
+  sl_distance_pct: number | null;
+  outcome_type: string | null;
+  pnl_pct: number | null;
+  pnl_usd: number | null;
+  created_at: string | null;
+  resolved_at: string | null;
+  status: string;
+}
+
+export interface ShadowSetupBreakdown {
+  setup_type: string | null;
+  total_trades: number;
+  winning_trades: number;
+  losing_trades: number;
+  win_rate: number;
+  profit_factor: number;
+  total_pnl_usd: number;
+  avg_pnl_pct: number;
+  best_trade_pct: number;
+  worst_trade_pct: number;
+}
+
+export interface ShadowStats {
+  experiment_id: string | null;
+  total_trades: number;
+  winning_trades: number;
+  losing_trades: number;
+  win_rate: number;
+  profit_factor: number;
+  total_pnl_usd: number;
+  avg_pnl_pct: number;
+  best_trade_pct: number;
+  worst_trade_pct: number;
+  by_setup_type: ShadowSetupBreakdown[];
+}
+
 export interface PositionData {
   pair: string;
   direction: string;

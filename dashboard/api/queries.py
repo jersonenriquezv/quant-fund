@@ -4,6 +4,15 @@ import asyncpg
 
 from dashboard.api import database as db
 
+# Shadow trades (ml_setups) — terminal market outcomes that represent a
+# theoretical trade resolving against price. Everything else (pre-execution
+# gates, dedup, orphans, no-fill) is NOT a trade and must be excluded from the
+# shadow viewer stats. Mirrors the training-filter intent in MEMORY.md.
+SHADOW_TERMINAL_OUTCOMES: tuple[str, ...] = (
+    "shadow_tp", "shadow_sl", "shadow_breakeven",
+    "shadow_time_stop", "shadow_timeout",
+)
+
 
 async def get_trades(status: str | None = None, limit: int = 50, offset: int = 0) -> list[dict]:
     async with db.pg_pool.acquire() as conn:
@@ -149,6 +158,118 @@ async def get_trade_stats() -> dict:
     d["profit_factor"] = (gp / gl) if gl > 0 else 0.0
     d["avg_rr"] = 0.0  # Requires per-trade RR calculation
     return d
+
+
+async def get_shadow_trades(
+    status: str | None = None,
+    setup_type: str | None = None,
+    experiment_id: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict]:
+    """Shadow 'trades' from ml_setups.
+
+    status='open'   → unresolved AND recent (bounds out ancient orphans).
+    status='closed' → terminal market outcomes only.
+    Defaults to the live EXPERIMENT_ID unless an explicit experiment_id is given.
+    """
+    from config.settings import settings
+
+    exp = experiment_id or settings.EXPERIMENT_ID
+    cols = (
+        "setup_id, setup_type, pair, direction, entry_price, sl_price, "
+        "tp1_price, tp2_price, outcome_type, pnl_pct, pnl_usd, actual_entry, "
+        "entry_distance_pct, sl_distance_pct, created_at, resolved_at"
+    )
+    where = ["experiment_id = $1"]
+    args: list = [exp]
+
+    if status == "open":
+        where.append("outcome_type IS NULL")
+        where.append("created_at > now() - interval '48 hours'")
+        order = "created_at DESC NULLS LAST"
+    elif status == "closed":
+        placeholders = ", ".join(f"${i + len(args) + 1}" for i in range(len(SHADOW_TERMINAL_OUTCOMES)))
+        where.append(f"outcome_type IN ({placeholders})")
+        args.extend(SHADOW_TERMINAL_OUTCOMES)
+        order = "resolved_at DESC NULLS LAST"
+    else:
+        placeholders = ", ".join(f"${i + len(args) + 1}" for i in range(len(SHADOW_TERMINAL_OUTCOMES)))
+        where.append(
+            f"(outcome_type IN ({placeholders}) OR "
+            f"(outcome_type IS NULL AND created_at > now() - interval '48 hours'))"
+        )
+        args.extend(SHADOW_TERMINAL_OUTCOMES)
+        order = "COALESCE(resolved_at, created_at) DESC NULLS LAST"
+
+    if setup_type:
+        args.append(setup_type)
+        where.append(f"setup_type = ${len(args)}")
+
+    args.append(limit)
+    limit_ph = f"${len(args)}"
+    args.append(offset)
+    offset_ph = f"${len(args)}"
+
+    sql = (
+        f"SELECT {cols} FROM ml_setups WHERE {' AND '.join(where)} "
+        f"ORDER BY {order} LIMIT {limit_ph} OFFSET {offset_ph}"
+    )
+    async with db.pg_pool.acquire() as conn:
+        rows = await conn.fetch(sql, *args)
+    return [dict(r) for r in rows]
+
+
+async def get_shadow_stats(
+    setup_type: str | None = None,
+    experiment_id: str | None = None,
+) -> dict:
+    """Aggregate stats over terminal shadow outcomes, plus per-setup breakdown.
+
+    pnl_usd is ALREADY net of taker fees ×2 (compute_pnl) — never re-deduct.
+    """
+    from config.settings import settings
+
+    exp = experiment_id or settings.EXPERIMENT_ID
+    placeholders = ", ".join(f"${i + 2}" for i in range(len(SHADOW_TERMINAL_OUTCOMES)))
+    where = [f"experiment_id = $1", f"outcome_type IN ({placeholders})"]
+    args: list = [exp, *SHADOW_TERMINAL_OUTCOMES]
+    if setup_type:
+        args.append(setup_type)
+        where.append(f"setup_type = ${len(args)}")
+    where_sql = " AND ".join(where)
+
+    agg_sql = """
+        COUNT(*)::int AS total_trades,
+        COUNT(*) FILTER (WHERE pnl_usd > 0)::int AS winning_trades,
+        COUNT(*) FILTER (WHERE pnl_usd <= 0)::int AS losing_trades,
+        COALESCE(SUM(pnl_usd), 0)::float AS total_pnl_usd,
+        COALESCE(AVG(pnl_pct), 0)::float AS avg_pnl_pct,
+        COALESCE(MAX(pnl_pct), 0)::float AS best_trade_pct,
+        COALESCE(MIN(pnl_pct), 0)::float AS worst_trade_pct,
+        COALESCE(SUM(pnl_usd) FILTER (WHERE pnl_usd > 0), 0)::float AS gross_profit,
+        COALESCE(ABS(SUM(pnl_usd) FILTER (WHERE pnl_usd < 0)), 0)::float AS gross_loss
+    """
+    async with db.pg_pool.acquire() as conn:
+        row = await conn.fetchrow(f"SELECT {agg_sql} FROM ml_setups WHERE {where_sql}", *args)
+        breakdown_rows = await conn.fetch(
+            f"""SELECT setup_type, {agg_sql} FROM ml_setups WHERE {where_sql}
+                GROUP BY setup_type ORDER BY total_pnl_usd DESC""",
+            *args,
+        )
+
+    def _finish(d: dict) -> dict:
+        total = d["total_trades"]
+        d["win_rate"] = (d["winning_trades"] / total * 100) if total > 0 else 0.0
+        gp = d.pop("gross_profit")
+        gl = d.pop("gross_loss")
+        d["profit_factor"] = (gp / gl) if gl > 0 else 0.0
+        return d
+
+    out = _finish(dict(row))
+    out["experiment_id"] = exp
+    out["by_setup_type"] = [_finish(dict(r)) for r in breakdown_rows]
+    return out
 
 
 async def set_cancel_request(pair: str) -> None:

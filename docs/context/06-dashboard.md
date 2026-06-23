@@ -35,6 +35,8 @@ Si el dashboard crashea, el bot sigue operando normalmente.
 | `GET /api/chart/live?symbol=&resolution=` | Redis | Vela FORMANDO (en progreso) para el tick real-time. Lee `qf:livecandle:{pair}:5m` (la cachea el bot vía WS, ~1-2s; fallback al `qf:candle:` confirmado). El front la pollea cada 2s y agrega a TFs mayores client-side. `/history` solo da velas cerradas, por eso esto es lo que hace mover la vela intra-barra |
 | `GET /api/chart/detections?symbol=&resolution=&to=` | PG candles + detectores OB/FVG (in-memory, read-only) | Overlay de detecciones del bot: zonas OB/FVG activas as-of `to`. Replay incremental, expiración por `current_time_ms`=ts de la barra (sin reloj wall-clock); window 600 barras, corre off event-loop. ~2.5s/call (O(n²)) — uso single-shot |
 | `GET /api/chart/detection_timeline?symbol=&resolution=&to=` | igual que `/detections` | **Perf + MTF**: replay por cada TF (HTF de sesgo `1d`+`4h` SIEMPRE + el TF del chart, deduped, en paralelo vía `asyncio.gather`). Devuelve `{zones, as_of, timeframes}`; cada zona trae lifecycle (`born_ts`/`expire_ts`/`spent_ts`), `significant` (por TF) y `source_tf`. Zonas vivas en la última barra del replay → `expire_ts = ZONE_OPEN_TS` (sentinel ~año 3000) para que una zona HTF se renderice as-of cualquier tiempo en un chart LTF. El front lo pide una vez por símbolo/resolución (+ por nueva vela live) y filtra client-side (`zonesAsOf()`) → cero llamadas por-barra |
+| `GET /api/shadow/trades?status=&setup_type=&experiment_id=&limit=50` | PG `ml_setups` (read-only) | Shadow "trades" del modo shadow-only. `status=open` → `outcome_type IS NULL` + bound 48h (evita orphans antiguos); `status=closed` → whitelist terminal (`shadow_tp/sl/breakeven/time_stop/timeout`). Scope por `EXPERIMENT_ID` (default settings, overridable). NO toca `trades` (congelada en 43 rows desde 2026-04-09) |
+| `GET /api/shadow/stats?setup_type=&experiment_id=` | PG `ml_setups` (read-only) | WR/PF/profit sobre outcomes terminales + breakdown `by_setup_type`. `pnl_usd` YA neto de fees ×2 — no re-deducir. OJO: el headline agregado mezcla brazos benchmark (`bench_engine1_*`); el breakdown los separa |
 | `POST /api/manual/calculate` | Pure math | Position sizing & R:R calculator (linear + inverse) |
 | `POST /api/manual/trades` | PG manual_trades | Create manual trade (planned) |
 | `GET /api/manual/trades` | PG manual_trades | List trades (filter by status/pair) |
@@ -154,6 +156,7 @@ dashboard/
 │   │   ├── sentiment.py    # GET /api/sentiment
 │   │   ├── liquidation.py  # GET /api/liquidation/heatmap/{pair}
 │   │   ├── chart.py        # GET /api/chart/{config,symbols,search,history} (TradingView UDF Datafeed)
+│   │   ├── shadow.py       # GET /api/shadow/{trades,stats} (ml_setups read-only, shadow-mode viewer)
 │   │   └── manual_routes.py # Manual trading API + HTML page
 │   ├── manual/
 │   │   ├── calculator.py  # Position sizing math (linear + inverse), no external deps
