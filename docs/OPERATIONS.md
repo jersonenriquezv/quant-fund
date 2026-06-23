@@ -265,6 +265,10 @@ sudo systemctl disable --now signal-scanner.timer
 | 21 | ml_setups: Engine 1 lossless metric columns (engine1_impulse_atr_multiple, engine1_pullback_depth_pct, engine1_pullback_candle_count, engine1_entry_atr_distance) | 2026-04 |
 | 22 | ml_setups: data_quality tag (partial-candle risk — rows whose trigger bar was a forming candle pre-backfill-fix; excluded from training) | 2026-06 |
 
+**Auxiliary tables (unversioned, `CREATE TABLE IF NOT EXISTS` — not numbered migrations):**
+- `dt_shadow_trades` — Dual Thrust shadow paper trades (created in `_create_tables`, written by `data_store.store_dt_shadow_trades` from the `main.py` DT hook; read by dashboard `/api/shadow/dt`). 2026-06.
+- `ml_forward_status` — single-row engine1 forward-gate state (created + upserted by `scripts/ml_v1_forward_check.py`; read by dashboard `/api/shadow/ml-status`). 2026-06.
+
 ### Adding a New Migration
 
 1. In `_create_tables()`, add a new version block:

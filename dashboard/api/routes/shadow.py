@@ -13,6 +13,7 @@ from dashboard.api.models import (
     ShadowTradeRecord, ShadowStats, ShadowSetupBreakdown,
     ShadowEquityResponse, ShadowEquityPoint,
     ShadowMLStatus, ShadowMLArm,
+    ShadowDTResponse, ShadowDTTrade, ShadowDTPoint,
 )
 from dashboard.api import queries
 
@@ -99,6 +100,24 @@ async def shadow_ml_status():
         top_half=_arm(d.get("top_half")),
         bottom_half=_arm(d.get("bottom_half")),
         updated_at=d.get("updated_at"),
+    )
+
+
+@router.get("/shadow/dt", response_model=ShadowDTResponse)
+async def shadow_dt(limit: int = Query(100, ge=1, le=500)):
+    d = await queries.get_dt_shadow(limit=limit)
+    return ShadowDTResponse(
+        available=d["available"],
+        start_balance=d["start_balance"],
+        current_balance=d["current_balance"],
+        total_profit=d["total_profit"],
+        return_pct=d["return_pct"],
+        max_drawdown_usd=d["max_drawdown_usd"],
+        max_drawdown_pct=d["max_drawdown_pct"],
+        n=d["n"], wins=d["wins"], losses=d["losses"],
+        win_rate=d["win_rate"], profit_factor=d["profit_factor"],
+        points=[ShadowDTPoint(**p) for p in d["points"]],
+        trades=[ShadowDTTrade(**t) for t in d["trades"]],
     )
 
 
