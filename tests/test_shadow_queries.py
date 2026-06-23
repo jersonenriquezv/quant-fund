@@ -20,6 +20,7 @@ from config.settings import settings
 class _FakeConn:
     def __init__(self, recorder):
         self._rec = recorder
+        self._fetch_rows = []
         self._row = {
             "total_trades": 0, "winning_trades": 0, "losing_trades": 0,
             "total_pnl_usd": 0.0, "avg_pnl_pct": 0.0,
@@ -29,7 +30,7 @@ class _FakeConn:
 
     async def fetch(self, sql, *args):
         self._rec.append((sql, args))
-        return []
+        return list(self._fetch_rows)
 
     async def fetchrow(self, sql, *args):
         self._rec.append((sql, args))
@@ -124,3 +125,46 @@ def test_stats_win_rate_and_pf_math(fake_pool):
     assert out["win_rate"] == pytest.approx(60.0)
     assert out["profit_factor"] == pytest.approx(120.0 / 70.0)
     assert "gross_profit" not in out  # popped
+
+
+def _eq_row(ts, pnl, setup="engine1", pair="ETH/USDT"):
+    return {"resolved_at": ts, "pnl_usd": pnl, "setup_type": setup, "pair": pair}
+
+
+def test_equity_curve_whitelist_scope_and_filters(fake_pool):
+    asyncio.run(queries.get_shadow_equity_curve())
+    sql, args = fake_pool.calls[-1]
+    assert "outcome_type IN (" in sql
+    assert "resolved_at IS NOT NULL" in sql
+    assert "pnl_usd IS NOT NULL" in sql
+    assert "ORDER BY resolved_at ASC" in sql
+    assert args[0] == "test_experiment_xyz"
+    for o in queries.SHADOW_TERMINAL_OUTCOMES:
+        assert o in args
+
+
+def test_equity_curve_running_sum_and_drawdown(fake_pool):
+    # +100 → -300 → +50  on a 10000 start: equity 10100, 9800, 9850.
+    # Peak 10100, trough 9800 → max DD = 300 (2.97% of peak).
+    fake_pool._conn._fetch_rows = [
+        _eq_row("2026-06-01T00:00:00", 100.0),
+        _eq_row("2026-06-02T00:00:00", -300.0),
+        _eq_row("2026-06-03T00:00:00", 50.0),
+    ]
+    out = asyncio.run(queries.get_shadow_equity_curve(start_balance=10000.0))
+    assert out["n"] == 3
+    assert out["current_balance"] == pytest.approx(9850.0)
+    assert out["total_profit"] == pytest.approx(-150.0)
+    assert out["return_pct"] == pytest.approx(-1.5)
+    assert out["max_drawdown_usd"] == pytest.approx(300.0)
+    assert out["max_drawdown_pct"] == pytest.approx(300.0 / 10100.0 * 100, abs=1e-2)
+    assert [p["equity"] for p in out["points"]] == [10100.0, 9800.0, 9850.0]
+
+
+def test_equity_curve_empty_is_flat(fake_pool):
+    out = asyncio.run(queries.get_shadow_equity_curve(start_balance=5000.0))
+    assert out["n"] == 0
+    assert out["current_balance"] == 5000.0
+    assert out["total_profit"] == 0.0
+    assert out["max_drawdown_usd"] == 0.0
+    assert out["points"] == []

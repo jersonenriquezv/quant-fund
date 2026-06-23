@@ -41,10 +41,9 @@
 
 **Done when:** Shadow tab shows today's opening shadows + correct per-setup WR/PF/profit; mobile clean at 375px; tests green.
 
-## Phase 2 — Synthetic equity / balance / profit
-- `queries.py`: `get_shadow_equity_curve(start_balance=10000, experiment_id=...)` — resolved terminal shadows ordered by `resolved_at`, running `start_balance + cumsum(pnl_usd)`. Return points `[{ts, equity, pnl_usd, setup_type}]` + summary (current balance, total profit, max drawdown, return %).
-- `routes/shadow.py`: `GET /api/shadow/equity`.
-- Frontend: equity curve chart on the Shadow page + balance/profit/DD cards. (Charting lib already in repo — reuse.)
+## Phase 2 — Synthetic equity / balance / profit — ✅ DONE 2026-06-23
+**Shipped:** `queries.get_shadow_equity_curve(start_balance=10000, setup_type, experiment_id)` — terminal-whitelist + `resolved_at IS NOT NULL` ordered ASC, running `start_balance + cumsum(pnl_usd)`, max-DD computed peak-to-trough in Python. Returns `points[{ts,equity,pnl_usd,setup_type,pair}]` + summary (current_balance, total_profit, return_pct, max_drawdown_usd/_pct, n). `routes/shadow.py` `GET /api/shadow/equity`. Models `ShadowEquityPoint`/`ShadowEquityResponse`. Frontend: SVG area-curve (NOT klinecharts — sparkline per dashboard rule) + balance/profit/return/maxDD cards on the Shadow page. Tests +3 (whitelist/scope, running-sum + DD math, empty=flat) → 9 total pass. Build /shadow 4.0 kB, mobile 375px verified. Live: 1633 pts, paper $10k→$8747.34, −12.53%, max DD $1314.76 (13.07%).
+**Note:** equity includes benchmark arms (same caveat as Phase 1 headline) — curve = all-shadows aggregate. Per-setup curve filterable via `setup_type` param; UI exposes whole-experiment only for now.
 
 ## Phase 3 — ML training status panel
 - Surface the engine1 meta-label forward-validation state: forward N / 30 gate, last freeze cutoff + train N, OOF/OOT PF, latest AUC, last `ml_v1_forward_check` verdict.

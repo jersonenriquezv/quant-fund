@@ -164,6 +164,26 @@ export interface ShadowStats {
   by_setup_type: ShadowSetupBreakdown[];
 }
 
+export interface ShadowEquityPoint {
+  ts: string;
+  equity: number;
+  pnl_usd: number;
+  setup_type: string | null;
+  pair: string | null;
+}
+
+export interface ShadowEquityResponse {
+  experiment_id: string | null;
+  start_balance: number;
+  current_balance: number;
+  total_profit: number;
+  return_pct: number;
+  max_drawdown_usd: number;
+  max_drawdown_pct: number;
+  n: number;
+  points: ShadowEquityPoint[];
+}
+
 export interface PositionData {
   pair: string;
   direction: string;
