@@ -29,7 +29,7 @@ from config.settings import settings  # noqa: E402
 from scripts.ml_v0_engine1 import prepare_features  # noqa: E402
 
 MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "engine1_meta_v1.pkl"
-N_GATE = int(os.environ.get("ML_FWD_GATE", "40"))   # min forward trades before a verdict
+N_GATE = int(os.environ.get("ML_FWD_GATE", "30"))   # min forward trades before a verdict + Telegram milestone
 
 
 def _telegram(text: str) -> None:
@@ -80,6 +80,20 @@ def main() -> int:
     pnl = pd.to_numeric(df["pnl_usd"], errors="coerce").fillna(0.0).values
     X, _, _ = prepare_features(df)
     X = X.reindex(columns=b["feature_names"])
+    # Re-apply the FROZEN categorical schema. prepare_features() re-derives which
+    # columns are categorical from whatever this forward slice happens to hold;
+    # on a small sample that drifts (numeric-with-None flips to string-category or
+    # vice versa) and LightGBM raises "categorical_feature do not match". The
+    # authoritative schema is the one the model trained on — force the forward X
+    # to it so dtypes AND category codes line up exactly.
+    cat_cols = b.get("cat_cols", [])
+    cat_categories = b.get("cat_categories", {})
+    for col in b["feature_names"]:
+        if col in cat_cols:
+            cats = cat_categories.get(col) or None
+            X[col] = pd.Categorical(X[col].astype("object"), categories=cats)
+        elif isinstance(X[col].dtype, pd.CategoricalDtype):
+            X[col] = pd.to_numeric(X[col], errors="coerce")
     score = b["model"].predict_proba(X)[:, 1]
 
     order = np.argsort(-score)
@@ -108,15 +122,19 @@ def main() -> int:
         verdict = "FAIL — filter did not hold forward (impulse-gate trap). Do NOT size on it."
     print(f"  VERDICT @ N={nf}: {verdict}")
 
-    # Telegram milestone once (state file guards against repeat spam).
+    # Telegram milestone once per frozen cutoff (state file guards repeat spam).
+    # Keyed to the cutoff so a RE-freeze (new window) re-arms the alert instead of
+    # being suppressed by a stale flag from a previous gate.
     flag = Path("/tmp/ml_fwd_gate_notified")
-    if not flag.exists():
+    already = flag.read_text().strip() if flag.exists() else ""
+    if already != str(cutoff):
         _telegram(
             f"\U0001f9ea <b>ML forward gate reached</b> (engine1)\n"
-            f"forward N={nf}\n"
+            f"forward N={nf} (gate {N_GATE})\n"
             f"take-all PF {pfs(all_pf)} → top-half PF {pfs(top_pf)}\n"
-            f"{verdict}")
-        flag.write_text(cutoff)
+            f"{verdict}\n"
+            f"Next: run scripts/ml_v1_money_test.py + decide calibration / small live.")
+        flag.write_text(str(cutoff))
     return 0
 
 
