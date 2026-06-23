@@ -166,6 +166,28 @@ class ShadowEquityResponse(BaseModel):
     points: list[ShadowEquityPoint] = []
 
 
+class ShadowMLArm(BaseModel):
+    wr: float | None = None
+    pf: float | None = None  # null = infinite (no losers) or undefined
+    pnl: float | None = None
+    n: int | None = None
+
+
+class ShadowMLStatus(BaseModel):
+    available: bool = False
+    cutoff_created_at: str | None = None
+    train_n: int | None = None
+    n_forward: int = 0
+    n_gate: int = 30
+    gate_reached: bool = False
+    verdict_state: str | None = None  # accumulating | pass | fail
+    verdict: str | None = None
+    take_all: ShadowMLArm | None = None
+    top_half: ShadowMLArm | None = None
+    bottom_half: ShadowMLArm | None = None
+    updated_at: str | None = None
+
+
 class WhaleMovementRecord(BaseModel):
     timestamp: int
     wallet: str

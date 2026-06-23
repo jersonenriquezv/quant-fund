@@ -9,7 +9,9 @@ via asyncio.run() in plain sync test functions.
 """
 
 import asyncio
+import json
 
+import asyncpg
 import pytest
 
 from dashboard.api import database as db
@@ -27,6 +29,8 @@ class _FakeConn:
             "best_trade_pct": 0.0, "worst_trade_pct": 0.0,
             "gross_profit": 0.0, "gross_loss": 0.0,
         }
+        self._ml_row = None      # row returned for ml_forward_status fetchrow
+        self._ml_exc = None      # exception to raise for ml_forward_status fetchrow
 
     async def fetch(self, sql, *args):
         self._rec.append((sql, args))
@@ -34,6 +38,10 @@ class _FakeConn:
 
     async def fetchrow(self, sql, *args):
         self._rec.append((sql, args))
+        if "ml_forward_status" in sql:
+            if self._ml_exc is not None:
+                raise self._ml_exc
+            return self._ml_row
         return dict(self._row)
 
 
@@ -168,3 +176,33 @@ def test_equity_curve_empty_is_flat(fake_pool):
     assert out["total_profit"] == 0.0
     assert out["max_drawdown_usd"] == 0.0
     assert out["points"] == []
+
+
+def test_ml_status_missing_table_returns_none(fake_pool):
+    fake_pool._conn._ml_exc = asyncpg.UndefinedTableError("no table")
+    assert asyncio.run(queries.get_ml_forward_status()) is None
+
+
+def test_ml_status_missing_row_returns_none(fake_pool):
+    fake_pool._conn._ml_row = None
+    assert asyncio.run(queries.get_ml_forward_status()) is None
+
+
+def test_ml_status_decodes_jsonb_string(fake_pool):
+    # asyncpg returns jsonb as a str unless a codec is set — must json.loads it.
+    payload = {"n_forward": 6, "n_gate": 30, "gate_reached": False,
+               "verdict_state": "accumulating", "train_n": 322}
+    fake_pool._conn._ml_row = {"payload": json.dumps(payload), "updated_at": "2026-06-23 13:00:00"}
+    out = asyncio.run(queries.get_ml_forward_status())
+    assert out["n_forward"] == 6
+    assert out["gate_reached"] is False
+    assert out["updated_at"] == "2026-06-23 13:00:00"
+
+
+def test_ml_status_accepts_decoded_dict(fake_pool):
+    payload = {"n_forward": 40, "n_gate": 30, "gate_reached": True, "verdict_state": "pass"}
+    fake_pool._conn._ml_row = {"payload": payload, "updated_at": None}
+    out = asyncio.run(queries.get_ml_forward_status())
+    assert out["gate_reached"] is True
+    assert out["verdict_state"] == "pass"
+    assert out["updated_at"] is None

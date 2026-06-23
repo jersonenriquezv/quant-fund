@@ -1,5 +1,7 @@
 """Centralized SQL queries — no ORM, raw asyncpg."""
 
+import json
+
 import asyncpg
 
 from dashboard.api import database as db
@@ -335,6 +337,29 @@ async def get_shadow_equity_curve(
         "n": len(points),
         "points": points,
     }
+
+
+async def get_ml_forward_status() -> dict | None:
+    """Engine1 meta-label forward-gate state, written by ml_v1_forward_check.py.
+
+    Single-row `ml_forward_status` table (payload jsonb + updated_at). Returns
+    None if the table/row doesn't exist yet (checker never ran). Read-only.
+    """
+    try:
+        async with db.pg_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT payload, updated_at FROM ml_forward_status WHERE id = 1"
+            )
+    except asyncpg.UndefinedTableError:
+        return None
+    if not row:
+        return None
+    payload = row["payload"]
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    payload = dict(payload)
+    payload["updated_at"] = str(row["updated_at"]) if row["updated_at"] else None
+    return payload
 
 
 async def set_cancel_request(pair: str) -> None:
