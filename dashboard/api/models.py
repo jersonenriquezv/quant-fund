@@ -99,6 +99,53 @@ class StatsResponse(BaseModel):
     avg_rr: float = 0.0
 
 
+class ShadowTradeRecord(BaseModel):
+    setup_id: str | None
+    setup_type: str | None
+    pair: str | None
+    direction: str | None
+    entry_price: float | None
+    sl_price: float | None
+    tp1_price: float | None
+    tp2_price: float | None
+    actual_entry: float | None
+    entry_distance_pct: float | None
+    sl_distance_pct: float | None
+    outcome_type: str | None
+    pnl_pct: float | None
+    pnl_usd: float | None
+    created_at: str | None
+    resolved_at: str | None
+    status: str  # "open" | "closed"
+
+
+class ShadowSetupBreakdown(BaseModel):
+    setup_type: str | None
+    total_trades: int = 0
+    winning_trades: int = 0
+    losing_trades: int = 0
+    win_rate: float = 0.0
+    profit_factor: float = 0.0
+    total_pnl_usd: float = 0.0
+    avg_pnl_pct: float = 0.0
+    best_trade_pct: float = 0.0
+    worst_trade_pct: float = 0.0
+
+
+class ShadowStats(BaseModel):
+    experiment_id: str | None = None
+    total_trades: int = 0
+    winning_trades: int = 0
+    losing_trades: int = 0
+    win_rate: float = 0.0
+    profit_factor: float = 0.0
+    total_pnl_usd: float = 0.0
+    avg_pnl_pct: float = 0.0
+    best_trade_pct: float = 0.0
+    worst_trade_pct: float = 0.0
+    by_setup_type: list[ShadowSetupBreakdown] = []
+
+
 class WhaleMovementRecord(BaseModel):
     timestamp: int
     wallet: str
