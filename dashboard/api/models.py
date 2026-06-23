@@ -146,6 +146,26 @@ class ShadowStats(BaseModel):
     by_setup_type: list[ShadowSetupBreakdown] = []
 
 
+class ShadowEquityPoint(BaseModel):
+    ts: str
+    equity: float
+    pnl_usd: float
+    setup_type: str | None
+    pair: str | None
+
+
+class ShadowEquityResponse(BaseModel):
+    experiment_id: str | None = None
+    start_balance: float = 0.0
+    current_balance: float = 0.0
+    total_profit: float = 0.0
+    return_pct: float = 0.0
+    max_drawdown_usd: float = 0.0
+    max_drawdown_pct: float = 0.0
+    n: int = 0
+    points: list[ShadowEquityPoint] = []
+
+
 class WhaleMovementRecord(BaseModel):
     timestamp: int
     wallet: str

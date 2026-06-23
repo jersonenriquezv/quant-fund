@@ -272,6 +272,71 @@ async def get_shadow_stats(
     return out
 
 
+async def get_shadow_equity_curve(
+    start_balance: float = 10000.0,
+    setup_type: str | None = None,
+    experiment_id: str | None = None,
+) -> dict:
+    """Synthetic paper-equity curve from resolved terminal shadows.
+
+    No real shadow account exists — equity = start_balance + running cumsum of
+    pnl_usd ordered by resolved_at, scoped to EXPERIMENT_ID. pnl_usd is already
+    net of fees ×2 — never re-deduct. Returns points + summary (current balance,
+    total profit, max drawdown abs/pct, return %).
+    """
+    from config.settings import settings
+
+    exp = experiment_id or settings.EXPERIMENT_ID
+    placeholders = ", ".join(f"${i + 2}" for i in range(len(SHADOW_TERMINAL_OUTCOMES)))
+    where = ["experiment_id = $1", f"outcome_type IN ({placeholders})",
+             "resolved_at IS NOT NULL", "pnl_usd IS NOT NULL"]
+    args: list = [exp, *SHADOW_TERMINAL_OUTCOMES]
+    if setup_type:
+        args.append(setup_type)
+        where.append(f"setup_type = ${len(args)}")
+
+    sql = (
+        f"SELECT resolved_at, pnl_usd, setup_type, pair FROM ml_setups "
+        f"WHERE {' AND '.join(where)} ORDER BY resolved_at ASC"
+    )
+    async with db.pg_pool.acquire() as conn:
+        rows = await conn.fetch(sql, *args)
+
+    points: list[dict] = []
+    equity = start_balance
+    peak = start_balance
+    max_dd_abs = 0.0
+    max_dd_pct = 0.0
+    for r in rows:
+        equity += float(r["pnl_usd"])
+        if equity > peak:
+            peak = equity
+        dd_abs = peak - equity
+        if dd_abs > max_dd_abs:
+            max_dd_abs = dd_abs
+            max_dd_pct = (dd_abs / peak * 100) if peak > 0 else 0.0
+        points.append({
+            "ts": str(r["resolved_at"]),
+            "equity": round(equity, 2),
+            "pnl_usd": round(float(r["pnl_usd"]), 2),
+            "setup_type": r["setup_type"],
+            "pair": r["pair"],
+        })
+
+    total_profit = equity - start_balance
+    return {
+        "experiment_id": exp,
+        "start_balance": round(start_balance, 2),
+        "current_balance": round(equity, 2),
+        "total_profit": round(total_profit, 2),
+        "return_pct": round((total_profit / start_balance * 100) if start_balance > 0 else 0.0, 2),
+        "max_drawdown_usd": round(max_dd_abs, 2),
+        "max_drawdown_pct": round(max_dd_pct, 2),
+        "n": len(points),
+        "points": points,
+    }
+
+
 async def set_cancel_request(pair: str) -> None:
     """Write a cancel request to Redis with 60s TTL."""
     key = f"qf:cancel_request:{pair}"

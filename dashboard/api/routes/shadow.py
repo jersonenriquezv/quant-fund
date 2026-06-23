@@ -9,7 +9,10 @@ Read-only: never mutate ml_setups (bot owns it). pnl_usd is already net of fees.
 
 from fastapi import APIRouter, Query
 
-from dashboard.api.models import ShadowTradeRecord, ShadowStats, ShadowSetupBreakdown
+from dashboard.api.models import (
+    ShadowTradeRecord, ShadowStats, ShadowSetupBreakdown,
+    ShadowEquityResponse, ShadowEquityPoint,
+)
 from dashboard.api import queries
 
 router = APIRouter()
@@ -48,6 +51,28 @@ async def shadow_stats(
         best_trade_pct=d["best_trade_pct"],
         worst_trade_pct=d["worst_trade_pct"],
         by_setup_type=[ShadowSetupBreakdown(**b) for b in d["by_setup_type"]],
+    )
+
+
+@router.get("/shadow/equity", response_model=ShadowEquityResponse)
+async def shadow_equity(
+    start_balance: float = Query(10000.0, gt=0),
+    setup_type: str | None = None,
+    experiment_id: str | None = None,
+):
+    d = await queries.get_shadow_equity_curve(
+        start_balance=start_balance, setup_type=setup_type, experiment_id=experiment_id,
+    )
+    return ShadowEquityResponse(
+        experiment_id=d["experiment_id"],
+        start_balance=d["start_balance"],
+        current_balance=d["current_balance"],
+        total_profit=d["total_profit"],
+        return_pct=d["return_pct"],
+        max_drawdown_usd=d["max_drawdown_usd"],
+        max_drawdown_pct=d["max_drawdown_pct"],
+        n=d["n"],
+        points=[ShadowEquityPoint(**p) for p in d["points"]],
     )
 
 

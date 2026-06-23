@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Header } from "@/components/Header";
 import { fetchApi } from "@/lib/api";
-import type { ShadowTradeRecord, ShadowStats } from "@/lib/api";
+import type { ShadowTradeRecord, ShadowStats, ShadowEquityResponse, ShadowEquityPoint } from "@/lib/api";
 
 function fmt(n: number | null | undefined, d: number = 2): string {
   if (n == null || Number.isNaN(n)) return "--";
@@ -39,22 +39,63 @@ function shortOutcome(o: string | null): string {
   return o.replace(/^shadow_/, "");
 }
 
+// Synthetic paper-equity curve (SVG sparkline — no charting lib per dashboard rules).
+function EquityCurve({ points }: { points: ShadowEquityPoint[] }) {
+  if (points.length < 2) {
+    return (
+      <div style={{ color: "var(--text-muted)", fontSize: 12, textAlign: "center", padding: "30px 0" }}>
+        Need 2+ resolved shadows for a curve
+      </div>
+    );
+  }
+  const vals = points.map((p) => p.equity);
+  const start = points[0].equity - points[0].pnl_usd; // implied opening balance
+  const min = Math.min(start, ...vals);
+  const max = Math.max(start, ...vals);
+  const range = max - min || 1;
+
+  const w = 600;
+  const h = 160;
+  const pad = 6;
+  const coords = vals.map((v, i) => {
+    const x = pad + (i / (vals.length - 1)) * (w - 2 * pad);
+    const y = h - pad - ((v - min) / range) * (h - 2 * pad);
+    return `${x},${y}`;
+  });
+  const startY = h - pad - ((start - min) / range) * (h - 2 * pad);
+  const last = vals[vals.length - 1];
+  const color = last >= start ? "var(--long)" : "var(--short)";
+  const area = `${pad},${h - pad} ${coords.join(" ")} ${w - pad},${h - pad}`;
+
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ width: "100%", height: 180 }}>
+      {/* opening-balance baseline */}
+      <line x1={pad} y1={startY} x2={w - pad} y2={startY} stroke="var(--border)" strokeWidth="1" strokeDasharray="4,4" />
+      <polygon points={area} fill={color} opacity="0.08" />
+      <polyline points={coords.join(" ")} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 export default function ShadowPage() {
   const [open, setOpen] = useState<ShadowTradeRecord[]>([]);
   const [closed, setClosed] = useState<ShadowTradeRecord[]>([]);
   const [stats, setStats] = useState<ShadowStats | null>(null);
+  const [equity, setEquity] = useState<ShadowEquityResponse | null>(null);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     try {
-      const [o, c, s] = await Promise.all([
+      const [o, c, s, e] = await Promise.all([
         fetchApi<ShadowTradeRecord[]>("/shadow/trades?status=open&limit=100"),
         fetchApi<ShadowTradeRecord[]>("/shadow/trades?status=closed&limit=100"),
         fetchApi<ShadowStats>("/shadow/stats"),
+        fetchApi<ShadowEquityResponse>("/shadow/equity"),
       ]);
       setOpen(o);
       setClosed(c);
       setStats(s);
+      setEquity(e);
     } finally {
       setLoading(false);
     }
@@ -105,6 +146,37 @@ export default function ShadowPage() {
             <span><span className="hero-stat-label">Open now</span> {open.length}</span>
           </div>
         </div>
+      </div>
+
+      {/* Synthetic equity curve */}
+      <div className="card" style={{ gridColumn: "1 / -1" }}>
+        <div className="card-title">Synthetic equity — paper ${fmt(equity?.start_balance ?? 10000, 0)} start</div>
+        <div style={{ color: "var(--text-muted)", fontSize: 11, marginBottom: 10 }}>
+          Paper curve: starting balance + cumulative shadow P&L, ordered by resolve time. Not a real account.
+        </div>
+        <div className="hero-stats" style={{ height: "auto", marginBottom: 10 }}>
+          <div className="hero-stat">
+            <div className="hero-stat-label">Balance</div>
+            <div className="hero-value">${fmt(equity?.current_balance ?? 0)}</div>
+          </div>
+          <div className="hero-stat">
+            <div className="hero-stat-label">Profit</div>
+            <div className={`hero-value ${(equity?.total_profit ?? 0) >= 0 ? "hero-value-positive" : "hero-value-negative"}`}>
+              {(equity?.total_profit ?? 0) >= 0 ? "+" : ""}${fmt(equity?.total_profit ?? 0)}
+            </div>
+          </div>
+          <div className="hero-stat">
+            <div className="hero-stat-label">Return</div>
+            <div className={`hero-value ${(equity?.return_pct ?? 0) >= 0 ? "hero-value-positive" : "hero-value-negative"}`}>
+              {(equity?.return_pct ?? 0) >= 0 ? "+" : ""}{fmt(equity?.return_pct ?? 0, 1)}%
+            </div>
+          </div>
+          <div className="hero-stat-secondary">
+            <span><span className="hero-stat-label">Max DD</span> -${fmt(equity?.max_drawdown_usd ?? 0)} ({fmt(equity?.max_drawdown_pct ?? 0, 1)}%)</span>
+            <span><span className="hero-stat-label">Resolved</span> {equity?.n ?? 0}</span>
+          </div>
+        </div>
+        <EquityCurve points={equity?.points ?? []} />
       </div>
 
       {/* Open shadows */}
