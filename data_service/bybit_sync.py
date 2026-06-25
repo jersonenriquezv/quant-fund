@@ -229,9 +229,47 @@ class BybitSync:
         ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS entry_slippage_bps DOUBLE PRECISION;
         ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS mae_mfe_tf VARCHAR(5);             -- candle granularity used (1m/5m)
 
+        -- Exit-discipline + planning flags (2026-06-25 trade-log review).
+        -- took_partial / moved_to_be are DERIVED at close by the watcher (rows_counted>1,
+        -- final stop at/beyond entry). planned_tp1/tp2 + is_practice are human/manual.
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS took_partial BOOLEAN;  -- scaled out (>1 close row)
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS moved_to_be BOOLEAN;   -- stop pulled to break-even
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS is_practice BOOLEAN;    -- micro "get hands dirty" trade — excluded from edge math
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS planned_tp1 DOUBLE PRECISION;
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS planned_tp2 DOUBLE PRECISION;
+
         -- REVIEW: derived labels.
+        -- clean_sample = the edge-math gate. A practice (micro-size) trade is NOT a
+        -- clean sample even if rules were followed — its size is unrepresentative, so it
+        -- must stay out of expectancy/PF/exit-efficiency (2026-06-25 review). Fresh DBs
+        -- get the is_practice clause inline; existing DBs are migrated by the DO block below.
         ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS clean_sample BOOLEAN
-            GENERATED ALWAYS AS (followed_process IS TRUE AND behavioral_error = '[]'::jsonb) STORED;
+            GENERATED ALWAYS AS (
+                followed_process IS TRUE
+                AND behavioral_error = '[]'::jsonb
+                AND is_practice IS NOT TRUE
+            ) STORED;
+        -- Recreate clean_sample on existing DBs whose generated expr predates the
+        -- is_practice clause (a generation expression cannot be ALTERed in place).
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_attrdef d
+                JOIN pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum
+                WHERE a.attrelid = 'bybit_trade_annotations'::regclass
+                  AND a.attname = 'clean_sample'
+                  AND pg_get_expr(d.adbin, d.adrelid) LIKE '%is_practice%'
+            ) THEN
+                DROP INDEX IF EXISTS idx_bybit_annot_clean;
+                ALTER TABLE bybit_trade_annotations DROP COLUMN IF EXISTS clean_sample;
+                ALTER TABLE bybit_trade_annotations ADD COLUMN clean_sample BOOLEAN
+                    GENERATED ALWAYS AS (
+                        followed_process IS TRUE
+                        AND behavioral_error = '[]'::jsonb
+                        AND is_practice IS NOT TRUE
+                    ) STORED;
+            END IF;
+        END $$;
         ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS trade_quality VARCHAR(10)
             GENERATED ALWAYS AS (
                 CASE

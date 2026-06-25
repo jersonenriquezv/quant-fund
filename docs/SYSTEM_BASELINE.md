@@ -496,7 +496,7 @@ Independent shadow-only experiment for microstructural scalping signals, separat
 
 > Purpose: deterministic **decision-quality** score for every manual Bybit trade. Measures whether confluences were present at entry; does **not** measure PnL. `bybit_watcher` calls `strategy_service.trade_classifier.classify()` on every position open and stores `auto_setup_type`, `auto_confluences`, `auto_detractors`, `auto_grade` on `bybit_trade_annotations`.
 
-**Implementation:** `strategy_service/trade_classifier.py` (`CLASSIFIER_VERSION = 2`).
+**Implementation:** `strategy_service/trade_classifier.py` (`CLASSIFIER_VERSION = 3`).
 
 ### Journal v2 top-down chain (Phase 3, 2026-06-01)
 `classify()` also emits a closed-vocab top-down chain that **pre-fills** the v2 form: `auto_htf_bias_daily`, `auto_htf_bias_4h`, `auto_htf_structure_reason`, `auto_location_pd` (volume-profile zone proxy), `auto_location_quality`, `auto_mtf_1h`, `auto_ltf_trigger` (precedence `sweep_reclaim > choch > bos > fvg > order_block`), `auto_structure_type`, and 5 `auto_conf_*` booleans (HTF/location/MTF/trigger/no-conflict). The watcher writes these immutable `auto_*` cols **and** pre-fills the human-editable chain cols (`htf_bias_daily` … `conf_noconflict`); on a re-tick the human cols are `COALESCE`'d so a dashboard correction is never clobbered. A human/machine disagreement IS the misread signal — both are kept. Bias `undefined` → `range` in the v2 taxonomy. The grade rubric below (net_score A/B/C/D) is unchanged.
@@ -509,6 +509,12 @@ B: net_score >= 4
 C: net_score >= 2
 D: net_score <  2
 ```
+**Counter-4H cap (v3, 2026-06-25):** if `counter_htf_4h` is a detractor (trade fights the
+4H bias), the headline grade is ceilinged at **C** regardless of net_score. A technically
+clean setup taken against the 4H trend is A on trigger quality but must never read as an A/B
+headline — the high net score otherwise seduces the operator toward the counter-HTF trades
+they are trying to quit. Cap only lowers (D stays D). `COUNTER_HTF_GRADE_CAP` in
+`trade_classifier.py`.
 
 ### Confluences (+1 each)
 | Tag | Trigger |
@@ -576,6 +582,16 @@ D: net_score <  2
 ---
 
 ## 8. Changelog
+
+### 2026-06-25 — Bybit trade-log quality pass (grade cap + planned-vs-executed + flags)
+**Files:** `strategy_service/trade_classifier.py`, `data_service/bybit_watcher.py`, `data_service/bybit_sync.py`, `dashboard/api/routes/bybit.py`, `dashboard/web/src/{lib/api.ts,app/annotate/[id]/page.tsx}`, tests.
+- **Why:** external trade-log review. Most of it was already shipped or wrong (mae/mfe/exit_efficiency/planned_* cols + the pre-entry pending-order plan flow all already exist). Two findings were real, built here.
+- **P2 — counter-4H grade cap.** `_grade` ceilings `auto_grade` at C when `counter_htf_4h` is present, regardless of confluence count. A high net score otherwise launders a counter-trend setup into an A and seduces the operator toward exactly the trades they want to quit. `CLASSIFIER_VERSION` 2→3 (grade semantics changed; v3 rows not grade-comparable to v2).
+- **planned_* auto-capture.** Watcher snapshots the Bybit order entry/SL/TP into `planned_*_price` at open (frozen, write-once via COALESCE); `_refresh_sl` captures the first stop seen as the intended SL (Bybit users attach the stop seconds after open). Enables the planned-vs-executed delta (widened_sl / held_loser) with zero manual typing.
+- **Exit-discipline flags.** `took_partial` + `moved_to_be` derived at close (`rows_counted>1`; final stop at/beyond entry). `is_practice` (manual toggle, excluded from edge math) + `planned_tp1/tp2` columns added.
+- **Form.** PLAN levels reframed as auto-captured; new PLAN-vs-EXECUTED badge row (SL held/widened/→BE + took-partial); PRACTICE TRADE toggle. Build + tsc clean.
+- **Deferred / not done:** review's "cut conf_mtf/conf_trigger to auto" (rejected — v2 deliberately keeps human+machine for the disagreement signal); a hard Telegram nudge for unplanned opens (form note covers it). **Edge-math training filter not yet updated to exclude `is_practice` — do that before next edge-audit.**
+- **Deploy:** rebuild `bybit-watcher` (classifier + watcher) + `dashboard` (form/API). **Merge note:** built off main; conflicts with PR #100 in `_insert_annotation` + `bybit_sync` annotation ALTERs (both add columns/params) — mechanical, resolve at merge.
 
 ### 2026-06-15 — Dual Thrust Phase 1a: live check / fresh-candle parity
 **Files:** `scripts/dual_thrust_live_check.py` (new), `tests/test_dual_thrust_live_check.py` (new), `docs/plans/dual-thrust-live-small-port.md` (Phase 1a/1b/1c).

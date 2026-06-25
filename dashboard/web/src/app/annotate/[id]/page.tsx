@@ -67,6 +67,7 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
   const [emotional, setEmotional] = useState("");
   const [screenshot, setScreenshot] = useState("");
   const [topdownUsed, setTopdownUsed] = useState(false);
+  const [isPractice, setIsPractice] = useState(false);
 
   // v2 top-down chain (selects). Empty string = unset.
   const [chain, setChain] = useState<Record<string, string>>({});
@@ -100,6 +101,7 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
       setEmotional(a.emotional_state || "");
       setScreenshot(a.screenshot_url || "");
       setTopdownUsed(a.topdown_brief_used ?? false);
+      setIsPractice(a.is_practice ?? false);
 
       // Chain: human value if set, else machine guess (auto_*), else blank.
       const pick = (human: unknown, auto: unknown) =>
@@ -162,6 +164,7 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
         emotional_state: emotional || null,
         screenshot_url: screenshot || null,
         topdown_brief_used: topdownUsed,
+        is_practice: isPractice,
         // v2 chain (empty select -> null)
         htf_bias_daily: chain.htf_bias_daily || null,
         htf_bias_4h: chain.htf_bias_4h || null,
@@ -530,13 +533,18 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
         </div>
 
         <div className="sec-eyebrow mt">PLAN · INTENDED LEVELS</div>
-        <p className="sec-note">Defines the R unit (|entry − SL| × size). Fills realized-R + exit efficiency.</p>
+        <p className="sec-note">
+          Auto-captured from your Bybit order at entry. Edit only to correct — the
+          gap vs the executed exit is what reveals widened-SL / cut-winner.
+        </p>
         <div className="lvl-grid">
           <NumField label="ENTRY" value={plannedEntry} onChange={setPlannedEntry} placeholder="79250" />
           <NumField label="STOP LOSS" value={plannedSl} onChange={setPlannedSl} placeholder="78400" />
           <NumField label="TAKE PROFIT" value={plannedTp} onChange={setPlannedTp} placeholder="81500" />
           <NumField label="RISK %" value={riskPct} onChange={setRiskPct} placeholder="1.0" />
         </div>
+
+        <PlanVsExecuted annot={annot} />
 
         <div className="sec-eyebrow mt">JOURNAL · NOTES</div>
 
@@ -570,6 +578,16 @@ export default function AnnotatePage({ params }: { params: ParamsP }) {
           />
           <span className="tc-box" aria-hidden="true" />
           <span className="tc-text">USED /topdown BRIEF BEFORE ENTRY</span>
+        </label>
+
+        <label className="topdown-check">
+          <input
+            type="checkbox"
+            checked={isPractice}
+            onChange={(e) => setIsPractice(e.target.checked)}
+          />
+          <span className="tc-box" aria-hidden="true" />
+          <span className="tc-text">PRACTICE TRADE (micro size — excluded from edge math)</span>
         </label>
 
         <Field label="TRIGGER · WHAT FIRED THE ENTRY (RULE 1)">
@@ -1341,6 +1359,67 @@ function NumField({
         .nf input::placeholder { color: rgba(255,255,255,0.22); }
       `}</style>
     </label>
+  );
+}
+
+function PlanVsExecuted({ annot }: { annot: BybitAnnotation }) {
+  const entry = annot.entry_price ?? annot.planned_entry_price ?? null;
+  const planned = annot.planned_sl_price ?? null;
+  const live = annot.position_sl_price ?? null;
+  const tookPartial = annot.took_partial;
+  const movedBe = annot.moved_to_be;
+
+  // SL delta: positive = stop moved AWAY from entry (widened = held loser); negative
+  // = stop moved toward/past entry (tightened / break-even).
+  let slVerdict: { text: string; cls: string } | null = null;
+  if (entry != null && planned != null && live != null) {
+    const plannedDist = Math.abs(planned - entry);
+    const liveDist = Math.abs(live - entry);
+    const diff = liveDist - plannedDist;
+    const rel = plannedDist > 0 ? (diff / plannedDist) * 100 : 0;
+    if (Math.abs(rel) < 1) {
+      slVerdict = { text: "SL held as planned", cls: "ok" };
+    } else if (diff > 0) {
+      slVerdict = { text: `SL widened ${rel.toFixed(0)}% (held loser?)`, cls: "bad" };
+    } else {
+      // tightened — distinguish break-even from a normal trail using movedBe flag
+      slVerdict = {
+        text: movedBe ? "SL → break-even" : `SL tightened ${Math.abs(rel).toFixed(0)}%`,
+        cls: "ok",
+      };
+    }
+  }
+
+  const badges: { text: string; cls: string }[] = [];
+  if (slVerdict) badges.push(slVerdict);
+  if (tookPartial != null)
+    badges.push({ text: tookPartial ? "took partial" : "no partial", cls: tookPartial ? "ok" : "neutral" });
+  if (movedBe != null && !slVerdict)
+    badges.push({ text: movedBe ? "moved to BE" : "stop not moved", cls: movedBe ? "ok" : "neutral" });
+
+  if (badges.length === 0) return null;
+
+  return (
+    <div className="pve">
+      <div className="sec-eyebrow">PLAN vs EXECUTED · auto</div>
+      <div className="pve-row">
+        {badges.map((b, i) => (
+          <span key={i} className={`pve-badge ${b.cls}`}>{b.text}</span>
+        ))}
+      </div>
+      <style jsx>{`
+        .pve { margin: 4px 0 24px; }
+        .pve-row { display: flex; flex-wrap: wrap; gap: 8px; }
+        .pve-badge {
+          font-size: 11px; padding: 5px 10px; border-radius: 100px;
+          font-weight: 600; letter-spacing: 0.02em;
+          border: 1px solid rgba(255,255,255,0.12);
+        }
+        .pve-badge.ok { background: rgba(48,209,88,0.12); color: #4ade80; }
+        .pve-badge.bad { background: rgba(255,69,58,0.12); color: #ff6b6b; }
+        .pve-badge.neutral { background: rgba(255,255,255,0.04); color: rgba(255,255,255,0.55); }
+      `}</style>
+    </div>
   );
 }
 

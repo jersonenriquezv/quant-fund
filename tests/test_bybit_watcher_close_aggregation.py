@@ -125,9 +125,11 @@ def test_close_annotation_sums_multiple_partial_fills(monkeypatch):
     assert result["exit_price"] == pytest.approx(2376.6666667, rel=1e-6)
     assert result["pnl_pct"] == pytest.approx(100.0 * 30.0 / 690.0, rel=1e-6)
     # UPDATE used the aggregated values
-    exit_price_param, pnl_param, pnl_pct_param, last_id_param, annot_id_param = conn.update_params
+    (exit_price_param, pnl_param, pnl_pct_param, last_id_param,
+     took_partial_param, moved_to_be_param, annot_id_param) = conn.update_params
     assert pnl_param == 30.0
     assert last_id_param == 999
+    assert took_partial_param is True          # 3 close rows → scaled out
     assert annot_id_param == 42
     assert conn.committed
 
@@ -202,9 +204,11 @@ def test_close_annotation_no_pnl_rows_still_closes(monkeypatch):
     assert result["exit_price"] is None
     assert result["pnl_pct"] is None
     # UPDATE still ran with NULL values, last_id=None
-    exit_price_param, pnl_param, pnl_pct_param, last_id_param, annot_id_param = conn.update_params
+    (exit_price_param, pnl_param, pnl_pct_param, last_id_param,
+     took_partial_param, moved_to_be_param, annot_id_param) = conn.update_params
     assert pnl_param is None
     assert last_id_param is None
+    assert took_partial_param is False         # 0 close rows → not a scale-out
 
 
 def test_close_annotation_no_open_annotation_returns_none(monkeypatch):
