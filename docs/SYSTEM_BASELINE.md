@@ -577,6 +577,14 @@ D: net_score <  2
 
 ## 8. Changelog
 
+### 2026-06-25 — /topdown live-falsification auto-reconcile (Bybit trade ↔ edge alert)
+**Files:** `data_service/topdown_reconcile.py` (new), `scripts/reconcile_topdown_falsification.py` (new), `data_service/bybit_watcher.py`, `data_service/bybit_sync.py` (col `signal_alert_id`), `tests/test_topdown_reconcile.py` (new).
+- **Why:** the /topdown edge (audit 2026-05-25, maker +0.13R BTC/ETH, p<0.0002) has an armed live test — N≥30 Bybit trades TAKEN from the edge alerts, then require live WR≥30% AND realized R>0. Manual flag (`topdown_brief_used`) was never checked (0/63 alerts), so accrual was stuck at N=0.
+- **Matcher** `topdown_reconcile.find_matching_alert` — STRICT rule (user choice): same pair+direction, `auto_setup_type='topdown_edge'`, alert scanned ≤36h before open, fill entry within 0.6% of alert entry, most-recent wins. Single source of truth for watcher + report.
+- **Watcher** sets `signal_alert_id` + `topdown_brief_used=true` automatically at open (COALESCE-safe vs manual correction); Telegram open-alert now shows `🎯 /topdown edge #N · E/SL/TP/R:R · counted toward falsification`. Read-only match, never blocks an open.
+- **Report** `scripts/reconcile_topdown_falsification.py` — backfills links on closed trades (`--apply`), prints scoreboard (N vs 30, WR, mean realized R, per-pair/dir, verdict). Backfill of 44 historical closed BTC/ETH trades matched only **1** (annot #61→alert #643) — confirms the alerts have barely been taken; the 1 match has no SL so isn't R-scoreable yet.
+- Schema column applied to live DB via `ensure_tables`. **Deploy:** rebuild `bybit-watcher` container to activate go-forward auto-linking.
+
 ### 2026-06-15 — Dual Thrust Phase 1a: live check / fresh-candle parity
 **Files:** `scripts/dual_thrust_live_check.py` (new), `tests/test_dual_thrust_live_check.py` (new), `docs/plans/dual-thrust-live-small-port.md` (Phase 1a/1b/1c).
 - `dual_thrust_live_check.py` fetches the latest OKX ETH 6h (`6Hutc`) + 4h candles, re-runs engine-vs-harness parity on fresh data, and prints the current live signal (price vs upper/lower thrust, long/short/flat, distance to triggers). Weekly forward-validation heartbeat; touches no pipeline/risk/execution.

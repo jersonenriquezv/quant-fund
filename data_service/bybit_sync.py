@@ -160,6 +160,12 @@ class BybitSync:
         ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS trigger_condition TEXT;
         ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS thesis_invalidation TEXT;
         ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS topdown_brief_used BOOLEAN;
+        -- Falsification link: the signal_scanner_alerts row this trade was taken from.
+        -- Set automatically by the watcher on a strict pair/dir/time/entry match (see
+        -- data_service/topdown_reconcile.py). Lets scripts/reconcile_topdown_falsification.py
+        -- compare realized R vs the alert's planned geometry. NULL = not an edge-alert trade.
+        ALTER TABLE bybit_trade_annotations ADD COLUMN IF NOT EXISTS signal_alert_id BIGINT;
+        CREATE INDEX IF NOT EXISTS idx_bybit_annot_signal_alert ON bybit_trade_annotations(signal_alert_id);
 
         -- ============================================================
         -- Journal v2 (redesign 2026-05-30) — additive, never drops v1.
