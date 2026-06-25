@@ -13,7 +13,10 @@ from __future__ import annotations
 
 from typing import Any
 
-CLASSIFIER_VERSION = 2
+# v3 (2026-06-25): counter-4H grade cap — auto_grade ceilinged at C when the trade
+# fights the 4H bias, regardless of confluence count. Grade semantics changed, so
+# rows tagged v3 are not grade-comparable to v2 (confluences/detractors unchanged).
+CLASSIFIER_VERSION = 3
 
 
 def _confluences(snap: dict[str, Any], direction: str) -> list[str]:
@@ -204,16 +207,30 @@ def _setup_type(snap: dict[str, Any], direction: str, confluences: list[str]) ->
     return "discretion"
 
 
+# Grade ceiling when the trade fights the 4H bias. A high confluence count must
+# NOT launder a counter-trend setup into an A — that score seduces the operator into
+# exactly the counter-HTF trades they are trying to quit. Trigger quality (the
+# confluences) can be high, but alignment is the root rule, so cap the headline
+# grade. See SYSTEM_BASELINE Bybit grading section (2026-06-25 review).
+COUNTER_HTF_GRADE_CAP = "C"
+
+
 def _grade(confluences: list[str], detractors: list[str]) -> str:
-    """A/B/C/D based on net score."""
+    """A/B/C/D from net score, then capped at C if the trade is counter-4H."""
     score = len(confluences) - len(detractors)
     if score >= 6:
-        return "A"
-    if score >= 4:
-        return "B"
-    if score >= 2:
-        return "C"
-    return "D"
+        grade = "A"
+    elif score >= 4:
+        grade = "B"
+    elif score >= 2:
+        grade = "C"
+    else:
+        grade = "D"
+    # Hard alignment cap: a counter-4H trade can be A on trigger quality but never
+    # an A/B headline grade. D stays D (cap only lowers, never raises).
+    if "counter_htf_4h" in detractors and grade in ("A", "B"):
+        return COUNTER_HTF_GRADE_CAP
+    return grade
 
 
 def _map_bias(b: str | None) -> str | None:

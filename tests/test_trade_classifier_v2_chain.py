@@ -7,7 +7,12 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from strategy_service.trade_classifier import classify, CLASSIFIER_VERSION
+from strategy_service.trade_classifier import (
+    COUNTER_HTF_GRADE_CAP,
+    CLASSIFIER_VERSION,
+    _grade,
+    classify,
+)
 from data_service.bybit_watcher import BybitWatcher, _V2_CHAIN_MAP
 
 
@@ -37,7 +42,7 @@ def _snap(direction="long", **over):
 
 def test_classify_emits_v2_chain_keys():
     out = classify(_snap())
-    assert out["auto_classifier_version"] == CLASSIFIER_VERSION == 2
+    assert out["auto_classifier_version"] == CLASSIFIER_VERSION == 3
     for auto_col, _ in _V2_CHAIN_MAP:
         assert auto_col in out, f"missing {auto_col}"
 
@@ -85,6 +90,31 @@ def test_cvd_against_breaks_noconflict():
     snap["cvd"] = {"cvd_1h": -100.0}           # selling pressure against a long
     out = classify(snap)
     assert out["auto_conf_noconflict"] is False
+
+
+# --- counter-4H grade cap (P2, 2026-06-25 review) ------------------------------
+
+def test_grade_cap_counter_htf_lowers_a_and_b_to_c():
+    # High net score that would normally be A/B is ceilinged at C when counter-4H.
+    assert _grade(["c"] * 8, []) == "A"
+    assert _grade(["c"] * 8, ["counter_htf_4h"]) == COUNTER_HTF_GRADE_CAP  # A -> C
+    assert _grade(["c"] * 5, ["counter_htf_4h"]) == COUNTER_HTF_GRADE_CAP  # net 4 (B) -> C
+
+
+def test_grade_cap_only_lowers_never_raises():
+    # A counter-4H trade that is already D stays D (cap is a ceiling, not a floor).
+    assert _grade(["c"] * 2, ["counter_htf_4h"]) == "D"  # net 1 -> D, unchanged
+
+
+def test_grade_cap_applies_through_classify():
+    # Realistic path: a short with a high confluence count but bullish 4H bias.
+    snap = _snap(direction="short")
+    snap["htf_bias"] = {"bias_daily": "bullish", "bias_4h": "bullish",
+                        "bias_1h": "bullish", "aligned_with_trade": False}
+    out = classify(snap)
+    assert "counter_htf_4h" in out["auto_detractors"]
+    assert out["auto_grade"] in ("C", "D")          # never A/B against 4H
+    assert out["auto_conf_htf"] is False
 
 
 def test_short_premium_location_favorable():

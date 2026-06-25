@@ -472,7 +472,18 @@ class BybitWatcher:
         # syncs it on the next tick.
         sl_raw = st.raw.get("stopLoss")
         sl_price = float(sl_raw) if sl_raw not in (None, "", "0") else None
+        tp_raw = st.raw.get("takeProfit")
+        tp_price = float(tp_raw) if tp_raw not in (None, "", "0") else None
         equity = self._get_equity()
+
+        # Planned (intended) geometry, frozen at open. position_sl_price tracks the
+        # LIVE stop (trails/widens); planned_sl_price is the FIRST stop we observe and
+        # never moves — the delta between them is what exposes widened_sl / held_loser /
+        # cut_winner_early. planned_sl may be NULL here when the SL is attached a few
+        # seconds after open; _refresh_sl fills it once on the first stop it sees.
+        planned_entry = st.entry_price
+        planned_sl = sl_price
+        planned_tp = tp_price
 
         auto_cols = [a for a, _ in _V2_CHAIN_MAP]
         human_cols = [h for _, h in _V2_CHAIN_MAP]
@@ -484,6 +495,7 @@ class BybitWatcher:
             "auto_setup_type", "auto_confluences", "auto_detractors",
             "auto_grade", "auto_classifier_version",
             "position_sl_price", "account_equity_at_open", "journal_schema_version",
+            "planned_entry_price", "planned_sl_price", "planned_tp_price",
         ] + auto_cols + human_cols + ["status"]
         placeholders = ",".join(["%s"] * len(cols))
 
@@ -497,6 +509,11 @@ class BybitWatcher:
             "position_sl_price = COALESCE(EXCLUDED.position_sl_price, bybit_trade_annotations.position_sl_price)",
             "account_equity_at_open = COALESCE(EXCLUDED.account_equity_at_open, bybit_trade_annotations.account_equity_at_open)",
             "journal_schema_version = EXCLUDED.journal_schema_version",
+            # Planned geometry is write-once (frozen intention) — COALESCE keeps the
+            # existing value so a re-tick or a later manual edit never overwrites it.
+            "planned_entry_price = COALESCE(bybit_trade_annotations.planned_entry_price, EXCLUDED.planned_entry_price)",
+            "planned_sl_price = COALESCE(bybit_trade_annotations.planned_sl_price, EXCLUDED.planned_sl_price)",
+            "planned_tp_price = COALESCE(bybit_trade_annotations.planned_tp_price, EXCLUDED.planned_tp_price)",
         ]
         # auto_* always refreshed (immutable machine view); human cols only filled when
         # still NULL, so a user correction via the dashboard survives a watcher re-tick.
@@ -520,6 +537,7 @@ class BybitWatcher:
             auto.get("auto_grade"),
             auto.get("auto_classifier_version"),
             sl_price, equity, 2,
+            planned_entry, planned_sl, planned_tp,
         ] + chain_vals + chain_vals + ["open"]
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(sql, params)
@@ -559,11 +577,16 @@ class BybitWatcher:
                 cur.execute(
                     """
                     UPDATE bybit_trade_annotations
-                    SET position_sl_price = %s, updated_at = NOW()
+                    SET position_sl_price = %s,
+                        -- Capture the FIRST stop ever seen as the intended SL (the user
+                        -- attaches it seconds after open). Write-once: later trails/widens
+                        -- move position_sl_price but planned_sl_price stays frozen.
+                        planned_sl_price = COALESCE(planned_sl_price, %s),
+                        updated_at = NOW()
                     WHERE symbol = %s AND side = %s AND status = 'open'
                       AND position_sl_price IS DISTINCT FROM %s
                     """,
-                    (sl_price, st.key.symbol, st.key.side, sl_price),
+                    (sl_price, sl_price, st.key.symbol, st.key.side, sl_price),
                 )
                 conn.commit()
         except Exception as exc:
@@ -635,7 +658,7 @@ class BybitWatcher:
             cur.execute(
                 """
                 SELECT id, entry_price, size, opened_at,
-                       trigger_condition, thesis_invalidation
+                       trigger_condition, thesis_invalidation, position_sl_price
                 FROM bybit_trade_annotations
                 WHERE symbol = %s AND side = %s AND status = 'open'
                 ORDER BY opened_at DESC LIMIT 1
@@ -695,6 +718,21 @@ class BybitWatcher:
                     f"total_pnl={pnl_usd}"
                 )
 
+            # Derived exit-discipline flags (the user's known leaks). took_partial:
+            # >1 closed_pnl row = position was scaled out. moved_to_be: the last live
+            # stop sat at/beyond entry on the profit side = stop was pulled to break-even.
+            took_partial = rows_counted > 1
+            moved_to_be = None
+            sl_last = annot.get("position_sl_price")
+            entry = annot.get("entry_price")
+            if sl_last is not None and entry is not None:
+                sl_last = float(sl_last); entry = float(entry)
+                tol = entry * 0.0005  # 0.05% — count "near BE" as BE
+                if key.side == "Buy":      # long → BE stop is at/above entry
+                    moved_to_be = sl_last >= entry - tol
+                else:                       # short → BE stop is at/below entry
+                    moved_to_be = sl_last <= entry + tol
+
             cur.execute(
                 """
                 UPDATE bybit_trade_annotations
@@ -703,12 +741,14 @@ class BybitWatcher:
                     pnl_usd = %s,
                     pnl_pct = %s,
                     closed_pnl_id = %s,
+                    took_partial = %s,
+                    moved_to_be = %s,
                     status = 'closed',
                     updated_at = NOW()
                 WHERE id = %s
                 RETURNING id, entry_price, size, opened_at
                 """,
-                (exit_price, pnl_usd, pnl_pct, last_id, annot["id"]),
+                (exit_price, pnl_usd, pnl_pct, last_id, took_partial, moved_to_be, annot["id"]),
             )
             updated = cur.fetchone()
             conn.commit()
