@@ -10,6 +10,7 @@ See docs/plans/_archive/signal-scanner-topdown-edge-2026-05-25.md (Phase 3).
 from __future__ import annotations
 
 from scripts.signal_scanner import (
+    MAX_RR,
     MAX_SWEEP_PCT,
     SCANNER_PAIRS,
     _edge_candidate,
@@ -26,7 +27,7 @@ def _signal(**over):
         "sl": 77800.0,       # short → SL above entry (protective)
         "tp": 73600.0,       # single final target
         "rr": 2.18,
-        "sweep_distance_pct": 0.17,
+        "sweep_distance_pct": 0.10,  # within the tightened 0.12% gate
         "risk_pct": 1.76,
         "bias_confidence": "medium",
         "current_price": 76400.0,
@@ -44,7 +45,8 @@ def test_sweep_within_cap_accepted():
 
 
 def test_sweep_over_cap_rejected():
-    assert _edge_candidate("BTC/USDT", _signal(sweep_distance_pct=0.51)) is None
+    # just over the tightened 0.12% gate
+    assert _edge_candidate("BTC/USDT", _signal(sweep_distance_pct=0.13)) is None
 
 
 def test_sweep_none_rejected():
@@ -78,6 +80,18 @@ def test_rr_zero_rejected():
 
 def test_rr_negative_rejected():
     assert _edge_candidate("BTC/USDT", _signal(rr=-1.0)) is None
+
+
+def test_rr_at_or_over_cap_rejected():
+    # rr >= MAX_RR == micro-SL setup (audit: 0 TP / 18 SL) -> dropped
+    assert _edge_candidate("BTC/USDT", _signal(rr=MAX_RR)) is None
+    assert _edge_candidate("BTC/USDT", _signal(rr=MAX_RR + 5.0)) is None
+
+
+def test_rr_just_under_cap_accepted():
+    cand = _edge_candidate("BTC/USDT", _signal(rr=MAX_RR - 0.5))
+    assert cand is not None
+    assert cand["rr"] == MAX_RR - 0.5
 
 
 # --- single TP passthrough (scaled never reaches the alert) ------------------

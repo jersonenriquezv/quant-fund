@@ -577,6 +577,13 @@ D: net_score <  2
 
 ## 8. Changelog
 
+### 2026-06-25 — /topdown alert quality gates retuned (sweep ≤0.12%, rr cap 6)
+**Files:** `scripts/signal_scanner.py` (`MAX_SWEEP_PCT` 0.5→0.12, new `MAX_RR=6.0`), `tests/test_signal_scanner_edge.py`.
+- **Why:** live forward audit of the first 63 emitted `topdown_edge` alerts (5m fill+outcome sim, maker fees, scratch analysis) showed the RAW stream is **bleeding forward: E −0.20R** (fill rate fine at 84% — non-fills are NOT the problem; SL 36 vs TP 10 is). The backtest +0.13R did not survive forward on the unfiltered firehose (same Apr–Jun regime that broke engine1/DT forward).
+- **Edge concentrates in a clean subset.** By sweep distance: ≤0.12% **E +0.47R** vs 0.1–0.5% buckets −0.43/−0.56R. By R:R: rr 4–6 **E +0.90R**, but rr ≥6 is **0 TP / 18 SL (E −1.0R)** — high rr = microscopic SL distance stopped out by noise, not a far target. Combined gate **sweep≤0.12 AND rr<6: n=19/63, WR 36%, E +0.471R**.
+- **Shipped both gates.** `MAX_SWEEP_PCT=0.12`, skip `rr >= MAX_RR (6.0)` in `_edge_candidate`. Expect ~0.6 alerts/day (was ~2/day) — fewer, higher quality; matches the user's selective manual style.
+- **CAVEAT:** N=19 in the winning bucket + 4-way slicing = multiple-comparison risk. Sweep finding is the robust one (monotonic, audit-confirmed). Treat as forward-tightening, re-validate via `scripts/reconcile_topdown_falsification.py` as real trades accrue. Scanner runs the host file via `signal-scanner.timer` (no docker rebuild — live next tick).
+
 ### 2026-06-25 — /topdown live-falsification auto-reconcile (Bybit trade ↔ edge alert)
 **Files:** `data_service/topdown_reconcile.py` (new), `scripts/reconcile_topdown_falsification.py` (new), `data_service/bybit_watcher.py`, `data_service/bybit_sync.py` (col `signal_alert_id`), `tests/test_topdown_reconcile.py` (new).
 - **Why:** the /topdown edge (audit 2026-05-25, maker +0.13R BTC/ETH, p<0.0002) has an armed live test — N≥30 Bybit trades TAKEN from the edge alerts, then require live WR≥30% AND realized R>0. Manual flag (`topdown_brief_used`) was never checked (0/63 alerts), so accrual was stuck at N=0.
