@@ -32,6 +32,7 @@ from psycopg2.extras import Json, RealDictCursor, execute_batch
 from pybit.unified_trading import HTTP
 
 from config.settings import settings
+from data_service.topdown_reconcile import AlertMatch, find_matching_alert
 from shared.logger import setup_logger
 
 logger = setup_logger("bybit_watcher")
@@ -107,6 +108,8 @@ class BybitWatcher:
         )
         self._last_state: dict[PositionKey, PositionState] = {}
         self._last_pending: dict[str, PendingOrder] = {}
+        # Set by _insert_annotation, consumed by the very next _fmt_open_alert (same tick).
+        self._last_alert_match: AlertMatch | None = None
         self._dashboard_base = os.getenv(
             "DASHBOARD_PUBLIC_URL", "http://100.120.181.11:3000"
         )
@@ -484,6 +487,7 @@ class BybitWatcher:
             "auto_setup_type", "auto_confluences", "auto_detractors",
             "auto_grade", "auto_classifier_version",
             "position_sl_price", "account_equity_at_open", "journal_schema_version",
+            "signal_alert_id", "topdown_brief_used",
         ] + auto_cols + human_cols + ["status"]
         placeholders = ",".join(["%s"] * len(cols))
 
@@ -497,6 +501,10 @@ class BybitWatcher:
             "position_sl_price = COALESCE(EXCLUDED.position_sl_price, bybit_trade_annotations.position_sl_price)",
             "account_equity_at_open = COALESCE(EXCLUDED.account_equity_at_open, bybit_trade_annotations.account_equity_at_open)",
             "journal_schema_version = EXCLUDED.journal_schema_version",
+            # Falsification link is set once at open; COALESCE keeps a manual
+            # correction (or clear) made later in the form from being clobbered.
+            "signal_alert_id = COALESCE(bybit_trade_annotations.signal_alert_id, EXCLUDED.signal_alert_id)",
+            "topdown_brief_used = COALESCE(bybit_trade_annotations.topdown_brief_used, EXCLUDED.topdown_brief_used)",
         ]
         # auto_* always refreshed (immutable machine view); human cols only filled when
         # still NULL, so a user correction via the dashboard survives a watcher re-tick.
@@ -510,21 +518,48 @@ class BybitWatcher:
             SET {", ".join(set_clauses)}
         RETURNING id
         """
-        params = [
-            st.key.symbol, st.key.side, st.updated_at,
-            st.entry_price, st.size, st.leverage,
-            notional, Json(context),
-            auto.get("auto_setup_type"),
-            Json(auto.get("auto_confluences")) if auto.get("auto_confluences") is not None else None,
-            Json(auto.get("auto_detractors")) if auto.get("auto_detractors") is not None else None,
-            auto.get("auto_grade"),
-            auto.get("auto_classifier_version"),
-            sl_price, equity, 2,
-        ] + chain_vals + chain_vals + ["open"]
         with self._conn() as conn, conn.cursor() as cur:
+            # Strict-match the trade to the /topdown edge alert it was taken from, so the
+            # live falsification (N>=30) auto-accrues without manual journal flagging.
+            # Read-only, swallow-on-error — must never block a trade open. The matched
+            # row is stashed on self for _fmt_open_alert to surface in Telegram.
+            match = None
+            try:
+                match = find_matching_alert(
+                    cur,
+                    symbol=st.key.symbol,
+                    side=st.key.side,
+                    entry_price=st.entry_price,
+                    opened_at=st.updated_at,
+                )
+            except Exception as exc:
+                logger.warning(f"topdown alert match failed (non-fatal): {exc}")
+            self._last_alert_match = match
+            signal_alert_id = match.alert_id if match else None
+            topdown_used = True if match else None  # NULL when unmatched (form stays editable)
+
+            params = [
+                st.key.symbol, st.key.side, st.updated_at,
+                st.entry_price, st.size, st.leverage,
+                notional, Json(context),
+                auto.get("auto_setup_type"),
+                Json(auto.get("auto_confluences")) if auto.get("auto_confluences") is not None else None,
+                Json(auto.get("auto_detractors")) if auto.get("auto_detractors") is not None else None,
+                auto.get("auto_grade"),
+                auto.get("auto_classifier_version"),
+                sl_price, equity, 2,
+                signal_alert_id, topdown_used,
+            ] + chain_vals + chain_vals + ["open"]
             cur.execute(sql, params)
             row = cur.fetchone()
             conn.commit()
+            if match:
+                logger.info(
+                    f"Linked {st.key.symbol} {st.key.side} open to topdown alert "
+                    f"#{match.alert_id} (lead {match.lead_hours:.1f}h, "
+                    f"entry Δ {match.entry_diff_pct:.2f}%)" if match.entry_diff_pct is not None
+                    else f"Linked {st.key.symbol} {st.key.side} open to topdown alert #{match.alert_id}"
+                )
             return row[0]
 
     def _get_equity(self) -> float | None:
@@ -756,6 +791,22 @@ class BybitWatcher:
         ]
         lines.extend(self._fmt_auto_block(auto))
         if auto:
+            lines.append("")
+        # /topdown edge-alert link (falsification accrual). Surface so the trade is
+        # visibly counted toward the N>=30 live test without manual journal flagging.
+        m = self._last_alert_match
+        if m is not None:
+            geo = []
+            if m.entry is not None:
+                geo.append(f"E <code>{m.entry:.4f}</code>")
+            if m.sl is not None:
+                geo.append(f"SL <code>{m.sl:.4f}</code>")
+            if m.tp is not None:
+                geo.append(f"TP <code>{m.tp:.4f}</code>")
+            if m.rr is not None:
+                geo.append(f"R:R <code>{m.rr:.2f}</code>")
+            lines.append(f"🎯 <b>/topdown edge #{m.alert_id}</b> · " + " · ".join(geo))
+            lines.append(f"   ↳ counted toward falsification (lead {m.lead_hours:.0f}h)")
             lines.append("")
         # Include selected context highlights
         htf = ctx.get("htf_bias") or {}

@@ -577,6 +577,21 @@ D: net_score <  2
 
 ## 8. Changelog
 
+### 2026-06-25 — /topdown alert quality gates retuned (sweep ≤0.12%, rr cap 6)
+**Files:** `scripts/signal_scanner.py` (`MAX_SWEEP_PCT` 0.5→0.12, new `MAX_RR=6.0`), `tests/test_signal_scanner_edge.py`.
+- **Why:** live forward audit of the first 63 emitted `topdown_edge` alerts (5m fill+outcome sim, maker fees, scratch analysis) showed the RAW stream is **bleeding forward: E −0.20R** (fill rate fine at 84% — non-fills are NOT the problem; SL 36 vs TP 10 is). The backtest +0.13R did not survive forward on the unfiltered firehose (same Apr–Jun regime that broke engine1/DT forward).
+- **Edge concentrates in a clean subset.** By sweep distance: ≤0.12% **E +0.47R** vs 0.1–0.5% buckets −0.43/−0.56R. By R:R: rr 4–6 **E +0.90R**, but rr ≥6 is **0 TP / 18 SL (E −1.0R)** — high rr = microscopic SL distance stopped out by noise, not a far target. Combined gate **sweep≤0.12 AND rr<6: n=19/63, WR 36%, E +0.471R**.
+- **Shipped both gates.** `MAX_SWEEP_PCT=0.12`, skip `rr >= MAX_RR (6.0)` in `_edge_candidate`. Expect ~0.6 alerts/day (was ~2/day) — fewer, higher quality; matches the user's selective manual style.
+- **CAVEAT:** N=19 in the winning bucket + 4-way slicing = multiple-comparison risk. Sweep finding is the robust one (monotonic, audit-confirmed). Treat as forward-tightening, re-validate via `scripts/reconcile_topdown_falsification.py` as real trades accrue. Scanner runs the host file via `signal-scanner.timer` (no docker rebuild — live next tick).
+
+### 2026-06-25 — /topdown live-falsification auto-reconcile (Bybit trade ↔ edge alert)
+**Files:** `data_service/topdown_reconcile.py` (new), `scripts/reconcile_topdown_falsification.py` (new), `data_service/bybit_watcher.py`, `data_service/bybit_sync.py` (col `signal_alert_id`), `tests/test_topdown_reconcile.py` (new).
+- **Why:** the /topdown edge (audit 2026-05-25, maker +0.13R BTC/ETH, p<0.0002) has an armed live test — N≥30 Bybit trades TAKEN from the edge alerts, then require live WR≥30% AND realized R>0. Manual flag (`topdown_brief_used`) was never checked (0/63 alerts), so accrual was stuck at N=0.
+- **Matcher** `topdown_reconcile.find_matching_alert` — STRICT rule (user choice): same pair+direction, `auto_setup_type='topdown_edge'`, alert scanned ≤36h before open, fill entry within 0.6% of alert entry, most-recent wins. Single source of truth for watcher + report.
+- **Watcher** sets `signal_alert_id` + `topdown_brief_used=true` automatically at open (COALESCE-safe vs manual correction); Telegram open-alert now shows `🎯 /topdown edge #N · E/SL/TP/R:R · counted toward falsification`. Read-only match, never blocks an open.
+- **Report** `scripts/reconcile_topdown_falsification.py` — backfills links on closed trades (`--apply`), prints scoreboard (N vs 30, WR, mean realized R, per-pair/dir, verdict). Backfill of 44 historical closed BTC/ETH trades matched only **1** (annot #61→alert #643) — confirms the alerts have barely been taken; the 1 match has no SL so isn't R-scoreable yet.
+- Schema column applied to live DB via `ensure_tables`. **Deploy:** rebuild `bybit-watcher` container to activate go-forward auto-linking.
+
 ### 2026-06-15 — Dual Thrust Phase 1a: live check / fresh-candle parity
 **Files:** `scripts/dual_thrust_live_check.py` (new), `tests/test_dual_thrust_live_check.py` (new), `docs/plans/dual-thrust-live-small-port.md` (Phase 1a/1b/1c).
 - `dual_thrust_live_check.py` fetches the latest OKX ETH 6h (`6Hutc`) + 4h candles, re-runs engine-vs-harness parity on fresh data, and prints the current live signal (price vs upper/lower thrust, long/short/flat, distance to triggers). Weekly forward-validation heartbeat; touches no pipeline/risk/execution.

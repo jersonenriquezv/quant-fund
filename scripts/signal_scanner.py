@@ -48,7 +48,17 @@ DEDUP_HOURS = 6       # don't re-alert the same pair/direction within this windo
 # engine swaps in the /topdown triplet logic, which measured +0.20R maker
 # (deduped) on BTC/ETH. See docs/plans/_archive/signal-scanner-topdown-edge-2026-05-25.md.
 SCANNER_PAIRS = ["BTC/USDT", "ETH/USDT"]  # edge confirmed only here, not TRADING_PAIRS
-MAX_SWEEP_PCT = 0.5   # actionable sweep gate — tighter than topdown's 1.0% spectator cap
+# Quality gates retuned 2026-06-25 from a live forward audit of the first 63 emitted
+# alerts (5m fill+outcome sim, maker fees). The raw stream was bleeding (E -0.20R), but
+# the edge concentrates in tight sweeps + moderate R:R:
+#   - sweep <= 0.12% : E +0.47R (vs -0.43R / -0.56R for the 0.1-0.5% buckets)
+#   - rr 4-6         : E +0.90R, while rr >= 6 is 0 TP / 18 SL (E -1.0R) — high rr
+#                      means a microscopic SL stopped out by noise, not a far target.
+# Combined (sweep<=0.12 AND rr<6): n=19/63, WR 36%, E +0.471R. Small N — treat as a
+# forward-validation tightening, re-check via scripts/reconcile_topdown_falsification.py.
+# Was MAX_SWEEP_PCT=0.5 / no rr cap. See SYSTEM_BASELINE §8 (2026-06-25).
+MAX_SWEEP_PCT = 0.12  # actionable sweep gate — edge lives in <=0.12% bucket
+MAX_RR = 6.0          # skip rr >= MAX_RR: micro-SL setups that auto-lose to noise
 
 
 def _pair_to_bybit(pair: str) -> str:
@@ -371,7 +381,8 @@ def _edge_candidate(pair: str, signal: dict[str, Any]) -> dict[str, Any] | None:
     candidate dict or None when the signal fails the gate.
 
     Gate: sweep ≤ MAX_SWEEP_PCT, geometry SL on the protective side
-    (long sl<entry, short sl>entry), rr>0, single TP = triplet final target.
+    (long sl<entry, short sl>entry), MIN_RR floor < rr < MAX_RR (the upper cap
+    drops micro-SL setups that auto-lose to noise), single TP = triplet final target.
     """
     side = signal["side"]
     entry = signal["entry"]
@@ -387,6 +398,10 @@ def _edge_candidate(pair: str, signal: dict[str, Any]) -> dict[str, Any] | None:
     if side == "short" and not sl > entry:
         return None
     if rr is None or rr <= 0:
+        return None
+    # Upper R:R cap: rr >= MAX_RR means the SL sits inside the noise band (tiny risk
+    # distance), which the live audit showed stops out almost every time (0 TP / 18 SL).
+    if rr >= MAX_RR:
         return None
 
     return {
