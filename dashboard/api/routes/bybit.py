@@ -81,7 +81,12 @@ class AnnotationUpdate(BaseModel):
     planned_entry_price: float | None = None
     planned_sl_price: float | None = None
     planned_tp_price: float | None = None
+    planned_tp1: float | None = None
+    planned_tp2: float | None = None
     risk_pct: float | None = Field(default=None, ge=0, le=100)
+    # is_practice: micro "get hands dirty" trade — counts for trigger-execution stats
+    # but is excluded from edge math so non-representative size doesn't pollute it.
+    is_practice: bool | None = None
     # v2 REVIEW: process diagnosis (the clean-sample label; blank-default honesty layer)
     followed_process: bool | None = None
     technical_error: list[str] | None = None
@@ -159,9 +164,15 @@ class AnnotationOut(BaseModel):
     planned_entry_price: float | None = None
     planned_sl_price: float | None = None
     planned_tp_price: float | None = None
+    planned_tp1: float | None = None
+    planned_tp2: float | None = None
     risk_pct: float | None = None
     account_equity_at_open: float | None = None
     position_sl_price: float | None = None
+    # exit-discipline flags (took_partial / moved_to_be derived at close; is_practice manual)
+    took_partial: bool | None = None
+    moved_to_be: bool | None = None
+    is_practice: bool | None = None
     # machine top-down chain (Phase 3 auto_* — pre-fill source; may diverge from human)
     auto_htf_bias_daily: str | None = None
     auto_htf_bias_4h: str | None = None
@@ -256,9 +267,14 @@ def _row_to_out(r: dict) -> AnnotationOut:
         planned_entry_price=r.get("planned_entry_price"),
         planned_sl_price=r.get("planned_sl_price"),
         planned_tp_price=r.get("planned_tp_price"),
+        planned_tp1=r.get("planned_tp1"),
+        planned_tp2=r.get("planned_tp2"),
         risk_pct=r.get("risk_pct"),
         account_equity_at_open=r.get("account_equity_at_open"),
         position_sl_price=r.get("position_sl_price"),
+        took_partial=r.get("took_partial"),
+        moved_to_be=r.get("moved_to_be"),
+        is_practice=r.get("is_practice"),
         auto_htf_bias_daily=r.get("auto_htf_bias_daily"),
         auto_htf_bias_4h=r.get("auto_htf_bias_4h"),
         auto_htf_structure_reason=r.get("auto_htf_structure_reason"),

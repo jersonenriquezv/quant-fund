@@ -547,9 +547,14 @@ export interface BybitAnnotation {
   planned_entry_price?: number | null;
   planned_sl_price?: number | null;
   planned_tp_price?: number | null;
+  planned_tp1?: number | null;
+  planned_tp2?: number | null;
   risk_pct?: number | null;
   account_equity_at_open?: number | null;
   position_sl_price?: number | null;
+  took_partial?: boolean | null;
+  moved_to_be?: boolean | null;
+  is_practice?: boolean | null;
   auto_htf_bias_daily?: string | null;
   auto_htf_bias_4h?: string | null;
   auto_htf_structure_reason?: string | null;
@@ -606,7 +611,10 @@ export interface BybitAnnotationPatch {
   planned_entry_price?: number | null;
   planned_sl_price?: number | null;
   planned_tp_price?: number | null;
+  planned_tp1?: number | null;
+  planned_tp2?: number | null;
   risk_pct?: number | null;
+  is_practice?: boolean | null;
   // journal v2 REVIEW
   followed_process?: boolean | null;
   technical_error?: string[] | null;
