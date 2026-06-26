@@ -73,10 +73,22 @@ classify_sl_failures, dual_thrust_parity, dual_thrust_live_check, compute_bybit_
 pretrade_check, shadow_health_alert, ml_v0_engine1, ml_v1_*, backtest_topdown,
 fetch_history, reconcile_topdown_falsification.
 
-### Phase 2 — shared/ study + document — PENDING
-Smallest, foundational (data contract for whole system). Mostly read + document.
-Smell: notifier.py vs alert_manager.py dual notification paths (consolidate raw notify_*
-into alert_manager only).
+### Phase 2 — shared/ study + document — STUDIED 2026-06-26 (no code change)
+Smallest, foundational (data contract for whole system). Read-through done; map:
+- `models.py` (216) — THE CONTRACT. 14 frozen dataclasses, one per layer output
+  (Candle/MarketSnapshot → TradeSetup → AIDecision → RiskApproval). frozen=True enforces
+  the "no raw dicts between layers" rule. MarketSnapshot = only mutable (aggregator bundle).
+- `pnl_engine.py` (199) — pure TP/SL/BE state machine. Single source of truth shared by
+  shadow_monitor + backtest + execution so all three agree on win/loss. No DB/IO.
+- `logger.py` (88) — loguru wrap, pytest-aware (no file sink in tests).
+- `notifier.py` (260) — raw Telegram transport (fire-and-forget HTTP).
+- `alert_manager.py` (642) — smart layer over notifier: priority, rate-limit, auto-silence.
+- `ml_features.py` (1018) — feature factory: extract_setup_features + ~15 indicator helpers
+  (RSI/ADX/Bollinger/Stoch/WaveTrend) → ml_setups table. Biggest file.
+
+SMELL (deferred to its own PR, not cleanup): notifier.py and alert_manager.py both expose
+notify_* methods → confusing ownership. Fix: raw notify_* stays in notifier, routing-only
+in alert_manager.
 
 ### Phase 3 — data_service/ study + document — PENDING
 Layer 1, already clean (0 dead). Study + document only. No deletions.
