@@ -199,7 +199,7 @@ Estudio arriba = teoría (estaciones 1–6). En el repo la ejecución está repa
 
 - **Decisión Engine One (shadow):** `python scripts/ml_v0_engine1.py` el **2026-06-08** (re-run N≈200). Umbrales y freeze → `docs/SYSTEM_BASELINE.md` §8 (2026-05-11) y §7.1 (gates G1–G6).
 - **Gap AFML vs código actual (auditoría + backlog):** `docs/audits/afml-wyckoff-gap-2026-06-01.md` — Tier 1 (labels, sample weights), **Tier 1b** (`data_service` / columnas barrier + ventana de label + helper training), Tier 2 (purged CV en v0, deploy meta-label), Tier 3 (dollar bars, fracdiff).
-- **Después de edge (si pasa 6/8):** roadmap clasificador + Kelly → `docs/audits/ai-service-audit-2026-03-18.md` Phase 2–4. **No** usar `plans/ai-recalibration.md` (path Claude viejo; reemplazado por meta-label en baseline H6).
+- **Después de edge (si pasa 6/8):** roadmap clasificador + Kelly → `docs/audits/ai-service-audit-2026-03-18.md` Phase 2–4. **No** usar `docs/plans/_archive/ai-recalibration-2026-03-14.md` (plan viejo, archivado; reemplazado por meta-label en baseline H6).
 - **SMC inducement (otro hilo, post-6/8):** `docs/plans/smc-inducement-pullback-fixes-2026-06-01.md` (features v19, no mezclar con Tier 1b).
 
 
