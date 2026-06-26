@@ -51,10 +51,20 @@ HIGH-confidence delete (✅ done):
   `scalp_silent_detector_audit.py` (analyses done, findings in memory/docs)
 - `backfill_bybit_annotations.py`, `bybit_ping.py`, `check_public_ip.py`
 
-MEDIUM-confidence (verify first): `chart_c3_fidelity.py`, `chart_retest_stats.py`,
-`topdown_edge_hunt.py`, `study_1d_veto.py`, `reconcile_bybit_partial_pnl.py`,
-`cascade_shadow.py`, `dual_thrust/forward_resim.py`, `dual_thrust/okx_revalidation.py`,
-`ml_manual_report.py`, `backtest_{bootstrap,stability,regime_split}.py`.
+MEDIUM-confidence batch ✅ verified 2026-06-26 — Explore agent's list was too aggressive,
+2 candidates were LIVE. Only 4 truly-done one-offs deleted:
+`chart_c3_fidelity.py`, `topdown_edge_hunt.py`, `study_1d_veto.py`, `ml_manual_report.py`.
+
+KEPT (real refs found — DO NOT delete):
+- `chart_retest_stats.py` → used by live `dashboard/api/routes/chart.py`
+- `dual_thrust/forward_resim.py` → active systemd `dual-thrust-forward.service`
+- `dual_thrust/okx_revalidation.py` → refs in `execution_service/dual_thrust_shadow.py` +4
+- `backtest_bootstrap.py`, `backtest_stability.py` → imported by tests
+- `cascade_shadow.py` → PARKED experiment (awaits N≥30), not dead
+- `reconcile_bybit_partial_pnl.py` → break-glass repair tool (`--apply` re-runnable)
+- `backtest_regime_split.py` → reusable diagnostic util
+
+scripts/ went 52 → 35 .py files across phase 1 (17 deleted total).
 
 KEEP (run by skills/systemd/cron or active dev): backtest, optimize, sync_bybit,
 report_*, daily_status, signal_scanner, weekly_edge_audit, topdown_push,
