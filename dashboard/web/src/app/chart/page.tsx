@@ -64,6 +64,12 @@ const CHART_STYLES = {
 
 const SPEEDS = [1, 2, 4, 8];
 const REPLAY_TAIL = 150; // bars revealed by playing forward from the entry point
+// klinecharts renders on a CPU canvas (willReadFrequently: true → no GPU accel),
+// so every live repaint is CPU-bound at full device-pixel density. Polling fast
+// = a hot laptop even on an idle tab. 5s is plenty for a forming candle, and the
+// poll fully pauses when the tab is hidden (see pageVisible) so a backgrounded
+// chart costs nothing.
+const LIVE_POLL_MS = 5000;
 
 function fmtBar(ts: number | undefined): string {
   if (!ts) return "—";
@@ -104,6 +110,7 @@ export default function ChartPage() {
   const [armDir, setArmDir] = useState<"long" | "short" | null>(null); // click-to-place mode
   const [activeTool, setActiveTool] = useState<ToolboxAction>("cursor"); // left toolbox
   const restoredSymbolRef = useRef<string | null>(null); // last symbol whose drawings were restored
+  const [pageVisible, setPageVisible] = useState(true); // pauses live polling/repaint when tab hidden
 
   // Init chart once.
   useEffect(() => {
@@ -215,6 +222,16 @@ export default function ChartPage() {
     return () => document.removeEventListener("visibilitychange", onVis);
   }, [replay, chartReady, reconcile]);
 
+  // Track tab visibility (always on). A hidden tab does zero polling/repaint —
+  // the live-poll and HTF-heartbeat effects gate on this, so a chart left open
+  // in a background tab or on a second monitor stops cooking the CPU.
+  useEffect(() => {
+    const onVis = () => setPageVisible(document.visibilityState === "visible");
+    onVis();
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, []);
+
   // Reflect asOfIdx onto the chart (replay only). Append-by-one when playing.
   useEffect(() => {
     const chart = chartRef.current;
@@ -284,10 +301,10 @@ export default function ChartPage() {
   // Wall-clock heartbeat (live only) so HTF detection overlays refresh as zones
   // form within the current bar, instead of going stale until the bar closes.
   useEffect(() => {
-    if (replay || !chartReady) return;
+    if (replay || !chartReady || !pageVisible) return;
     const id = setInterval(() => setHourTick((n) => n + 1), 60_000);
     return () => clearInterval(id);
-  }, [replay, chartReady]);
+  }, [replay, chartReady, pageVisible]);
 
   // Render zones active as-of the current bar from the cached timeline. Pure
   // client-side filter → instant, runs every bar during playback with no fetch.
@@ -321,7 +338,7 @@ export default function ChartPage() {
   // The backend caches a 5m forming candle; higher TFs aggregate it client-side
   // (open carried from the prior bar's close — perps are continuous).
   useEffect(() => {
-    if (replay || !chartReady) return;
+    if (replay || !chartReady || !pageVisible) return;
     const pms = RESOLUTION_MS[resolution] ?? 5 * 60_000;
     const id = setInterval(async () => {
       const chart = chartRef.current;
@@ -377,9 +394,9 @@ export default function ChartPage() {
       } catch {
         /* transient — keep current data */
       }
-    }, 2000);
+    }, LIVE_POLL_MS);
     return () => clearInterval(id);
-  }, [replay, chartReady, symbol, resolution, reconcile]);
+  }, [replay, chartReady, symbol, resolution, reconcile, pageVisible]);
 
   const toggleReplay = () => {
     setPlaying(false);
