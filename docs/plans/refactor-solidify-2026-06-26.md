@@ -7,6 +7,18 @@ each service — before migrating to a VPS. Driven service-by-service, one sessi
 Zero expected change to WR/PnL. Only indirect bot benefit: fewer places for bugs to hide
 (cf. partial-candle bug). Decision to do this taken at 300+ collected trades.
 
+## ▶ RESUME — next session (start here)
+
+1. **Merge PR #103 first** (`chore/refactor-pre-vps-cleanup`, phases 0-2, tests green).
+   Pending from 2026-06-26 — user deferred the merge.
+2. After merge: `git checkout main && git pull`, then branch `chore/refactor-phase3-data`.
+3. **Phase 3 — data_service/ study** (Layer 1, already 0 dead — comprehension only, no
+   deletions expected). Caveman walkthrough like Phase 2 did for shared/. Then document.
+4. Carry-overs / open threads:
+   - Pre-existing uncommitted mods on `fix/chart-perf-cpu`: `docs/plans/dual-thrust-phase1b-shadow-wiring.md`, `docs/plans/engine1-entry-gate.md` (NOT part of refactor — leave or handle separately).
+   - `scripts/alert_ml_milestone.sh` still untracked (user's ML-milestone systemd helper — decide whether to commit).
+   - Deferred refactor: notifier.py / alert_manager.py notify_* overlap → its own PR (Phase 2 smell).
+
 ## Key distinction: DEAD vs UNREACHABLE
 
 - **DEAD** = nobody imports it → safe to delete.
