@@ -35,11 +35,15 @@ Zero expected change to WR/PnL. Only indirect bot benefit: fewer places for bugs
 Root `/plans` (4 stale March concept docs) merged into `docs/plans/_archive/`. Root dir
 removed. `notes.md` stale path fixed. One plans folder now: `docs/plans/`.
 
-### Phase 1 — scripts/ dead-code purge — PENDING
+### Phase 1 — scripts/ dead-code purge — HIGH-conf DONE 2026-06-26
 Delete one-off scripts whose job is done and nothing references (cross-checked vs
-.claude/ skills, systemd/ timers, docs/). ~6.5k LOC.
+.claude/ skills, systemd/ timers, docs/). ~6.5k LOC target.
 
-HIGH-confidence delete:
+13 HIGH-confidence scripts deleted (verified: zero refs in live code / skills / systemd /
+tests; only docs narrate them historically, which is fine). 1415 tests still collect clean.
+MEDIUM-confidence batch still PENDING (next pass).
+
+HIGH-confidence delete (✅ done):
 - `repair_partial_candles.py`, `flag_partial_candle_ml.py` (bug fixed, merged)
 - `dual_thrust_candle_parity.py`, `dual_thrust_shadow_parity.py` (gates PASS)
 - `validate_engine1_gates_oos.py`, `analyze_engine1_entry_gates.py` (gate killed)
