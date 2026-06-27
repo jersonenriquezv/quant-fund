@@ -908,29 +908,6 @@ class TestConfluenceCounting:
 # 10. Quick Setup Signal Tests
 # ============================================================
 
-class TestQuickSetupSignals:
-    """Quick setup signal validation — C/E/H removed 2026-04-13."""
-
-    def test_setup_c_removed(self):
-        """Setup C removed — always returns None."""
-        qe = QuickSetupEvaluator()
-        snapshot = _make_snapshot(funding_rate=-0.0005, buy_volume=600.0, sell_volume=400.0)
-        candles = _make_candles(101.0, count=20, timeframe="5m")
-        result = qe.evaluate_setup_c("BTC/USDT", "bullish", snapshot, 101.0, candles)
-        assert result is None
-
-    def test_setup_h_removed(self):
-        """Setup H removed — always returns None."""
-        qe = QuickSetupEvaluator()
-        state = _make_state(break_type="bos", break_direction="bullish", timeframe="5m")
-        candles = [make_candle(
-            open=100.0, close=100.01, high=100.02, low=99.99,
-            volume=10.0, timestamp=i * 300_000, timeframe="5m",
-        ) for i in range(25)]
-        result = qe.evaluate_setup_h("BTC/USDT", "bullish", state, candles)
-        assert result is None
-
-
 # ============================================================
 # 11. evaluate_all() multi-signal emission
 # ============================================================

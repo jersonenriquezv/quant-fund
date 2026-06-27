@@ -116,21 +116,6 @@ def _make_structure_state(
 
 
 # ================================================================
-# Setup C — Funding Squeeze
-# ================================================================
-
-class TestSetupC:
-    """Setup C removed 2026-04-13 — signal demoted to confluence booster."""
-
-    def test_setup_c_always_returns_none(self, evaluator):
-        """Setup C removed — method returns None unconditionally."""
-        snapshot = _make_snapshot(funding_rate=-0.0005, buy_volume=600, sell_volume=400)
-        candles = make_candle_series(base_price=100.0, count=20)
-        result = evaluator.evaluate_setup_c("BTC/USDT", "bullish", snapshot, 100.0, candles)
-        assert result is None
-
-
-# ================================================================
 # Setup D — LTF Structure Scalp
 # ================================================================
 
@@ -236,22 +221,6 @@ class TestSetupD:
 # ================================================================
 # Setup E — Cascade Reversal
 # ================================================================
-
-class TestSetupE:
-    """Setup E removed 2026-04-13 — signal demoted to confluence booster."""
-
-    def test_setup_e_always_returns_none(self, evaluator):
-        """Setup E removed — method returns None unconditionally."""
-        ts = int(time.time() * 1000)
-        liq = OIFlushEvent(
-            timestamp=ts - 5000, pair="BTC/USDT", side="long",
-            size_usd=500000, price=99000.0, source="oi_proxy",
-        )
-        snapshot = _make_snapshot(buy_volume=550, sell_volume=450, oi_flushes=[liq])
-        candles = make_candle_series(base_price=99.0, count=20, timeframe="5m")
-        result = evaluator.evaluate_setup_e("BTC/USDT", "bullish", snapshot, [], candles, 99.0)
-        assert result is None
-
 
 # ================================================================
 # Quick Setup Types Constant
@@ -647,22 +616,3 @@ class TestSetupDStructuralTP:
         tp2_rr = settings.SETUP_TP2_RR.get("setup_d_choch", settings.TP2_RR_RATIO)
         expected_fixed_tp2 = result.entry_price + risk * tp2_rr
         assert result.tp2_price == pytest.approx(expected_fixed_tp2, abs=0.01)
-
-
-# ================================================================
-# Setup H — REMOVED 2026-04-13 (retail momentum chase, 0/13 WR)
-# ================================================================
-
-class TestSetupH:
-
-    def test_setup_h_always_returns_none(self, evaluator):
-        """Setup H removed — method returns None unconditionally."""
-        state = _make_structure_state("bos", "bullish")
-        candles = [Candle(
-            timestamp=1_000_000_000_000 + i * 300_000,
-            open=100.0, high=100.1, low=99.9, close=100.05,
-            volume=10.0, volume_quote=1000.0,
-            pair="BTC/USDT", timeframe="5m", confirmed=True,
-        ) for i in range(30)]
-        result = evaluator.evaluate_setup_h("BTC/USDT", "bullish", state, candles)
-        assert result is None
