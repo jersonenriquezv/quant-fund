@@ -11,7 +11,7 @@ Engine1 (trend-pullback) is shadow-only and unprofitable ungated (forward PF 0.7
 **The live rule (simple, frozen):** at detection, score the engine1 setup with the frozen model → if score ≥ 0.847 → execute small live; else → shadow only. No calibration. No probability sizing. One fixed cutoff.
 
 ## Phase 1 — Live scoring parity (tracer bullet)
-**Status:** pending
+**Status:** in-review
 **Inputs:** frozen model `models/engine1_meta_v1.pkl`; engine1 detection path in `main.py` (~line 191 `evaluate_all`, ~274 shadow branch); offline scorer in `scripts/ml_v1_money_test.py` / `prepare_features`.
 **Outputs:** a reusable in-process scorer module (e.g. `strategy_service/engines/engine1_scorer.py`) that loads the frozen model once and returns `score` + `passes_cutoff` for a live engine1 `TradeSetup`; a `ENGINE1_LIVE_SCORE` log line per engine1 emission (still shadow, no execution change).
 **Work:**
@@ -26,7 +26,26 @@ Engine1 (trend-pullback) is shadow-only and unprofitable ungated (forward PF 0.7
 - [ ] Rollback if: live score diverges from offline (feature mismatch) → do not proceed; fix feature parity first.
 
 **Evidence (filled by /phased-implementation):**
-<empty>
+- 2026-06-27 — Automated checks:
+  - `python scripts/engine1_scorer_parity.py` → **PASS**. N=40 recent engine1 rows, max |batch − per_row| = **0.00e+00** (tol 1e-3), 0 rows over tol. Per-row (live path) scoring exactly reproduces batch (offline) scoring. Score range 0.001..0.996; cutoff 0.847 → 6/40 eligible.
+  - `python -m pytest tests/ -q` → **1414 passed, 1 xpassed** (incl. new `tests/test_engine1_scorer.py`, 5 tests; 0 failures).
+  - Syntax + import: `engine1_scorer` imports clean, `settings.ENGINE1_SCORE_CUTOFF = 0.847`.
+- Manual checklist:
+  - [x] `ENGINE1_LIVE_SCORE` emission — closed by automated test `tests/test_engine1_scorer.py::test_engine1_score_log_fires_and_logs` (feeds an engine1 setup through `_engine1_score_log`, asserts the log fires). No need to wait for a live emission. (Live log will also self-confirm when engine1 next emits on an active pair.)
+- Rollback trigger fired: no (live score == offline score, exact).
+- Files changed:
+  - `config/settings.py` (+`ENGINE1_SCORE_CUTOFF = 0.847`, frozen rank cutoff)
+  - `strategy_service/engines/engine1_scorer.py` (NEW — frozen-model in-process scorer, reuses `prepare_features`, forces training categories)
+  - `scripts/engine1_scorer_parity.py` (NEW — Phase 1 gate)
+  - `main.py` (`_ml_log_setup` now returns the feature dict; new `_engine1_score_log`; log-only hook after dedup — NO execution change)
+- LOC delta: ~+135 / −3
+- **Parity design note:** scorer reuses `scripts.ml_v0_engine1.prepare_features` (one transform path, no drift) and overrides categorical categories from the frozen artifact, so single-row live scoring cannot diverge from batch scoring. Proven by 0.00 max diff.
+- 2026-06-27 — **DEPLOY (tracer caught 2 production blockers the offline gate could not):**
+  - First deploy crash-looped 8× — the OKX `id=None` ccxt crash. The fix `harden_okx_markets` (`fc15ca5`) had never been merged to this line. Cherry-picked → committed separately (PR #108, MERGED `ab9be03`). Confirmed live: `harden_okx_markets: dropped 1 market(s) with id=None`; real balance restored ($86.30 vs $100 fallback).
+  - In-container scoring failed: `ModuleNotFoundError: lightgbm` then `OSError: libgomp.so.1`. The bot runtime image lacked the model's deps. Fixed: `requirements.txt` +`lightgbm==4.6.0`, +`scikit-learn==1.8.0` (pinned to freeze version — kills `InconsistentVersionWarning`); `Dockerfile` +`apt install libgomp1`. **Without the tracer this would have silently thrown on every engine1 emission (caught by try/except) — ENGINE1_LIVE_SCORE would never have appeared.**
+  - In-container scoring now verified: model loads clean (no version warning), 5 recent rows score identically host vs container (0.8292 / 0.0045 / 0.0048 / 0.8320 / 0.8165) — **host==container exact**.
+  - Bot healthy post-deploy: `Restarts=0`, shadow-only (`LIVE: []`), scoring is log-only.
+- Manual check status: `ENGINE1_LIVE_SCORE` not yet observed — engine1 (short-only, 5 pairs) has not emitted on an active pair since deploy (only BTC scope-filtered + setup_a/b/scalp emits seen). Hook is reachable + scoring works in-container; awaiting a real engine1 emission to close the manual check.
 
 ---
 
@@ -86,7 +105,7 @@ Engine1 (trend-pullback) is shadow-only and unprofitable ungated (forward PF 0.7
 - **Topping up capital before Phase 3 passes** — adding $ before live≈shadow is confirmed increases exposure to an unproven-live edge without de-risking the unknown.
 
 ## Open questions (must resolve before starting)
-- Exact `R` (risk-per-trade $) → sets the 10R kill line as a real number. Recommend `R = $1.5` (10R = $15) at $86 capital. **User to confirm.**
+- Exact `R` (risk-per-trade $) → sets the 10R kill line as a real number. **RESOLVED 2026-06-27: `R = $1.5` (10R = $15 kill line).**
 - Min-notional per OKX pair for the 5 v1d pairs (ETH/SOL/LINK/AVAX/XRP short) — confirm $86 covers min size on all.
 - Re-freeze cadence: when does the cutoff get recomputed? Proposal: never during this live test; only on a deliberate re-freeze + new forward window.
 

@@ -962,6 +962,16 @@ class Settings:
     ENGINE1_IMPULSE_GATE_MAX: float = float(
         os.getenv("ENGINE1_IMPULSE_GATE_MAX", "2.24")
     )
+    # Engine 1 ML-score filter → small live (BUILD 2026-06-27). Frozen
+    # meta-label model `models/engine1_meta_v1.pkl` scores each engine1 setup;
+    # only score >= ENGINE1_SCORE_CUTOFF (v1d top-tercile) is eligible for live.
+    # The cutoff is FROZEN from the v1d top-tercile (do NOT recompute live).
+    # Forward gate PASSED: ml_v1_forward_check top-half PF 1.32 on unseen N=34.
+    # Plan: docs/plans/engine1-ml-filter-live.md. Grill: docs/grill/
+    # engine1-top-tercile-live-2026-06-27.md. Rank cutoff — NO calibration.
+    ENGINE1_SCORE_CUTOFF: float = float(
+        os.getenv("ENGINE1_SCORE_CUTOFF", "0.847")
+    )
     # Pair filter for shadow mode — restrict setups to specific pairs.
     # Omitted setups track all TRADING_PAIRS. Empty list = blocked entirely.
     # Quarantine d_choch / d_bos to BTC+ETH per redesign §3.4–3.5
