@@ -403,6 +403,10 @@ Stable ~0.71–0.72 across three runs at growing N → signal is real, not noise
 
 Legacy SMC class (A/B/D/F) stays dead — collecting labels only, no granular work. Plain-language map of where every signal stands vs its gate: `docs/STRATEGY_REFINEMENT_GUIDE.md`. Strategy-touch work stays gated on the graduation criteria in §7.1 / §7.2 / §9, not reopened wholesale.
 
+### engine1 ML-score filter → small live — BUILD approved 2026-06-27
+
+Forward gate PASSED: `scripts/ml_v1_forward_check.py` on unseen post-freeze trades (N=34) — take-all PF 0.74 vs **top-half PF 1.32 (+$17)**, the same gate that killed the impulse-gate (PF 4.5 in-sample → 0.94 forward). Honest breakeven-inclusive test (frozen model scoring all 499 v1d fills): take-all −$98 → **top-tercile +$721**, so the filter flips engine1 positive even counting BE fees. No calibration (frozen rank cutoff ≈0.847, not probability sizing). Plan: `docs/plans/engine1-ml-filter-live.md` (4 phases, tracer = live-score parity). Plain-language writeup: `docs/plans/engine1-ml-filter-EXPLAINER.md`. Grill: `docs/grill/engine1-top-tercile-live-2026-06-27.md`. Kill = 10R DD (p99 of healthy model/30 trades) / 7 losses / rolling-20 PF<1.2. First live capital since shadow-only (2026-04-15); $86 kept, +$100 held until live≈shadow confirmed.
+
 ### Data integrity — Partial-candle backfill fix (code/data done 2026-06-15, deploy pending PR merge)
 
 Surfaced by the Dual Thrust Phase 1b-P1 parity tracer (`scripts/dual_thrust_candle_parity.py`): the Postgres `candles` store held partial (forming) bars — backfill stored the forming bar `confirmed=True` and the upsert was `ON CONFLICT DO NOTHING`, so the later complete WS bar was dropped. ~36% of 4h / 12% of 1h / 1% of 15m bars affected, all pairs. Tainted SMC detectors, ML features, /chart. Grilled → BUILD. **Fix shipped (branch `fix/partial-candle-backfill`):** Fix A — `backfill_candles` drops any forming bar (`ts + tf_ms > now`); Fix B — live candle store uses `ON CONFLICT DO UPDATE` so authoritative bars overwrite stale partials; history repaired across 7 pairs × {4h,1h,15m} (~1000+ bars) via `scripts/repair_partial_candles.py`; parity tracer 21/21 PASS post-repair; 131 contaminated ml_setups tagged `data_quality='partial_candle_risk'` (migration 22) + excluded from training. Plan `docs/plans/partial-candle-backfill-fix.md`. Data-layer only, no risk/execution touch, no ML_FEATURE_VERSION bump. **Live deploy gated on PR review+merge** (running container still has pre-fix code until then; Fix B self-heals on next authoritative bar once deployed).
@@ -576,6 +580,11 @@ D: net_score <  2
 ---
 
 ## 8. Changelog
+
+### 2026-06-27 — /bybit pending panel: hide reduce-only SL/TP exits
+**Files:** `dashboard/api/routes/bybit.py` (`list_pending` SQL adds `reduce_only IS NOT TRUE`).
+- **Why:** an open short's reduce-only **Buy** SL/TP orders were surfacing in the dashboard PENDING ORDERS panel and rendering as **LONG** cards (`PendingRow` infers direction from raw order side, `isLong = side === "Buy"`). User read it as a direction mismatch ("entered short, shows long"). The trade-log annotation itself was correct (`Sell` → SHORT); only the pending panel was misleading.
+- **Fix:** `/bybit/pending` excludes `reduce_only` orders. Those are exits of an open position, not pending entries awaiting fill. `IS NOT TRUE` (not `= false`) keeps NULL `reduce_only` rows visible (treated as entries) since the column is nullable. Deployed via `docker compose up -d --build api`.
 
 ### 2026-06-25 — /topdown alert quality gates retuned (sweep ≤0.12%, rr cap 6)
 **Files:** `scripts/signal_scanner.py` (`MAX_SWEEP_PCT` 0.5→0.12, new `MAX_RR=6.0`), `tests/test_signal_scanner_edge.py`.

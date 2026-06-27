@@ -476,15 +476,20 @@ def _pending_to_out(r: dict) -> PendingOrderOut:
 
 @router.get("/pending", response_model=list[PendingOrderOut])
 async def list_pending(status: str | None = "pending", limit: int = Query(50, ge=1, le=200)):
+    # reduce_only orders are SL/TP exits of an open position, not pending entries.
+    # Excluding them keeps this panel to genuine entry orders awaiting fill and
+    # avoids mislabeling a short's reduce-only Buy exit as a LONG entry.
     async with db.pg_pool.acquire() as conn:
         if status:
             rows = await conn.fetch(
-                "SELECT * FROM bybit_pending_orders WHERE status = $1 ORDER BY placed_at DESC LIMIT $2",
+                "SELECT * FROM bybit_pending_orders WHERE status = $1 AND reduce_only IS NOT TRUE "
+                "ORDER BY placed_at DESC LIMIT $2",
                 status, limit,
             )
         else:
             rows = await conn.fetch(
-                "SELECT * FROM bybit_pending_orders ORDER BY placed_at DESC LIMIT $1",
+                "SELECT * FROM bybit_pending_orders WHERE reduce_only IS NOT TRUE "
+                "ORDER BY placed_at DESC LIMIT $1",
                 limit,
             )
     return [_pending_to_out(dict(r)) for r in rows]
