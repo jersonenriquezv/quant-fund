@@ -8,7 +8,7 @@ Deterministic SMC pattern detection (BOS/CHoCH, OB, FVG, sweeps, premium/discoun
 ## Source of truth (read before editing)
 - **Detailed behavior:** `docs/context/02-strategy.md` (Spanish, deep — detector logic, setup definitions, common helpers, expectancy filters)
 - **Active config / thresholds / setup status:** `docs/SYSTEM_BASELINE.md` — ENABLED_SETUPS, SHADOW_MODE_SETUPS, all numeric thresholds, changelog
-- **Engines (redesign track):** `strategy_service/engines/` — Engine 1 (`engines/trend_pullback.py`) and its baseline comparators (`engines/benchmarks.py`) live here. Reports under `scripts/report_engine1_shadow.py`
+- **Engines (redesign track):** `strategy_service/engines/` — Engine 1 (`engines/trend_pullback.py`), its baseline comparators (`engines/benchmarks.py`), and the meta-label score filter (`engines/engine1_scorer.py`, frozen model `models/engine1_meta_v1.pkl`) live here. Reports under `scripts/report_engine1_shadow.py`
 - **Models:** `shared/models.py` — `TradeSetup`, `OrderBlock`, `FVG`, etc. ALWAYS read this before referencing fields
 
 ## Files
@@ -24,6 +24,7 @@ Deterministic SMC pattern detection (BOS/CHoCH, OB, FVG, sweeps, premium/discoun
 | `volume_profile.py` | 4H VP — POC/VAH/VAL/HVN/LVN. Cached per-pair |
 | `trade_classifier.py` | Setup type classification helper |
 | `engines/` | Redesign engines (Engine 1 trend pullback). New strategies land here, not in `setups.py` |
+| `engines/engine1_scorer.py` | Frozen meta-label model scorer (`models/engine1_meta_v1.pkl`). `score_features()` / `passes_cutoff()` — in-process P(tp) for an engine1 setup, gates live eligibility (`ENGINE1_SCORE_CUTOFF`). Log-only in main.py until the live gate ships |
 
 ## Rules — modifying detectors / setups
 1. **Confluence gate is structural-only.** BOS, CHoCH, FVG, order_block, liquidity_sweep, breaker_block, pd_zone, initiating_ob, bos_confirmed count toward the 2-min gate. CVD/OI/funding/ratios are ML features, NOT confluences. Do not inflate the gate by adding metric-based confluences.

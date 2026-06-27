@@ -282,7 +282,13 @@ async def _process_pipeline_setup(setup, candle: Candle, *, allow_live: bool) ->
         return False
 
     # --- ML: capture feature snapshot AFTER dedup (dedup adds no ML value) ---
-    _ml_log_setup(setup, candle)
+    features = _ml_log_setup(setup, candle)
+
+    # --- engine1 meta-label scoring (Phase 1: log only, NO execution change) ---
+    # Reproduces the frozen-model score in-process so we can later gate live
+    # execution on it. docs/plans/engine1-ml-filter-live.md.
+    if setup.setup_type == "engine1_trend_pullback" and features is not None:
+        _engine1_score_log(setup, features)
 
     # --- Shadow mode: data collection — track ALL setups, minimize filtering ---
     if setup.setup_type in settings.SHADOW_MODE_SETUPS and _shadow_monitor is not None:
@@ -487,10 +493,14 @@ async def _process_pipeline_setup(setup, candle: Candle, *, allow_live: bool) ->
 # ML instrumentation helpers (fire-and-forget)
 # ================================================================
 
-def _ml_log_setup(setup, candle: Candle) -> None:
-    """Log setup features to ml_setups table at detection time."""
+def _ml_log_setup(setup, candle: Candle) -> dict | None:
+    """Log setup features to ml_setups table at detection time.
+
+    Returns the feature dict captured at detection (for in-process scoring),
+    or None if logging was skipped or failed.
+    """
     if _data_service is None or _data_service.postgres is None:
-        return
+        return None
     try:
         snapshot = _data_service.get_market_snapshot(candle.pair)
         current_price = candle.close
@@ -547,9 +557,32 @@ def _ml_log_setup(setup, candle: Candle) -> None:
             experiment_id=experiment_id,
         )
         _emit_metric("ml_setup_insert_ok" if ok else "ml_setup_insert_error", 1, setup.pair)
+        return features
     except Exception as e:
         logger.error(f"ML setup logging failed: {e}")
         _emit_metric("ml_setup_insert_error", 1, setup.pair)
+        return None
+
+
+def _engine1_score_log(setup, features: dict) -> None:
+    """Score an engine1 setup with the frozen meta-label model and log it.
+
+    Phase 1 of the ML-score live filter: log-only, changes NOTHING about
+    execution. Surfaces the score + cutoff decision per emission so we can
+    confirm live scores match the offline analysis before wiring the gate.
+    """
+    try:
+        from strategy_service.engines import engine1_scorer
+        score = engine1_scorer.score_features(features)
+        eligible = engine1_scorer.passes_cutoff(score)
+        logger.info(
+            f"ENGINE1_LIVE_SCORE {setup.pair} {setup.direction} "
+            f"score={score:.4f} cutoff={settings.ENGINE1_SCORE_CUTOFF} "
+            f"eligible={eligible} (Phase 1 log-only, no execution change)"
+        )
+        _emit_metric("engine1_score", score, setup.pair)
+    except Exception as e:
+        logger.error(f"engine1 scoring failed ({setup.pair}): {e}")
 
 
 def _ml_resolve_outcome(setup_id: str, outcome_type: str, **kwargs) -> None:
