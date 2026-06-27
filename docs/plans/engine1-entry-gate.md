@@ -2,14 +2,23 @@
 **Slug:** engine1-entry-gate
 **Source grill:** docs/grill/engine1-entry-gate-2026-06-08.md
 **Created:** 2026-06-08
-**Status:** pending
+**Status:** ABANDONED — KILLED 2026-06-11 (forward validation FAILED)
 **Tracer bullet:** Does the low-impulse edge hold on genuinely FUTURE shadow data (not just a historical out-of-sample split)? If forward PF collapses to baseline, the whole gate is curve-fit and dies — at zero code cost.
+
+## POST-MORTEM (2026-06-11)
+Forward validation FAILED. Tracer answered NO. Forward cohort (`created_at > '2026-06-08'`, N=77) gave gated subset PF **0.94** vs ungated **0.59**. Gate beat ungated by +0.35 (clears the relative bar) BUT missed the absolute **PF ≥ 1.5** bar — gated arm is still losing money. Rollback condition (Phase 1, line: "forward PF < 1.5 → KILL") FIRED.
+
+Root cause: the in-sample 4.5 PF and 5/5 walk-forward folds were **tercile noise**. Forward impulse median (2.453) drifted above the frozen 2.24 cutoff — regime shifted, the low-impulse population the gate keyed on no longer behaves the same. Curve-fit to a historical regime, not a stable edge.
+
+Whole-engine context: ungated engine1 forward PF 0.59 = engine1 itself still bleeding. The gate was the last lever and it didn't clear. engine1 stays PARKED (weak *signal*, not a management/plumbing problem).
+
+**Disposition:** Phase 2 code (PR #80) stays `ENGINE1_IMPULSE_GATE_ENABLED=False` permanently, left inert as an audit trail — do NOT enable. No further phases. Plan closed. Detail → memory `project_engine1_gate_forward_validation`.
 
 ## Context summary
 engine1_trend_pullback is break-even raw (PF ~1.0 on v1d). In-sample slicing + a frozen-cutoff chronological holdout showed that filtering to the LOW tercile of `engine1_impulse_atr_multiple` (cutoff ≤ **2.24**) lifts out-of-sample PF to ~4.5 (testN=33, distributed across 11 winners, post-fee). This plan validates that forward, then — only if it survives — implements the gate. It changes WHICH engine1 signals are taken; it does NOT change the signal, the geometry, or any feature definition (so **no ML_FEATURE_VERSION bump**). Stays shadow throughout. Live execution is explicitly out of scope (gated separately by SYSTEM_BASELINE §7.1).
 
 ## Phase 1 — Pre-registered forward validation (NO CODE)
-**Status:** pending
+**Status:** FAILED — KILLED 2026-06-11 (forward PF 0.94 < 1.5 bar; see POST-MORTEM above)
 **Inputs:**
 - Frozen cutoff: `engine1_impulse_atr_multiple <= 2.24` (33rd pct of v1d resolved cohort, N=340, as of 2026-06-08).
 - Freeze line: only rows with `created_at > 2026-06-08` count as forward/out-of-time.
@@ -27,17 +36,17 @@ engine1_trend_pullback is break-even raw (PF ~1.0 on v1d). In-sample slicing + a
 **Timeline note:** engine1 v1d emits ~21 resolved/day, so **N≥50 forward rows accrue in ~2–3 days**, not weeks. The 30-day clause is only a backstop ceiling.
 
 **Verification gate:**
-- [ ] Automated: forward cohort reaches **N ≥ 50 resolved** post-freeze rows (≈3 days) OR **30 days elapsed** (2026-07-08), whichever first. Then: gated-subset **PF ≥ 1.5** AND gated PF beats ungated forward PF by **≥ 0.3**.
-- [ ] Manual: confirm forward winners are distributed (top-win share < 30%), not 1-2 fat trades.
-- [ ] Rollback if: forward PF < 1.5 OR gated does not beat ungated by ≥0.3 → KILL the gate, mark plan abandoned, write one-line post-mortem. Do NOT proceed to Phase 2.
+- [x] Automated: forward cohort reached N=77 post-freeze rows (>2026-06-08). Gated PF **0.94** vs ungated **0.59** — FAILS absolute PF≥1.5 bar; beats ungated by +0.35 (relative bar passes).
+- [x] Manual: moot — absolute bar already failed.
+- [x] Rollback FIRED: forward PF 0.94 < 1.5 → gate KILLED, plan abandoned, post-mortem written. Did NOT proceed to enabling Phase 2.
 
-**Evidence (filled by /phased-implementation):**
-<empty until phase runs>
+**Evidence:**
+Forward N=77, gated PF 0.94, ungated PF 0.59. Frozen cutoff 2.24 stale vs forward impulse median 2.453 (regime drift). In-sample 4.5 PF + 5/5 walk-forward = tercile noise. See POST-MORTEM at top.
 
 ---
 
 ## Phase 2 — Implement gate in engine (shadow only)
-**Status:** CODE SHIPPED default-OFF 2026-06-08 (PR #80 follow-up). Enabling the suppression (`ENGINE1_IMPULSE_GATE_ENABLED=true`) remains BLOCKED on Phase 1 forward-validation pass. Built ahead of Phase 1 because walk-forward (5/5 folds beat baseline) de-risked it and default-off changes zero live/shadow behaviour — code is reviewed/tested and ready to flip the day the forward number confirms.
+**Status:** CODE SHIPPED default-OFF 2026-06-08 (PR #80 follow-up). Stays `ENGINE1_IMPULSE_GATE_ENABLED=false` PERMANENTLY — Phase 1 forward validation FAILED 2026-06-11. Code left inert as audit trail; do NOT enable. (Built ahead of Phase 1 because walk-forward looked robust, but forward data killed the edge — see POST-MORTEM.)
 **Inputs:** Phase 1 pass + the frozen cutoff value (or a re-derived value if Phase 1 recommends, recorded explicitly).
 **Outputs:**
 - `engine1_impulse_atr_multiple` gate wired in `strategy_service/engines/trend_pullback.py`, controlled by a new `settings.ENGINE1_IMPULSE_GATE_MAX` (default off / very high so behavior is unchanged until deliberately enabled).
@@ -50,12 +59,11 @@ engine1_trend_pullback is break-even raw (PF ~1.0 on v1d). In-sample slicing + a
 - Update `docs/SYSTEM_BASELINE.md` §thresholds + §setup-status.
 
 **Verification gate:**
-- [ ] Automated: `pytest tests/test_engine_trend_pullback.py tests/test_engine1_benchmarks.py tests/test_report_engine1_shadow.py -v` — 0 failures; a test proving default-off emission count is byte-identical to pre-change.
-- [ ] Manual: deploy to shadow, confirm gated flag appears in new `ml_setups` rows and partitions emissions sanely.
-- [ ] Rollback if: default-off changes any existing emission, or tests regress → revert commit.
+- [x] Automated: tests passed at ship time (PR #80 follow-up), default-off emission count byte-identical to pre-change.
+- [x] Manual: gated flag confirmed in `ml_setups` rows, emissions partitioned sanely.
+- [x] Rollback N/A: default-off shipped clean; gate never enabled (Phase 1 failed).
 
-**Evidence (filled by /phased-implementation):**
-<empty until phase runs>
+**Evidence:** Code merged default-OFF, never activated. Permanently inert per POST-MORTEM.
 
 ---
 
