@@ -9,15 +9,17 @@ Zero expected change to WR/PnL. Only indirect bot benefit: fewer places for bugs
 
 ## ▶ RESUME — next session (start here)
 
-1. **Merge PR #103 first** (`chore/refactor-pre-vps-cleanup`, phases 0-2, tests green).
-   Pending from 2026-06-26 — user deferred the merge.
-2. After merge: `git checkout main && git pull`, then branch `chore/refactor-phase3-data`.
-3. **Phase 3 — data_service/ study** (Layer 1, already 0 dead — comprehension only, no
-   deletions expected). Caveman walkthrough like Phase 2 did for shared/. Then document.
-4. Carry-overs / open threads:
-   - Pre-existing uncommitted mods on `fix/chart-perf-cpu`: `docs/plans/dual-thrust-phase1b-shadow-wiring.md`, `docs/plans/engine1-entry-gate.md` (NOT part of refactor — leave or handle separately).
-   - `scripts/alert_ml_milestone.sh` still untracked (user's ML-milestone systemd helper — decide whether to commit).
+1. **Phase 4 — strategy_service/ dead stubs + study** (next). Branch `chore/refactor-phase4-strategy`.
+   Delete dead setup stubs (evaluate_setup_c/e/h, killed scalp detectors) + their assert-None
+   tests together. Then study SMC detectors. See Phase 4 section below.
+2. Carry-overs / open threads:
    - Deferred refactor: notifier.py / alert_manager.py notify_* overlap → its own PR (Phase 2 smell).
+   - Deferred split (Phase 6b territory): data_store.py (2407) → redis/postgres/ml_schema;
+     bybit_watcher.py (1112) → watcher/context/classifier/alert. Only if appetite.
+
+**History:** #103 (phases 0-2) MERGED to main 2026-06-27. Phase 3 (data_service study) DONE
+2026-06-27 — see below. Carry-over docs (engine1 post-mortem, ml-v0 audit, alert_ml_milestone.sh,
+video notes) committed into #103 before merge.
 
 ## Key distinction: DEAD vs UNREACHABLE
 
@@ -102,8 +104,35 @@ SMELL (deferred to its own PR, not cleanup): notifier.py and alert_manager.py bo
 notify_* methods → confusing ownership. Fix: raw notify_* stays in notifier, routing-only
 in alert_manager.
 
-### Phase 3 — data_service/ study + document — PENDING
-Layer 1, already clean (0 dead). Study + document only. No deletions.
+### Phase 3 — data_service/ study + document — ✅ DONE 2026-06-27 (no code change)
+Layer 1 (17 files, 8.8k LOC). Confirmed **0 dead code** (every file has live call sites).
+Entry point: `service.py::DataService` — the only facade main.py touches; wires all submodules,
+runs a RECOVERING→RUNNING→DEGRADED state machine + polling loops. Map:
+
+**Core market data (in main process):**
+- `service.py` (1100) — facade orchestrator. `get_market_snapshot/latest_candle/cvd/funding/oi/whale_movements`, lifecycle, gap backfill, health. → OKX WS/REST, Redis, PG, Etherscan, mempool, news, Telegram.
+- `data_store.py` (2407, biggest) — dual store: `RedisStore` (real-time cache, TTL'd) + `PostgresStore` (history, 11 tables). ML outcome whitelist `VALID_OUTCOMES`/`NON_MARKET_OUTCOMES` + `ml_market_outcome_filter_sql()`.
+- `exchange_client.py` (482) — OKX REST via ccxt: backfill (drops forming bar), funding/OI polling, orderbook depth.
+- `websocket_feeds.py` (454) — OKX WS `/business` candles, confirmed-only filter, ~600 candles/pair/tf in mem.
+- `cvd_calculator.py` (423) — OKX WS `/public` trades → CVD 5m/15m/1h. WARMING_UP→VALID→INVALID.
+- `oi_flush_detector.py` (185) — OI-drop >2%/5m cascade detector (passive, fed by poll loop).
+- `etherscan_client.py` (349) — ETH whale poll (33 wallets) → exchange deposits/withdrawals.
+- `btc_whale_client.py` (366) — BTC whale poll via mempool.space (8 wallets, UTXO).
+- `news_client.py` (244) — Fear&Greed + headlines (alternative.me + CryptoCompare), Redis-cached, degrades gracefully.
+- `data_integrity.py` (224) — pure state: enums, `SETUP_DATA_DEPS`, `can_trade_setup()`, `CircuitBreaker`, `validate_candle_continuity()`.
+- `liquidation_estimator.py` (124) — liq-level heatmap from OI+candles (pure).
+- `metadata.py` (45) — OKX instrument IDs + contract sizes, single source of truth (pure).
+
+**Bybit manual-trade journal (separate from main process):**
+- `bybit_watcher.py` (1112) — **standalone daemon** (`bybit-watcher` container, NOT in main.py). Polls Bybit REST 60s, detects open/close, annotates, captures context, v2 auto-classify chain, Telegram alerts.
+- `bybit_sync.py` (480) — Bybit executions + closed-PnL sync (idempotent). Called only by `scripts/sync_bybit.py`.
+- `context_service.py` (711) — builds context snapshots (HTF bias/funding/OI/CVD/liq) for Bybit trades + signal_scanner. Reads PG directly.
+- `topdown_reconcile.py` (118) — matches Bybit trades ↔ /topdown edge alerts (pure; 36h window, 0.6% entry tol).
+
+**Redis vs Postgres split:** Redis = ephemeral real-time cache (latest candle/funding/OI/whale, short TTL, dashboard feeds) — bot survives if it dies (degraded). Postgres = durable history/audit/ML training (UPSERT-safe) — needed for backfill, but can run mem-only on failure (data lost on restart).
+
+**Smells (deferred, NOT this phase):** `data_store.py` → split redis/postgres/ml_schema;
+`bybit_watcher.py` → split watcher/context/classifier/alert. Tracked in resume carry-overs.
 
 ### Phase 4 — strategy_service/ dead stubs + study — PENDING
 Delete dead setup stubs inside live files:
