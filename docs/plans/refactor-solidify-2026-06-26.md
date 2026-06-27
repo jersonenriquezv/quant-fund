@@ -155,9 +155,24 @@ All 1409 tests pass post-change. SMC detector study: file roles already mapped i
 / volume_profile / engines). Smell confirmed: `setups.py` (1616 LOC) monolith → split
 deferred to Phase 6b (extract OBSelector/TPCalculator/SetupGeometry).
 
-### Phase 5 — config/settings.py split — PENDING
+### Phase 5 — config/settings.py split — PENDING (NEXT — start here next session)
 264 flat fields → split into `RiskConfig`, `StrategyConfig`, `ExchangeConfig`, `MLConfig`
-sub-dataclasses. High blast radius (every service imports) — needs full test pass after.
+sub-dataclasses. High blast radius (every service imports `from config.settings import settings`).
+
+**Resume steps (low-token):**
+1. `git checkout main && git pull` (all of phases 0-4 already merged). Branch `chore/refactor-phase5-config`.
+2. Recon FIRST (cheap): `grep -rn "settings\." --include=*.py | wc -l` to size blast radius;
+   `wc -l config/settings.py` to confirm field count.
+3. **Decide approach before coding** — two options, pick with user:
+   (a) Keep `settings` flat as the public API; group internally only (low risk, low payoff).
+   (b) True sub-dataclasses `settings.risk.*` / `settings.strategy.*` (clean, but rewrites
+       every call site — biggest diff in the whole refactor).
+   Recommend (a) first pass unless user wants the full rename.
+4. `python -m pytest tests/ -q` MUST stay green (1409+). Follow /doc-update (SYSTEM_BASELINE).
+5. One PR off the branch, same merge flow as #103-#105.
+
+**Risk note:** highest-blast-radius phase. Env-var overrides + `.env` parsing live here too —
+don't break `OKX_SANDBOX`, `ENABLED_SETUPS`, `EXPERIMENT_ID`, `DUAL_THRUST_SHADOW_ENABLED`.
 
 ### Phase 6 — main.py god-file split (final boss) — PENDING
 1416 LOC → extract:
