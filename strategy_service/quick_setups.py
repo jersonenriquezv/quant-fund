@@ -1,13 +1,13 @@
 """
-Quick Setup Evaluation — Setup C, D, E, H.
+Quick Setup Evaluation — Setup D (variants d_bos, d_choch).
 
 Data-driven setups with shorter duration (4h max) and lower R:R (1:1 min).
 These fire only when no swing setup (A/B) is detected.
 
-Setup C: Funding Squeeze — extreme funding + CVD alignment = momentum entry
 Setup D: LTF Structure Scalp — CHoCH/BOS on 5m + fresh OB, no sweep/FVG needed
-Setup E: Cascade Reversal — OI drop cascade + CVD reversal = catch the bounce
-Setup H: Momentum/Impulse — volume-driven directional move + BOS = ride the wave
+
+Setups C/E/H removed 2026-04-13 (signals demoted to confluence boosters in
+setups.py). `setup_c` retained in QUICK_SETUP_TYPES for ml_setups compat only.
 """
 
 import time
@@ -25,27 +25,9 @@ logger = setup_logger("strategy_quick_setups")
 
 
 class QuickSetupEvaluator:
-    """Evaluates quick trade setups (C, D, E) from market data signals."""
+    """Evaluates quick trade setups (D variants) from market data signals."""
 
     _ob_scorer = SetupEvaluator()
-
-    def evaluate_setup_c(
-        self,
-        pair: str,
-        htf_bias: str,
-        snapshot: Optional[MarketSnapshot],
-        current_price: float,
-        candles: list[Candle],
-    ) -> Optional[TradeSetup]:
-        """REMOVED 2026-04-13: Setup C — Funding Squeeze.
-
-        0 resolved trades. Entered at market price with fixed % SL — no structural
-        OB anchor. Violates the golden rule: no Order Block = no trade.
-
-        Funding extreme signal now flows as a confluence booster into
-        _check_volume_confirmation() (setups.py) for OB-anchored setups.
-        """
-        return None
 
     def evaluate_setup_d(
         self,
@@ -210,43 +192,6 @@ class QuickSetupEvaluator:
             htf_bias=htf_bias,
             ob_timeframe=best_ob.timeframe,
         )
-
-    def evaluate_setup_e(
-        self,
-        pair: str,
-        htf_bias: str,
-        snapshot: Optional[MarketSnapshot],
-        active_obs: list[OrderBlock],
-        candles: list[Candle],
-        current_price: float,
-    ) -> Optional[TradeSetup]:
-        """REMOVED 2026-04-13: Setup E — Cascade Reversal.
-
-        0W/1L. Entered at market price when no OB found — no structural anchor.
-        OI cascade signal now flows as a confluence booster into
-        _check_volume_confirmation() (setups.py) for OB-anchored setups.
-        """
-        return None
-
-    def evaluate_setup_h(
-        self,
-        pair: str,
-        htf_bias: str,
-        structure_state: MarketStructureState,
-        candles: list[Candle],
-        snapshot: Optional[MarketSnapshot] = None,
-    ) -> Optional[TradeSetup]:
-        """REMOVED 2026-04-13: Setup H — Momentum/Impulse Entry.
-
-        0/13 live WR, 27 trades at 11% WR, PF 0.10. Entry at market price
-        during impulse = adverse selection (AFML Ch.5). This is what institutions
-        profit FROM — retail chasing momentum. 74/104 trades in one backtest
-        period, accounting for -$1,144.
-
-        Future redesign would require: OB pullback entry (wait for retest),
-        structural SL below the OB that caused the impulse.
-        """
-        return None
 
     # ================================================================
     # Helpers

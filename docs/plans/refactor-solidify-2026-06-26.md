@@ -9,17 +9,17 @@ Zero expected change to WR/PnL. Only indirect bot benefit: fewer places for bugs
 
 ## ▶ RESUME — next session (start here)
 
-1. **Phase 4 — strategy_service/ dead stubs + study** (next). Branch `chore/refactor-phase4-strategy`.
-   Delete dead setup stubs (evaluate_setup_c/e/h, killed scalp detectors) + their assert-None
-   tests together. Then study SMC detectors. See Phase 4 section below.
+1. **Phase 5 — config/settings.py split** (next). Branch `chore/refactor-phase5-config`.
+   264 flat fields → RiskConfig/StrategyConfig/ExchangeConfig/MLConfig sub-dataclasses.
+   HIGH blast radius (every service imports) — full test pass mandatory. See Phase 5 below.
 2. Carry-overs / open threads:
    - Deferred refactor: notifier.py / alert_manager.py notify_* overlap → its own PR (Phase 2 smell).
    - Deferred split (Phase 6b territory): data_store.py (2407) → redis/postgres/ml_schema;
      bybit_watcher.py (1112) → watcher/context/classifier/alert. Only if appetite.
 
 **History:** #103 (phases 0-2) MERGED to main 2026-06-27. Phase 3 (data_service study) DONE
-2026-06-27 — see below. Carry-over docs (engine1 post-mortem, ml-v0 audit, alert_ml_milestone.sh,
-video notes) committed into #103 before merge.
++ MERGED #104 2026-06-27. Phase 4 (strategy dead stubs) DONE 2026-06-27 — see below. Carry-over
+docs (engine1 post-mortem, ml-v0 audit, alert_ml_milestone.sh, video notes) committed into #103.
 
 ## Key distinction: DEAD vs UNREACHABLE
 
@@ -134,12 +134,26 @@ runs a RECOVERING→RUNNING→DEGRADED state machine + polling loops. Map:
 **Smells (deferred, NOT this phase):** `data_store.py` → split redis/postgres/ml_schema;
 `bybit_watcher.py` → split watcher/context/classifier/alert. Tracked in resume carry-overs.
 
-### Phase 4 — strategy_service/ dead stubs + study — PENDING
-Delete dead setup stubs inside live files:
-- `quick_setups.py`: `evaluate_setup_c/e/h()` → return None (removed 2026-04-13)
-- `scalp_setups.py`: `evaluate_sweep_choch/vol_cvd_divergence/funding_extreme()` → killed
-Keep tests that assert None? Decide: delete stub + its assert-None test together.
-Then study SMC detectors. Smell: `setups.py` 1616 LOC monolith → defer split to Phase 6b.
+### Phase 4 — strategy_service/ dead stubs + study — ✅ DONE 2026-06-27
+**Plan diverged from code reality — verified before deleting.** The two stub groups were
+NOT equivalent:
+
+- **`quick_setups.py` `evaluate_setup_c/e/h()` — DELETED** (true `return None` stubs since
+  2026-04-13). Removed the 3 methods + their dedicated assert-None tests
+  (`tests/test_quick_setups.py` TestSetupC/E/H, `tests/test_strategy_integration.py`
+  test_setup_c_removed/test_setup_h_removed). Module + class docstrings updated.
+  **KEPT** `QUICK_SETUP_TYPES` tuple incl. `setup_c` (explicit ml_setups compat per
+  strategy_service/CLAUDE.md) and its `test_quick_setup_types` assertion.
+- **`scalp_setups.py` `evaluate_sweep_choch/vol_cvd_divergence/funding_extreme()` — KEPT.**
+  These are NOT dead stubs: full detector implementations, only unwired from the live path.
+  `service.py:650-662` explicitly documents "Detector retained ... for historical replay;
+  not invoked in live shadow path." Deleting would contradict an in-code decision. Tests
+  (`tests/test_scalp_setups.py`, ~50 assertions) stay. Plan was wrong here.
+
+All 1409 tests pass post-change. SMC detector study: file roles already mapped in
+`strategy_service/CLAUDE.md` (setups.py / market_structure / order_blocks / fvg / liquidity
+/ volume_profile / engines). Smell confirmed: `setups.py` (1616 LOC) monolith → split
+deferred to Phase 6b (extract OBSelector/TPCalculator/SetupGeometry).
 
 ### Phase 5 — config/settings.py split — PENDING
 264 flat fields → split into `RiskConfig`, `StrategyConfig`, `ExchangeConfig`, `MLConfig`
