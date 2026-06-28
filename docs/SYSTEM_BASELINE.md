@@ -581,6 +581,15 @@ D: net_score <  2
 
 ## 8. Changelog
 
+### 2026-06-28 — engine1 ML-score filter LIVE-small (first real money since shadow-only)
+**Files:** `config/settings.py` (+`ENGINE1_LIVE_GATED_ENABLED`, `ENGINE1_RISK_USD`, kill thresholds), `main.py` (live-gate routing + kill check + throttled alert), `risk_service/service.py` (+`risk_usd` override), `strategy_service/engines/engine1_kill_switch.py` (new), tests (+18). PRs #110 (Phase 1 scorer), #111 (Phase 2 wiring), #112 (runbook).
+- **What:** engine1 `trend_pullback` setups whose frozen meta-label score (`models/engine1_meta_v1.pkl`) ≥ `ENGINE1_SCORE_CUTOFF` (0.847, v1d top-tercile) now route to **real OKX execution** at fixed $1.5 risk, gated by master flag `ENGINE1_LIVE_GATED_ENABLED`. Every other engine1 emission (score < cutoff) stays shadow. **Flag flipped to `true` 2026-06-28 22:00 UTC** — first live capital since shadow-only (2026-04-15). Capital $86.30 untouched otherwise.
+- **Why it passed:** `ml_v1_forward_check` (N_GATE=30) on unseen post-freeze trades (N=34): take-all PF 0.74 → top-half PF **1.32** (+$17). Honest test scoring all 499 v1d fills incl 278 breakeven: take-all −$98 → top-tercile **+$721**.
+- **Design:** engine1 live is a GATE, not a special exec path — still runs all standard guardrails (min risk distance, min order size, portfolio heat, `TRADING_HALTED`, one-live-slot/candle); only the AI filter is bypassed (frozen model replaces it). Sizing via new `risk_service.check(risk_usd=)` → `risk_pct = risk_usd / capital`, still capped by `MAX_MARGIN_PCT_OF_CAPITAL`. engine1 emits via `SHADOW_MODE_SETUPS` (NOT `ENABLED_SETUPS`, which stays `[]`); the flag does the routing.
+- **Kill switch** (`engine1_kill_switch.py`, pure): over closed engine1 PnL, auto-reverts new live entries to shadow + fires throttled CRITICAL Telegram alert if cumulative DD > **10R** ($15), **7** consecutive losses, OR rolling-20 PF < **1.2** (≥20 trades). Below 10R = normal variance, do NOT stop early.
+- **Sandbox DELIBERATELY skipped:** exec machinery is proven + unit-tested; demo fills unrepresentative; the $15 kill line + tiny R ARE the safety net ("go live small"). Runbook: `docs/runbooks/engine1-phase3-golive.md`. Plan: `docs/plans/engine1-ml-filter-live.md`.
+- **Validation in progress (Phase 3):** first ~15–20 real trades — watch fill rate ≥80%, live top-tercile WR ≥45%, rolling-20 PF ≥1.2, and SL rate (shadow top-tercile had 0 SL = overfit watch). PASS → Phase 4 scale (+$100 ready, raise R). Roll back by setting flag `false` + redeploy.
+
 ### 2026-06-27 — /bybit pending panel: hide reduce-only SL/TP exits
 **Files:** `dashboard/api/routes/bybit.py` (`list_pending` SQL adds `reduce_only IS NOT TRUE`).
 - **Why:** an open short's reduce-only **Buy** SL/TP orders were surfacing in the dashboard PENDING ORDERS panel and rendering as **LONG** cards (`PendingRow` infers direction from raw order side, `isLong = side === "Buy"`). User read it as a direction mismatch ("entered short, shows long"). The trade-log annotation itself was correct (`Sell` → SHORT); only the pending panel was misleading.
