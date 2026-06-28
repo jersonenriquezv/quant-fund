@@ -972,6 +972,36 @@ class Settings:
     ENGINE1_SCORE_CUTOFF: float = float(
         os.getenv("ENGINE1_SCORE_CUTOFF", "0.847")
     )
+    # --- Engine 1 ML-score LIVE gate (Phase 2, default OFF) ---
+    # Master kill switch. When True, an engine1_trend_pullback setup whose
+    # frozen-model score >= ENGINE1_SCORE_CUTOFF routes to REAL OKX execution
+    # at min size (risk = ENGINE1_RISK_USD) instead of shadow. Every other
+    # engine1 emission (score < cutoff) stays shadow. Flag OFF = pure shadow,
+    # behaviour identical to Phase 1. First live capital since shadow-only.
+    # docs/plans/engine1-ml-filter-live.md §Phase 2.
+    ENGINE1_LIVE_GATED_ENABLED: bool = (
+        os.getenv("ENGINE1_LIVE_GATED_ENABLED", "false").lower() == "true"
+    )
+    # Fixed $ risk per engine1 live trade. Concretizes the kill line:
+    # 10R drawdown = $15. Sizing uses risk_pct = ENGINE1_RISK_USD / capital,
+    # overriding RISK_PER_TRADE for engine1 live trades only.
+    ENGINE1_RISK_USD: float = float(os.getenv("ENGINE1_RISK_USD", "1.5"))
+    # Kill-switch thresholds (grill Q6). When ANY is breached over the live
+    # engine1 trade history, new engine1 live entries revert to shadow and a
+    # CRITICAL Telegram alert fires (operator then flips the flag off).
+    #   - cumulative drawdown (peak-to-trough, in R units) > KILL_DD_R
+    #   - KILL_CONSEC_LOSSES consecutive losing trades
+    #   - rolling-window profit factor < KILL_ROLLING_PF after >= window trades
+    ENGINE1_KILL_DD_R: float = float(os.getenv("ENGINE1_KILL_DD_R", "10"))
+    ENGINE1_KILL_CONSEC_LOSSES: int = int(
+        os.getenv("ENGINE1_KILL_CONSEC_LOSSES", "7")
+    )
+    ENGINE1_KILL_ROLLING_PF: float = float(
+        os.getenv("ENGINE1_KILL_ROLLING_PF", "1.2")
+    )
+    ENGINE1_KILL_ROLLING_WINDOW: int = int(
+        os.getenv("ENGINE1_KILL_ROLLING_WINDOW", "20")
+    )
     # Pair filter for shadow mode — restrict setups to specific pairs.
     # Omitted setups track all TRADING_PAIRS. Empty list = blocked entirely.
     # Quarantine d_choch / d_bos to BTC+ETH per redesign §3.4–3.5

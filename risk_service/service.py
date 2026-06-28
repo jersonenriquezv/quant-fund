@@ -45,6 +45,7 @@ class RiskService:
     def check(
         self, setup: TradeSetup, ai_confidence: float = 1.0,
         dry_run: bool = False, capital_override: float | None = None,
+        risk_usd: float | None = None,
     ) -> RiskApproval:
         """Run all guardrails and calculate position size.
 
@@ -60,6 +61,10 @@ class RiskService:
             capital_override: If set, use this capital instead of querying
                 exchange or state tracker. Used by shadow mode to size
                 positions against SHADOW_CAPITAL ($500 virtual).
+            risk_usd: If set, risk a FIXED dollar amount this trade instead of
+                RISK_PER_TRADE × capital. risk_pct = risk_usd / capital. Used
+                by the engine1 live gate (ENGINE1_RISK_USD) so the kill line is
+                a concrete $. Still bounded by MAX_MARGIN_PCT_OF_CAPITAL.
         """
         now = int(time.time())
 
@@ -134,7 +139,13 @@ class RiskService:
                 self._balance_ever_fetched = True
                 self._state.set_capital(capital)
 
-        risk_pct = settings.RISK_PER_TRADE
+        # Fixed-$ risk override (engine1 live gate): risk_pct = risk_usd / capital.
+        # Falls back to RISK_PER_TRADE if capital is non-positive (sizing error
+        # is caught downstream by the position_size <= 0 guard).
+        if risk_usd is not None and capital > 0:
+            risk_pct = risk_usd / capital
+        else:
+            risk_pct = settings.RISK_PER_TRADE
         sl_distance = abs(setup.entry_price - setup.sl_price)
 
         # Dynamic sizing: size = (capital * risk_pct) / sl_distance

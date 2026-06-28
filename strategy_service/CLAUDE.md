@@ -24,7 +24,8 @@ Deterministic SMC pattern detection (BOS/CHoCH, OB, FVG, sweeps, premium/discoun
 | `volume_profile.py` | 4H VP — POC/VAH/VAL/HVN/LVN. Cached per-pair |
 | `trade_classifier.py` | Setup type classification helper |
 | `engines/` | Redesign engines (Engine 1 trend pullback). New strategies land here, not in `setups.py` |
-| `engines/engine1_scorer.py` | Frozen meta-label model scorer (`models/engine1_meta_v1.pkl`). `score_features()` / `passes_cutoff()` — in-process P(tp) for an engine1 setup, gates live eligibility (`ENGINE1_SCORE_CUTOFF`). Log-only in main.py until the live gate ships |
+| `engines/engine1_scorer.py` | Frozen meta-label model scorer (`models/engine1_meta_v1.pkl`). `score_features()` / `passes_cutoff()` — in-process P(tp) for an engine1 setup, gates live eligibility (`ENGINE1_SCORE_CUTOFF`). Wired to the live gate in main.py behind `ENGINE1_LIVE_GATED_ENABLED` (default OFF) |
+| `engines/engine1_kill_switch.py` | Pure kill-metric module for the engine1 live gate. `evaluate_kill(pnls, …)` → DD-in-R / consecutive losses / rolling-PF verdict over closed engine1 trade PnL. main.py reverts new engine1 live entries to shadow + alerts on breach |
 
 ## Rules — modifying detectors / setups
 1. **Confluence gate is structural-only.** BOS, CHoCH, FVG, order_block, liquidity_sweep, breaker_block, pd_zone, initiating_ob, bos_confirmed count toward the 2-min gate. CVD/OI/funding/ratios are ML features, NOT confluences. Do not inflate the gate by adding metric-based confluences.

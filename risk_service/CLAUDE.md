@@ -38,6 +38,7 @@ Operational rules for Claude when modifying `risk_service/`. Capital guardian �
 1. **`MAX_MARGIN_PCT_OF_CAPITAL` is the hard cap.** If risk_pct exceeds it, recompute with capped risk. Bet sizing must never exceed this.
 2. **Min order size check is post-sizing, not pre.** Reject after computing size, with a clear message naming the pair.
 3. **Bet sizing only fires when AI is active** (`ai_confidence < 1.0`). With AI bypass everywhere, this path is currently inactive — do not delete it.
+4. **`risk_usd` override = fixed-$ risk** (`check(..., risk_usd=)`). When set, `risk_pct = risk_usd / capital` instead of `RISK_PER_TRADE`. Used by the engine1 live gate (`ENGINE1_RISK_USD`) so the kill line is a concrete $. Still passes through the `MAX_MARGIN_PCT_OF_CAPITAL` hard cap — do not bypass it.
 
 ## Never
 - Make a guardrail async or I/O-bound. They must be microsecond-fast.

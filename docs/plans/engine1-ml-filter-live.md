@@ -2,7 +2,7 @@
 **Slug:** engine1-ml-filter-live
 **Source grill:** docs/grill/engine1-top-tercile-live-2026-06-27.md
 **Created:** 2026-06-27
-**Status:** pending
+**Status:** Phase 1 + 2 done (wiring shipped, flag default OFF); Phase 3 (go-live) pending Q2 min-notional
 **Tracer bullet:** Can the bot reproduce the frozen model's score IN-PROCESS at detection time, matching the offline script? If live score ≠ offline score, the whole filter is wrong.
 
 ## Context summary
@@ -11,7 +11,7 @@ Engine1 (trend-pullback) is shadow-only and unprofitable ungated (forward PF 0.7
 **The live rule (simple, frozen):** at detection, score the engine1 setup with the frozen model → if score ≥ 0.847 → execute small live; else → shadow only. No calibration. No probability sizing. One fixed cutoff.
 
 ## Phase 1 — Live scoring parity (tracer bullet)
-**Status:** in-review
+**Status:** done (merged PR #110, 2026-06-27)
 **Inputs:** frozen model `models/engine1_meta_v1.pkl`; engine1 detection path in `main.py` (~line 191 `evaluate_all`, ~274 shadow branch); offline scorer in `scripts/ml_v1_money_test.py` / `prepare_features`.
 **Outputs:** a reusable in-process scorer module (e.g. `strategy_service/engines/engine1_scorer.py`) that loads the frozen model once and returns `score` + `passes_cutoff` for a live engine1 `TradeSetup`; a `ENGINE1_LIVE_SCORE` log line per engine1 emission (still shadow, no execution change).
 **Work:**
@@ -50,7 +50,7 @@ Engine1 (trend-pullback) is shadow-only and unprofitable ungated (forward PF 0.7
 ---
 
 ## Phase 2 — Execution wiring behind a flag (default OFF)
-**Status:** pending
+**Status:** done (2026-06-28, flag default OFF — zero behaviour change until flipped)
 **Inputs:** Phase 1 scorer + frozen cutoff, proven parity.
 **Outputs:** an engine1 live-gated execution path that routes `score ≥ cutoff` setups through `risk_service.check` → `execution_service.execute` at min-notional; gated by a new master flag `ENGINE1_LIVE_GATED_ENABLED` (default `False`); explicit `R` (risk-per-trade) wired so the kill line is a concrete $.
 **Work:**
@@ -65,7 +65,24 @@ Engine1 (trend-pullback) is shadow-only and unprofitable ungated (forward PF 0.7
 - [ ] Rollback if: flag ON changes any NON-engine1 setup behavior, or risk guardrails bypassed.
 
 **Evidence:**
-<empty>
+- 2026-06-28 — Automated checks:
+  - `python -m pytest tests/ -q` → **1432 passed, 1 xpassed** (was 1414 in Phase 1; +18 new). 0 failures.
+  - New `tests/test_engine1_live_gate.py` (5) proves routing: flag ON + score≥cutoff + no-kill → `execution_service.execute` called once, `shadow_monitor.add_shadow` NOT called, and `risk.check` receives `risk_usd=ENGINE1_RISK_USD`; flag ON + score<cutoff → shadow; flag OFF + score≥cutoff → shadow; kill verdict True → reverts to shadow (no execute); non-engine1 setup untouched.
+  - New `tests/test_engine1_kill_switch.py` (13) covers all three kill conditions (DD-in-R peak-to-trough, trailing consecutive losses, rolling-window PF) + ordering + zero-R safety.
+  - `main` imports clean; `risk.check` signature back-compat verified (existing `test_main_pipeline` updated to expect `risk_usd=None` for non-engine1).
+- Design:
+  - **Routing** (`main.py` `_process_pipeline_setup`): engine1 score computed once via `_engine1_score_log` (now returns the score). `engine1_live = ENGINE1_LIVE_GATED_ENABLED and score >= ENGINE1_SCORE_CUTOFF and not kill`. The shadow gate gains `and not engine1_live`, so an eligible engine1 setup falls through to the live path; every other engine1 emission stays shadow. Flag OFF → `engine1_live` always False → identical to Phase 1.
+  - **AI bypass**: engine1_live setups get a synthetic approved `AIDecision` (frozen model replaces the AI filter) — no Claude call.
+  - **Sizing**: new `risk_service.check(..., risk_usd=)` param. When set, `risk_pct = risk_usd / capital` (else `RISK_PER_TRADE`). engine1 live passes `ENGINE1_RISK_USD=$1.5` → concrete 10R=$15 kill line. Still bounded by `MAX_MARGIN_PCT_OF_CAPITAL` (0.25). All standard guardrails (`MIN_RISK_DISTANCE`, min-order-size, portfolio heat, `TRADING_HALTED`, live-slot guard) still run — engine1 is NOT a special execution path, only a special *gate*.
+  - **Kill switch** (`strategy_service/engines/engine1_kill_switch.py`, pure): `evaluate_kill(pnls, …)` over closed engine1 trade PnL (oldest-first). Checked at the live-gate decision (`_engine1_kill_check` queries `fetch_recent_closed_trades`, filters `setup_type='engine1_trend_pullback'`). On breach: engine1 reverts to shadow automatically + throttled (1h) CRITICAL Telegram alert prompting the operator to flip the flag off. Fail-safe: any DB/scoring error → `(False, None)`, standalone guardrails still protect capital.
+- Files changed:
+  - `config/settings.py` (+`ENGINE1_LIVE_GATED_ENABLED`=False, +`ENGINE1_RISK_USD`=1.5, +`ENGINE1_KILL_DD_R`=10, +`ENGINE1_KILL_CONSEC_LOSSES`=7, +`ENGINE1_KILL_ROLLING_PF`=1.2, +`ENGINE1_KILL_ROLLING_WINDOW`=20)
+  - `risk_service/service.py` (+`risk_usd` override param)
+  - `strategy_service/engines/engine1_kill_switch.py` (NEW — pure kill-metric module)
+  - `main.py` (`_engine1_score_log` returns score; live-gate routing branch; `_engine1_kill_check` + throttled `_engine1_emit_kill_alert`; engine1 in AI-bypass branch; `risk_usd` wired; `AlertPriority` import)
+  - `tests/test_engine1_live_gate.py` (NEW, 5), `tests/test_engine1_kill_switch.py` (NEW, 13), `tests/test_main_pipeline.py` (1 assertion updated)
+- Manual check (flag OFF = identical to today): proven by `test_flag_off_high_score_stays_shadow` + full-suite green. Flag-ON sandbox order placement is deferred to Phase 3 (real OKX, money decision).
+- Open: min-notional per OKX pair (Q2) still unconfirmed — blocks Phase 3, NOT Phase 2. With `risk_usd=$1.5` a tight SL may size below OKX min; `risk_service` rejects gracefully (`risk_rejected`) — no crash, just no fill until Q2 sizing is confirmed.
 
 ---
 
