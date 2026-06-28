@@ -32,12 +32,20 @@ class _FakeConn:
         self._ml_row = None      # row returned for ml_forward_status fetchrow
         self._ml_exc = None      # exception to raise for ml_forward_status fetchrow
         self._fetch_exc = None   # exception to raise from fetch (e.g. missing table)
+        self._milestone_count = 0  # value returned by fetchval (training milestone)
+        self._fetchval_exc = None  # exception to raise from fetchval
 
     async def fetch(self, sql, *args):
         self._rec.append((sql, args))
         if self._fetch_exc is not None:
             raise self._fetch_exc
         return list(self._fetch_rows)
+
+    async def fetchval(self, sql, *args):
+        self._rec.append((sql, args))
+        if self._fetchval_exc is not None:
+            raise self._fetchval_exc
+        return self._milestone_count
 
     async def fetchrow(self, sql, *args):
         self._rec.append((sql, args))
@@ -261,3 +269,22 @@ def test_ml_status_accepts_decoded_dict(fake_pool):
     assert out["gate_reached"] is True
     assert out["verdict_state"] == "pass"
     assert out["updated_at"] is None
+
+
+def test_training_milestone_counts_engine1_binary_outcomes(fake_pool):
+    fake_pool._conn._milestone_count = 357
+    n = asyncio.run(queries.get_ml_training_milestone())
+    assert n == 357
+    sql, _ = fake_pool._conn._rec[-1]
+    # Must mirror alert_ml_milestone.sh: engine1, fv>=4, binary outcomes only,
+    # NO experiment_id filter (trainer pools regimes).
+    assert "engine1_trend_pullback" in sql
+    assert "feature_version >= 4" in sql
+    assert "shadow_tp" in sql and "shadow_sl" in sql
+    assert "experiment_id" not in sql
+
+
+def test_training_milestone_returns_zero_on_error(fake_pool):
+    # Query swallows all exceptions and returns 0 (read-only, never blocks page).
+    fake_pool._conn._fetchval_exc = RuntimeError("boom")
+    assert asyncio.run(queries.get_ml_training_milestone()) == 0
