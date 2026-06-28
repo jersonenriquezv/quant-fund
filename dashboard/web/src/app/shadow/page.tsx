@@ -184,9 +184,9 @@ export default function ShadowPage() {
         <EquityCurve values={(equity?.points ?? []).map((p) => p.equity)} start={equity?.start_balance ?? 10000} />
       </div>
 
-      {/* ML training — engine1 meta-label forward gate */}
+      {/* ML training — engine1 meta-label forward gate + re-train milestone */}
       <div className="card" style={{ gridColumn: "1 / -1" }}>
-        <div className="card-title">ML training — engine1 forward gate</div>
+        <div className="card-title">ML training — engine1 gates</div>
         {!ml?.available ? (
           <div style={{ color: "var(--text-muted)", fontSize: 12, padding: "16px 0" }}>
             No forward-check run yet. Status appears once <span className="num">ml_v1_forward_check.py</span> runs (daily timer).
@@ -253,6 +253,32 @@ export default function ShadowPage() {
                 </div>
               )}
             </>
+          );
+        })()}
+
+        {/* Re-train milestone — DIFFERENT axis from the forward gate above */}
+        {ml && (() => {
+          const n = ml.milestone_n ?? 0;
+          const thr = ml.milestone_threshold || 500;
+          const pct = Math.min(100, (n / Math.max(1, thr)) * 100);
+          return (
+            <div style={{ marginTop: 18, paddingTop: 14, borderTop: "1px solid var(--border)" }}>
+              <div style={{ color: "var(--text-muted)", fontSize: 11, marginBottom: 10 }}>
+                <b style={{ color: "var(--text-secondary)" }}>Two different questions.</b> The
+                {" "}<b>forward gate</b> above asks &quot;does the <i>current</i> frozen model&apos;s edge hold on unseen trades?&quot; (validation — the real-money gate).
+                {" "}This <b>re-train milestone</b> asks &quot;do we have enough total data to train a <i>better</i> model?&quot; (dataset size). A model can have plenty of data and still fail forward.
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
+                <span className="hero-stat-label">Re-train data (engine1 tp+sl)</span>
+                <span className="num" style={{ color: "var(--accent)" }}>{n} / {thr}</span>
+              </div>
+              <div style={{ height: 8, borderRadius: 100, background: "var(--bg-secondary)", overflow: "hidden" }}>
+                <div style={{ width: `${pct}%`, height: "100%", background: "var(--accent)", borderRadius: 100, transition: "width .3s" }} />
+              </div>
+              <div style={{ color: "var(--text-muted)", fontSize: 10, marginTop: 6 }}>
+                At {thr} binary outcomes → re-train ml_v0 + fresh out-of-time check. Not a go-live signal.
+              </div>
+            </div>
           );
         })()}
       </div>

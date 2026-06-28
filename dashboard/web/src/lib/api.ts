@@ -204,6 +204,8 @@ export interface ShadowMLStatus {
   top_half: ShadowMLArm | null;
   bottom_half: ShadowMLArm | null;
   updated_at: string | null;
+  milestone_n: number; // engine1 binary outcomes accumulated (re-train dataset size)
+  milestone_threshold: number; // re-train bar (500)
 }
 
 export interface ShadowDTTrade {

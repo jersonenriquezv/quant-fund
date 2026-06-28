@@ -30,7 +30,13 @@ from config.settings import settings  # noqa: E402
 from scripts.ml_v0_engine1 import prepare_features  # noqa: E402
 
 MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "engine1_meta_v1.pkl"
-N_GATE = int(os.environ.get("ML_FWD_GATE", "30"))   # min forward trades before a verdict + Telegram milestone
+N_GATE = int(os.environ.get("ML_FWD_GATE", "100"))  # min forward trades before a verdict + Telegram milestone.
+# Raised 30 -> 100 (2026-06-28). N=30 was underpowered: the gate PASSed at N=34
+# then FLIPPED to FAIL at N=42 (8 trades = noise at that sample size), after we
+# had already gone live. At N=30 the top-half-vs-take-all PF difference sits
+# inside its own confidence interval, so a single snapshot is a coin flip. A
+# powered verdict needs ~100+ forward outcomes. See docs/SYSTEM_BASELINE.md §8
+# (2026-06-28 engine1 live revert).
 
 
 def _telegram(text: str) -> None:

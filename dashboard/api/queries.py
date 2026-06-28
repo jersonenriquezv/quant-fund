@@ -442,6 +442,29 @@ async def get_ml_forward_status() -> dict | None:
     return payload
 
 
+async def get_ml_training_milestone() -> int:
+    """Count engine1 binary outcomes available to RE-TRAIN the meta-label model.
+
+    Mirrors scripts/alert_ml_milestone.sh EXACTLY (so the dashboard number ==
+    the Telegram milestone): engine1_trend_pullback rows with feature_version>=4
+    and a clean binary outcome (shadow_tp/shadow_sl), across ALL experiments
+    (no experiment_id filter — the trainer pools regimes). This is a DIFFERENT
+    measure from the forward gate: training-data volume, not model validation.
+    Returns 0 on any error (read-only, never blocks the page).
+    """
+    try:
+        async with db.pg_pool.acquire() as conn:
+            n = await conn.fetchval(
+                """SELECT count(*)::int FROM ml_setups
+                   WHERE setup_type = 'engine1_trend_pullback'
+                     AND feature_version >= 4
+                     AND outcome_type IN ('shadow_tp', 'shadow_sl')"""
+            )
+        return int(n or 0)
+    except Exception:
+        return 0
+
+
 async def set_cancel_request(pair: str) -> None:
     """Write a cancel request to Redis with 60s TTL."""
     key = f"qf:cancel_request:{pair}"

@@ -178,7 +178,7 @@ class ShadowMLStatus(BaseModel):
     cutoff_created_at: str | None = None
     train_n: int | None = None
     n_forward: int = 0
-    n_gate: int = 30
+    n_gate: int = 100
     gate_reached: bool = False
     verdict_state: str | None = None  # accumulating | pass | fail
     verdict: str | None = None
@@ -186,6 +186,14 @@ class ShadowMLStatus(BaseModel):
     top_half: ShadowMLArm | None = None
     bottom_half: ShadowMLArm | None = None
     updated_at: str | None = None
+    # Training-data milestone — DIFFERENT axis from the forward gate above.
+    # Counts ALL engine1 binary outcomes (shadow_tp/shadow_sl, fv>=4), pre +
+    # post freeze = the dataset size available to RE-TRAIN a new model. The
+    # forward gate validates the CURRENT frozen model on unseen data; this just
+    # measures whether we have enough data to train a better one. Mirrors
+    # scripts/alert_ml_milestone.sh (threshold 500).
+    milestone_n: int = 0
+    milestone_threshold: int = 500
 
 
 class ShadowDTTrade(BaseModel):
