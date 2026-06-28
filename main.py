@@ -33,7 +33,7 @@ from execution_service.shadow_monitor import ShadowMonitor
 from execution_service.dual_thrust_shadow import (
     DualThrustShadowTracker, format_telegram as dual_thrust_format_telegram)
 from shared.notifier import TelegramNotifier
-from shared.alert_manager import AlertManager
+from shared.alert_manager import AlertManager, AlertPriority
 from data_service.liquidation_estimator import estimate_liquidation_levels
 from telegram_bot import TelegramInteractiveBot
 
@@ -284,14 +284,37 @@ async def _process_pipeline_setup(setup, candle: Candle, *, allow_live: bool) ->
     # --- ML: capture feature snapshot AFTER dedup (dedup adds no ML value) ---
     features = _ml_log_setup(setup, candle)
 
-    # --- engine1 meta-label scoring (Phase 1: log only, NO execution change) ---
-    # Reproduces the frozen-model score in-process so we can later gate live
-    # execution on it. docs/plans/engine1-ml-filter-live.md.
+    # --- engine1 meta-label scoring + LIVE gate (Phase 2) ---
+    # Score the setup in-process; if the live gate is ON and the score clears
+    # the frozen cutoff, route this engine1 setup to REAL execution instead of
+    # shadow. The kill switch can still force it back to shadow.
+    # docs/plans/engine1-ml-filter-live.md §Phase 2.
+    engine1_live = False
     if setup.setup_type == "engine1_trend_pullback" and features is not None:
-        _engine1_score_log(setup, features)
+        score = _engine1_score_log(setup, features)
+        if (settings.ENGINE1_LIVE_GATED_ENABLED
+                and score is not None
+                and score >= settings.ENGINE1_SCORE_CUTOFF):
+            kill, kill_reason = _engine1_kill_check()
+            if kill:
+                logger.warning(
+                    f"engine1 live gate: score {score:.4f} eligible but KILL "
+                    f"SWITCH active ({kill_reason}) — routing to shadow"
+                )
+                await _engine1_emit_kill_alert(kill_reason or "threshold breached")
+            else:
+                engine1_live = True
+                logger.info(
+                    f"engine1 LIVE gate: {setup.pair} {setup.direction} "
+                    f"score={score:.4f} >= {settings.ENGINE1_SCORE_CUTOFF} "
+                    f"— routing to REAL execution (risk=${settings.ENGINE1_RISK_USD})"
+                )
 
     # --- Shadow mode: data collection — track ALL setups, minimize filtering ---
-    if setup.setup_type in settings.SHADOW_MODE_SETUPS and _shadow_monitor is not None:
+    # engine1 live-gated setups skip shadow and fall through to the live path.
+    if (setup.setup_type in settings.SHADOW_MODE_SETUPS
+            and not engine1_live
+            and _shadow_monitor is not None):
         # Direction filter: reject proven-broken directions (e.g. setup_a long 5% WR)
         allowed_dirs = settings.SHADOW_DIRECTION_FILTER.get(setup.setup_type)
         if allowed_dirs is not None and setup.direction not in allowed_dirs:
@@ -392,9 +415,15 @@ async def _process_pipeline_setup(setup, candle: Candle, *, allow_live: bool) ->
 
     # Layer 3: AI Service — Claude filter
     decision = None
-    if setup.setup_type in QUICK_SETUP_TYPES or setup.setup_type in AI_BYPASS_SETUP_TYPES:
-        reason = ("data-driven quick setup" if setup.setup_type in QUICK_SETUP_TYPES
-                  else "AI bypass (pending recalibration)")
+    if (setup.setup_type in QUICK_SETUP_TYPES
+            or setup.setup_type in AI_BYPASS_SETUP_TYPES
+            or engine1_live):
+        if setup.setup_type in QUICK_SETUP_TYPES:
+            reason = "data-driven quick setup"
+        elif engine1_live:
+            reason = "engine1 ML-score gate (frozen model, no AI filter)"
+        else:
+            reason = "AI bypass (pending recalibration)"
         decision = AIDecision(
             confidence=1.0,
             approved=True,
@@ -415,8 +444,13 @@ async def _process_pipeline_setup(setup, candle: Candle, *, allow_live: bool) ->
     # Layer 4: Risk Service (pass AI confidence for bet sizing)
     approval = None
     ai_conf = decision.confidence if decision else 1.0
+    # engine1 live trades risk a fixed $ (ENGINE1_RISK_USD) so the kill line is
+    # a concrete number; all other setups use RISK_PER_TRADE × capital.
+    engine1_risk_usd = settings.ENGINE1_RISK_USD if engine1_live else None
     if _risk_service is not None:
-        approval = _risk_service.check(setup, ai_confidence=ai_conf)
+        approval = _risk_service.check(
+            setup, ai_confidence=ai_conf, risk_usd=engine1_risk_usd,
+        )
         if not approval.approved:
             logger.info(f"Risk rejected: {approval.reason}")
             if _alert_manager:
@@ -564,25 +598,88 @@ def _ml_log_setup(setup, candle: Candle) -> dict | None:
         return None
 
 
-def _engine1_score_log(setup, features: dict) -> None:
+def _engine1_score_log(setup, features: dict) -> float | None:
     """Score an engine1 setup with the frozen meta-label model and log it.
 
-    Phase 1 of the ML-score live filter: log-only, changes NOTHING about
-    execution. Surfaces the score + cutoff decision per emission so we can
-    confirm live scores match the offline analysis before wiring the gate.
+    Surfaces the score + cutoff decision per emission. Returns the score (P(tp)
+    in [0,1]) for the live-gate decision, or None if scoring failed. Logging is
+    always best-effort — a scoring failure never blocks the pipeline.
     """
     try:
         from strategy_service.engines import engine1_scorer
         score = engine1_scorer.score_features(features)
         eligible = engine1_scorer.passes_cutoff(score)
+        gate = "ON" if settings.ENGINE1_LIVE_GATED_ENABLED else "OFF"
         logger.info(
             f"ENGINE1_LIVE_SCORE {setup.pair} {setup.direction} "
             f"score={score:.4f} cutoff={settings.ENGINE1_SCORE_CUTOFF} "
-            f"eligible={eligible} (Phase 1 log-only, no execution change)"
+            f"eligible={eligible} live_gate={gate}"
         )
         _emit_metric("engine1_score", score, setup.pair)
+        return score
     except Exception as e:
         logger.error(f"engine1 scoring failed ({setup.pair}): {e}")
+        return None
+
+
+# Throttle for the kill-switch alert — avoid spamming on every eligible emission.
+_engine1_kill_alert_ts: float = 0.0
+_ENGINE1_KILL_ALERT_TTL = 3600  # seconds
+
+
+def _engine1_kill_check() -> tuple[bool, str | None]:
+    """Evaluate the engine1 live-gate kill switch over closed engine1 trades.
+
+    Returns (triggered, reason). Fail-safe: on any error returns (False, None)
+    so a transient DB hiccup never blocks live entries on its own — the
+    standalone guardrails (DD, cooldown) still protect capital.
+    """
+    if _data_service is None or _data_service.postgres is None:
+        return False, None
+    try:
+        from strategy_service.engines import engine1_kill_switch
+
+        # Pull enough history to cover the rolling window + DD curve.
+        limit = max(settings.ENGINE1_KILL_ROLLING_WINDOW * 3, 60)
+        rows = _data_service.postgres.fetch_recent_closed_trades(limit=limit)
+        # fetch_recent_closed_trades returns DESC; kill-switch needs oldest-first.
+        pnls = [
+            float(r["pnl_usd"])
+            for r in reversed(rows)
+            if r.get("setup_type") == "engine1_trend_pullback"
+            and r.get("pnl_usd") is not None
+        ]
+        if not pnls:
+            return False, None
+        verdict = engine1_kill_switch.evaluate_kill(
+            pnls,
+            r_usd=settings.ENGINE1_RISK_USD,
+            dd_r_limit=settings.ENGINE1_KILL_DD_R,
+            consec_limit=settings.ENGINE1_KILL_CONSEC_LOSSES,
+            pf_floor=settings.ENGINE1_KILL_ROLLING_PF,
+            pf_window=settings.ENGINE1_KILL_ROLLING_WINDOW,
+        )
+        return verdict.triggered, verdict.reason
+    except Exception as e:
+        logger.error(f"engine1 kill check failed: {e}")
+        return False, None
+
+
+async def _engine1_emit_kill_alert(reason: str) -> None:
+    """Fire a throttled CRITICAL Telegram alert when the kill switch trips."""
+    global _engine1_kill_alert_ts
+    now = time.time()
+    if (now - _engine1_kill_alert_ts) < _ENGINE1_KILL_ALERT_TTL:
+        return
+    _engine1_kill_alert_ts = now
+    msg = (
+        f"🛑 ENGINE1 KILL SWITCH TRIPPED — {reason}. New engine1 live entries "
+        f"reverted to SHADOW automatically. Set ENGINE1_LIVE_GATED_ENABLED=false "
+        f"to make it permanent and review."
+    )
+    logger.critical(msg)
+    if _alert_manager is not None:
+        await _alert_manager.alert(AlertPriority.CRITICAL, "engine1_kill", msg)
 
 
 def _ml_resolve_outcome(setup_id: str, outcome_type: str, **kwargs) -> None:
