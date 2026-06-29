@@ -395,6 +395,8 @@ Stable ~0.71–0.72 across three runs at growing N → signal is real, not noise
 
 **Principle:** each batch ships + passes bar before next starts. No parallel strategy work during infra phase.
 
+**Pre-VPS refactor track (separate, non-edge):** tracker `docs/plans/refactor-solidify-2026-06-26.md`. Phases 0–4 DONE+merged (#103–#105). Phase 5 (config split) DEFERRED — weakest ROI. **Phase 6 (main.py god-file split) — grilled+planned 2026-06-29:** grill `docs/grill/main-py-split-phase6-2026-06-29.md` (BUILD), plan `docs/plans/main-py-split-phase6.md` (3 phases, Approach A incremental, shadow-pure = no capital risk, zero behavior change). Run `/phased-implementation` to start.
+
 ### FREEZE — Strategy work halted (2026-05-13 → 2026-06-08) — EXPIRED 2026-06-08
 
 **Resolution (2026-06-08):** Freeze period complete. The 6/8 fork was hard-kill vs extract-platform. **Decision: neither kill nor hard-pivot — keep collecting in shadow.** Rationale: two NON-SMC signals show edge that the 5/13 "SMC dead" verdict did not cover:

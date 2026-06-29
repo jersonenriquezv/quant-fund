@@ -36,31 +36,20 @@ from shared.notifier import TelegramNotifier
 from shared.alert_manager import AlertManager, AlertPriority
 from data_service.liquidation_estimator import estimate_liquidation_levels
 from telegram_bot import TelegramInteractiveBot
+from pipeline_runtime import rt
 
 logger = setup_logger("main")
 
 # Setup deduplication cache — prevents sending the same setup to Claude every 5m candle.
 # Key: (pair, direction, setup_type, entry_price), Value: unix timestamp of last eval.
-_setup_dedup_cache: dict[tuple, float] = {}
+# The cache itself lives on the shared runtime (rt.setup_dedup_cache); these TTLs
+# gate its re-evaluation cadence (live vs shadow).
 _SETUP_DEDUP_TTL_SECONDS = 3600  # 1 hour — prevents re-sending same setup while limit order is pending
 _SHADOW_DEDUP_TTL_SECONDS = 300  # 5 min — shadow is data collection, only dedup same-candle repeats
 
-# Module-level references set by main() so the callback can access them
-_data_service: DataService | None = None
-_strategy_service: StrategyService | None = None
-_ai_service: AIService | None = None
-_risk_service: RiskService | None = None
-_execution_service: ExecutionService | None = None
-_campaign_monitor: CampaignMonitor | None = None
-_shadow_monitor: ShadowMonitor | None = None
-_dual_thrust_shadow: DualThrustShadowTracker | None = None
-_notifier: TelegramNotifier | None = None
-_alert_manager: AlertManager | None = None
-
-# Track last setup detection time for dry spell alerts
-_last_setup_detected_time: float = 0.0
-# Track ATR history per pair for volatility spike detection
-_atr_history: dict[str, list[float]] = {}  # pair -> [recent ATR values]
+# All service references + mutable pipeline state live on the shared `rt`
+# singleton (pipeline_runtime.py), set by main() at startup. See
+# docs/plans/main-py-split-phase6.md (Refactor Phase 6).
 
 
 # ================================================================
@@ -69,15 +58,15 @@ _atr_history: dict[str, list[float]] = {}  # pair -> [recent ATR values]
 
 def _publish_strategy_state(pair: str) -> None:
     """Publish active OBs and HTF bias to Redis for the dashboard."""
-    if _strategy_service is None or _data_service is None:
+    if rt.strategy_service is None or rt.data_service is None:
         return
     try:
-        redis = _data_service.redis
+        redis = rt.data_service.redis
 
         # Collect OBs for all pairs
         all_obs = []
         for p in settings.TRADING_PAIRS:
-            for ob in _strategy_service.get_active_order_blocks(p):
+            for ob in rt.strategy_service.get_active_order_blocks(p):
                 all_obs.append({
                     "timestamp": ob.timestamp,
                     "pair": ob.pair,
@@ -93,7 +82,7 @@ def _publish_strategy_state(pair: str) -> None:
         redis.set_bot_state("order_blocks", json.dumps(all_obs), ttl=600)
 
         # HTF bias for all pairs
-        bias = {p: _strategy_service.get_htf_bias(p) for p in settings.TRADING_PAIRS}
+        bias = {p: rt.strategy_service.get_htf_bias(p) for p in settings.TRADING_PAIRS}
         redis.set_bot_state("htf_bias", json.dumps(bias), ttl=600)
     except Exception as e:
         logger.error(f"Failed to publish strategy state to Redis: {e}")
@@ -112,23 +101,23 @@ async def on_candle_confirmed(candle: Candle) -> None:
         f"close={candle.close} vol={candle.volume:.4f}"
     )
 
-    if _strategy_service is None:
+    if rt.strategy_service is None:
         return
 
     # Shadow monitor: evaluate all tracked shadow positions against this candle
-    if _shadow_monitor is not None:
-        _shadow_monitor.check_candle(candle.pair, candle)
+    if rt.shadow_monitor is not None:
+        rt.shadow_monitor.check_candle(candle.pair, candle)
 
     # Dual Thrust shadow (order-free): on each confirmed ETH 4h candle, replay
     # the validated brain + harness fill model on fresh OKX REST 4h bars and
     # record a theoretical flip position. Fetch is blocking (ccxt) so run in an
     # executor; an engine error must never break the pipeline.
-    if (settings.DUAL_THRUST_SHADOW_ENABLED and _dual_thrust_shadow is not None
+    if (settings.DUAL_THRUST_SHADOW_ENABLED and rt.dual_thrust_shadow is not None
             and candle.pair == "ETH/USDT" and candle.timeframe == "4h"):
         try:
             loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(
-                None, _dual_thrust_shadow.on_candle, candle)
+                None, rt.dual_thrust_shadow.on_candle, candle)
             # Push each new theoretical flip/SL to Telegram. Direct send (not the
             # muted alert path): flips are rare + the signal the operator wants
             # during the soak. Order-free — no live trade is implied.
@@ -136,13 +125,13 @@ async def on_candle_confirmed(candle: Candle) -> None:
                 # Persist completed flips/SLs (idempotent upsert — the tracker
                 # re-replays the whole window on restart, re-emitting historical
                 # trades as "new"; the first replay after a deploy backfills).
-                if _data_service is not None and _data_service.postgres is not None:
+                if rt.data_service is not None and rt.data_service.postgres is not None:
                     await loop.run_in_executor(
-                        None, _data_service.postgres.store_dt_shadow_trades,
+                        None, rt.data_service.postgres.store_dt_shadow_trades,
                         result.new_trades, candle.pair, candle.timeframe)
-                if _notifier is not None:
+                if rt.notifier is not None:
                     for tr in result.new_trades:
-                        await _notifier.send(dual_thrust_format_telegram(tr, candle.pair))
+                        await rt.notifier.send(dual_thrust_format_telegram(tr, candle.pair))
         except Exception as e:
             logger.error(f"Dual Thrust shadow hook error: {e}")
 
@@ -151,13 +140,13 @@ async def on_candle_confirmed(candle: Candle) -> None:
     # ============================================================
     if (settings.HTF_CAMPAIGN_ENABLED
             and candle.timeframe == settings.HTF_CAMPAIGN_SIGNAL_TF
-            and _campaign_monitor is not None):
+            and rt.campaign_monitor is not None):
 
-        if _campaign_monitor.has_active_campaign(candle.pair):
+        if rt.campaign_monitor.has_active_campaign(candle.pair):
             # Active campaign on this pair — evaluate pyramid add
-            c = _campaign_monitor.get_campaign(candle.pair)
+            c = rt.campaign_monitor.get_campaign(candle.pair)
             if c is not None and c.phase == "active":
-                await _campaign_monitor.evaluate_add(c, candle)
+                await rt.campaign_monitor.evaluate_add(c, candle)
         else:
             # No active campaign on this pair — check for new HTF setup
             await _evaluate_htf_pipeline(candle)
@@ -168,8 +157,8 @@ async def on_candle_confirmed(candle: Candle) -> None:
 
     # Block intraday when HTF campaign active on this pair
     if (settings.HTF_CAMPAIGN_ENABLED
-            and _campaign_monitor is not None
-            and _campaign_monitor.has_active_campaign(candle.pair)):
+            and rt.campaign_monitor is not None
+            and rt.campaign_monitor.has_active_campaign(candle.pair)):
         logger.debug(
             f"Intraday blocked: HTF campaign active on {candle.pair}"
         )
@@ -188,21 +177,21 @@ async def on_candle_confirmed(candle: Candle) -> None:
     # Live execution still consumes at most ONE setup per candle (the first
     # ENABLED one); shadow logging consumes every SHADOW_MODE setup.
     # See docs/strategy_redesign_2026_04.md §Phase 0.5.
-    all_setups = _strategy_service.evaluate_all(candle.pair, candle)
+    all_setups = rt.strategy_service.evaluate_all(candle.pair, candle)
     _publish_strategy_state(candle.pair)
 
     # Position Guardian — evaluate open positions against live market conditions
     # Only run when data is clean (RUNNING state) to avoid false early closes
     if (settings.POSITION_GUARDIAN_ENABLED
-            and _execution_service is not None
-            and _execution_service._guardian is not None
-            and _data_service is not None
-            and _data_service.state == DataServiceState.RUNNING):
+            and rt.execution_service is not None
+            and rt.execution_service._guardian is not None
+            and rt.data_service is not None
+            and rt.data_service.state == DataServiceState.RUNNING):
         try:
-            recent = _data_service.get_candles(candle.pair, candle.timeframe, count=20)
-            snapshot = _data_service.get_market_snapshot(candle.pair)
+            recent = rt.data_service.get_candles(candle.pair, candle.timeframe, count=20)
+            snapshot = rt.data_service.get_market_snapshot(candle.pair)
             cvd = snapshot.cvd if snapshot else None
-            await _execution_service._guardian.evaluate(candle.pair, candle, recent, cvd)
+            await rt.execution_service._guardian.evaluate(candle.pair, candle, recent, cvd)
         except Exception as e:
             logger.error(f"Position Guardian error: {e}")
 
@@ -211,15 +200,14 @@ async def on_candle_confirmed(candle: Candle) -> None:
     # through _process_pipeline_setup (shadow path). evaluate_scalp returns
     # at most one TradeSetup per call and is gated by SCALP_SHADOW_ENABLED.
     if settings.SCALP_SHADOW_ENABLED:
-        scalp_setup = _strategy_service.evaluate_scalp(candle.pair, candle)
+        scalp_setup = rt.strategy_service.evaluate_scalp(candle.pair, candle)
         if scalp_setup is not None:
             all_setups = list(all_setups) + [scalp_setup]
 
     if not all_setups:
         return
 
-    global _last_setup_detected_time
-    _last_setup_detected_time = time.time()
+    rt.last_setup_detected_time = time.time()
 
     live_executed = False
     for setup in all_setups:
@@ -249,11 +237,11 @@ async def _process_pipeline_setup(setup, candle: Candle, *, allow_live: bool) ->
 
     # --- Data integrity gate ---
     snapshot = None
-    if _data_service is not None:
-        snapshot = _data_service.get_market_snapshot(candle.pair)
-        cvd_state = _data_service.get_cvd_state(candle.pair)
+    if rt.data_service is not None:
+        snapshot = rt.data_service.get_market_snapshot(candle.pair)
+        cvd_state = rt.data_service.get_cvd_state(candle.pair)
         allowed, reason = can_trade_setup(
-            setup.setup_type, snapshot.health, _data_service.state, cvd_state,
+            setup.setup_type, snapshot.health, rt.data_service.state, cvd_state,
         )
         if not allowed:
             logger.info(
@@ -270,7 +258,7 @@ async def _process_pipeline_setup(setup, candle: Candle, *, allow_live: bool) ->
     # `dedup_ttl` differs per shadow-vs-live to control re-evaluation cadence.
     dedup_key = (setup.pair, setup.direction, setup.setup_type)
     now = time.time()
-    last_eval = _setup_dedup_cache.get(dedup_key)
+    last_eval = rt.setup_dedup_cache.get(dedup_key)
     is_shadow = setup.setup_type in settings.SHADOW_MODE_SETUPS
     dedup_ttl = _SHADOW_DEDUP_TTL_SECONDS if is_shadow else _SETUP_DEDUP_TTL_SECONDS
     if last_eval and (now - last_eval) < dedup_ttl:
@@ -314,7 +302,7 @@ async def _process_pipeline_setup(setup, candle: Candle, *, allow_live: bool) ->
     # engine1 live-gated setups skip shadow and fall through to the live path.
     if (setup.setup_type in settings.SHADOW_MODE_SETUPS
             and not engine1_live
-            and _shadow_monitor is not None):
+            and rt.shadow_monitor is not None):
         # Direction filter: reject proven-broken directions (e.g. setup_a long 5% WR)
         allowed_dirs = settings.SHADOW_DIRECTION_FILTER.get(setup.setup_type)
         if allowed_dirs is not None and setup.direction not in allowed_dirs:
@@ -335,15 +323,15 @@ async def _process_pipeline_setup(setup, candle: Candle, *, allow_live: bool) ->
             return False
         # Risk check: run but do NOT gate on result. Log as ML feature only.
         risk_approval = None
-        if _risk_service is not None:
-            risk_approval = _risk_service.check(
+        if rt.risk_service is not None:
+            risk_approval = rt.risk_service.check(
                 setup, dry_run=True,
                 capital_override=settings.effective_shadow_capital,
             )
 
             # Persist risk check result to ml_setups (ML feature, not a gate)
-            if _data_service is not None and _data_service.postgres is not None:
-                _data_service.postgres.update_ml_risk_check(
+            if rt.data_service is not None and rt.data_service.postgres is not None:
+                rt.data_service.postgres.update_ml_risk_check(
                     setup.setup_id,
                     approved=risk_approval.approved,
                     reason=risk_approval.reason,
@@ -357,13 +345,13 @@ async def _process_pipeline_setup(setup, candle: Candle, *, allow_live: bool) ->
 
         # Fetch orderbook snapshot for fill quality estimation
         ob_snapshot = None
-        if _data_service is not None:
-            ob_snapshot = _data_service.get_orderbook_snapshot(setup.pair)
+        if rt.data_service is not None:
+            ob_snapshot = rt.data_service.get_orderbook_snapshot(setup.pair)
 
-        accepted = _shadow_monitor.add_shadow(
+        accepted = rt.shadow_monitor.add_shadow(
             setup, orderbook=ob_snapshot, risk_approval=risk_approval,
         )
-        _setup_dedup_cache[dedup_key] = time.time()
+        rt.setup_dedup_cache[dedup_key] = time.time()
         if not accepted:
             _ml_resolve_outcome(setup.setup_id, "shadow_dedup")
             return False
@@ -396,7 +384,7 @@ async def _process_pipeline_setup(setup, candle: Candle, *, allow_live: bool) ->
     # Pre-check: can this pair meet exchange minimum order size?
     min_size = settings.MIN_ORDER_SIZES.get(setup.pair, 0)
     if min_size > 0:
-        capital = _risk_service._state.get_capital()
+        capital = rt.risk_service._state.get_capital()
         if settings.FIXED_TRADE_MARGIN > 0:
             max_margin = settings.FIXED_TRADE_MARGIN
         else:
@@ -432,7 +420,7 @@ async def _process_pipeline_setup(setup, candle: Candle, *, allow_live: bool) ->
             warnings=[],
         )
         logger.info(f"AI bypass: {setup.setup_type} — {reason}")
-    elif _ai_service is not None and _data_service is not None:
+    elif rt.ai_service is not None and rt.data_service is not None:
         decision = await _evaluate_with_claude(setup, candle)
         if decision is None:
             _ml_resolve_outcome(setup.setup_id, "ai_rejected")
@@ -447,14 +435,14 @@ async def _process_pipeline_setup(setup, candle: Candle, *, allow_live: bool) ->
     # engine1 live trades risk a fixed $ (ENGINE1_RISK_USD) so the kill line is
     # a concrete number; all other setups use RISK_PER_TRADE × capital.
     engine1_risk_usd = settings.ENGINE1_RISK_USD if engine1_live else None
-    if _risk_service is not None:
-        approval = _risk_service.check(
+    if rt.risk_service is not None:
+        approval = rt.risk_service.check(
             setup, ai_confidence=ai_conf, risk_usd=engine1_risk_usd,
         )
         if not approval.approved:
             logger.info(f"Risk rejected: {approval.reason}")
-            if _alert_manager:
-                await _alert_manager.notify_setup_rejected(
+            if rt.alert_manager:
+                await rt.alert_manager.notify_setup_rejected(
                     setup.pair, setup.setup_type, setup.direction,
                     "Risk", approval.reason or "unknown",
                 )
@@ -466,21 +454,21 @@ async def _process_pipeline_setup(setup, candle: Candle, *, allow_live: bool) ->
             # Log to trade_rejections table for journal analysis
             _log_trade_rejection(setup, approval.reason or "unknown")
             # ML: store risk check result + resolve outcome
-            if _data_service is not None and _data_service.postgres is not None:
-                _data_service.postgres.update_ml_risk_check(
+            if rt.data_service is not None and rt.data_service.postgres is not None:
+                rt.data_service.postgres.update_ml_risk_check(
                     setup.setup_id,
                     approved=False,
                     reason=approval.reason,
                 )
             _ml_resolve_outcome(
                 setup.setup_id, "risk_rejected",
-                risk_context=extract_risk_context(_risk_service),
+                risk_context=extract_risk_context(rt.risk_service),
             )
             # Cache structural risk rejections (SL too close, R:R too low) so the
             # same broken setup doesn't re-trigger Claude after dedup TTL expires.
             reason_lower = (approval.reason or "").lower()
             if "sl too close" in reason_lower or "risk distance" in reason_lower:
-                _setup_dedup_cache[dedup_key] = time.time()
+                rt.setup_dedup_cache[dedup_key] = time.time()
                 logger.debug(f"Dedup: cached risk-rejected setup {dedup_key}")
             return False
         logger.info(
@@ -489,7 +477,7 @@ async def _process_pipeline_setup(setup, candle: Candle, *, allow_live: bool) ->
         )
 
     # Check if this OB already failed
-    if _strategy_service is not None and _strategy_service.is_ob_failed(
+    if rt.strategy_service is not None and rt.strategy_service.is_ob_failed(
         setup.pair, setup.sl_price, setup.entry_price
     ):
         logger.info(
@@ -497,7 +485,7 @@ async def _process_pipeline_setup(setup, candle: Candle, *, allow_live: bool) ->
             f"sl={setup.sl_price:.2f} — skipping"
         )
         _ml_resolve_outcome(setup.setup_id, "risk_rejected")
-        _setup_dedup_cache[dedup_key] = time.time()
+        rt.setup_dedup_cache[dedup_key] = time.time()
         return False
 
     # Layer 5: Execution (or Signal). Reaching this point consumes the
@@ -508,16 +496,16 @@ async def _process_pipeline_setup(setup, candle: Candle, *, allow_live: bool) ->
     if approval is not None and approval.approved:
         if settings.SIGNAL_ONLY:
             logger.info(f"Signal mode: sending signal for {setup.pair} {setup.direction}")
-            if _alert_manager is not None:
-                await _alert_manager.notify_signal(setup, approval, decision)
-            _setup_dedup_cache[dedup_key] = time.time()
-        elif _execution_service is not None:
+            if rt.alert_manager is not None:
+                await rt.alert_manager.notify_signal(setup, approval, decision)
+            rt.setup_dedup_cache[dedup_key] = time.time()
+        elif rt.execution_service is not None:
             ai_confidence = decision.confidence if decision else 0.0
-            placed = await _execution_service.execute(setup, approval, ai_confidence)
+            placed = await rt.execution_service.execute(setup, approval, ai_confidence)
             # Always dedup — even on failure. NetworkError may mean the order
             # reached OKX but we didn't get the response. Without this, the
             # next candle retries and creates a duplicate live order.
-            _setup_dedup_cache[dedup_key] = time.time()
+            rt.setup_dedup_cache[dedup_key] = time.time()
         return True
 
     return False
@@ -533,17 +521,17 @@ def _ml_log_setup(setup, candle: Candle) -> dict | None:
     Returns the feature dict captured at detection (for in-process scoring),
     or None if logging was skipped or failed.
     """
-    if _data_service is None or _data_service.postgres is None:
+    if rt.data_service is None or rt.data_service.postgres is None:
         return None
     try:
-        snapshot = _data_service.get_market_snapshot(candle.pair)
+        snapshot = rt.data_service.get_market_snapshot(candle.pair)
         current_price = candle.close
-        recent_candles = _data_service.get_candles(candle.pair, candle.timeframe, count=100)
+        recent_candles = rt.data_service.get_candles(candle.pair, candle.timeframe, count=100)
 
         # Orderbook snapshot for spread/imbalance features
         ob_snapshot = None
         try:
-            ob_snapshot = _data_service.get_orderbook_snapshot(candle.pair)
+            ob_snapshot = rt.data_service.get_orderbook_snapshot(candle.pair)
         except Exception as e:
             logger.debug(f"orderbook snapshot miss ({candle.pair}): {e}")
 
@@ -551,7 +539,7 @@ def _ml_log_setup(setup, candle: Candle) -> dict | None:
         btc_candles = None
         if candle.pair != "BTC/USDT":
             try:
-                btc_candles = _data_service.get_candles("BTC/USDT", candle.timeframe, count=50)
+                btc_candles = rt.data_service.get_candles("BTC/USDT", candle.timeframe, count=50)
             except Exception as e:
                 logger.debug(f"BTC candle fetch miss ({candle.pair}): {e}")
 
@@ -570,10 +558,10 @@ def _ml_log_setup(setup, candle: Candle) -> dict | None:
         # against, not live OKX balance. Keeps risk_capital consistent with
         # shadow_position_size and shadow_margin on the same row.
         risk_ctx = None
-        if _risk_service is not None:
+        if rt.risk_service is not None:
             is_shadow = setup.setup_type in settings.SHADOW_MODE_SETUPS
             override = settings.effective_shadow_capital if is_shadow else None
-            risk_ctx = extract_risk_context(_risk_service, capital_override=override)
+            risk_ctx = extract_risk_context(rt.risk_service, capital_override=override)
 
         # Scalp setups live under their own experiment_id so v1/v2/v3 datasets
         # stay separable from engine1/swing experiments. Without this branch,
@@ -583,7 +571,7 @@ def _ml_log_setup(setup, candle: Candle) -> dict | None:
         is_scalp = setup.setup_type in settings.SCALP_SETUP_TYPES
         experiment_id = settings.SCALP_EXPERIMENT_ID if is_scalp else settings.EXPERIMENT_ID
 
-        ok = _data_service.postgres.insert_ml_setup(
+        ok = rt.data_service.postgres.insert_ml_setup(
             setup_id=setup.setup_id,
             features=features,
             risk_context=risk_ctx,
@@ -623,7 +611,6 @@ def _engine1_score_log(setup, features: dict) -> float | None:
 
 
 # Throttle for the kill-switch alert — avoid spamming on every eligible emission.
-_engine1_kill_alert_ts: float = 0.0
 _ENGINE1_KILL_ALERT_TTL = 3600  # seconds
 
 
@@ -634,14 +621,14 @@ def _engine1_kill_check() -> tuple[bool, str | None]:
     so a transient DB hiccup never blocks live entries on its own — the
     standalone guardrails (DD, cooldown) still protect capital.
     """
-    if _data_service is None or _data_service.postgres is None:
+    if rt.data_service is None or rt.data_service.postgres is None:
         return False, None
     try:
         from strategy_service.engines import engine1_kill_switch
 
         # Pull enough history to cover the rolling window + DD curve.
         limit = max(settings.ENGINE1_KILL_ROLLING_WINDOW * 3, 60)
-        rows = _data_service.postgres.fetch_recent_closed_trades(limit=limit)
+        rows = rt.data_service.postgres.fetch_recent_closed_trades(limit=limit)
         # fetch_recent_closed_trades returns DESC; kill-switch needs oldest-first.
         pnls = [
             float(r["pnl_usd"])
@@ -667,27 +654,26 @@ def _engine1_kill_check() -> tuple[bool, str | None]:
 
 async def _engine1_emit_kill_alert(reason: str) -> None:
     """Fire a throttled CRITICAL Telegram alert when the kill switch trips."""
-    global _engine1_kill_alert_ts
     now = time.time()
-    if (now - _engine1_kill_alert_ts) < _ENGINE1_KILL_ALERT_TTL:
+    if (now - rt.engine1_kill_alert_ts) < _ENGINE1_KILL_ALERT_TTL:
         return
-    _engine1_kill_alert_ts = now
+    rt.engine1_kill_alert_ts = now
     msg = (
         f"🛑 ENGINE1 KILL SWITCH TRIPPED — {reason}. New engine1 live entries "
         f"reverted to SHADOW automatically. Set ENGINE1_LIVE_GATED_ENABLED=false "
         f"to make it permanent and review."
     )
     logger.critical(msg)
-    if _alert_manager is not None:
-        await _alert_manager.alert(AlertPriority.CRITICAL, "engine1_kill", msg)
+    if rt.alert_manager is not None:
+        await rt.alert_manager.alert(AlertPriority.CRITICAL, "engine1_kill", msg)
 
 
 def _ml_resolve_outcome(setup_id: str, outcome_type: str, **kwargs) -> None:
     """Resolve an ml_setup outcome (fire-and-forget)."""
-    if not setup_id or _data_service is None or _data_service.postgres is None:
+    if not setup_id or rt.data_service is None or rt.data_service.postgres is None:
         return
     try:
-        ok = _data_service.postgres.update_ml_setup_outcome(
+        ok = rt.data_service.postgres.update_ml_setup_outcome(
             setup_id=setup_id,
             outcome_type=outcome_type,
             **kwargs,
@@ -707,30 +693,30 @@ async def _evaluate_htf_pipeline(candle: Candle) -> None:
 
     Full pipeline: Strategy → AI → Risk → Campaign execution.
     """
-    if (_strategy_service is None or _campaign_monitor is None
-            or _risk_service is None):
+    if (rt.strategy_service is None or rt.campaign_monitor is None
+            or rt.risk_service is None):
         return
 
     # Block if intraday position active on this pair
-    if (_execution_service is not None and _execution_service._monitor is not None
-            and candle.pair in _execution_service._monitor.positions):
-        pos = _execution_service._monitor.positions[candle.pair]
+    if (rt.execution_service is not None and rt.execution_service._monitor is not None
+            and candle.pair in rt.execution_service._monitor.positions):
+        pos = rt.execution_service._monitor.positions[candle.pair]
         if pos.phase != "closed":
             logger.debug(f"HTF blocked: intraday position active on {candle.pair}")
             return
 
     # Block if max campaigns reached or already have one on this pair
-    if not _campaign_monitor.can_open_new_campaign():
+    if not rt.campaign_monitor.can_open_new_campaign():
         return
-    if _campaign_monitor.has_active_campaign(candle.pair):
+    if rt.campaign_monitor.has_active_campaign(candle.pair):
         return
 
     # Data integrity gate for HTF pipeline
-    if _data_service is not None and _data_service.state != DataServiceState.RUNNING:
-        logger.debug(f"HTF blocked: data service state={_data_service.state.name}")
+    if rt.data_service is not None and rt.data_service.state != DataServiceState.RUNNING:
+        logger.debug(f"HTF blocked: data service state={rt.data_service.state.name}")
         return
 
-    setup = _strategy_service.evaluate_htf(candle.pair, candle)
+    setup = rt.strategy_service.evaluate_htf(candle.pair, candle)
     if setup is None:
         return
 
@@ -742,7 +728,7 @@ async def _evaluate_htf_pipeline(candle: Candle) -> None:
 
     # AI filter
     decision = None
-    if _ai_service is not None and _data_service is not None:
+    if rt.ai_service is not None and rt.data_service is not None:
         decision = await _evaluate_with_claude(setup, candle)
         if decision is None:
             return
@@ -750,14 +736,14 @@ async def _evaluate_htf_pipeline(candle: Candle) -> None:
             return
 
     # Risk check — uses same guardrails (DD, cooldown, max positions)
-    approval = _risk_service.check(setup)
+    approval = rt.risk_service.check(setup)
     if not approval.approved:
         logger.info(f"HTF risk rejected: {approval.reason}")
         return
 
     # Execute campaign (pass approval so campaign uses risk-approved sizing)
     ai_confidence = decision.confidence if decision else 0.0
-    await _campaign_monitor.execute_campaign(setup, ai_confidence, approval=approval)
+    await rt.campaign_monitor.execute_campaign(setup, ai_confidence, approval=approval)
 
 
 # ================================================================
@@ -766,8 +752,6 @@ async def _evaluate_htf_pipeline(candle: Candle) -> None:
 
 # In-memory counter of emit_metric failures — surfaced periodically so a
 # silent Postgres outage does not remain invisible indefinitely.
-_EMIT_METRIC_FAILURES: list[int] = [0]
-_EMIT_METRIC_LAST_WARN: list[float] = [0.0]
 
 
 def _emit_metric(name: str, value: float, pair: str | None = None, labels: dict | None = None) -> None:
@@ -776,19 +760,19 @@ def _emit_metric(name: str, value: float, pair: str | None = None, labels: dict 
     Errors are counted in-memory and surfaced via a WARNING every 5 minutes
     (max) so a broken metrics path does not silently hide all observability.
     """
-    if _data_service is None:
+    if rt.data_service is None:
         return
     try:
-        _data_service.postgres.insert_metric(name, value, pair=pair, labels=labels)
+        rt.data_service.postgres.insert_metric(name, value, pair=pair, labels=labels)
     except Exception as e:
-        _EMIT_METRIC_FAILURES[0] += 1
+        rt.emit_metric_failures += 1
         now = time.time()
-        if now - _EMIT_METRIC_LAST_WARN[0] > 300:
+        if now - rt.emit_metric_last_warn > 300:
             logger.warning(
-                f"_emit_metric failures: {_EMIT_METRIC_FAILURES[0]} since last warn "
+                f"_emit_metric failures: {rt.emit_metric_failures} since last warn "
                 f"(last error: {e}). Metrics path may be degraded."
             )
-            _EMIT_METRIC_LAST_WARN[0] = now
+            rt.emit_metric_last_warn = now
 
 
 # ================================================================
@@ -797,10 +781,10 @@ def _emit_metric(name: str, value: float, pair: str | None = None, labels: dict 
 
 def _persist_ai_decision(trade_id, decision, setup) -> None:
     """Write AI decision to PostgreSQL (fire-and-forget)."""
-    if _data_service is None:
+    if rt.data_service is None:
         return
     try:
-        _data_service.postgres.insert_ai_decision(
+        rt.data_service.postgres.insert_ai_decision(
             trade_id=trade_id,
             confidence=decision.confidence,
             reasoning=decision.reasoning,
@@ -817,10 +801,10 @@ def _persist_ai_decision(trade_id, decision, setup) -> None:
 
 async def _evaluate_with_claude(setup, candle) -> "AIDecision | None":
     """Run pre-filter then Claude evaluation. Returns AIDecision or None if rejected/failed."""
-    if _ai_service is None or _data_service is None:
+    if rt.ai_service is None or rt.data_service is None:
         return None
 
-    snapshot = _data_service.get_market_snapshot(candle.pair)
+    snapshot = rt.data_service.get_market_snapshot(candle.pair)
 
     # Pre-filter: reject obvious losers before calling Claude
     reject_reason = _pre_filter_for_claude(setup, snapshot)
@@ -832,7 +816,7 @@ async def _evaluate_with_claude(setup, candle) -> "AIDecision | None":
 
     # Claude evaluation
     claude_start = time.monotonic()
-    decision = await _ai_service.evaluate(setup, snapshot)
+    decision = await rt.ai_service.evaluate(setup, snapshot)
     _emit_metric("claude_latency_ms", (time.monotonic() - claude_start) * 1000, setup.pair)
 
     # Attach snapshot health to adjustments for audit trail
@@ -906,10 +890,10 @@ def _pre_filter_for_claude(setup, snapshot) -> str | None:
 
 def _persist_ai_pre_filter(setup, reason: str) -> None:
     """Write synthetic AI decision for pre-filter rejection (audit trail)."""
-    if _data_service is None:
+    if rt.data_service is None:
         return
     try:
-        _data_service.postgres.insert_ai_decision(
+        rt.data_service.postgres.insert_ai_decision(
             trade_id=None,
             confidence=0.0,
             reasoning=f"Pre-filter: {reason}",
@@ -927,10 +911,10 @@ def _persist_ai_pre_filter(setup, reason: str) -> None:
 
 def _persist_risk_event(event_type: str, details: dict) -> None:
     """Write risk event to PostgreSQL (fire-and-forget)."""
-    if _data_service is None:
+    if rt.data_service is None:
         return
     try:
-        _data_service.postgres.insert_risk_event(event_type, details)
+        rt.data_service.postgres.insert_risk_event(event_type, details)
     except Exception as e:
         logger.error(f"Failed to persist risk event: {e}")
 
@@ -942,14 +926,14 @@ def _log_trade_rejection(setup, reason: str) -> None:
     have malformed prices (entry=0 from a stale snapshot, sl==entry from
     an ATR collapse) and a single ZeroDivisionError would swallow the log.
     """
-    if _data_service is None:
+    if rt.data_service is None:
         return
     try:
         entry = setup.entry_price if setup.entry_price > 0 else 0.0
         risk = abs(setup.entry_price - setup.sl_price)
         sl_dist = (risk / entry) if entry > 0 else None
         rr = abs(setup.tp2_price - setup.entry_price) / risk if risk > 0 else None
-        _data_service.postgres.insert_trade_rejection(
+        rt.data_service.postgres.insert_trade_rejection(
             pair=setup.pair,
             direction=setup.direction,
             setup_type=setup.setup_type,
@@ -965,7 +949,6 @@ def _log_trade_rejection(setup, reason: str) -> None:
 # Daily summary loop (replaces hourly status — available on Grafana)
 # ================================================================
 
-_bot_start_time: float = 0.0
 
 
 async def _daily_summary_loop() -> None:
@@ -1006,8 +989,8 @@ async def _session_alert_loop() -> None:
 
             for name, start_hour, _, hours_label in TRADING_SESSIONS:
                 if now.hour == start_hour and now.minute < 5:
-                    if alerted.get(name) != day and _alert_manager:
-                        await _alert_manager.notify_session_open(name, hours_label)
+                    if alerted.get(name) != day and rt.alert_manager:
+                        await rt.alert_manager.notify_session_open(name, hours_label)
                         alerted[name] = day
         except Exception as e:
             logger.error(f"Session alert error: {e}")
@@ -1020,35 +1003,33 @@ async def _session_alert_loop() -> None:
 # ================================================================
 
 _DRY_SPELL_THRESHOLD_HOURS = 4  # Alert after 4 hours of no setups
-_dry_spell_alerted: bool = False
 
 
 async def _dry_spell_loop() -> None:
     """Alert when no setups detected for extended period."""
-    global _dry_spell_alerted
 
     # Wait for bot to warm up
     await asyncio.sleep(300)
 
     while True:
         try:
-            if _last_setup_detected_time > 0 and _alert_manager:
-                hours_since = (time.time() - _last_setup_detected_time) / 3600
-                if hours_since >= _DRY_SPELL_THRESHOLD_HOURS and not _dry_spell_alerted:
-                    await _alert_manager.notify_dry_spell(
+            if rt.last_setup_detected_time > 0 and rt.alert_manager:
+                hours_since = (time.time() - rt.last_setup_detected_time) / 3600
+                if hours_since >= _DRY_SPELL_THRESHOLD_HOURS and not rt.dry_spell_alerted:
+                    await rt.alert_manager.notify_dry_spell(
                         hours_since, settings.TRADING_PAIRS,
                     )
-                    _dry_spell_alerted = True
+                    rt.dry_spell_alerted = True
                 elif hours_since < _DRY_SPELL_THRESHOLD_HOURS:
-                    _dry_spell_alerted = False  # Reset when setup found
-            elif _last_setup_detected_time == 0 and _alert_manager:
+                    rt.dry_spell_alerted = False  # Reset when setup found
+            elif rt.last_setup_detected_time == 0 and rt.alert_manager:
                 # Bot just started, no setup yet — check if it's been long enough
-                hours_since = (time.time() - _bot_start_time) / 3600
-                if hours_since >= _DRY_SPELL_THRESHOLD_HOURS and not _dry_spell_alerted:
-                    await _alert_manager.notify_dry_spell(
+                hours_since = (time.time() - rt.bot_start_time) / 3600
+                if hours_since >= _DRY_SPELL_THRESHOLD_HOURS and not rt.dry_spell_alerted:
+                    await rt.alert_manager.notify_dry_spell(
                         hours_since, settings.TRADING_PAIRS,
                     )
-                    _dry_spell_alerted = True
+                    rt.dry_spell_alerted = True
         except Exception as e:
             logger.error(f"Dry spell alert error: {e}")
 
@@ -1059,8 +1040,6 @@ async def _dry_spell_loop() -> None:
 # Volatility spike + funding extreme alerts
 # ================================================================
 
-_vol_spike_cooldown: dict[str, float] = {}  # pair -> last alert time
-_funding_extreme_cooldown: dict[str, float] = {}  # pair -> last alert time
 _VOL_SPIKE_RATIO = 2.0  # ATR must be 2x above rolling average
 _VOL_ALERT_COOLDOWN = 3600  # 1 hour between alerts per pair
 _FUNDING_ALERT_COOLDOWN = 7200  # 2 hours between alerts per pair
@@ -1076,11 +1055,11 @@ async def _market_monitor_loop() -> None:
             now = time.time()
 
             for pair in settings.TRADING_PAIRS:
-                if _data_service is None or _alert_manager is None:
+                if rt.data_service is None or rt.alert_manager is None:
                     continue
 
                 # --- Volatility spike detection ---
-                candles = _data_service.get_candles(pair, "5m", 100)
+                candles = rt.data_service.get_candles(pair, "5m", 100)
                 if candles and len(candles) >= 50:
                     # Simple ATR: avg(high-low) over recent vs older window
                     recent = candles[-14:]
@@ -1094,30 +1073,30 @@ async def _market_monitor_loop() -> None:
                         avg_pct = avg_atr / price
                         ratio = current_pct / avg_pct
 
-                        last_alert = _vol_spike_cooldown.get(pair, 0)
+                        last_alert = rt.vol_spike_cooldown.get(pair, 0)
                         if ratio >= _VOL_SPIKE_RATIO and (now - last_alert) > _VOL_ALERT_COOLDOWN:
-                            await _alert_manager.notify_volatility_spike(
+                            await rt.alert_manager.notify_volatility_spike(
                                 pair, current_pct, avg_pct,
                             )
-                            _vol_spike_cooldown[pair] = now
+                            rt.vol_spike_cooldown[pair] = now
 
                 # --- Funding rate extreme detection ---
-                funding = _data_service.get_funding_rate(pair)
+                funding = rt.data_service.get_funding_rate(pair)
                 if funding and abs(funding.rate) >= settings.FUNDING_EXTREME_THRESHOLD:
-                    last_alert = _funding_extreme_cooldown.get(pair, 0)
+                    last_alert = rt.funding_extreme_cooldown.get(pair, 0)
                     if (now - last_alert) > _FUNDING_ALERT_COOLDOWN:
                         direction = "long" if funding.rate < 0 else "short"
-                        await _alert_manager.notify_funding_extreme(
+                        await rt.alert_manager.notify_funding_extreme(
                             pair, funding.rate, direction,
                         )
-                        _funding_extreme_cooldown[pair] = now
+                        rt.funding_extreme_cooldown[pair] = now
 
                 # --- Drawdown warning ---
-                if _risk_service is not None:
-                    daily_dd = _risk_service._state.get_daily_dd_pct()
+                if rt.risk_service is not None:
+                    daily_dd = rt.risk_service._state.get_daily_dd_pct()
                     dd_threshold = settings.MAX_DAILY_DRAWDOWN * settings.DD_WARNING_THRESHOLD
                     if daily_dd >= dd_threshold and daily_dd < settings.MAX_DAILY_DRAWDOWN:
-                        await _alert_manager.notify_dd_warning(
+                        await rt.alert_manager.notify_dd_warning(
                             daily_dd, settings.MAX_DAILY_DRAWDOWN,
                         )
 
@@ -1143,14 +1122,14 @@ async def _liquidation_alert_loop() -> None:
 
 async def _send_liquidation_alert() -> None:
     """Compute and send top liquidation clusters for all pairs."""
-    if _data_service is None or _alert_manager is None:
+    if rt.data_service is None or rt.alert_manager is None:
         return
 
     all_clusters: list[dict] = []
 
     for pair in settings.TRADING_PAIRS:
-        candles = _data_service.get_candles(pair, "5m", settings.LIQ_CANDLE_COUNT)
-        oi = _data_service.get_open_interest(pair)
+        candles = rt.data_service.get_candles(pair, "5m", settings.LIQ_CANDLE_COUNT)
+        oi = rt.data_service.get_open_interest(pair)
         if not candles or oi is None or oi.oi_usd <= 0:
             continue
 
@@ -1198,7 +1177,7 @@ async def _send_liquidation_alert() -> None:
         })
 
     if all_clusters:
-        await _alert_manager.notify_liquidation_clusters(all_clusters)
+        await rt.alert_manager.notify_liquidation_clusters(all_clusters)
 
 
 # ================================================================
@@ -1355,11 +1334,10 @@ async def main() -> None:
         logger.error("Config validation failed. Exiting.")
         sys.exit(1)
 
-    global _data_service, _strategy_service, _ai_service, _risk_service, _execution_service, _campaign_monitor, _shadow_monitor, _dual_thrust_shadow, _notifier, _alert_manager
 
     # Create Telegram notifier + AlertManager wrapper
-    _notifier = TelegramNotifier(settings.TELEGRAM_BOT_TOKEN, settings.TELEGRAM_CHAT_ID)
-    _alert_manager = AlertManager(_notifier, enabled=settings.BOT_TELEGRAM_ALERTS_ENABLED)
+    rt.notifier = TelegramNotifier(settings.TELEGRAM_BOT_TOKEN, settings.TELEGRAM_CHAT_ID)
+    rt.alert_manager = AlertManager(rt.notifier, enabled=settings.BOT_TELEGRAM_ALERTS_ENABLED)
     if not settings.BOT_TELEGRAM_ALERTS_ENABLED:
         logger.info(
             "Bot Telegram alerts MUTED (BOT_TELEGRAM_ALERTS_ENABLED=false): "
@@ -1369,50 +1347,50 @@ async def main() -> None:
         )
 
     # Create DataService with pipeline callback + alert manager for whale alerts
-    _data_service = DataService(on_candle_confirmed=on_candle_confirmed, alert_manager=_alert_manager)
+    rt.data_service = DataService(on_candle_confirmed=on_candle_confirmed, alert_manager=rt.alert_manager)
 
     # Create StrategyService — Layer 2
-    _strategy_service = StrategyService(_data_service)
+    rt.strategy_service = StrategyService(rt.data_service)
     logger.info("Strategy Service initialized")
 
     # Create AIService — Layer 3
-    _ai_service = AIService(_data_service)
+    rt.ai_service = AIService(rt.data_service)
 
     # Create RiskService — Layer 4 (capital from exchange balance or INITIAL_CAPITAL fallback)
-    balance = _data_service.fetch_usdt_balance()
+    balance = rt.data_service.fetch_usdt_balance()
     if balance is not None and balance > 0:
         capital = balance
         logger.info(f"Capital from exchange: ${capital:.2f}")
     else:
         capital = settings.INITIAL_CAPITAL
         logger.warning(f"Could not fetch balance — using INITIAL_CAPITAL: ${capital:.2f}")
-    _risk_service = RiskService(capital=capital, data_service=_data_service)
+    rt.risk_service = RiskService(capital=capital, data_service=rt.data_service)
 
     # Startup pair diagnostic — check capital vs min order requirements
-    _log_pair_diagnostics(capital, _data_service.postgres)
+    _log_pair_diagnostics(capital, rt.data_service.postgres)
 
     # Reconcile drawdown from PostgreSQL (source of truth for realized PnL).
     # Catches cases where Redis state was lost or stale after restart.
-    _risk_service._state.reconcile_drawdown_from_db(_data_service.postgres)
+    rt.risk_service._state.reconcile_drawdown_from_db(rt.data_service.postgres)
 
     # Create ExecutionService — Layer 5
     # on_sl_hit callback marks failed OBs so the same OB doesn't re-trigger
     def _on_sl_hit(pair: str, sl_price: float, entry_price: float) -> None:
-        if _strategy_service is not None:
-            _strategy_service.mark_ob_failed(pair, sl_price, entry_price)
+        if rt.strategy_service is not None:
+            rt.strategy_service.mark_ob_failed(pair, sl_price, entry_price)
 
-    _execution_service = ExecutionService(
-        _risk_service, _data_service, alert_manager=_alert_manager,
+    rt.execution_service = ExecutionService(
+        rt.risk_service, rt.data_service, alert_manager=rt.alert_manager,
         on_sl_hit=_on_sl_hit
     )
-    await _execution_service.start()
+    await rt.execution_service.start()
 
     # Create ShadowMonitor for theoretical outcome tracking. When bot alerts
     # are muted, pass no notifier so shadow tracking/fill/resolution stays
     # silent — outcome tracking (ML data) continues unchanged either way.
     if settings.SHADOW_MODE_SETUPS:
-        _shadow_notifier = _notifier if settings.BOT_TELEGRAM_ALERTS_ENABLED else None
-        _shadow_monitor = ShadowMonitor(_data_service, notifier=_shadow_notifier)
+        _shadow_notifier = rt.notifier if settings.BOT_TELEGRAM_ALERTS_ENABLED else None
+        rt.shadow_monitor = ShadowMonitor(rt.data_service, notifier=_shadow_notifier)
         logger.info(
             f"Shadow Monitor initialized: {settings.SHADOW_MODE_SETUPS} "
             f"(${settings.effective_shadow_capital} virtual, basis={settings.SHADOW_CAPITAL_BASIS})"
@@ -1422,22 +1400,22 @@ async def main() -> None:
     # REST 4h bars via the exchange client (forming bar already dropped post the
     # partial-candle fix). docs/plans/dual-thrust-phase1b-shadow-wiring.md Phase 2.
     if settings.DUAL_THRUST_SHADOW_ENABLED:
-        _dual_thrust_shadow = DualThrustShadowTracker(
-            candle_fetcher=lambda: _data_service._exchange.backfill_candles(
+        rt.dual_thrust_shadow = DualThrustShadowTracker(
+            candle_fetcher=lambda: rt.data_service._exchange.backfill_candles(
                 "ETH/USDT", "4h", 500)
         )
         logger.info("Dual Thrust shadow tracker initialized (ETH/USDT 4h, order-free)")
 
     # Create CampaignMonitor for HTF position trades (when enabled)
-    if settings.HTF_CAMPAIGN_ENABLED and _execution_service._executor is not None:
-        _campaign_monitor = CampaignMonitor(
-            executor=_execution_service._executor,
-            risk_service=_risk_service,
-            strategy_service=_strategy_service,
-            data_store=_data_service,
-            alert_manager=_alert_manager,
+    if settings.HTF_CAMPAIGN_ENABLED and rt.execution_service._executor is not None:
+        rt.campaign_monitor = CampaignMonitor(
+            executor=rt.execution_service._executor,
+            risk_service=rt.risk_service,
+            strategy_service=rt.strategy_service,
+            data_store=rt.data_service,
+            alert_manager=rt.alert_manager,
         )
-        _campaign_monitor.start()
+        rt.campaign_monitor.start()
         logger.info("HTF Campaign Monitor started")
     elif settings.HTF_CAMPAIGN_ENABLED:
         logger.warning("HTF campaigns enabled but execution disabled (no OKX key)")
@@ -1449,13 +1427,13 @@ async def main() -> None:
             _interactive_bot = TelegramInteractiveBot(
                 token=settings.TELEGRAM_BOT_TOKEN,
                 allowed_chat_ids={int(settings.TELEGRAM_CHAT_ID)},
-                data_service=_data_service,
-                strategy_service=_strategy_service,
-                risk_service=_risk_service,
-                execution_service=_execution_service,
-                shadow_monitor=_shadow_monitor,
+                data_service=rt.data_service,
+                strategy_service=rt.strategy_service,
+                risk_service=rt.risk_service,
+                execution_service=rt.execution_service,
+                shadow_monitor=rt.shadow_monitor,
                 bot_start_time=time.time(),
-                get_last_setup_time=lambda: _last_setup_detected_time,
+                get_last_setup_time=lambda: rt.last_setup_detected_time,
             )
             await _interactive_bot.start()
             logger.info("Telegram interactive bot started")
@@ -1475,11 +1453,10 @@ async def main() -> None:
     signal.signal(signal.SIGTERM, handle_signal)
 
     # Start DataService in background
-    data_task = asyncio.create_task(_data_service.start(), name="data_service")
+    data_task = asyncio.create_task(rt.data_service.start(), name="data_service")
 
     # Start daily summary loop + bot started notification
-    global _bot_start_time
-    _bot_start_time = time.time()
+    rt.bot_start_time = time.time()
     status_task = asyncio.create_task(_daily_summary_loop(), name="daily_summary")
     liq_task = asyncio.create_task(_liquidation_alert_loop(), name="liquidation_alerts")
     session_task = asyncio.create_task(_session_alert_loop(), name="session_alerts")
@@ -1493,13 +1470,13 @@ async def main() -> None:
     logger.info("Shutting down...")
     if _interactive_bot is not None:
         await _interactive_bot.stop()
-    if _campaign_monitor is not None:
-        await _campaign_monitor.stop()
-    if _execution_service is not None:
-        await _execution_service.stop()
-    if _ai_service is not None:
-        await _ai_service.close()
-    await _data_service.stop()
+    if rt.campaign_monitor is not None:
+        await rt.campaign_monitor.stop()
+    if rt.execution_service is not None:
+        await rt.execution_service.stop()
+    if rt.ai_service is not None:
+        await rt.ai_service.close()
+    await rt.data_service.stop()
 
     # Cancel background tasks
     for task in [data_task, status_task, liq_task, session_task, dry_spell_task, market_monitor_task]:

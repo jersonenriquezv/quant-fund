@@ -35,6 +35,7 @@ with patch("shared.logger.setup_logger", side_effect=_noop_logger):
     if "shared.notifier" in sys.modules:
         del sys.modules["shared.notifier"]
     import main
+    from pipeline_runtime import rt
 
 
 # ============================================================
@@ -86,24 +87,27 @@ def _make_snapshot(
     )
 
 
+def _reset_rt():
+    rt.setup_dedup_cache.clear()
+    rt.data_service = None
+    rt.strategy_service = None
+    rt.ai_service = None
+    rt.risk_service = None
+    rt.execution_service = None
+    rt.notifier = None
+    rt.campaign_monitor = None
+    rt.shadow_monitor = None
+    rt.dual_thrust_shadow = None
+    rt.alert_manager = None
+    rt.last_setup_detected_time = 0.0
+
+
 @pytest.fixture(autouse=True)
 def reset_module_state():
-    """Reset main.py module-level state between tests."""
-    main._setup_dedup_cache.clear()
-    main._data_service = None
-    main._strategy_service = None
-    main._ai_service = None
-    main._risk_service = None
-    main._execution_service = None
-    main._notifier = None
+    """Reset shared runtime (rt) state between tests."""
+    _reset_rt()
     yield
-    main._setup_dedup_cache.clear()
-    main._data_service = None
-    main._strategy_service = None
-    main._ai_service = None
-    main._risk_service = None
-    main._execution_service = None
-    main._notifier = None
+    _reset_rt()
 
 
 def _wire_services(
@@ -124,7 +128,7 @@ def _wire_services(
     strategy.get_htf_bias.return_value = htf_bias
     strategy.get_active_order_blocks.return_value = []
     strategy.is_ob_failed.return_value = False
-    main._strategy_service = strategy
+    rt.strategy_service = strategy
 
     data = MagicMock()
     data.state = DataServiceState.RUNNING
@@ -144,25 +148,25 @@ def _wire_services(
     data.redis.get_bot_state.return_value = None
     data.postgres = MagicMock()
     data.postgres.insert_ai_decision.return_value = 1
-    main._data_service = data
+    rt.data_service = data
 
     ai = AsyncMock()
     if decision is not None:
         ai.evaluate.return_value = decision
-    main._ai_service = ai
+    rt.ai_service = ai
 
     risk = MagicMock()
     risk._state.get_capital.return_value = 100.0  # $100 test capital
     if approval is not None:
         risk.check.return_value = approval
-    main._risk_service = risk
+    rt.risk_service = risk
 
     execution = AsyncMock()
     execution.execute.return_value = True
-    main._execution_service = execution
+    rt.execution_service = execution
 
     notifier = AsyncMock()
-    main._notifier = notifier
+    rt.notifier = notifier
 
     return strategy, data, ai, risk, execution, notifier
 
@@ -274,7 +278,7 @@ class TestPreFilter:
         snapshot = _make_snapshot()
         strategy = MagicMock()
         strategy.get_htf_bias.return_value = "bearish"
-        main._strategy_service = strategy
+        rt.strategy_service = strategy
 
         reason = main._pre_filter_for_claude(setup, snapshot)
         assert reason is None
@@ -285,7 +289,7 @@ class TestPreFilter:
         snapshot = _make_snapshot()
         strategy = MagicMock()
         strategy.get_htf_bias.return_value = "bullish"
-        main._strategy_service = strategy
+        rt.strategy_service = strategy
 
         reason = main._pre_filter_for_claude(setup, snapshot)
         assert reason is None
@@ -296,7 +300,7 @@ class TestPreFilter:
         snapshot = _make_snapshot()
         strategy = MagicMock()
         strategy.get_htf_bias.return_value = "bullish"
-        main._strategy_service = strategy
+        rt.strategy_service = strategy
 
         reason = main._pre_filter_for_claude(setup, snapshot)
         assert reason is None
@@ -305,7 +309,7 @@ class TestPreFilter:
         """Long + extreme positive funding → rejected."""
         setup = _make_setup(direction="long")
         snapshot = _make_snapshot(funding_rate=0.001)  # 0.1% >> 0.03%
-        main._strategy_service = None  # skip HTF check
+        rt.strategy_service = None  # skip HTF check
 
         reason = main._pre_filter_for_claude(setup, snapshot)
         assert reason is not None
@@ -315,7 +319,7 @@ class TestPreFilter:
         """Long + buy dominance < 40% → rejected."""
         setup = _make_setup(direction="long")
         snapshot = _make_snapshot(buy_volume=300.0, sell_volume=700.0)  # 30%
-        main._strategy_service = None
+        rt.strategy_service = None
 
         reason = main._pre_filter_for_claude(setup, snapshot)
         assert reason is not None
@@ -327,7 +331,7 @@ class TestPreFilter:
         snapshot = MarketSnapshot(
             pair="ETH/USDT", timestamp=int(time.time() * 1000),
         )
-        main._strategy_service = None
+        rt.strategy_service = None
 
         reason = main._pre_filter_for_claude(setup, snapshot)
         assert reason is None
@@ -361,3 +365,56 @@ class TestDedupCache:
 
         # Execution should only happen once — second call is deduped
         assert execution.execute.call_count == 1
+
+
+# ============================================================
+# Branch coverage (Refactor Phase 6 — main.py split)
+# Exercise the dual-thrust shadow hook, HTF-campaign intraday block, and
+# position-guardian paths so "tests green" covers them before functions are
+# relocated out of main.py in later phases.
+# ============================================================
+
+class TestUncoveredBranches:
+
+    def test_dual_thrust_shadow_hook_invoked_on_eth_4h(self):
+        import asyncio
+        _wire_services(setup=None)
+        dt = MagicMock()
+        result = MagicMock()
+        result.new_trades = []  # no flips → no persist/notify
+        dt.on_candle.return_value = result
+        rt.dual_thrust_shadow = dt
+
+        with patch.object(main.settings, "DUAL_THRUST_SHADOW_ENABLED", True):
+            asyncio.run(main.on_candle_confirmed(
+                _make_candle(pair="ETH/USDT", timeframe="4h")))
+
+        dt.on_candle.assert_called_once()
+
+    def test_htf_campaign_active_blocks_intraday(self):
+        import asyncio
+        strategy, _data, _ai, _risk, _exec, _notif = _wire_services(
+            setup=_make_setup())
+        campaign = MagicMock()
+        campaign.has_active_campaign.return_value = True
+        rt.campaign_monitor = campaign
+
+        # 5m candle != HTF_CAMPAIGN_SIGNAL_TF (4h): first HTF block is skipped,
+        # then the active-campaign guard blocks the intraday path and returns.
+        with patch.object(main.settings, "HTF_CAMPAIGN_ENABLED", True):
+            asyncio.run(main.on_candle_confirmed(_make_candle(timeframe="5m")))
+
+        strategy.evaluate_all.assert_not_called()
+
+    def test_position_guardian_evaluated_when_enabled(self):
+        import asyncio
+        _strategy, data, _ai, _risk, execution, _notif = _wire_services(
+            setup=None)
+        guardian = AsyncMock()
+        execution._guardian = guardian
+        data.get_candles.return_value = [_make_candle()]
+
+        with patch.object(main.settings, "POSITION_GUARDIAN_ENABLED", True):
+            asyncio.run(main.on_candle_confirmed(_make_candle()))
+
+        guardian.evaluate.assert_called_once()
