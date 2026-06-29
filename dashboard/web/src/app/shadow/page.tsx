@@ -386,7 +386,8 @@ export default function ShadowPage() {
                 <th>Setup</th>
                 <th style={{ textAlign: "right" }}>N</th>
                 <th style={{ textAlign: "right" }}>WR</th>
-                <th style={{ textAlign: "right" }}>PF</th>
+                <th style={{ textAlign: "right" }} title="Profit factor over ALL resolved shadows. Can be carried entirely by an old luck cluster — compare with Recent PF.">PF (all)</th>
+                <th style={{ textAlign: "right" }} title="Profit factor over the most-recent HALF of trades by count. The closer-to-reality number: if it collapsed below PF (all), the headline is stale.">Recent PF</th>
                 <th style={{ textAlign: "right" }}>P&L $</th>
                 <th className="col-type" style={{ textAlign: "right" }}>Avg %</th>
               </tr>
@@ -394,12 +395,30 @@ export default function ShadowPage() {
             <tbody>
               {stats?.by_setup_type.map((b) => {
                 const pnlClass = b.total_pnl_usd >= 0 ? "pnl-positive" : "pnl-negative";
+                const recentClass = b.recent_n < 1 ? "" : b.recent_profit_factor >= 1 ? "pnl-positive" : "pnl-negative";
                 return (
                   <tr key={b.setup_type ?? "unknown"} className="animate-in">
-                    <td style={{ fontWeight: 600 }}>{b.setup_type}</td>
+                    <td style={{ fontWeight: 600 }}>
+                      {b.setup_type}
+                      {b.decayed && (
+                        <span
+                          title="Decayed: all-time PF looked tradeable but the recent half fell below half of it. The headline is carried by old trades."
+                          style={{
+                            marginLeft: 6, fontSize: 9, fontWeight: 700,
+                            padding: "1px 5px", borderRadius: 100,
+                            color: "var(--warning)",
+                            border: "1px solid var(--warning)",
+                            whiteSpace: "nowrap",
+                          }}
+                        >⚠ DECAYED</span>
+                      )}
+                    </td>
                     <td className="num">{b.total_trades}</td>
                     <td className="num">{fmt(b.win_rate, 1)}%</td>
                     <td className="num">{fmt(b.profit_factor, 2)}</td>
+                    <td className={`num ${recentClass}`} title={`Most-recent ${b.recent_n} trades`}>
+                      {b.recent_n < 1 ? "—" : fmt(b.recent_profit_factor, 2)}
+                    </td>
                     <td className={`num ${pnlClass}`}>
                       {(b.total_pnl_usd >= 0 ? "+" : "") + fmt(b.total_pnl_usd)}
                     </td>
@@ -408,10 +427,13 @@ export default function ShadowPage() {
                 );
               })}
               {!loading && (!stats || stats.by_setup_type.length === 0) && (
-                <tr><td colSpan={6} style={{ color: "var(--text-muted)", textAlign: "center", padding: 20 }}>No resolved shadows yet</td></tr>
+                <tr><td colSpan={7} style={{ color: "var(--text-muted)", textAlign: "center", padding: 20 }}>No resolved shadows yet</td></tr>
               )}
             </tbody>
           </table>
+        </div>
+        <div style={{ color: "var(--text-muted)", fontSize: 10, marginTop: 8, lineHeight: 1.4 }}>
+          <b>Recent PF</b> = profit factor over the most-recent half of each setup&apos;s trades (by count). When it&apos;s far below <b>PF (all)</b>, the headline is carried by old trades — flagged <span style={{ color: "var(--warning)" }}>⚠ DECAYED</span>. Shadow = theoretical, not live fills.
         </div>
       </div>
 
