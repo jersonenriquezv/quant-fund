@@ -148,6 +148,11 @@ export interface ShadowSetupBreakdown {
   avg_pnl_pct: number;
   best_trade_pct: number;
   worst_trade_pct: number;
+  // Recent-half (most-recent 50% of trades by count) — exposes edge decay.
+  recent_n: number;
+  recent_pnl_usd: number;
+  recent_profit_factor: number;
+  decayed: boolean;
 }
 
 export interface ShadowStats {

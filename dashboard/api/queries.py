@@ -15,6 +15,19 @@ SHADOW_TERMINAL_OUTCOMES: tuple[str, ...] = (
     "shadow_time_stop", "shadow_timeout",
 )
 
+# An all-time aggregate hides WHEN the edge happened — a setup whose entire
+# profit came from an old luck cluster shows the same headline PF as one with a
+# persistent edge. The /shadow breakdown surfaces a recent-half PF (most-recent
+# 50% of trades by count) so the dashboard glance can't mislead.
+#
+# "decayed" flag: a setup that LOOKED tradeable all-time (PF >= MIN) but whose
+# recent-half PF fell below HALF of that, on a non-trivial recent sample. An
+# absolute "recent < 1.0" bar misses dramatic-but-still-positive decay (e.g.
+# setup_f: all-time 4.13 -> recent 1.04), so the bar is relative.
+SHADOW_DECAY_MIN_RECENT_N = 5
+SHADOW_DECAY_ALLTIME_PF_MIN = 1.5
+SHADOW_DECAY_RATIO = 0.5
+
 
 async def get_trades(status: str | None = None, limit: int = 50, offset: int = 0) -> list[dict]:
     async with db.pg_pool.acquire() as conn:
@@ -252,13 +265,33 @@ async def get_shadow_stats(
         COALESCE(SUM(pnl_usd) FILTER (WHERE pnl_usd > 0), 0)::float AS gross_profit,
         COALESCE(ABS(SUM(pnl_usd) FILTER (WHERE pnl_usd < 0)), 0)::float AS gross_loss
     """
+    # Recency = the most-recent HALF of each setup's trades BY COUNT (not by
+    # calendar days). A day-window breaks when a setup's whole history fits
+    # inside it; a count-split always isolates the latest 50%, matching the
+    # walk-forward used to vet these setups. `recent` flags rows whose
+    # per-setup row number (oldest=1) is in the upper half.
+    recent_breakdown_sql = f"""
+        WITH ranked AS (
+            SELECT setup_type, pnl_usd, pnl_pct,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY setup_type ORDER BY created_at, setup_id
+                   ) AS rn,
+                   COUNT(*) OVER (PARTITION BY setup_type) AS grp_n
+            FROM ml_setups WHERE {where_sql}
+        )
+        SELECT setup_type, {agg_sql},
+            COUNT(*) FILTER (WHERE rn > grp_n / 2.0)::int AS recent_n,
+            COALESCE(SUM(pnl_usd) FILTER (WHERE rn > grp_n / 2.0), 0)::float
+                AS recent_pnl_usd,
+            COALESCE(SUM(pnl_usd) FILTER (WHERE pnl_usd > 0 AND rn > grp_n / 2.0), 0)::float
+                AS recent_gross_profit,
+            COALESCE(ABS(SUM(pnl_usd) FILTER (WHERE pnl_usd < 0 AND rn > grp_n / 2.0)), 0)::float
+                AS recent_gross_loss
+        FROM ranked GROUP BY setup_type ORDER BY total_pnl_usd DESC
+    """
     async with db.pg_pool.acquire() as conn:
         row = await conn.fetchrow(f"SELECT {agg_sql} FROM ml_setups WHERE {where_sql}", *args)
-        breakdown_rows = await conn.fetch(
-            f"""SELECT setup_type, {agg_sql} FROM ml_setups WHERE {where_sql}
-                GROUP BY setup_type ORDER BY total_pnl_usd DESC""",
-            *args,
-        )
+        breakdown_rows = await conn.fetch(recent_breakdown_sql, *args)
 
     def _finish(d: dict) -> dict:
         total = d["total_trades"]
@@ -266,6 +299,21 @@ async def get_shadow_stats(
         gp = d.pop("gross_profit")
         gl = d.pop("gross_loss")
         d["profit_factor"] = (gp / gl) if gl > 0 else 0.0
+        # Recent-half PF — the "closer to reality" number (exposes decay).
+        # Only present on per-setup breakdown rows, not the overall aggregate.
+        rgp = d.pop("recent_gross_profit", None)
+        rgl = d.pop("recent_gross_loss", None)
+        if rgp is not None:
+            d["recent_profit_factor"] = (rgp / rgl) if rgl > 0 else 0.0
+            # Decay flag: real recent sample, all-time looked tradeable, but
+            # recent-half PF fell below half of it — headline carried by old
+            # trades.
+            d["decayed"] = (
+                d["recent_n"] >= SHADOW_DECAY_MIN_RECENT_N
+                and rgl > 0
+                and d["profit_factor"] >= SHADOW_DECAY_ALLTIME_PF_MIN
+                and d["recent_profit_factor"] < d["profit_factor"] * SHADOW_DECAY_RATIO
+            )
         return d
 
     out = _finish(dict(row))

@@ -130,6 +130,13 @@ class ShadowSetupBreakdown(BaseModel):
     avg_pnl_pct: float = 0.0
     best_trade_pct: float = 0.0
     worst_trade_pct: float = 0.0
+    # Recency context — the all-time PF above can be carried entirely by an old
+    # luck cluster. recent_* covers the most-recent HALF of trades by count, so
+    # decay is visible. `decayed` flags a headline carried by old trades.
+    recent_n: int = 0
+    recent_pnl_usd: float = 0.0
+    recent_profit_factor: float = 0.0
+    decayed: bool = False
 
 
 class ShadowStats(BaseModel):

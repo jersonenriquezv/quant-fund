@@ -146,6 +146,52 @@ def test_stats_win_rate_and_pf_math(fake_pool):
     assert "gross_profit" not in out  # popped
 
 
+def _breakdown_row(setup, gp, gl, recent_n, rgp, rgl, total=20):
+    """Build a per-setup breakdown row as the recent-split SQL would return it."""
+    return {
+        "setup_type": setup, "total_trades": total,
+        "winning_trades": total // 2, "losing_trades": total - total // 2,
+        "total_pnl_usd": gp - gl, "avg_pnl_pct": 0.0,
+        "best_trade_pct": 0.0, "worst_trade_pct": 0.0,
+        "gross_profit": gp, "gross_loss": gl,
+        "recent_n": recent_n, "recent_pnl_usd": rgp - rgl,
+        "recent_gross_profit": rgp, "recent_gross_loss": rgl,
+    }
+
+
+def test_stats_breakdown_recent_pf_split_in_sql(fake_pool):
+    asyncio.run(queries.get_shadow_stats())
+    grp_sql, _ = fake_pool.calls[1]
+    # Recency is a count-based split, not a calendar window.
+    assert "ROW_NUMBER() OVER" in grp_sql
+    assert "rn > grp_n / 2.0" in grp_sql
+    assert "recent_gross_profit" in grp_sql
+
+
+def test_stats_breakdown_decay_flag(fake_pool):
+    fake_pool._conn._fetch_rows = [
+        # F-like: all-time PF 4.0, recent collapsed to ~1.03 → DECAYED.
+        _breakdown_row("setup_f", gp=400.0, gl=100.0, recent_n=36, rgp=30.0, rgl=29.0),
+        # B-like: all-time PF ~2.86, recent ~1.67 (above half) → not decayed.
+        _breakdown_row("setup_b", gp=200.0, gl=70.0, recent_n=24, rgp=40.0, rgl=24.0),
+        # thin recent sample (recent_n < 5) → never flagged regardless of PF.
+        _breakdown_row("setup_a", gp=300.0, gl=2.0, recent_n=2, rgp=150.0, rgl=2.0),
+        # never tradeable (all-time PF < 1.5) → not "decay", just bad.
+        _breakdown_row("engine1", gp=80.0, gl=120.0, recent_n=200, rgp=20.0, rgl=60.0),
+    ]
+    out = asyncio.run(queries.get_shadow_stats())
+    by = {b["setup_type"]: b for b in out["by_setup_type"]}
+
+    assert by["setup_f"]["recent_profit_factor"] == pytest.approx(30.0 / 29.0)
+    assert by["setup_f"]["decayed"] is True
+    assert by["setup_b"]["decayed"] is False
+    assert by["setup_a"]["decayed"] is False   # thin recent sample
+    assert by["engine1"]["decayed"] is False    # never looked tradeable
+    # gross_* popped on breakdown rows too.
+    assert "recent_gross_profit" not in by["setup_f"]
+    assert "gross_loss" not in by["setup_f"]
+
+
 def _eq_row(ts, pnl, setup="engine1", pair="ETH/USDT"):
     return {"resolved_at": ts, "pnl_usd": pnl, "setup_type": setup, "pair": pair}
 
