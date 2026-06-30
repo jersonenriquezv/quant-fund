@@ -86,7 +86,7 @@ Split `main.py` (1546 LOC) into `pipeline_runtime.py` + 4 modules (`persistence`
 ---
 
 ## Phase 3 — Extract core (`ml_instrumentation` + `pipeline_router`); main.py → wiring only
-**Status:** code done (commit 794e01b on chore/refactor-phase6-mainpy, not pushed); real-startup deploy smoke PENDING (last gate item)
+**Status:** DONE (commit 794e01b on chore/refactor-phase6-mainpy, not pushed); real-startup deploy smoke PASSED 2026-06-30 20:05 UTC
 **Inputs:** Phase 2 outputs — leaves extracted, tests green, imports clean.
 **Outputs:** `ml_instrumentation.py` (`_ml_log_setup`, `_ml_resolve_outcome`, `_engine1_score_log`, `_engine1_kill_check`, `_engine1_emit_kill_alert`); `pipeline_router.py` (`on_candle_confirmed`, `_process_pipeline_setup`, `_evaluate_htf_pipeline`, `_evaluate_with_claude`, `_pre_filter_for_claude`, `_publish_strategy_state`); `main.py` ≈250 LOC = imports + `validate_config` + `_log_pair_diagnostics` + `_send_crash_alert` + `main()` + `__main__` + re-exports.
 **Work:**
@@ -133,10 +133,13 @@ Split `main.py` (1546 LOC) into `pipeline_runtime.py` + 4 modules (`persistence`
   - Repo-wide orphan sweep (`main._<global>` reads) → 0; dedup consts only in
     pipeline_router.
 - Rollback trigger fired: **no** (automated gate). 
-- PENDING gate item: real-startup deploy smoke (`docker compose up -d --build bot`)
-  — boot, OKX WS connect, one `ml_setups` row written, strategy state published
-  to Redis, 9-step `reference_deploy_verification`. Bot is shadow-pure so worst
-  case is minutes of lost ML logging; awaiting user go to deploy.
+- Real-startup deploy smoke — **PASSED 2026-06-30 20:05 UTC** (`docker compose up -d
+  --build bot`): bot boots healthy, OKX WS connects (first live ETH 5m candle 20:05:00),
+  DataService → RUNNING, and `pipeline_router:on_candle_confirmed` fires across all 7
+  pairs — proving the re-exported callback runs through the new module end-to-end.
+  `_publish_strategy_state` wrote `qf:bot:htf_bias` + `qf:bot:order_blocks` to Redis
+  (TTL 522/600 = fresh post-deploy). ml_setups insert path is live inside the pipeline
+  (writes on the next detected setup). Zero tracebacks; all 8 containers healthy.
 
 ## Out of scope (deliberately)
 - **notifier/alert_manager `notify_*` overlap smell** — real but separate concern; its own PR (Phase 2 carry-over in tracker). Bundling it here inflates an already-large diff.
