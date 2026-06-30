@@ -36,6 +36,8 @@ with patch("shared.logger.setup_logger", side_effect=_noop_logger):
     if "shared.notifier" in sys.modules:
         del sys.modules["shared.notifier"]
     import main
+    import pipeline_router
+    from pipeline_runtime import rt
 
 CUTOFF = settings.ENGINE1_SCORE_CUTOFF
 
@@ -90,11 +92,11 @@ def _wire(approval_ok=True):
     data.get_market_snapshot.return_value = _make_snapshot()
     data.get_orderbook_snapshot.return_value = None
     data.postgres = MagicMock()
-    main._data_service = data
+    rt.data_service = data
 
     strategy = MagicMock()
     strategy.is_ob_failed.return_value = False
-    main._strategy_service = strategy
+    rt.strategy_service = strategy
 
     risk = MagicMock()
     risk._state.get_capital.return_value = 100.0
@@ -102,31 +104,31 @@ def _wire(approval_ok=True):
         approved=approval_ok, position_size=0.02 if approval_ok else 0.0,
         leverage=1.0, risk_pct=0.015, reason="" if approval_ok else "rejected",
     )
-    main._risk_service = risk
+    rt.risk_service = risk
 
     execution = AsyncMock()
     execution.execute.return_value = True
-    main._execution_service = execution
+    rt.execution_service = execution
 
     shadow = MagicMock()
     shadow.add_shadow.return_value = True
-    main._shadow_monitor = shadow
+    rt.shadow_monitor = shadow
 
-    main._ai_service = None
-    main._alert_manager = None
-    main._notifier = None
+    rt.ai_service = None
+    rt.alert_manager = None
+    rt.notifier = None
     return data, risk, execution, shadow
 
 
 @pytest.fixture(autouse=True)
 def _reset():
-    main._setup_dedup_cache.clear()
+    rt.setup_dedup_cache.clear()
     for attr in ("_data_service", "_strategy_service", "_ai_service",
                  "_risk_service", "_execution_service", "_shadow_monitor",
                  "_alert_manager", "_notifier"):
         setattr(main, attr, None)
     yield
-    main._setup_dedup_cache.clear()
+    rt.setup_dedup_cache.clear()
     for attr in ("_data_service", "_strategy_service", "_ai_service",
                  "_risk_service", "_execution_service", "_shadow_monitor",
                  "_alert_manager", "_notifier"):
@@ -136,9 +138,12 @@ def _reset():
 def _run(setup, score, *, flag, kill=(False, None), approval_ok=True):
     """Drive _process_pipeline_setup with controlled score + kill verdict."""
     data, risk, execution, shadow = _wire(approval_ok=approval_ok)
-    with patch.object(main, "_ml_log_setup", return_value={"f": 1}), \
-         patch.object(main, "_engine1_score_log", return_value=score), \
-         patch.object(main, "_engine1_kill_check", return_value=kill), \
+    # Patch in pipeline_router's namespace: _process_pipeline_setup now lives
+    # there (Refactor Phase 6) and looks these helpers up in its own module
+    # globals, not main's. Patching main.* would not take.
+    with patch.object(pipeline_router, "_ml_log_setup", return_value={"f": 1}), \
+         patch.object(pipeline_router, "_engine1_score_log", return_value=score), \
+         patch.object(pipeline_router, "_engine1_kill_check", return_value=kill), \
          patch.object(settings, "ENGINE1_LIVE_GATED_ENABLED", flag), \
          patch.object(settings, "MIN_ORDER_SIZES", {}):
         asyncio.run(main._process_pipeline_setup(setup, _make_candle(), allow_live=True))

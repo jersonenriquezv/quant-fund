@@ -184,8 +184,8 @@ bot_metrics (metric_name VARCHAR(50), value FLOAT, pair VARCHAR(20), labels JSON
 
 | metric_name | Dónde se mide | Frecuencia |
 |---|---|---|
-| `pipeline_latency_ms` | `main.py` (on_candle_confirmed) | Cada candle (~5min) |
-| `claude_latency_ms` | `main.py` (_evaluate_with_claude) | Cada evaluación Claude |
+| `pipeline_latency_ms` | `pipeline_router.py` (on_candle_confirmed) | Cada candle (~5min) |
+| `claude_latency_ms` | `pipeline_router.py` (_evaluate_with_claude) | Cada evaluación Claude |
 | `okx_order_latency_ms` | `executor.py` (place_limit/stop/tp) | Cada orden |
 | `ws_reconnection` | `websocket_feeds.py` (start loop) | Cada reconexión |
 | `health_status` | `data_service/service.py` (health check) | Cada 30s |
@@ -227,7 +227,7 @@ bot_metrics (metric_name VARCHAR(50), value FLOAT, pair VARCHAR(20), labels JSON
 | 5. Execution Service | Implementado + auditoría | 32 | `execution_service/service.py` |
 | Backtester | Implementado (fase 1) | 21 | `scripts/backtest.py` |
 | Alert Manager | Implementado | 26 | `shared/alert_manager.py` |
-| **Total** | **5/5 completas + backtester + alerts** | **478** | `main.py` (pipeline completo) |
+| **Total** | **5/5 completas + backtester + alerts** | **478** | `pipeline_router.py` (pipeline) + `main.py` (wiring) |
 
 ## Backtesting (`scripts/`)
 
@@ -343,7 +343,7 @@ Cualquier emisión fuera de `VALID_OUTCOMES` genera WARNING en logs. Actualizar 
 - `shared/models.py` — `TradeSetup.setup_id` (uuid auto-generated)
 - `data_service/data_store.py` — `ml_setups` table, `insert_ml_setup()`, `update_ml_setup_outcome()`, `update_ml_guardian_shadow()`
 - `execution_service/models.py` — `ManagedPosition.setup_id`
-- `main.py` — `_ml_log_setup()`, `_ml_resolve_outcome()` (fire-and-forget)
+- `ml_instrumentation.py` — `_ml_log_setup()`, `_ml_resolve_outcome()` (fire-and-forget)
 - `execution_service/monitor.py` — `_ml_resolve_close()` (outcome on trade close/cancel/replace)
 - `scripts/feature_importance.py` — MDI/MDA/SFI with purged k-fold CV
 - `config/settings.py` — `ML_FEATURE_VERSION` (currently 6)
