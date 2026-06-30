@@ -788,7 +788,7 @@ async def _evaluate_with_claude(setup, candle) -> "AIDecision | None":
             "missing": list(snapshot.health.missing_sources),
         }
 
-    _persist_ai_decision(None, decision, setup)
+    _persist_ai_decision(decision, setup)
 
     if not decision.approved:
         logger.info(
@@ -846,20 +846,6 @@ def _pre_filter_for_claude(setup, snapshot) -> str | None:
                 return f"CVD divergence against short (buy dominance {buy_dominance*100:.1f}% > 60%)"
 
     return None
-
-
-# ================================================================
-# Daily summary loop (replaces hourly status — available on Grafana)
-# ================================================================
-
-
-
-async def _daily_summary_loop() -> None:
-    """Placeholder — daily summary disabled. Kept for future use."""
-    # Daily summary notification removed — user wants only order/close alerts.
-    # Grafana dashboards provide the same info on demand.
-    while True:
-        await asyncio.sleep(86400)
 
 
 # ================================================================
@@ -1137,9 +1123,8 @@ async def main() -> None:
     # Start DataService in background
     data_task = asyncio.create_task(rt.data_service.start(), name="data_service")
 
-    # Start daily summary loop + bot started notification
+    # Start background monitoring loops
     rt.bot_start_time = time.time()
-    status_task = asyncio.create_task(_daily_summary_loop(), name="daily_summary")
     liq_task = asyncio.create_task(_liquidation_alert_loop(), name="liquidation_alerts")
     session_task = asyncio.create_task(_session_alert_loop(), name="session_alerts")
     dry_spell_task = asyncio.create_task(_dry_spell_loop(), name="dry_spell_alerts")
@@ -1161,7 +1146,7 @@ async def main() -> None:
     await rt.data_service.stop()
 
     # Cancel background tasks
-    for task in [data_task, status_task, liq_task, session_task, dry_spell_task, market_monitor_task]:
+    for task in [data_task, liq_task, session_task, dry_spell_task, market_monitor_task]:
         if not task.done():
             task.cancel()
             try:

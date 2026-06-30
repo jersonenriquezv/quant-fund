@@ -51,13 +51,17 @@ def _emit_metric(name: str, value: float, pair: str | None = None, labels: dict 
 # Persistence helpers (called from pipeline callback)
 # ================================================================
 
-def _persist_ai_decision(trade_id, decision, setup) -> None:
-    """Write AI decision to PostgreSQL (fire-and-forget)."""
+def _persist_ai_decision(decision, setup) -> None:
+    """Write AI decision to PostgreSQL (fire-and-forget).
+
+    No trade_id: shadow-mode AI decisions are never tied to a live trade row
+    (always None at the single call site), so the param was dropped.
+    """
     if rt.data_service is None:
         return
     try:
         rt.data_service.postgres.insert_ai_decision(
-            trade_id=trade_id,
+            trade_id=None,
             confidence=decision.confidence,
             reasoning=decision.reasoning,
             adjustments=decision.adjustments,
