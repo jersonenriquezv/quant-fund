@@ -583,6 +583,12 @@ D: net_score <  2
 
 ## 8. Changelog
 
+### 2026-06-30 — Refactor Phase 6: main.py god-file split into 5 modules
+**Files:** `main.py` (1546 → 390 LOC), new `pipeline_runtime.py` + `persistence.py` + `monitoring_loops.py` + `ml_instrumentation.py` + `pipeline_router.py`; tests (`test_main_pipeline.py`, `test_engine1_live_gate.py` patch repoint + rt injection). Branch `chore/refactor-phase6-mainpy`.
+- **Impact: NONE on live/shadow/ML/WR/PnL behavior** — pure structural hygiene before VPS migration. Bot stays shadow-pure (`ENABLED_SETUPS=[]`, `ENGINE1_LIVE_GATED_ENABLED=false`); the dormant engine1 live gate was relocated verbatim and is still OFF.
+- **What:** P1 (tracer) replaced ~20 module-level globals with a shared `rt` singleton (`pipeline_runtime.py`); P2 extracted leaf writers (`persistence.py`) + background alert loops (`monitoring_loops.py`) and removed dead `_daily_summary_loop` + an always-None `trade_id` param; P3 extracted the ML instrumentation + the pipeline core (`ml_instrumentation.py`, `pipeline_router.py`), leaving `main.py` as imports + wiring + `main()`.
+- **Verification:** 1437 tests green at every step (identical to pre-split baseline); 0 orphan globals; no circular imports. Real-startup deploy smoke pending at time of writing.
+
 ### 2026-06-28 — engine1 live REVERTED same day; forward gate raised 30→100 + re-train milestone on /shadow
 **Files:** `config/.env` (`ENGINE1_LIVE_GATED_ENABLED=false`), `scripts/ml_v1_forward_check.py` (N_GATE 30→100), `dashboard/api/{models,queries,routes/shadow}.py` + `web/.../shadow/page.tsx` + `lib/api.ts` (re-train milestone surfaced), tests (+2).
 - **What happened:** ~30 min after going live, the dashboard forward gate flipped **PASS→FAIL**. We had decided to go live on the forward gate at **N=34** (top-half PF 1.32). With 8 more forward trades (**N=42**) the verdict became FAIL — top-half PF 0.89, take-all 0.68 (top-half still *ranks* better, but neither clears breakeven forward). **Flag set back to `false` + redeploy → engine1 back to shadow. ZERO live trades executed — no money touched** (engine1 never emitted an eligible setup in the live window).

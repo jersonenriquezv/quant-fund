@@ -86,7 +86,7 @@ Split `main.py` (1546 LOC) into `pipeline_runtime.py` + 4 modules (`persistence`
 ---
 
 ## Phase 3 — Extract core (`ml_instrumentation` + `pipeline_router`); main.py → wiring only
-**Status:** pending
+**Status:** code done (commit 794e01b on chore/refactor-phase6-mainpy, not pushed); real-startup deploy smoke PENDING (last gate item)
 **Inputs:** Phase 2 outputs — leaves extracted, tests green, imports clean.
 **Outputs:** `ml_instrumentation.py` (`_ml_log_setup`, `_ml_resolve_outcome`, `_engine1_score_log`, `_engine1_kill_check`, `_engine1_emit_kill_alert`); `pipeline_router.py` (`on_candle_confirmed`, `_process_pipeline_setup`, `_evaluate_htf_pipeline`, `_evaluate_with_claude`, `_pre_filter_for_claude`, `_publish_strategy_state`); `main.py` ≈250 LOC = imports + `validate_config` + `_log_pair_diagnostics` + `_send_crash_alert` + `main()` + `__main__` + re-exports.
 **Work:**
@@ -102,7 +102,41 @@ Split `main.py` (1546 LOC) into `pipeline_runtime.py` + 4 modules (`persistence`
 - [ ] Rollback if: bot fails to boot, OR `ml_setups` writes stop, OR any pipeline branch diverges in logs → redeploy previous image (Docker auto-restart) + `git revert` Phase 3 commit.
 
 **Evidence:**
-<empty>
+- 2026-06-30 — Core extracted in one focused commit (794e01b).
+  - `ml_instrumentation.py` (leaf): `_ml_log_setup`, `_ml_resolve_outcome`,
+    `_engine1_score_log`, `_engine1_kill_check`, `_engine1_emit_kill_alert`
+    (+ `_ENGINE1_KILL_ALERT_TTL`). Imports `_emit_metric` from persistence.
+  - `pipeline_router.py` (core): `_publish_strategy_state`, `on_candle_confirmed`,
+    `_process_pipeline_setup`, `_evaluate_htf_pipeline`, `_evaluate_with_claude`,
+    `_pre_filter_for_claude` (+ dedup-TTL consts). The dormant `engine1_live`
+    branch relocated VERBATIM, flag `ENGINE1_LIVE_GATED_ENABLED` still OFF.
+  - `main.py` 1190 → **390 LOC**: imports + re-exports + `validate_config`
+    + `_log_pair_diagnostics` + `_send_crash_alert` + `main()` + `__main__`.
+    `main()` wires `DataService(on_candle_confirmed=…)` via import from
+    pipeline_router. (Slightly above the ~250 estimate — `_log_pair_diagnostics`
+    + `validate_config` are larger than the grill guessed; both are pure
+    wiring/startup, left in main by design.)
+- Test fix (monkeypatch-after-move): `test_engine1_live_gate._run` patched
+  `main._ml_log_setup / _engine1_score_log / _engine1_kill_check`; since
+  `_process_pipeline_setup` now resolves those in `pipeline_router`'s globals,
+  patches repointed to `pipeline_router.*` (+ `import pipeline_router`). All
+  other `main.<fn>` test refs are CALLS (resolve via re-export); `main.settings.*`
+  patches mutate the shared settings object so they still take.
+- Automated checks:
+  - `python -m pytest tests/ -q` → **1437 passed, 1 xpassed, 0 failed** (identical
+    baseline; 8 stable on repeat).
+  - Targeted `test_engine1_live_gate + test_engine1_scorer + test_main_pipeline`
+    → **24 passed** (dormant live branch + scorer + pipeline callback intact).
+  - Import smoke `import main, pipeline_router, ml_instrumentation` → no
+    ImportError / circular import; 4 re-exports present on `main`.
+  - `ast.parse` on all 5 modules → OK.
+  - Repo-wide orphan sweep (`main._<global>` reads) → 0; dedup consts only in
+    pipeline_router.
+- Rollback trigger fired: **no** (automated gate). 
+- PENDING gate item: real-startup deploy smoke (`docker compose up -d --build bot`)
+  — boot, OKX WS connect, one `ml_setups` row written, strategy state published
+  to Redis, 9-step `reference_deploy_verification`. Bot is shadow-pure so worst
+  case is minutes of lost ML logging; awaiting user go to deploy.
 
 ## Out of scope (deliberately)
 - **notifier/alert_manager `notify_*` overlap smell** — real but separate concern; its own PR (Phase 2 carry-over in tracker). Bundling it here inflates an already-large diff.
