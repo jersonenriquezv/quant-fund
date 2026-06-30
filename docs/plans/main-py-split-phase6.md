@@ -41,7 +41,7 @@ Split `main.py` (1546 LOC) into `pipeline_runtime.py` + 4 modules (`persistence`
 ---
 
 ## Phase 2 — Extract leaf modules + dead-code kill
-**Status:** pending
+**Status:** done (commits c624394 move + fdd606d dead-code on chore/refactor-phase6-mainpy, not pushed)
 **Inputs:** Phase 1 outputs — `rt` singleton live, all globals migrated, tests green.
 **Outputs:** `persistence.py` (`_persist_ai_decision`, `_persist_ai_pre_filter`, `_persist_risk_event`, `_log_trade_rejection`, `_emit_metric`); `monitoring_loops.py` (`_session_alert_loop`, `_dry_spell_loop`, `_market_monitor_loop`, `_liquidation_alert_loop`, `_send_liquidation_alert`, `TRADING_SESSIONS` const + their module-level cooldown state now on `rt`); dead code removed.
 **Work:**
@@ -57,7 +57,31 @@ Split `main.py` (1546 LOC) into `pipeline_runtime.py` + 4 modules (`persistence`
 - [ ] Rollback if: import cycle, OR any monitoring loop changes cadence/behavior → revert the offending module's commit.
 
 **Evidence:**
-<empty>
+- 2026-06-30 — Two-commit split as planned.
+  - Commit 1 (c624394) pure move: `persistence.py` (131 LOC: `_emit_metric`,
+    `_persist_ai_decision`, `_persist_ai_pre_filter`, `_persist_risk_event`,
+    `_log_trade_rejection`) + `monitoring_loops.py` (242 LOC: 4 alert loops +
+    `_send_liquidation_alert` + `TRADING_SESSIONS` + threshold consts). Bodies
+    unchanged; state/services via `rt`. main.py re-imports all symbols; dropped
+    now-unused `datetime/timezone` + `liquidation_estimator` imports.
+  - Commit 2 (fdd606d) dead-code, isolated/revertable: deleted `_daily_summary_loop`
+    (+ `status_task` create + cancel-list entry); dropped always-None `trade_id`
+    param from `_persist_ai_decision` (+ single call site).
+- Automated checks:
+  - `python -m pytest tests/ -q` → **1437 passed, 1 xpassed, 0 failed** (identical
+    to the pre-move baseline on this branch; the 2-test delta vs Phase 1's 1439 is
+    the shadow-PR-#115 tests absent off main, not a regression).
+  - Import smoke: `python -c "import main, persistence, monitoring_loops"` → no
+    ImportError / circular import; re-exports present (`main._emit_metric`,
+    `main._session_alert_loop`, `main.TRADING_SESSIONS`, `main._send_liquidation_alert`).
+  - Orphan-global sweep across all 4 modules → 0 (every service/state via `rt`).
+  - `ast.parse` on all three files → OK.
+- LOC: main.py 1524 → 1190 (−334); persistence.py +131; monitoring_loops.py +242.
+- Branch-hygiene fix (pre-Phase-2): the Phase 1 tracer commit had landed on
+  `feat/shadow-recency-decay` (stacked on the OPEN shadow PR #115, unpushed).
+  Cherry-picked onto `chore/refactor-phase6-mainpy` (clean off main) as 359d3a7;
+  reset shadow branch back to origin so PR #115 stays pure. Nothing was pushed.
+- Rollback trigger fired: **no**.
 
 ---
 
