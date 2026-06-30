@@ -36,6 +36,7 @@ with patch("shared.logger.setup_logger", side_effect=_noop_logger):
     if "shared.notifier" in sys.modules:
         del sys.modules["shared.notifier"]
     import main
+    import pipeline_router
     from pipeline_runtime import rt
 
 CUTOFF = settings.ENGINE1_SCORE_CUTOFF
@@ -137,9 +138,12 @@ def _reset():
 def _run(setup, score, *, flag, kill=(False, None), approval_ok=True):
     """Drive _process_pipeline_setup with controlled score + kill verdict."""
     data, risk, execution, shadow = _wire(approval_ok=approval_ok)
-    with patch.object(main, "_ml_log_setup", return_value={"f": 1}), \
-         patch.object(main, "_engine1_score_log", return_value=score), \
-         patch.object(main, "_engine1_kill_check", return_value=kill), \
+    # Patch in pipeline_router's namespace: _process_pipeline_setup now lives
+    # there (Refactor Phase 6) and looks these helpers up in its own module
+    # globals, not main's. Patching main.* would not take.
+    with patch.object(pipeline_router, "_ml_log_setup", return_value={"f": 1}), \
+         patch.object(pipeline_router, "_engine1_score_log", return_value=score), \
+         patch.object(pipeline_router, "_engine1_kill_check", return_value=kill), \
          patch.object(settings, "ENGINE1_LIVE_GATED_ENABLED", flag), \
          patch.object(settings, "MIN_ORDER_SIZES", {}):
         asyncio.run(main._process_pipeline_setup(setup, _make_candle(), allow_live=True))
